@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>simple-rom-organiser</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Simple ROM Organiser</name>
+  <summary>Match and organise ROM folders against TOSEC and No-Intro DATs</summary>
+  <description>
+    <p>
+      A small local web app that keeps the TOSEC and No-Intro DATs up to date, scans a ROM
+      folder and builds a clean library: matched files are renamed and sorted, unwanted and
+      duplicate files are set aside (never deleted), and M3U playlists are written for
+      complete multi-disk sets. It also installs Kickstart ROMs for RetroArch/PUAE.
+    </p>
+  </description>
+  <launchable type="desktop-id">simple-rom-organiser.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+    <category>Game</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

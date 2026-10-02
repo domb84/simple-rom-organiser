@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Simple ROM Organiser
+GenericName=ROM organiser
+Comment=Match and organise ROM folders against TOSEC and No-Intro DATs and build a clean library
+Exec=@EXEC@
+Icon=simple-rom-organiser
+Terminal=false
+StartupNotify=false
+Categories=Utility;Game;
+Keywords=ROM;TOSEC;Amiga;DAT;M3U;

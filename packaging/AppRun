@@ -1,0 +1,49 @@
+#!/bin/sh
+# AppRun for the Simple ROM Organiser AppImage.
+# Runs the bundled, relocatable CPython with the romorg package; never uses the host Python.
+set -eu
+
+# $APPDIR is set by the AppImage runtime; fall back to this script's directory
+# (e.g. when running an extracted squashfs-root/ directly).
+if [ -z "${APPDIR:-}" ]; then
+    APPDIR="$(dirname "$(readlink -f "$0")")"
+    export APPDIR
+fi
+PY="$APPDIR/usr/python/bin/python3"
+
+# Make sure host Python settings cannot leak into the bundled interpreter
+# (python -I below also ignores PYTHON* variables and the user site dir).
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP 2>/dev/null || true
+
+# The bundled OpenSSL looks for /etc/ssl/cert.pem; point it at the system CA bundle
+# if that file does not exist (other distros), so HTTPS downloads of DATs work.
+if [ -z "${SSL_CERT_FILE:-}" ] && [ ! -e /etc/ssl/cert.pem ]; then
+    for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+             /etc/ssl/ca-bundle.pem /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; do
+        if [ -r "$f" ]; then
+            SSL_CERT_FILE="$f"
+            export SSL_CERT_FILE
+            break
+        fi
+    done
+fi
+
+# With no terminal (launched from the app menu / Steam), send output to a log file.
+# ROMORG_LOG=1 forces logging even from a terminal.
+if [ ! -t 1 ] || [ "${ROMORG_LOG:-0}" = "1" ]; then
+    LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/simple-rom-organiser"
+    LOG="$LOG_DIR/app.log"
+    if mkdir -p "$LOG_DIR" 2>/dev/null; then
+        # Keep the log small: rotate once it passes ~1 MiB.
+        if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ]; then
+            mv -f "$LOG" "$LOG.1"
+        fi
+        {
+            echo "----- $(date '+%Y-%m-%d %H:%M:%S') starting ${APPIMAGE:-$APPDIR} $*"
+        } >> "$LOG" 2>/dev/null && exec >> "$LOG" 2>&1
+    fi
+fi
+
+# exec: Python replaces this shell, so killing the AppImage process stops the server.
+# -I isolated mode, -B never try to write .pyc files into the read-only image, -u unbuffered log.
+exec "$PY" -I -B -u -m romorg "$@"
