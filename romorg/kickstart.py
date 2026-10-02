@@ -73,7 +73,7 @@ ProgressFn = Callable[[int, int, str], None]
 class KickOp:
     target: Path
     source: Optional["Entry"]
-    status: str  # copy | ok | conflict | missing
+    status: str  # copy | ok | conflict | missing | unmatched (folder source: a file that is no known Kickstart)
     reason: str = ""
     description: str = ""
     md5: str = ""         # expected md5 of the source (or of the first table entry if missing)
@@ -228,8 +228,13 @@ def plan_kickstarts(result: "ScanResult", dest: Path,
     already exists with one of the expected md5s. ``conflict``: the target exists
     with a different md5 (never overwritten). ``missing``: no local file found.
     """
-    dest = Path(dest)
-    local = _local_by_md5(result, kickstart_dat)
+    return _plan_from_local(_local_by_md5(result, kickstart_dat), Path(dest),
+                            "not found in the scanned folder")
+
+
+def _plan_from_local(local: dict[str, list[tuple["Entry", Any]]], dest: Path,
+                     missing_text: str) -> list[KickOp]:
+    """The PUAE table against ``local`` (md5 -> [(entry, object with a ``.name``)])."""
     groups: dict[str, list[tuple[str, str]]] = {}
     for filename, md5, desc in PUAE_BIOS:
         groups.setdefault(filename, []).append((md5, desc))
@@ -238,7 +243,7 @@ def plan_kickstarts(result: "ScanResult", dest: Path,
     for filename, variants in groups.items():
         target = dest / filename
         md5s = {m for m, _ in variants}
-        found: Optional[tuple["Entry", "Rom", str, str]] = None
+        found: Optional[tuple["Entry", Any, str, str]] = None
         for md5, desc in variants:
             hits = local.get(md5)
             if hits:
@@ -253,14 +258,14 @@ def plan_kickstarts(result: "ScanResult", dest: Path,
                 d = next(dd for m, dd in variants if m == existing)
                 ops.append(KickOp(target, None, "ok", "already installed", d, existing or ""))
             else:
-                why = "not found in the scanned folder"
+                why = missing_text
                 if exists:
                     why += "; a different file exists at the target"
                 ops.append(KickOp(target, None, "missing", why, " / ".join(d for _, d in variants), md5))
             continue
 
         entry, rom, md5, desc = found
-        src = _abs(entry.path, result.root)
+        src = entry.path
         label = src.name + (f"::{entry.member}" if entry.member else "")
         if existing in md5s:
             ops.append(KickOp(target, entry, "ok", "already installed", desc, md5, rom.name))
@@ -269,6 +274,82 @@ def plan_kickstarts(result: "ScanResult", dest: Path,
                               desc, md5, rom.name))
         else:
             ops.append(KickOp(target, entry, "copy", f"from {label}", desc, md5, rom.name))
+    return ops
+
+
+# ------------------------------------------------------- Kickstarts found in a folder tree
+# (the "Commodore Amiga - WHDLoad" system: its own Kickstarts/ folder, no DAT involved)
+
+MAX_KICKSTART_SIZE = 1_100_000      # the biggest PUAE ROM is the 1 MiB CD32 KS + extended image
+FOLDER_SCAN_LIMIT = 2000            # files looked at in one Kickstart folder
+
+
+def scan_kickstart_folder(folder: Path) -> tuple[dict[str, list[tuple["Entry", Any]]], list[tuple["Entry", str]]]:
+    """Hash the files under ``folder`` (recursive, hidden files skipped).
+
+    Returns ``(by_md5, unknown)``: ``by_md5`` maps md5 -> [(entry, shim with .name)] for the files whose md5
+    is in :data:`PUAE_BIOS`; ``unknown`` lists ``(entry, reason)`` for every other file. Only the plain
+    bytes are hashed - archives are not opened and nothing is modified. Files above
+    :data:`MAX_KICKSTART_SIZE` are reported without being read.
+    """
+    from types import SimpleNamespace
+
+    from .scanner import Entry
+
+    known = {md5 for _f, md5, _d in PUAE_BIOS}
+    by_md5: dict[str, list[tuple["Entry", Any]]] = {}
+    unknown: list[tuple["Entry", str]] = []
+    files: list[Path] = []
+    stack = [Path(folder)]
+    while stack and len(files) < FOLDER_SCAN_LIMIT:
+        d = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for de in it:
+                    if de.name.startswith("."):
+                        continue
+                    try:
+                        if de.is_dir(follow_symlinks=False):
+                            stack.append(Path(de.path))
+                        elif de.is_file():
+                            files.append(Path(de.path))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    files.sort(key=lambda p: p.as_posix().casefold())
+    for path in files[:FOLDER_SCAN_LIMIT]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        entry = Entry(path, None, size, "", None, Path(folder))
+        if size > MAX_KICKSTART_SIZE or size == 0:
+            unknown.append((entry, "too large to be a Kickstart ROM" if size else "empty file"))
+            continue
+        md5 = _file_md5(path)
+        if md5 is None:
+            unknown.append((entry, "could not be read"))
+        elif md5 in known:
+            by_md5.setdefault(md5, []).append((entry, SimpleNamespace(name=path.name)))
+        else:
+            unknown.append((entry, f"not a Kickstart PUAE knows (md5 {md5})"))
+    return by_md5, unknown
+
+
+def plan_kickstarts_from_folder(folder: Optional[Path], dest: Path) -> list[KickOp]:
+    """Like :func:`plan_kickstarts`, with the sources taken from the files under ``folder`` (matched by
+    md5 against :data:`PUAE_BIOS`; no DAT, no TOSEC data). The PUAE table rows come first
+    (copy | ok | conflict | missing); every file that is not a known Kickstart follows as an
+    ``unmatched`` op (never copied, only reported)."""
+    dest = Path(dest)
+    if folder is None:     # the folder does not exist (yet): the table with everything "missing"
+        return _plan_from_local({}, dest, "no Kickstarts folder yet")
+    folder = Path(folder)
+    by_md5, unknown = scan_kickstart_folder(folder)
+    ops = _plan_from_local(by_md5, dest, f"not found in {folder.name}/")
+    for entry, why in unknown:
+        ops.append(KickOp(entry.path, entry, "unmatched", why, "not recognised", ""))
     return ops
 
 

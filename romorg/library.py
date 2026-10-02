@@ -9,12 +9,13 @@ running it on its own kept output changes nothing.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 
 from . import tags
-from .tags import STYLE_NOINTRO, STYLE_TOSEC
+from .tags import STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC, STYLE_WHDLOAD
 
 if TYPE_CHECKING:
     from .datfile import Rom
@@ -174,6 +175,7 @@ class Item:
     member: Optional[str]
     form: str = ""                # organiser._header_form
     link: bool = False            # a symlink: takes part in the selection but is never moved
+    disc_total: int = 0           # Redump multi-disc games: discs of this release in the DAT (0 = unknown)
 
 
 @dataclass
@@ -209,6 +211,7 @@ class IncompleteSet:
     total: int
     present: dict[int, int]       # disk number -> Item.key
     missing: tuple[int, ...]
+    kept: bool = False            # Redump: the discs stay where they are (no ``_incomplete`` move), only reported
 
 
 @dataclass
@@ -264,10 +267,14 @@ def _rom_name(item: Item) -> str:
 
 
 def _style(item: Item) -> str:
-    return item.style if item.style in (STYLE_TOSEC, STYLE_NOINTRO) else STYLE_TOSEC
+    return item.style if item.style in (STYLE_TOSEC, STYLE_NOINTRO, STYLE_WHDLOAD, STYLE_REDUMP) else STYLE_TOSEC
 
 
 def _tags_of(item: Item) -> tags.Tags:
+    if _style(item) == STYLE_REDUMP:     # name + the DAT <category> (Demos, Coverdiscs, Preproduction)
+        return tags.redump_tags(_rom_name(item), getattr(item.rom, "category", "") or "")
+    if _style(item) == STYLE_WHDLOAD:    # game name + archive stem (the stem alone lacks the status)
+        return tags.parse_whdload(_rom_name(item), getattr(item.rom, "game", "") or "")
     return tags.parse_name(_rom_name(item), _style(item))
 
 
@@ -288,14 +295,14 @@ def exclusion_of(rom_name: str, style: str, profile: LibraryProfile) -> tuple[tu
 
 
 def eligibility(rom_name: str, style: str, profile: LibraryProfile, languages: bool = True,
-                flags: bool = True) -> list[tuple[str, str]]:
+                flags: bool = True, parsed: Optional[tags.Tags] = None) -> list[tuple[str, str]]:
     """Every ``(code, exact text)`` that makes ``rom_name`` ineligible under ``profile``.
 
     Codes: the exclusion rules (``RULES``), ``flag_<x>`` (a flag type missing from
     ``profile.keep_flags``; text = the exact ``[cr FLT]``) and ``language`` (no selected language;
     text = the languages it has, e.g. ``(De)``). ``languages`` / ``flags`` switch those two filters off
-    (they only apply to some DATs)."""
-    t = tags.parse_name(rom_name, style)
+    (they only apply to some DATs). ``parsed``: the already parsed tags (WHDLoad needs the game name too)."""
+    t = parsed if parsed is not None else tags.parse_name(rom_name, style)
     info = [(r, x) for r, x in tags.exclusion_info(t) if r in profile.exclude]
     if flags and style == STYLE_TOSEC:
         for code in tags.KEEP_FLAGS:
@@ -336,7 +343,7 @@ def _lang_rank(langs: Iterable[str], profile: LibraryProfile) -> int:
 
 def _release_key(item: Item) -> tuple:
     """One released version of a product: the name without its dump flags."""
-    t = tags.parse_name(_rom_name(item), _style(item))
+    t = _tags_of(item)
     return (t.style, t.title.casefold(), t.version, t.regions,
             () if t.languages_implied else t.languages, t.flags)
 
@@ -465,7 +472,8 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
     excluded: list[tuple[Item, list[tuple[str, str]]]] = []
     for it in items:
         info = eligibility(_rom_name(it), _style(it), profile, languages=it.dat in scope.language,
-                           flags=scope.flags(it.dat))
+                           flags=scope.flags(it.dat),
+                           parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None)
         if info:
             excluded.append((it, info))
         else:
@@ -496,7 +504,22 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
 
     for dat in sorted(by_dat):
         dat_items = by_dat[dat]
-        if dat in latest_dats | best_dats | m3u_dats and all(_style(i) == STYLE_TOSEC for i in dat_items):
+        if all(_style(i) == STYLE_REDUMP for i in dat_items):
+            if dat in latest_dats and (profile.latest_only or (dat in scope.region and profile.one_per_game)):
+                _select_redump(dat, dat_items, profile, dat in scope.region and profile.one_per_game, sel,
+                               decide, next_id)
+            else:
+                for it in dat_items:
+                    decide(it, KEEP)
+        elif all(_style(i) == STYLE_WHDLOAD for i in dat_items):
+            best = dat in best_dats and profile.best_variant
+            latest = dat in latest_dats and profile.latest_only
+            if best or latest:
+                _select_whdload(dat_items, profile, best, sel, decide)
+            else:
+                for it in dat_items:
+                    decide(it, KEEP)
+        elif dat in latest_dats | best_dats | m3u_dats and all(_style(i) == STYLE_TOSEC for i in dat_items):
             _select_tosec(dat, dat_items, profile, dat in best_dats and profile.best_variant,
                           dat in latest_dats and profile.latest_only, dat in m3u_dats and profile.complete_only,
                           sel, decide, next_id, keep_all=dat not in latest_dats | best_dats)
@@ -514,7 +537,7 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
         if d.action == KEEP:
             d.reason = why
     sel.incomplete = [x for x in sel.incomplete
-                      if any(sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
+                      if x.kept or any(sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
     sel.vanished = _vanished(items, sel)
     return sel
 
@@ -553,6 +576,87 @@ def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
     return out
 
 
+def _whd_vkeys(group: list[Item]) -> dict[int, tuple]:
+    """Version key per item, comparable inside one game (zero-padded ``v1.02`` read as a fraction)."""
+    versions = {it.key: _tags_of(it).version for it in group}
+    widths = tags._fraction_widths(versions.values())
+    if not widths:
+        return {it.key: _tags_of(it).version_key for it in group}
+    return {k: tags._version_key(v, widths) for k, v in versions.items()}
+
+
+def _whd_variant(t: tags.Tags) -> tuple:
+    """The variant signature of a WHDLoad archive: language set, chipset tags, memory tags, video mode."""
+    return (tuple(sorted(t.languages)), tuple(sorted(tags.chipset(t))),
+            tuple(sorted({tags._whd_memory(f) for f in t.flags if tags._whd_memory(f)})),
+            "NTSC" in t.video)
+
+
+def _select_whdload(dat_items: list[Item], profile: LibraryProfile, best: bool, sel: Selection,
+                    decide: Any) -> None:
+    """WHDLoad: games = ``tags.identity_key`` (title + status + product tags). ``best``: keep ONE variant per
+    game - best selected language, then platform (CD32 > AGA > OCS), then standard memory over low-memory
+    builds, then PAL / untagged over NTSC, then the newest version, then the highest build number, then the
+    name. Otherwise (latest only): keep the newest version of every variant (same language set, chipset,
+    memory tags and video mode); older ones are superseded. Nothing of the TOSEC Amiga rules is involved."""
+    groups: dict[tuple, list[Item]] = {}
+    for it in dat_items:
+        groups.setdefault(tags.identity_key(_tags_of(it)), []).append(it)
+    for group in groups.values():
+        vkeys = _whd_vkeys(group)
+        info = {}
+        for it in group:
+            t = _tags_of(it)
+            info[it.key] = (_lang_rank(tags.variant_languages(t), profile), tags.platform_rank(t),
+                            tags.whd_memory_rank(t), 1 if "NTSC" in t.video else 0)
+        if best:
+            pool = group
+            for idx in range(4):
+                low = min(info[i.key][idx] for i in pool)
+                pool = [i for i in pool if info[i.key][idx] == low]
+            newest = max(vkeys[i.key] for i in pool)
+            pool = [i for i in pool if vkeys[i.key] == newest]
+            top = max(_tags_of(i).build for i in pool)
+            pool = [i for i in pool if _tags_of(i).build == top]
+            winner = min(pool, key=lambda i: (_rom_name(i).casefold(), _rom_name(i), i.key))
+            wname = _rom_name(winner)
+            for it in group:
+                if it.key == winner.key or _rom_name(it) == wname:
+                    decide(it, KEEP)
+                else:
+                    decide(it, SUPERSEDED, superseded_by=wname,
+                           reason=f"one best variant per game: kept {wname} ({_whd_why(it, winner, info, vkeys)})")
+            continue
+        by_variant: dict[tuple, list[Item]] = {}
+        for it in group:
+            by_variant.setdefault(_whd_variant(_tags_of(it)), []).append(it)
+        for members in by_variant.values():
+            top = max((vkeys[i.key], _tags_of(i).build) for i in members)
+            cand = [i for i in members if (vkeys[i.key], _tags_of(i).build) == top]
+            winner = min(cand, key=lambda i: (_rom_name(i).casefold(), _rom_name(i), i.key))
+            wname = _rom_name(winner)
+            for it in members:
+                if it.key == winner.key or _rom_name(it) == wname:
+                    decide(it, KEEP)
+                else:
+                    decide(it, SUPERSEDED, superseded_by=wname,
+                           reason=f"superseded by {wname} (newer version of the same variant)")
+
+
+def _whd_why(it: Item, winner: Item, info: dict[int, tuple], vkeys: dict[int, tuple]) -> str:
+    """The first ranking criterion on which ``winner`` beats ``it`` (for the preview text)."""
+    a, b = info[it.key], info[winner.key]
+    for idx, text in enumerate(("preferred language", "better platform (CD32 > AGA > OCS)",
+                                "standard memory", "PAL instead of NTSC")):
+        if a[idx] != b[idx]:
+            return text
+    if vkeys[it.key] != vkeys[winner.key]:
+        return "newer version"
+    if _tags_of(it).build != _tags_of(winner).build:
+        return "higher build number"
+    return "name order"
+
+
 def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, one_per_game: bool,
                     sel: Selection, decide: Any) -> None:
     by_form: dict[str, list[Item]] = {}
@@ -573,6 +677,113 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
                        reason=f"superseded by {newer} (newer version of the same region)")
             else:
                 decide(it, KEEP)
+
+
+def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one_per_game: bool,
+                   sel: Selection, decide: Any, next_id: list[int]) -> None:
+    """Redump (Sega Dreamcast): ONE release per game, discs of a game always stay together.
+
+    A *game* = ``tags.redump_game_key`` (title + status + product tags; the disc number is not part of
+    it). Its *editions* are the (regions, explicit languages) groups; every disc of an edition belongs to
+    that edition. Per game the best edition is kept (selected language order, region priority, newest
+    revision, fewest extra tags, name) with ALL its discs - for every disc number the newest revision
+    of that edition; everything else is ``superseded``. With ``one_per_game`` off every edition is kept
+    (still only the newest revision of each disc). A kept multi-disc edition becomes a :class:`ChosenSet`
+    (a playlist) when all of its discs (``Item.disc_total`` or the highest disc number) are present,
+    else an :class:`IncompleteSet` that is only reported (the discs stay).
+    """
+    order = tags.region_order(profile.region_priority)
+    games: dict[tuple, list[Item]] = {}
+    for it in dat_items:
+        games.setdefault(tags.game_key(_tags_of(it)), []).append(it)
+    for group in games.values():
+        names = list(dict.fromkeys(_rom_name(i) for i in group))
+        vkeys = tags.group_version_keys(names, STYLE_REDUMP)
+        editions: dict[tuple, list[Item]] = {}
+        for it in group:
+            t = _tags_of(it)
+            editions.setdefault((t.regions, () if t.languages_implied else t.languages), []).append(it)
+
+        def first_of(members: list[Item]) -> Item:
+            return min(members, key=lambda i: (tags.disc_number(_tags_of(i)), _rom_name(i)))
+
+        def newest_of(members: list[Item]) -> tuple:
+            return max(vkeys[_rom_name(i)] for i in members)
+
+        if one_per_game:
+            # best edition: selected language, region priority, then the newest revision (over its
+            # discs), fewest extra tags, name
+            def lr(members: list[Item]) -> tuple:
+                t = _tags_of(first_of(members))
+                return (_lang_rank(tags.variant_languages(t), profile), tags.region_rank(t.regions, order))
+
+            best = min(lr(m) for m in editions.values())
+            pool = {k: m for k, m in editions.items() if lr(m) == best}
+            newest = max(newest_of(m) for m in pool.values())
+            pool = {k: m for k, m in pool.items() if newest_of(m) == newest}
+            winner_key = min(pool, key=lambda k: (tags.extra_tag_count(_tags_of(first_of(pool[k]))),
+                                                  _rom_name(first_of(pool[k])).casefold(),
+                                                  _rom_name(first_of(pool[k])), str(k)))
+            kept_editions = {winner_key: editions[winner_key]}
+        else:
+            kept_editions = editions
+        winner_name = ""
+        for key, members in kept_editions.items():
+            # newest revision of every disc number
+            by_disc: dict[int, list[Item]] = {}
+            for it in members:
+                by_disc.setdefault(tags.disc_number(_tags_of(it)), []).append(it)
+            chosen: dict[int, Item] = {}
+            for disc, cands in by_disc.items():
+                chosen[disc] = max(cands, key=lambda i: (vkeys[_rom_name(i)],
+                                                         tuple(-ord(c) for c in _rom_name(i).casefold())))
+            for disc, cands in by_disc.items():
+                win = chosen[disc]
+                for it in cands:
+                    if it.key == win.key or _rom_name(it) == _rom_name(win):
+                        decide(it, KEEP)
+                    else:
+                        decide(it, SUPERSEDED, superseded_by=_rom_name(win),
+                               reason=f"older revision: kept {_rom_name(win)}")
+            winner_name = winner_name or _rom_name(next(iter(chosen.values())))
+            discs = sorted(d for d in chosen if d > 0)
+            if discs:
+                total = max([it.disc_total for it in chosen.values()] + [discs[-1]])
+                first = chosen[discs[0]]
+                stem = _disc_free_name(_rom_name(first))
+                if discs == list(range(1, total + 1)) and total >= 2:
+                    sel.sets.append(ChosenSet(
+                        id=next_id[0], dat=dat, name=stem, total=total,
+                        slots={d: chosen[d].key for d in discs}, labels={d: f"Disc {d}" for d in discs},
+                        flags=(), cracked=False))
+                    for d in discs:
+                        sel.decisions[chosen[d].key].set_id = next_id[0]
+                    next_id[0] += 1
+                elif total >= 2:
+                    miss = tuple(d for d in range(1, total + 1) if d not in chosen)
+                    sel.incomplete.append(IncompleteSet(
+                        dat=dat, name=stem, total=total, present={d: chosen[d].key for d in discs},
+                        missing=miss, kept=True))
+                    for d in discs:
+                        dec = sel.decisions[chosen[d].key]
+                        dec.missing = miss
+                        dec.reason = ("incomplete set (missing disc " + ", ".join(str(m) for m in miss)
+                                      + ") - kept, no playlist")
+        if one_per_game:
+            for key, members in editions.items():
+                if key in kept_editions:
+                    continue
+                for it in members:
+                    decide(it, SUPERSEDED, superseded_by=winner_name,
+                           reason=f"one version per game: kept {winner_name}")
+
+
+_DISC_TOKEN_RE = re.compile(r"\s*\(Dis[ck] \d+\)")
+
+
+def _disc_free_name(name: str) -> str:
+    """``"Skies of Arcadia (USA) (Disc 1)"`` -> ``"Skies of Arcadia (USA)"`` (the playlist's name)."""
+    return _DISC_TOKEN_RE.sub("", name).strip()
 
 
 def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str], decide: Any) -> None:
@@ -741,10 +952,37 @@ def _missing_for(it: Item, partial: list[_Set], group: list[Item]) -> tuple[int,
 def _style_of_platform(platform: Any) -> str:
     src = getattr(platform, "source", "")
     src = getattr(src, "value", src)
+    if src == "whdload":
+        return STYLE_WHDLOAD
+    if src == "redump":
+        return STYLE_REDUMP
     return STYLE_NOINTRO if src == "nointro" else STYLE_TOSEC
 
 
 _BOTH = [STYLE_TOSEC, STYLE_NOINTRO]
+_ALL = [STYLE_TOSEC, STYLE_NOINTRO, STYLE_WHDLOAD, STYLE_REDUMP]
+# Descriptions that differ for the WHDLoad system (shown instead of the generic ones).
+_WHD_DESCRIPTIONS = {
+    "pre_release": "Beta, Pre Release and Preview builds (the database also marks many unfinished hacks and "
+                   "ports as (Beta)).",
+    "demo": "Game demos and demo-only releases: (Game Demo), (Demo), (Playable Demo).",
+    "unreleased": "Games that were never released: (Unreleased).",
+    "latest_only": "Keep only the newest version of every variant (same game, language, chipset, memory "
+                   "build and video mode); older versions go to _superseded.",
+    "best_variant": "Keep ONE archive per game: your language order first, then the platform "
+                    "(CD32 > AGA > OCS), then standard memory over 512KB / Low Mem builds, then PAL / untagged "
+                    "over NTSC, then the newest version (highest build number last). Different products "
+                    "(Two Disk / One Disk installs, Image / Files, Demos, Cover Disks, Hacks, CDTV) are never merged.",
+    "languages": "Keep only archives playable in the selected languages (first = preferred). An archive "
+                 "with no language tag counts as English; (German) / _De = German; a multi-language archive "
+                 "(En,Fr,De) counts for each of its languages.",
+}
+_REDUMP_DESCRIPTIONS = {
+    "pre_release": "Betas ((Beta)). Redump files most of them under the Preproduction category.",
+    "prototype": "Prototypes ((Proto)) and every disc Redump files under the Preproduction category.",
+    "demo": "Demos, samples, Japanese trial discs ((Taikenban), (Tentou Taikenban), (Tentou-you Demo ...)) and "
+            "every disc Redump files under the Demos or Coverdiscs categories.",
+}
 _RULE_DESCRIPTIONS = {
     "bad_dump": "Dumps marked as bad or corrupt. Never useful.",
     "virus": "Disks that carry a virus.",
@@ -785,13 +1023,18 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
 
     Only entries that apply to ``platform_style`` are returned (``applies_to`` lists the styles)."""
     out: list[dict[str, Any]] = []
-    per_style = {st: tags.rule_tokens(st) for st in _BOTH}
+    per_style = {st: tags.rule_tokens(st) for st in _ALL}
+    whd = platform_style == STYLE_WHDLOAD
+    redump = platform_style == STYLE_REDUMP
     for rule in RULES:
-        applies = [st for st in _BOTH if per_style[st][rule]]
+        applies = [st for st in _ALL if per_style[st][rule]]
         # list tokens of the requested style (the TOSEC list is the superset)
         toks = per_style.get(platform_style, per_style[STYLE_TOSEC])[rule]
         out.append({"id": rule, "field": "exclude", "label": tags.RULE_LABELS[rule], "kind": "exclude",
-                    "default": True, "tokens": list(toks), "description": _RULE_DESCRIPTIONS[rule],
+                    "default": True, "tokens": list(toks),
+                    "description": ((_WHD_DESCRIPTIONS.get(rule) if whd else None)
+                                    or (_REDUMP_DESCRIPTIONS.get(rule) if redump else None)
+                                    or _RULE_DESCRIPTIONS[rule]),
                     "applies_to": applies})
     for code in tags.KEEP_FLAGS:
         out.append({"id": code, "field": "keep_flags", "label": tags.KEEP_FLAG_LABELS[code],
@@ -807,28 +1050,40 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         out.append(d)
 
     opt("latest_only", "latest_only", "Latest versions only", True,
-        "Keep only the newest version of a release (older ones go to _superseded).", _BOTH)
+        _WHD_DESCRIPTIONS["latest_only"] if whd else
+        "Keep only the newest version of a release (older ones go to _superseded).", _ALL)
     opt("best_variant", "best_variant", "One best variant per game", True,
+        _WHD_DESCRIPTIONS["best_variant"] if whd else
         "Keep ONE variant per game: preferred language, then cracked, then best platform "
-        "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC])
+        "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC, STYLE_WHDLOAD])
     opt("one_per_game", "one_per_game", "One version per game", True,
         "Keep ONE version per game: preferred language, then the best region (see region priority), "
-        "then the newest revision, then the fewest extra tags. Off: the latest version of every region.",
-        [STYLE_NOINTRO])
+        "then the newest revision, then the fewest extra tags. Off: the latest version of every region. "
+        "Multi-disc games keep ALL discs of the chosen release.",
+        [STYLE_NOINTRO, STYLE_REDUMP])
     opt("complete_only", "complete_only", "Complete multi-disk sets only", True,
         "Multi-disk games need every disk; incomplete ones go to _incomplete.", [STYLE_TOSEC])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])
     opt("languages", "languages", "Languages", True,
+        _WHD_DESCRIPTIONS["languages"] if whd else
         "Keep only releases playable in the selected languages (first = preferred). A release with no "
         "language and no country tag counts as English; a country implies its language; "
-        "(de-en) counts as both.", _BOTH, default_value=["En"])
+        "(de-en) counts as both.", _ALL, default_value=["En"])
     opt("region_priority", "region_priority", "Region priority", True,
         "Best region first. When one version per game is kept, the first region listed here wins "
-        "(unlisted regions follow in alphabetical order).", [STYLE_NOINTRO],
+        "(unlisted regions follow in alphabetical order).", [STYLE_NOINTRO, STYLE_REDUMP],
         default_value=list(tags.DEFAULT_REGION_PRIORITY))
     return [e for e in out if platform_style in e["applies_to"]]
+
+
+def _with_dat(rom: Any, dat_name: str) -> Any:
+    """``rom`` with its ``dat`` filled in (roms of a DatFile whose own ``dat`` is empty)."""
+    try:
+        return replace(rom, dat=dat_name)
+    except TypeError:
+        return rom
 
 
 def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any]]:
@@ -839,7 +1094,7 @@ def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any
     (releases = No-Intro sets / TOSEC roms, bad dumps and other excluded rules NOT filtered out)
     descending, then code. ``games`` = distinct titles (``tags.title_key``). Counting follows
     ``tags.variant_languages`` (the rules the filter itself uses)."""
-    roms: list[tuple[str, str]] = []     # (name, style)
+    roms: list[tags.Tags] = []
     seen_units: set[tuple[str, str]] = set()
 
     def add_rom(rom: Any, dat_name: str = "") -> None:
@@ -849,14 +1104,15 @@ def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any
         if (dat, nm) in seen_units:
             return
         seen_units.add((dat, nm))
-        roms.append((nm, STYLE_NOINTRO if set_name else STYLE_TOSEC))
+        roms.append(tags.of_rom(rom if getattr(rom, "dat", "") or not dat_name else
+                                _with_dat(rom, dat_name)))
 
     def walk(obj: Any) -> None:
         if isinstance(obj, Item):
             nm = _rom_name(obj)
             if (obj.dat, nm) not in seen_units:
                 seen_units.add((obj.dat, nm))
-                roms.append((nm, _style(obj)))
+                roms.append(_tags_of(obj))
         elif hasattr(obj, "roms") and not hasattr(obj, "set_name"):
             for r in obj.roms:
                 add_rom(r, getattr(obj, "name", ""))
@@ -869,8 +1125,7 @@ def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any
     walk(source)
     count: dict[str, int] = {}
     games: dict[str, set] = {}
-    for name, style in roms:
-        t = tags.parse_name(name, style)
+    for t in roms:
         for code in tags.variant_languages(t):
             count[code] = count.get(code, 0) + 1
             games.setdefault(code, set()).add(tags.title_key(t))
@@ -898,7 +1153,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dic
             "one_per_game": bool(_dats(platform, "region_dats")),
             "region_priority": bool(_dats(platform, "region_dats")),
             "languages": has_langs,
-            "keep_flags": bool(_dats(platform, "best_variant_dats")),
+            "keep_flags": bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC,
             "rescue": bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC,
         },
         "scopes": {

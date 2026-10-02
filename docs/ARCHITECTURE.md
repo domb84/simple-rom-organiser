@@ -1187,3 +1187,239 @@ New converts write their original to `_converted_originals/<rel>` (a leading res
 `tests/test_layout.py` (new layout per reason, legacy migration + idempotence + byte-exact undo, v3 log,
 case-insensitive names, scan/summary ignoring reason folders, convert original location) plus the
 layout paths updated throughout the existing suites.
+
+
+# AMENDMENT 10 - "Commodore Amiga - WHDLoad" as a separate system; folder persistence; config writes
+
+**Binding; supersedes Amendments 1-9 where it differs.** USER RULE: the WHDLoad system shares NOTHING with
+"Commodore Amiga" (TOSEC ADF): own folder, own DAT source/directory, own config keys, own library profile,
+own Kickstart step, no shared identity or cross-DAT logic. (Only generic code is shared.)
+
+## A. Folder persistence bug and config writes
+* Cause: `static/app.js` only persisted a system's folder on the small **Save** button or on a successful scan;
+  Browse / Folders / typing set a draft (`state.drafts`) that died with the page. Now the field saves on
+  `change` (blur / Enter after an edit), after Browse / Folders (they dispatch `change`), before a scan
+  (`startScan` awaits `commitFolder`; a refused path aborts the scan with the reason) and via **Clear**. Saves are
+  serialised per system (`folderQueue`), the newest text wins, each row shows *Saved / Not saved / Saving /
+  error (tooltip = reason)* (`data-folder-state`), a toast confirms. The Save button is gone.
+* `paths.update_config(mutate)` is the only way to write `config.json`: one process-wide `RLock`, read the LATEST
+  file inside the lock, apply, atomic replace (fsync). A damaged file is copied to `config.json.damaged` first.
+  `App._config_update`, `_save_profile` (was a stale-snapshot read-modify-write), scan, folders, options and
+  Kickstart saves all use it. `folders_save` / `kickstart/dest` run `strict` (a failed write is a 500, not an
+  empty answer). `paths.save_config` stays for whole-file replacement only.
+* Kickstart destination is per platform: `config["kickstart_dests"] = {platform: path}`; the legacy single
+  `kickstart_dest` is migrated (on every config write and when read) to `kickstart_dests["Commodore Amiga"]` ONLY.
+  `GET /api/status` keeps `kickstart_dest` (= the Amiga's) and adds `kickstart_dests`. New
+  `POST /api/kickstart/dest {platform, dest}` saves the choice immediately.
+
+## B. DAT source: `romorg/whdload.py`, `paths.whdload_dir()` (= `data_dir()/whdload`)
+Mirror of `nointro.py` for ONE DAT: `DAT_NAME = "Commodore - Amiga - WHDLoad"` (header name = file stem),
+`BASE_URL` raw.githubusercontent MrV2K/WHDLoad-Database/main, `header_version` (header `date`, else `version`),
+`manifest.json` with the ETag, `list_dats / find_dat / download_dat / check_updates / update_dats` with the same
+result shapes (`source: "whdload"`), `WhdloadError`. Download -> `.part` -> parse (>=1 rom, header name equal) ->
+atomic replace -> manifest. Offline = cached DAT. No licence is stated for the repository: only the DAT (hashes) is
+downloaded. `datfile.parse_clrmamepro` falls back to the header `date` as `version` and decodes a non-UTF-8 file
+as Windows-1252 (the real DAT has `Alien\xb3`, `D\xe9but` in game names; rom names are ASCII).
+`autoupdate.UpdateManager(..., whdload=whdload)`: a third source: check (HEAD ETag), download after No-Intro,
+commit under `dat_lock`, scope `("whdload", names)` for `ensure(platform)`, `status()["whdload"] = {installed,
+latest, status, dats, checked_at}`, persisted `checked_at`. `whdload=None` = not managed (tests with fakes).
+
+## C. Platform
+`Platform` gains `kickstart_folder: str = ""` and `protected_dirs: tuple = ()`; `DatSource.WHDLOAD`;
+`platforms.has_kickstart(p)` (= `kickstart_dat or kickstart_folder`); `locate_dats(..., whdload_directory)`.
+`"Commodore Amiga - WHDLoad"`: dats `("Commodore - Amiga - WHDLoad",)`, source `whdload`, layout `flat`, no M3U,
+extensions `.lha .lzx`, `folder_hint "whdload"`, `latest_dats = best_variant_dats = language_dats = (dat,)`,
+`region_dats = ()`, `kickstart_folder "Kickstarts"`, `protected_dirs ("Kickstarts",)`. DAT roms are loaded with
+`set_names=True`: set = the rom stem, so the same `.lha` listed under several game names (9 such files in the real
+DAT) is ONE unit (have / missing / duplicates count sets: 4112 sets for 4121 entries).
+* Matching: the scanner hashes `.lha` / `.lzx` as plain files (sha1, crc + size). Only `.zip` (zipfile) and
+  `.7z` / `.rar` (7z) are archives; a test feeds a `.lha` that is a valid zip and checks it is never opened.
+* Organise = rename to `rom.name`, flat, unmatched -> `_unmatched/`, reason folders as in Amendment 9.
+* `folders.py`: `KICKSTARTS_DIR`, `PROTECTED_DIRS`, `is_protected(parts, names)`. A PROTECTED name is not a
+  reserved/reason folder: `scanner.scan(..., protected_dirs=platform.protected_dirs)` / `collect_files(protected=)`
+  skip that top-level folder (case-insensitive), so scan / organise / Build library / Convert never see it; other
+  platforms are unaffected (an Amiga TOSEC root's `Kickstarts/` is scanned as before).
+
+## D. Tags (`tags.py`): style `whdload`
+`STYLE_WHDLOAD`, `WHDLOAD_DAT_NAME`, `parse_whdload(stem, game="")` (lru-cached), `style_of_rom(rom)`,
+`of_rom(rom)` (`Rom.tags` uses it; `organiser` Item style too), `Tags.build: int = 0`. Only the DAT name selects the
+style. Measured on the real DAT (4121 entries; game-name parens / stem tokens, counts):
+* **Game name** (identity, status, product tags): language words German 280, French 211, Italian 106, Spanish 61,
+  Polish 38, Danish 9, Czech 5, Swedish 5, Greek 3, Finnish 3, Dutch 1, Croatian 1 -> `languages`; chipset AGA 269, CD32 133,
+  OCS 2, ECS 2 (`PLATFORM_ORDER` CD32 > AGA > OCS; untagged = OCS); NTSC 252; memory 512KB 40 / 512k 10, 1MB 31,
+  2MB 7, Fast Mem 34, Low Mem 16, Chip Mem 8, Slow Mem 3, 1.5MB, 8MB, 12MB, 1MB Chip; status Beta 138, Pre Release 4,
+  Preview 2, Game Demo 73, Demo 1, Unreleased 2 (Playable / Rolling / Playable Demo N only next to Game Demo); product
+  tags (all kept in the identity): Cover Disk 80, PD 76, Files 39, Image 39, CDTV 25, MT32 24, Two Disk 18, One Disk 17,
+  Three/Four Disk, CD-ROM 18, Arcadia 17, Enhanced 14, Hack 5, No Intro 7, Hi/Low Res, ST Port, Alt 3, Censored, Crunched,
+  publishers / magazines / editions (free text, ~150 distinct).
+* **Archive stem** `Title_v1.2[_Lang][_AGA][_1MB]..._0417`: version `vX.Y[a]` (4118 of 4121; `v2.1-B` -> `v2.1b`; 3 have
+  none), 4-digit build (2206; `0107&0266` = max), language codes De 278, Fr 209, It 106, Es 61, Pl 38, Dk 9, Cz 5, Se 5,
+  Gr 3, Fi 3, Nl 1, Hr 1 and multi-codes `EnFrDe` / `EnFrEs`, AGA 269, NTSC, CD32 131, CDTV 25, ECS/OCS, `512k` `512KB`
+  `512Kb` `1MB` `1Mb` `2MB` `15MB` `1MbChip` `Fast` `Slow` `Chip` `LowMem`, `BETA` / `Beta3` / `PreRelease`, `Hack` /
+  `fix` + `by_<author>`, `Image` `Files` `1Disk` `2Disk` `3Disk` `4Disk` `CD` `NoIntro` `LoRes` `HiRes` `AtariST` ... Free
+  words (publishers `Ocean`, `Psygnosis`, authors) that the game name also carries are not parsed twice.
+* Merge: game-name values + stem values (union; they agree on every language / chipset / NTSC / memory token of the DAT;
+  `Beta` is mostly game-name only: 138 vs 10 `BETA` stems, which is why the game name must be consulted). Hack / fix
+  with `by <author>` adds `Hack` and `by <author>` flags (different authors are different products).
+* Rules: `_WHD_PAREN_WORDS` (own vocabulary, used only when `Tags.style == "whdload"`): pre_release = Beta, Pre Release,
+  Preview; demo = Game Demo, Demo, Playable Demo; unreleased = Unreleased. No prototype / bad dump / modified / virus tokens
+  exist, so those catalog entries do not apply (`rule_tokens("whdload")`, `classify_token(.., style)`, `token_rule(.., style)`).
+  NOT excluded (kept, separate products): Cover Disk, PD, Hack, Alt, Two/One Disk, Image/Files, CDTV, CD-ROM, Enhanced.
+* `identity_key` = `(style, title.casefold(), status.casefold(), sorted product flags)` (`whd_identity_key`); language, chipset,
+  NTSC, memory, version, build are ranking attributes. `title_key` = (style, title). `flag_kind`: CD32 / CDTV / MT32 and
+  memory tags count as `hardware` (facet chips).
+
+## E. Library (`library.py`)
+`_select_whdload` (items of style whdload; scope `latest_dats` / `best_variant_dats`):
+* eligibility: exclusion rules + language filter (`variant_languages`; no tag = English). Keep-flags do not apply.
+* `best_variant` (default): per game keep ONE: lowest of (language rank, platform rank CD32 > AGA > OCS, memory rank
+  [none 0 < 1MB/2MB/Fast/Slow/Chip 1 < 512KB/512k/Low Mem 2], NTSC 1), then newest version (zero-padded fractions as in
+  `tags.group_version_keys`), then highest build, then name. Others -> `superseded` with the first deciding criterion in
+  the reason text. `latest_only` without it: newest (version, build) per variant signature (languages, chipset tags,
+  memory tags, NTSC); both off: everything kept. Pure and location independent -> idempotent (tested on the real DAT).
+* Catalog (`rule_catalog("whdload")`): pre_release, demo, unreleased (exact tokens), `latest_only`, `best_variant`,
+  `languages` with WHDLoad descriptions; keep-flags, complete_only, rescue, one_per_game, region_priority do not apply
+  (`applies_to`; `profile_info.available.keep_flags` is False for it). `available_languages` and the vanish report work
+  through `tags.of_rom` / `_tags_of`.
+* Real DAT, defaults (4112 sets, all present): kept 2763 / excluded 924 (language 711, pre_release 137, demo 74,
+  unreleased 2) / superseded 425; 376 titles vanish (language 269, pre_release 82, demo 24, unreleased 1). En+De: kept 2852;
+  no language filter 3044; latest-only (best off) 3188; everything off 4112. Re-selecting the kept output changes nothing.
+
+## F. Kickstart per platform
+`kickstart.plan_kickstarts_from_folder(folder, dest)` / `scan_kickstart_folder(folder)`: every file under the folder
+(recursive, hidden skipped, <= 1.1 MB) is MD5-hashed and matched against `PUAE_BIOS` (no DAT, no TOSEC data); ops
+`copy | ok | conflict | missing` as before plus `unmatched` (any other file: reported, never copied). The TOSEC planner
+(`plan_kickstarts`, source = Firmware DAT) is unchanged (they share only `_plan_from_local`). Server: `kickstart/dirs`
+(`?platform=`; `last` per platform, `kickstart_folder`), `kickstart/plan|apply {platform, dest, ...}`, `kickstart/dest`.
+A DAT-based platform needs a scan OF THAT platform (409 otherwise); a folder-based one needs its platform folder (saved
+or scanned) - missing `Kickstarts/` yields an all-`missing` plan with `source_exists: false`. Responses add `platform`,
+`source` (`dat|folder`), `source_dir`. `GET /api/platforms` rows add `kickstart_folder`, `has_kickstart`, `kickstart_dest`,
+`protected_dirs`. UI: the step shows per selected system (own destination field, detected dirs, intro text, source note,
+`unmatched` chip) and is hidden when `has_kickstart` is false.
+
+## G. Judgment calls
+(1) CD32 > AGA > OCS also when the OCS entry is newer (Exile v1.4 OCS loses to Exile v1.1 CD32) - as specified.
+(2) CDTV, CD-ROM, Image/Files, nDisk, Hack, Cover Disk, PD, Alt, publishers are product tags (identity), not variants.
+(3) `(Beta)` (138 entries, many are hacks/ports) is excluded by default through the existing pre_release rule; Hack, Cover Disk
+and PD are not excluded. (4) 1MB / 2MB / Fast / Slow / Chip memory builds rank equally (between standard and 512KB / Low Mem);
+ties fall to PAL, version, build, name. (5) The stem `No` is not Norwegian ("No_jump"). (6) Same title spelled differently
+(`Super Skid Marks` vs `Super SkidMarks`) stays two games. (7) Only loose files in `Kickstarts/` are matched (archives are not
+opened there). (8) `.zip` / `.7z` files in the WHDLoad folder are still treated as archives by the generic scanner.
+
+
+# AMENDMENT 11 - Sega Dreamcast (Redump, CHD)
+
+**Binding; additive.** Amiga / WHDLoad / the consoles are unchanged; the new system shares no DAT, folder, config key
+or matching with them. Stdlib only. New modules: `redump.py`, `chd.py` (+ `flacdec.py`, `cdecc.py`), `chdtool.py`,
+`chdpool.py` / `chdworker.py`, `dreamcast.py`. Tests: `test_chd`, `test_redump`, `test_chdtool`, `test_chdpool`,
+`test_dreamcast`, `test_dc_server` (+ `tests/chdtestlib.py`: a **test-only** CHD v5 writer, tiny FLAC encoder, synthetic
+discs, Redump-style DAT writer and a fake `chdman` shell script).
+
+## Source, platform, layout
+* `DatSource.REDUMP = "redump"`, `paths.redump_dir()` (= `data_dir()/redump`, own folder). `redump.py` mirrors `whdload.py`:
+  `DAT_NAME = "Sega - Dreamcast"`, `check_updates` (HEAD, falling back to a header-only GET; version = the date in the
+  `Content-Disposition` file name `... (2026-06-14 18-25-41).zip`; status `update_available` only when the remote date is
+  **newer** than the installed DAT `<version>`), `download_dat` (zip -> `.zip.part` -> single `.dat` member copied by bytes
+  (no path from the zip) -> parsed, header name checked -> atomic replace -> `manifest.json`), `update_dats`, `list_dats`.
+  **HTTP only** (`http://redump.org/datfile/dc/`; HTTPS is refused). `autoupdate.UpdateManager(..., redump=redump)` is a
+  fourth source (check phase, download phase after WHDLoad, scope `("redump", names)` for `ensure`, `status()["redump"]`,
+  persisted `checked_at`, `RedumpError` counts as a network error like the others); `redump=None` = not managed.
+* `Platform "Sega Dreamcast"`: `source redump`, `layout "game_folder"` (`platforms.LAYOUT_GAME_FOLDER`), extensions
+  `.chd .gdi .cue .bin .raw`, `convertible=True` (raw -> CHD), `m3u_dats=()` (playlists belong to Build library),
+  `latest_dats = language_dats = region_dats = (DAT,)`, folder hint `dreamcast`. `platforms.load_platform_dats` parses it
+  with `datfile.parse_redump` (every rom of a game gets `set_name = game`: one unit = one disc; `Rom.category` new last field
+  = the `<category>`).
+* Layout: `<root>/<Redump name>/<Redump name>.chd` + sidecars; the six reserved folders as before.
+
+## chd.py: pure-Python CHD v5 reader
+`Chd(path, load_map=True)` (header + metadata always; the map lazily when `load_map=False`): header (124 bytes, version 5
+only, parent -> `ChdUnsupported`), compressed map (16-byte header, Huffman tree RLE-coded with 16 codes / 8 bits, types with
+RLE_SMALL / RLE_LARGE, lengths / offsets / CRC16, SELF / SELF0 / SELF1; the map CRC16 over the rebuilt 12-byte entries is
+verified) or uncompressed map; hunk codecs `cdlz` (raw LZMA1 lc3 lp0 pb2 + deflate subcode, ECC bitmap), `cdzl`, `cdfl`
+(FLAC frames + deflate subcode), plus `zlib`, `lzma`, uncompressed (zstd / huff / parent -> `ChdUnsupported`). Sectors of
+frames whose ECC bit is set get sync + P/Q parity rebuilt (`cdecc.generate`: ECMA-130, vectorised with big integers: P rows
+and the Q diagonals via strided slices + SWAR GF(2^8) arithmetic, 8-30 us per sector; verified against the per-sector
+reference `generate_reference` and the real files). `flacdec.decode_frames`: fixed / LPC / constant / verbatim subframes,
+all stereo modes, Rice partitions, CRCs not checked. CD audio is big-endian in hunks; extraction swaps it back.
+Metadata `CHT2 CHTR CHGD CHGT` -> `Track(number,type,subtype,frames,pad,pregap,pgtype,pgsub,postgap,start,gd)`; track `start`
+= running sum of `frames` each rounded up to a multiple of 4 (chdman's track padding). **Extraction = chdman `extractcd`**:
+`data_frames = frames - pad` (GD-ROM pad frames are at the END of the track's frames and dropped), 2352-byte sectors
+(MODE1_RAW / MODE2_RAW / AUDIO; the cooked types give 2048 / 2336 / 2324 bytes at offsets 16 / 24), subcode dropped. A virtual
+pregap (`PGTYPE` starting with `V`) contributes nothing; a stored pregap is part of `frames`. (Pregap / CD-with-pregap
+semantics are derived from chdman's documented behaviour; the only real files here are GD-ROMs with pregap 0 - **not
+validated on a real CD CHD**.) `iter_track`, `hash_track` (crc32 + md5 + sha1 in one pass), `verify_raw_sha1`. Hunks are
+decoded in groups of 16 so the ECC work is batched; nothing is loaded as a whole.
+Measured on the real files (Steam Deck, one core): `cdlz` data 95 MB/s decode (76 MB/s hashed end to end), `cdzl` ~41 MB/s,
+`cdfl` (pure-Python FLAC) 1.2 MB/s, rawsha1 path (with subcode) ~37 MB/s.
+
+## chdtool.py (chdman)
+`detect(config)` (order: `$ROMORG_CHDMAN`, config `chdman_path`, `PATH`, Flatpak `org.mamedev.MAME` / `net.retrodeck.retrodeck`
+(`flatpak run --command=chdman`), `~/.local/bin`, `~/Emulation/tools[/chdconv|/MAME]`, `~/retrodeck/tools`, `~/bin`, `/usr/bin`,
+`/usr/local/bin`; each probed with `chdman help`), `info()` (UI JSON incl. install steps), `extract_cd` (GD-ROM -> `disc.gdi` + track
+files parsed from the gdi; CD -> `disc.cue` + one bin sliced by the CHD's track sizes), `create_cd`, `run` (progress from the
+`NN.N%` output, reader thread + prompt cancel: SIGTERM then SIGKILL of the process group), `hash_range`, `check_space`,
+`make_workdir` / `remove_workdir` / `sweep_stale`. Temp files: hidden `<root>/.romorg-chd-<id>/` with a `pid` file **inside the
+ROM folder** (same file system, never `/tmp`); `sweep_stale` (server start for the saved Dreamcast folder, every scan and convert) removes
+folders of dead pids or older than 24 h. Flatpak access: `flatpak info --show-permissions` is checked and the error carries
+`flatpak override --user --filesystem=<dir> <app>`. The real chdman could **not** be run here; tests use a fake shell script.
+
+## dreamcast.py
+* **Index**: `DcIndex(dat)`: games (`DcGame`: `(Track N).bin` roms in track order, `.cue` kept but ignored), `by_sizes` (track-size
+  tuple -> games; 945 tuples for 1516 games, 105 shared), `disc_totals()`.
+* **Units** (`discover_units`): a CHD alone in a folder that is not the root / a reserved folder = the whole folder (recursive,
+  hidden files included, our own playlists / temp excluded, sub-folders holding their own CHD excluded); otherwise the CHD +
+  the files of its directory that start with its stem (longest stem wins). Raw sets: a `.gdi` (else `.cue`) in a folder without
+  a CHD (one file per track); sets inside `_converted_originals/` are `result.originals`, not matches.
+* **Matching** (`match_chd`): candidates by exact track-size tuple, then every DATA track smallest first (early exit) must equal
+  the Redump rom (sha1 + crc + md5), several candidates -> audio hashed to tell them apart; level `verified` only when all tracks
+  hashed and equal, else `identified`. Hash source: chdman `extractcd` when found (`engine auto`; the extracted sizes must equal
+  the metadata, no space / any chdman error -> pure Python), else the reader. `ChdCache` table `chd_hashes(path,size,mtime_ns,sha1,
+  kind,tracks,level,via)` in `hashes.sqlite` (key = path, size, mtime_ns, CHD header sha1); a cached unchanged CHD is never decoded.
+  A fully hashed CHD with one differing track is *unmatched* with the track numbers in the reason.
+* **`scan(...) -> DcScanResult(ScanResult)`**: `matched` = `DcMatch(Match)` (`unit`, `level`, `kind chd|raw`, `item()` row), `unmatched` =
+  `DcEntry` (`reason`, `kind`), `missing` = one stand-in `Rom` per missing game, `units`, `junk`, `originals`, `engine`; `summary()` keeps the
+  generic keys and adds `chd_files identified verified raw engine chdman`. `workers > 1` (server: auto, up to 4; config `chd_workers`,
+  `$ROMORG_CHD_WORKERS`): CHDs are identified concurrently and their tracks hashed by `chdpool.HashPool` worker processes
+  (`python -m romorg.chdworker`, JSON lines, killed on cancel, any worker failure -> in-process fallback; POSIX only).
+* **Plans**: game-level `DcOp(RenameOp)` (`moves` = file moves, `game`, `level`, `n_files`, `unit`); `plan_tidy`, `plan_library(result, profile,
+  move_unmatched, savedisk, labels)` -> `organiser.LibraryPlan` (ops + playlists + `library.Selection`); `apply_plan` expands to file ops and calls
+  `organiser.apply_renames` (one journal, one undo, never overwrites, empty folders removed). Canonical target = `<root>/<safe name>/` with the
+  folder, the CHD and every file starting with the old stem renamed; unrelated files keep their names and move with the folder; reason folders
+  keep the current names (`_excluded/<folder>`, ` (2)` suffix on collisions); duplicates: canonical > outside reserved folders > verified > the copy
+  with the most files (the saves) > shortest path; conflicts (target taken) skip the whole game.
+* **Library rules**: `tags.STYLE_REDUMP` (No-Intro parser + `Tags.category`; only the DAT name selects it), `tags.CATEGORY_RULES` (Demos, Coverdiscs ->
+  demo; Preproduction -> prototype), Redump tokens `(Taikenban)`, `(Tentou Taikenban)`, `(Tentou-you Taikenban)`, `(Tokubetsu Taikenban)`, `(Tentou-you Demo
+  [Movie|Demonstration Movie])`, `(Trial ...)` -> demo (plus the No-Intro words), `library._select_redump`: game key = `tags.redump_game_key`
+  (title + status + product tags; `(Disc N)`, dates, video, `Alt`, `Rerelease` excluded), editions = (regions, explicit languages); per game ONE
+  edition (language rank, region priority, newest revision, fewest tags) with ALL its discs (newest revision of each disc); others superseded;
+  `one_per_game` off keeps every edition. A complete multi-disc edition -> `ChosenSet` -> `m3u` playlist next to disc 1 (relative paths
+  `../<disc 2 folder>/...`; labels off by default); incomplete -> `IncompleteSet(kept=True)` (reported, nothing moves). `Item.disc_total` from the DAT.
+  Rule catalog for style `redump`: pre_release, prototype, demo, latest_only, one_per_game, languages, region_priority.
+* **Convert** (`plan_convert` / `apply_conversions`, chdman only): temp folder, `createcd`, the new CHD is extracted again and every track compared
+  with Redump (+ layout check), only then `create` journal record + move into `<name>/<name>.chd`, then the raw files move one by one to
+  `_converted_originals/<rel>` (journalled; a failure rolls the moved ones back). Space check = 2 x raw size + 256 MB. Cancel / failure leave the raw set
+  untouched and no temp folder. Undo = the standard `organiser.undo`.
+* **Verify fully** (`verify_units`): decode every track of the `identified` CHDs (chdman or the pool), update the cache; mismatches are reported.
+
+## Server / UI
+`GET/POST /api/chdman` (detection incl. `steps` / `hint`, save `path` and `engine` auto|python), `POST /api/dc/verify` (job `verify`), status gains `redump`,
+platforms gain `chd`; scan results: matched rows `level kind engine tracks`, games rows `level kind`, unmatched rows `reason kind`; organise / library rows add
+`game level n_files files`; `convert/plan` adds `chdman`; `convert/apply` answers 409 + install hint without chdman. UI: Redump badge, level chips
+(identified / verified / raw), cards, Dreamcast bar with **Verify fully**, chdman panel (found path or instructions, path override, engine), Redump
+rules text, game-folder layout sketch, playlist option, convert text.
+
+## Numbers
+Real DAT (2026-06-14, 1516 games, categories Games 1183 / Demos 130 / Applications 84 / Coverdiscs 51 / Multimedia 24 / Preproduction 23 / Bonus Discs 14 /
+Video 6 / Add-Ons 1; 151 discs carry `(Disc N)`: 104 two-disc, 24 three, 16 four, 7 lone "Disc 1"). All 1516 present, defaults (English, Europe > USA > World > Japan,
+one per game): **kept 399 / excluded 904 (language 698, demo 183, pre-release 21, prototype 2) / superseded 213**, 12 playlists, 660 titles vanish (language 610,
+demo 46, prototype 2, pre-release 2); no language filter: kept 933 / excluded 206 / superseded 377, 39 playlists; English + Japanese: 917 / 280 / 319; no
+rule at all: 1133 kept / 383 superseded, 40 playlists, 8 discs with a missing sibling; one-per-game off: 596 kept / 16 superseded. Re-selecting the kept
+set changes nothing. Unclassified (kept) by design: the categories Applications / Multimedia / Bonus Discs / Video / Add-Ons (129 discs) and the tokens
+`Unl` (81), `Rerelease`, `Alt`, `Genteiban`, `Limited Edition`, `Omake Disc`, `Special Disk`, `Shenmue Passport`, `MilCD`, `Video ROM`, serials `610-xxxx`, dates, revisions.
+Real CHDs (4 titles, `identified` = data tracks): JSR 35.0 s, Sonic Adventure 37.1 s, THPS2 31.9 s, Toy Commander 19.8 s (one core); whole real folder through the
+server with 4 workers 44 s; rescan 0.2 s; **Verify fully** of all four (audio decoded in pure Python, 4 processes) 128 s; all 4 titles: every track crc32 / md5 / sha1 = Redump.
+
+## Judgement calls / not verified
+Raw sets and unmatched units are never touched by the library rules; Applications etc. stay; sidecar rule = names starting with the CHD stem (a longer sibling stem wins); an
+incomplete multi-disc game stays in place. **Not verified here:** the real `chdman` (fake script only), a real Flycast / RetroArch load of the playlists, a real exFAT card,
+CD (non-GD) CHDs with pregaps, a Flatpak MAME with and without filesystem access.

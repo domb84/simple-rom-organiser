@@ -6,23 +6,45 @@ Supported systems:
 | System | DATs | Source |
 | --- | --- | --- |
 | Commodore Amiga | 4 [TOSEC](https://www.tosecdev.org/) DATs (Games ADF, Workbench, Kickstart-Disks, Firmware) | TOSEC pack from tosecdev.org |
+| Commodore Amiga - WHDLoad | *Commodore - Amiga - WHDLoad* (4121 Retroplay `.lha` archives) | MrV2K's [WHDLoad-Database](https://github.com/MrV2K/WHDLoad-Database) on GitHub |
 | Nintendo Game Boy Advance | *Nintendo - Game Boy Advance* | No-Intro, via libretro-database |
 | Nintendo 64 | *Nintendo - Nintendo 64* | No-Intro, via libretro-database |
 | Nintendo Entertainment System | *Nintendo - Nintendo Entertainment System* | No-Intro, via libretro-database |
 | Super Nintendo Entertainment System | *Nintendo - Super Nintendo Entertainment System* | No-Intro, via libretro-database |
+| Sega Dreamcast | *Sega - Dreamcast* (1516 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
 every file against the system's DATs, shows what you have and what is missing, renames
 and sorts the files, and - for the Amiga - writes M3U playlists for multi-disk games and
 installs Kickstart ROMs for RetroArch.
 
+**Commodore Amiga - WHDLoad is a separate system from Commodore Amiga (TOSEC).** It has its own
+row, folder, DAT, library rules, Kickstart step and config keys; nothing is shared or
+cross-matched with the TOSEC ADF system. Each DAT entry is one pre-installed Retroplay `.lha`
+archive; files are matched by the hash (sha1, crc + size) of the **whole `.lha` file** - the
+archives are never opened. Organising renames them to the database name
+(`1000ccTurbo_v1.0.lha`), flat in the system folder; files that match nothing go to `_unmatched/`.
+Its library rules: exclude *Beta / Pre Release / Preview*, *Game Demo / Demo* and *Unreleased*
+(the exact tokens are listed in the panel), keep your languages (no tag = English, `(German)` /
+`_De` = German, `EnFrDe` = three languages) and keep **one best archive per game**: your language
+order, then CD32 > AGA > OCS, then standard memory over `512KB` / `Low Mem` builds, then PAL /
+untagged over NTSC, then the newest version (highest build number last). Different products
+(`Two Disk` / `One Disk` installs, `Image` / `Files`, demos, cover disks, hacks, CDTV, CD-ROM) are
+never merged. No dump-flag, multi-disk or playlist options exist for it.
+
+**Sega Dreamcast (Redump)** is the one *folder per game* system: `<system folder>/<Redump name>/<Redump name>.chd`
+plus the sidecar files next to it (see [Sega Dreamcast: CHD + Redump](#sega-dreamcast-chd--redump)). CHD files are
+matched per track against the Redump hashes by a built-in pure-Python CHD reader (or by `chdman` when you
+have it), raw Redump sets (`.gdi` / `.cue` + track files) are recognised too and can be converted to CHD.
+
 What it does:
 
 1. Keeps the DATs current **automatically**. At every start it checks, in the background,
    the newest TOSEC release (<https://www.tosecdev.org/downloads>, ~100 MB, Amiga; downloaded
-   only when its release date differs from the installed one) and the four No-Intro DATs in the
+   only when its release date differs from the installed one), the four No-Intro DATs in the
    [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro)
-   mirror on GitHub (a few MB, consoles; only changed files are fetched). Nothing to download by hand.
+   mirror on GitHub (a few MB, consoles; only changed files are fetched) and the Redump
+   Dreamcast DAT (one HEAD request; the 0.7 MB zip only when its date is newer). Nothing to download by hand.
 2. **Systems & folders**: one row per system with its DAT status and folder (native dialog,
    or the built-in folder browser with shortcuts for Home and SD cards / USB drives under
    `/run/media`). Each folder is remembered.
@@ -165,8 +187,10 @@ Tests: `python3 -m unittest discover -s tests -v`
    demand (it becomes **Cancel update** while running). Offline you get a quiet note and the
    installed DATs are used; with no DATs installed and no network a clear error with **Retry**
    appears. Below, one row per system: its DAT source (TOSEC / No-Intro), the local DAT
-   version, and its folder. Type the path or use **Browse...** / **Folders...**, then **Save**,
-   or press **Scan** on the row (scanning remembers the folder too). Scanning a system whose
+   version, and its folder. Type the path or use **Browse...** / **Folders...**: a folder is **saved
+   the moment you choose it** (or when you leave the field / press Enter / press **Scan**) and the
+   row says *Saved* or *Not saved* (with the reason when the folder was refused); **Clear**
+   forgets it. There is no Save button to forget. Scanning a system whose
    DATs are not installed yet simply waits for the automatic update (its progress is shown in
    the scan's progress line). After an update the page says *DATs updated - rescan*.
 2. **Scan** - shows overall cards (have / missing / % complete, matched, unmatched,
@@ -351,6 +375,90 @@ With the rules off (or in *Advanced: tidy only*) the older behaviour remains: **
 version only** moves older versions to `_superseded/` using the same ranking as
 above for consoles.
 
+## Sega Dreamcast: CHD + Redump
+
+**Layout.** One folder per game, named exactly like the Redump entry, holding the CHD and its sidecars:
+
+```text
+dreamcast/
+  Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A)/
+    Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).chd
+    Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).zip      sidecars: every file that starts with the CHD's old name
+    Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).state    (.zip .md5 .gdi .cue .state .srm .sav ...) is renamed with it
+  Shenmue (Europe) (En,Fr,De,Es) (Disc 1)/...               multi-disc: one folder per disc, the playlist is next to disc 1
+  _unmatched/  _excluded/  _superseded/  _duplicates/  _converted_originals/    the usual reserved folders
+```
+
+*Organise* / *Build library* rename the game **folder**, the CHD and every sidecar to the Redump name (so save
+states stay linked to the game; they are never deleted or rewritten). Everything else in the folder keeps its
+name and moves along with the folder. A loose `.chd` in the system folder gets a new `<Redump name>/` folder with
+its sidecars (files that start with its name). A CHD that matches no Redump entry moves **with its whole folder**
+into `_unmatched/<folder>`; other unrelated files are handled by the usual unmatched rules (frontend files such as
+`gamelist.xml` / `media/` stay). Two copies of one game: the one with more files (your saves) stays, the other
+moves whole to `_duplicates/`. Every step is previewed first, never overwrites, and is undoable (one undo log).
+
+**Where Redump comes from.** `http://redump.org/datfile/dc/` - **plain HTTP only** (redump.org refuses
+HTTPS connections). At every start the app sends one `HEAD` request (user agent `simple-rom-organiser/<version>`)
+and reads the version from the `Content-Disposition` file name (`Sega - Dreamcast - Datfile (1516) (2026-06-14 18-25-41).zip`);
+only when that date is newer than the installed DAT's `<version>` is the zip downloaded, its single `.dat`
+extracted, validated by parsing and swapped in atomically. It lives in its own folder (`redump/` in the data folder)
+that no other updater touches; offline, the installed DAT keeps working. The DAT lists one `.cue` and one
+`(Track N).bin` per track for every disc; the `.cue` entries are ignored and a game is *one disc*.
+
+**How a CHD is matched** (the pure-Python reader needs nothing installed): the CHD's header and metadata give its
+tracks (data / audio, sizes) without decoding anything. The Redump games with the same track sizes are the
+candidates; every **data** track is decoded (the GD-ROM pad frames and the subcode are dropped, exactly like
+`chdman extractcd`) and hashed (crc32 + md5 + sha1) and must equal the Redump track. Audio tracks are compared by
+**length only**. That is the level **identified**. When every track - audio included - was decoded and equals
+Redump (by chdman, or by the Verify fully button) the level is **verified**. A CHD matches a game only if every
+`.bin` track matches. Results are cached per file (path, size, modification time and the CHD's own header SHA-1),
+so a rescan of an unchanged CHD never decodes it again; the cache is in the data folder, scanning never writes
+into your game folder.
+
+| Level | What was compared | How |
+| --- | --- | --- |
+| **identified** | track sizes + crc32 / md5 / sha1 of every data track; audio by length | built-in reader (default without chdman) |
+| **verified** | every track, audio included | chdman `extractcd` while scanning, or **Verify fully** |
+| **raw (convertible)** | an unpacked Redump set, every track file hashed | files, no CHD involved |
+
+**Speed of the built-in reader** (Steam Deck, measured on the real files): the data tracks (`cdlz`/`cdzl`, with
+the CD error-correction bytes rebuilt) are decoded at about 40-95 MB/s (about 76 MB/s including hashing), so a
+1.2 GB disc is *identified* in about 35 s; the FLAC audio (`cdfl`) is decoded in pure Python at about 1.2 MB/s
+per core, which is why audio is only checked by length at first. **Verify fully** hashes the audio tracks in
+parallel worker processes (up to 4) and shows progress / Cancel; a disc with 400 MB of audio takes minutes.
+`chdman` is faster, especially for FLAC.
+
+**chdman (optional).** If found (`chdman` on `PATH`, the Flatpak `org.mamedev.MAME` - Discover -> MAME ships
+chdman -, `~/.local/bin`, `~/Emulation/tools`, a path you save in the Convert step, or `$ROMORG_CHDMAN`), the
+scan extracts each CHD to a hidden temporary folder **inside your game folder** (the same file system as the
+ROMs - never `/tmp`, which can be a small RAM disk; about the disc's size is needed, checked first), hashes every
+track and deletes the temp files: the result is *verified* straight away. Leftover temp folders of a crashed run
+are swept at start-up. If chdman fails or there is no room the built-in reader takes over. A Flatpak chdman can
+only see folders the Flatpak is allowed to: if it cannot see your SD card the error shows the exact fix, e.g.
+`flatpak override --user --filesystem=/run/media/deck org.mamedev.MAME`. You can force the built-in reader in
+the Convert step ("always the built-in reader"). Without chdman the Convert step is disabled and says how to get it.
+
+**Convert raw sets to CHD** (needs chdman). A folder with a `.gdi` (or a `.cue` with one file per track) and its
+track files that matches a Redump game is flagged *raw (convertible)*. *Convert* runs `chdman createcd` into the
+hidden temp folder, **decodes the new CHD again and compares every track with Redump** (chdman `extractcd`), and
+only if all tracks match places the CHD in `<Redump name>/<Redump name>.chd` and moves the raw files to
+`_converted_originals/<their path>` (nothing is deleted). Any failure, mismatch, missing space or Cancel leaves the raw files
+untouched and no temp files behind. About twice the disc size must be free during a conversion. **Undo last**
+removes the new CHD (after checking its SHA-1) and puts the raw files back.
+
+**Library rules for Redump names** (`Title (Region) (Languages) (Rev A) (Disc 1)`), in the same panel as the
+consoles: *Demos / samples* (`(Demo)`, `(Sample)`, the Japanese `(Taikenban)` / `(Tentou Taikenban)` /
+`(Tentou-you Demo)` / `(Trial Disk)` discs **and** every disc Redump files under the categories *Demos* and
+*Coverdiscs*), *Pre-release* (`(Beta)`), *Prototypes* (`(Proto)` and the category *Preproduction*); the other
+categories (Games, Applications, Multimedia, Bonus Discs, Video, Add-Ons) are kept. Languages (English by
+default; no language tag falls back to the region: Japan = Japanese), region priority (Europe, USA, World, Japan)
+and **one release per game**. **Multi-disc games stay together**: the best *release* (language, region, newest revision)
+is chosen as a whole and ALL its discs are kept (the newest revision of every disc); the others are
+`_superseded`. Each kept multi-disc game gets an `.m3u` playlist (relative paths) written next to disc 1, e.g.
+`Shenmue (Europe) (En,Fr,De,Es)/Shenmue (Europe) (En,Fr,De,Es).m3u` -> `Shenmue ... (Disc 1).chd`,
+`../Shenmue ... (Disc 2)/...`; a game with a disc missing keeps its discs where they are (no playlist) and is listed.
+Disc labels (`|Disc 2`) are off by default (not every frontend reads them).
+
 ## Convert to No-Intro format (SNES, N64)
 
 Organise only renames. **Convert** writes a clean copy of each copier-headered SNES dump
@@ -431,6 +539,18 @@ the [PUAE documentation](https://docs.libretro.com/library/puae/).
   `conflict` (a different file has that name - never overwritten) or `missing` (you don't
   have it). **Copy Kickstarts** copies (never moves) the files; the content is verified
   against the expected MD5 before writing.
+
+### WHDLoad: its own Kickstart step
+
+PUAE needs Kickstarts for WHDLoad too, but the WHDLoad system has **no DAT for them**: put your
+Kickstart ROMs into a `Kickstarts/` folder inside the WHDLoad system folder (any sub-folders).
+That folder is **protected** - it is never scanned, moved, set aside or counted as unmatched by
+scan / organise / Build library. The step matches those files by MD5 against the PUAE table,
+previews `copy` / `ok` / `conflict` / `missing` and lists every other file as `unmatched` (it is
+reported, never copied). Copy never moves and never overwrites. The destination is remembered
+**per system** (`kickstart_dests` in `config.json`; the single `kickstart_dest` of older versions is
+migrated to Commodore Amiga only) and saved as soon as you pick it. The Commodore Amiga (TOSEC)
+Kickstart step above is unchanged. Systems without a Kickstart source do not show the step.
 
 ## Building and installing
 
@@ -517,15 +637,14 @@ The UI is sized for the Deck's 1280x800 screen with large touch targets. The nat
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro
 DATs and their `manifest.json` - kept separate, so updating the TOSEC pack never touches
 them), `cache/` (downloaded pack zip, hash cache), `updates.json` (when the DATs were last
-checked) and `config.json` (last system, folder per system, library rules per system, last
-Kickstart destination). Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
+checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
 are written into your platform folder.
 
 ## Adding a platform
 
 Platforms are defined in one place, `romorg/platforms.py`: a name, its DAT names in
-priority order, where they come from (`tosec` or `nointro`), the layout (`per_dat` folders
-or `flat`), which DATs get M3U playlists, the optional Kickstart / BIOS DAT, and for
+priority order, where they come from (`tosec`, `nointro`, `whdload` or `redump`), the layout (`per_dat` folders,
+`flat` or `game_folder`), which DATs get M3U playlists, the optional Kickstart / BIOS DAT, and for
 consoles the alternative hashes to try (`snes_header`, `nes_header`, `n64_byteorder`) and
 whether Convert is offered. The server and UI pick new entries up automatically. No-Intro
 DATs are fetched from
@@ -543,6 +662,17 @@ DATs are fetched from
   use the GitHub ETag, so unchanged files are not downloaded again; no GitHub API calls are
   made. Each download is validated (parsed) before it replaces the old file. Offline, the
   DATs already downloaded keep working.
+- **WHDLoad**: only the one DAT, `Commodore - Amiga - WHDLoad.dat`, from
+  `https://raw.githubusercontent.com/MrV2K/WHDLoad-Database/main/Commodore%20-%20Amiga%20-%20WHDLoad.dat`
+  (the version shown is the header `date`, e.g. `2026-07-05`; checked with the ETag like the
+  No-Intro DATs, validated by parsing before it replaces the old file, cached offline). It is
+  stored in its own folder and never touched by TOSEC / No-Intro updates. **That repository
+  states no licence: this app downloads only the DAT (a list of names and hashes), never any
+  game file.** The DAT is Windows-1252 encoded; it is read as such.
+- **Redump (Sega Dreamcast)**: `http://redump.org/datfile/dc/` over **plain HTTP** (HTTPS is refused by
+  the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
+  (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the
+  old DAT atomically; it is stored in its own `redump/` folder. Offline, the installed DAT keeps working.
 - **Updates and scans.** The update runs on its own background thread and never blocks the UI.
   It never interrupts a running scan: a scan works on the DATs it loaded at its start, and if
   new DATs are installed afterwards the page says *DATs updated - rescan*.

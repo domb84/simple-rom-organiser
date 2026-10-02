@@ -494,7 +494,8 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
     others: list[RenameOp] = []
 
     def style_of(rom: "Rom") -> str:
-        return "nointro" if getattr(rom, "set_name", "") else "tosec"
+        from .tags import style_of_rom
+        return style_of_rom(rom)
 
     for p, m in loose_matched.items():
         if _is_converted_original(p, root):

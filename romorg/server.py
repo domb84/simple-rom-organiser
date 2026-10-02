@@ -227,10 +227,12 @@ OTHER_SYSTEM_DIRS = {
     "pcengine", "ps2", "ps3", "psp", "psvita", "psx", "saturn", "sega32x", "segacd", "snes",
     "switch", "wii", "wiiu", "xbox", "zxspectrum", "amstradcpc", "dos", "scummvm",
 }
-KICKSTART_ORDER = ("copy", "conflict", "ok", "missing")
+KICKSTART_ORDER = ("copy", "conflict", "ok", "missing", "unmatched")
 CONVERT_ORDER = ("convert", "conflict", "skip")
 MAX_TITLE = 120
 LAYOUT_PER_DAT, LAYOUT_FLAT = "per_dat", "flat"
+LAYOUT_GAME_FOLDER = "game_folder"   # Sega Dreamcast: <root>/<Redump name>/<Redump name>.chd
+CHDMAN_TTL = 60.0                    # seconds a chdman detection result is reused
 SOURCE_TOSEC, SOURCE_NOINTRO = "tosec", "nointro"
 # Result kinds whose rows carry name tags (filterable by region / language / video / flag / rule).
 TAG_KINDS = ("matched", "missing", "games")
@@ -408,6 +410,11 @@ def _enum_str(value: Any, default: str) -> str:
 def _source(platform: Any) -> str:
     """Where a platform's DATs come from: "tosec" (default) or "nointro"."""
     return _enum_str(getattr(platform, "source", None), SOURCE_TOSEC)
+
+
+def _has_kickstart(platform: Any) -> bool:
+    """A Kickstart step exists: a TOSEC firmware DAT or the platform's own Kickstart folder."""
+    return bool(getattr(platform, "kickstart_dat", None) or getattr(platform, "kickstart_folder", ""))
 
 
 def _layout(platform: Any) -> str:
@@ -613,6 +620,29 @@ def _check_scan_root(path: Path) -> None:
         raise ApiError(HTTPStatus.BAD_REQUEST, f"{path} is inside the app's own data folder{hint}")
 
 
+# The single ``kickstart_dest`` of older versions belonged to the TOSEC Amiga system only; it is
+# migrated to ``kickstart_dests["Commodore Amiga"]`` (per-platform Kickstart destinations).
+LEGACY_KICKSTART_PLATFORM = "Commodore Amiga"
+
+
+def _migrate_config(cfg: dict[str, Any]) -> None:
+    """In-place config migrations (idempotent): ``kickstart_dest`` -> ``kickstart_dests[Amiga]``."""
+    legacy = cfg.pop("kickstart_dest", None) if "kickstart_dest" in cfg else None
+    if isinstance(legacy, str) and legacy:
+        table = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
+        table.setdefault(LEGACY_KICKSTART_PLATFORM, legacy)
+        cfg["kickstart_dests"] = table
+
+
+def _kick_dest(cfg: dict[str, Any], platform_name: str) -> str | None:
+    """The saved Kickstart destination of one platform (legacy single value = the Amiga's)."""
+    table = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
+    value = table.get(platform_name)
+    if not value and platform_name == LEGACY_KICKSTART_PLATFORM:
+        value = cfg.get("kickstart_dest")
+    return value if isinstance(value, str) and value else None
+
+
 def _undo_log_count(data: Any) -> int | None:
     """Number of moves recorded in an undo log (list, or dict holding a list)."""
     if isinstance(data, list):
@@ -648,6 +678,8 @@ class _NoUpdates:
                 "progress": {"done": 0, "total": 0, "message": "", "source": ""}, "error": None,
                 "tosec": {"installed": None, "latest": None, "status": "unknown", "checked_at": None},
                 "nointro": {"installed": None, "latest": None, "status": "unknown", "dats": [],
+                            "checked_at": None},
+                "whdload": {"installed": None, "latest": None, "status": "unknown", "dats": [],
                             "checked_at": None}}
 
 
@@ -663,6 +695,7 @@ class App:
         self._scan: ScanState | None = None
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
+        self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
 
@@ -699,17 +732,22 @@ class App:
             return {}
 
     def _config_update(self, folder_for: tuple[str, str | None] | None = None,
-                       latest_for: tuple[str, bool] | None = None, **values: Any) -> dict[str, Any]:
-        """Merge values into config.json and return it.
+                       latest_for: tuple[str, bool] | None = None, strict: bool = False,
+                       kickstart_for: tuple[str, str | None] | None = None,
+                       **values: Any) -> dict[str, Any]:
+        """Merge values into config.json and return the saved config.
 
         ``folder_for=(platform, path)`` remembers a platform's folder (``path=None`` forgets it);
-        ``latest_for=(platform, bool)`` remembers the "latest version only" choice.
+        ``latest_for=(platform, bool)`` remembers the "latest version only" choice;
+        ``kickstart_for=(platform, path)`` remembers a platform's Kickstart destination.
+        The change is applied to the LATEST config.json under ``paths.update_config``'s lock, so a
+        concurrent writer (scan, profile save, ...) can never be overwritten by a stale snapshot.
+        ``strict``: a failed write raises ``ApiError(500)`` instead of being swallowed.
         """
-        try:
-            paths = _mod("paths")
-            cfg = paths.load_config()
+        def mutate(cfg: dict[str, Any]) -> None:
             cfg.update(values)
-            for key, pair in (("folders", folder_for), ("latest_only", latest_for)):
+            for key, pair in (("folders", folder_for), ("latest_only", latest_for),
+                              ("kickstart_dests", kickstart_for)):
                 if pair is None:
                     continue
                 table = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
@@ -718,10 +756,15 @@ class App:
                 else:
                     table[pair[0]] = pair[1]
                 cfg[key] = table
-            paths.save_config(cfg)
-            return cfg
-        except Exception:  # config is a convenience only
+            _migrate_config(cfg)
+
+        try:
+            return dict(_mod("paths").update_config(mutate))
+        except Exception as exc:  # config is a convenience only (but a folder save must say so)
             traceback.print_exc()
+            if strict:
+                raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR,
+                               f"Could not write config.json ({exc}) - the setting was not saved") from exc
             return {}
 
     def _folders(self, cfg: dict[str, Any] | None = None) -> dict[str, str]:
@@ -788,11 +831,15 @@ class App:
         return rows
 
     @staticmethod
-    def _ranking_text() -> str:
-        """The Amiga variant ranking as one line (from ``tags.PLATFORM_ORDER``)."""
+    def _ranking_text(style: str = SOURCE_TOSEC) -> str:
+        """The variant ranking as one line (from ``tags.PLATFORM_ORDER``)."""
         library = _optional_mod("library")
         tags = getattr(library, "tags", None) or _optional_mod("tags")
         order = list(getattr(tags, "PLATFORM_ORDER", None) or ("CD32", "AGA", "OCS"))
+        if style == "whdload":
+            return ("Preference: your language order, then " + " over ".join(order)
+                    + ", then standard memory over 512KB / Low Mem builds, then PAL / untagged over NTSC, "
+                    "then the newest version (highest build number last)")
         return "Preference: cracked, then " + " over ".join(order) + ", then newest (your language order comes first)"
 
     def _profile_info(self, platform: Any, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -828,7 +875,7 @@ class App:
             info["available"] = {**info["available"], **extra.get("available", {})}
             info["scopes"] = {**info["scopes"], **extra.get("scopes", {})}
         info["available_languages"] = self._available_languages(platform) if info["available"].get("languages") else []
-        info["ranking"] = self._ranking_text() if info["available"].get("best_variant") else ""
+        info["ranking"] = self._ranking_text(info.get("style") or SOURCE_TOSEC) if info["available"].get("best_variant") else ""
         return info
 
     @staticmethod
@@ -908,6 +955,66 @@ class App:
             self._dat_cache = (key, value)
             return value
 
+    def sweep_chd_temp(self) -> list[str]:
+        """Startup housekeeping: delete leftover ``.romorg-chd-*`` temp folders (dead runs) in the Dreamcast folder."""
+        chdtool = _optional_mod("chdtool")
+        removed: list[str] = []
+        if chdtool is None:
+            return removed
+        for platform in _mod("platforms").list_platforms():
+            if _layout(platform) != LAYOUT_GAME_FOLDER:
+                continue
+            folder = self._folders().get(platform.name)
+            if folder and os.path.isdir(folder):
+                removed += chdtool.sweep_stale(Path(folder))
+        return removed
+
+    # ---- chdman (Sega Dreamcast): detected lazily, result reused for a minute
+
+    def _chdman(self, refresh: bool = False) -> Any:
+        """The detected ``chdtool.Chdman`` (or None)."""
+        return self._chdman_state(refresh)[1]
+
+    def _chdman_info(self, refresh: bool = False) -> dict[str, Any]:
+        """JSON for the UI: ``{found, label, kind, hint, ...}`` (``chdtool.info``)."""
+        return dict(self._chdman_state(refresh)[2])
+
+    def _chdman_state(self, refresh: bool = False) -> tuple[float, Any, dict[str, Any]]:
+        with self._lock:
+            cached = self._chdman_cache
+        if cached is not None and not refresh and time.monotonic() - cached[0] < CHDMAN_TTL:
+            return cached
+        chdtool = _optional_mod("chdtool")
+        if chdtool is None:
+            state: tuple[float, Any, dict[str, Any]] = (time.monotonic(), None, {"found": False, "label": "", "kind": "",
+                                                        "hint": "chdman support is not available in this version"})
+        else:
+            cfg = self._config()
+            try:
+                found = chdtool.detect(cfg)
+            except Exception:  # noqa: BLE001 - detection must never break the page
+                traceback.print_exc()
+                found = None
+            if found is not None:
+                info = found.to_dict()
+                info["hint"] = ""
+            else:
+                info = {"found": False, "kind": "", "label": "", "hint": chdtool.INSTALL_HINT}
+                info["steps"] = [
+                    "Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
+                    "or install any chdman and put it on PATH",
+                    f"or save the path of a chdman binary below (config key \"{chdtool.CONFIG_KEY}\", "
+                    f"environment {chdtool.ENV_VAR})"]
+            info["override"] = str(cfg.get(chdtool.CONFIG_KEY) or "")
+            state = (time.monotonic(), found, info)
+        with self._lock:
+            self._chdman_cache = state
+        return state
+
+    @staticmethod
+    def _is_dc(state: "ScanState") -> bool:
+        return state.layout == LAYOUT_GAME_FOLDER
+
     def _scan_is_stale(self) -> bool:
         """True when the DATs of the scanned platform changed after that scan parsed them."""
         with self._lock:
@@ -951,6 +1058,7 @@ class App:
             "folder_hint": getattr(platform, "folder_hint", "") or "",
             "extensions": list(getattr(platform, "extensions", ()) or ()),
             "convertible": bool(getattr(platform, "convertible", False)),
+            "chd": layout == LAYOUT_GAME_FOLDER,
             "folder": self._folders(cfg).get(platform.name),
             "latest_only": self._latest_only(platform, cfg),
             "library": self._profile_for_info(platform, cfg),
@@ -958,6 +1066,10 @@ class App:
             "complete": all(d["present"] for d in dats),
             "m3u_dats": list(platform.m3u_dats or ()),
             "kickstart_dat": platform.kickstart_dat,
+            "kickstart_folder": getattr(platform, "kickstart_folder", "") or "",
+            "has_kickstart": bool(platform.kickstart_dat or getattr(platform, "kickstart_folder", "")),
+            "kickstart_dest": _kick_dest(cfg, platform.name),
+            "protected_dirs": list(getattr(platform, "protected_dirs", ()) or ()),
         }
 
     def _profile_for_info(self, platform: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -1032,9 +1144,18 @@ class App:
                            "no_dats")
         job.report(0, 0, "Scanning...")
         layout = _layout(platform)
-        result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=job.report,
-                       cancel=job.cancel if cancellable else None,
-                       alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=layout)
+        if layout == LAYOUT_GAME_FOLDER:     # Sega Dreamcast: CHD / raw sets, matched per track
+            cfg = self._config()
+            result = _mod("dreamcast").scan(
+                root, dats, progress=job.report, cancel=job.cancel if cancellable else None,
+                chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
+                workers=_mod("chdpool").default_workers(cfg.get("chd_workers")),
+                protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
+        else:
+            result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=job.report,
+                           cancel=job.cancel if cancellable else None,
+                           alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=layout,
+                           protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
         if cancellable and job.cancel.is_set():
             return None
         dat_names = list(getattr(result, "dat_names", None) or [getattr(d, "name", "") for d in dats])
@@ -1054,6 +1175,9 @@ class App:
 
     def _rename_plan(self, state: ScanState, move_unmatched: bool = True, latest_only: bool = False) -> list[Any]:
         key = (move_unmatched, latest_only)
+        if key not in state.rename_plans and self._is_dc(state):
+            state.rename_plans[key] = sorted(_mod("dreamcast").plan_tidy(state.result, move_unmatched),
+                                              key=_order_key(ORGANISE_ORDER))
         if key not in state.rename_plans:
             kwargs: dict[str, Any] = {"missing_dats": list(state.missing_dats), "move_unmatched": move_unmatched,
                                       "layout": state.layout}
@@ -1075,6 +1199,10 @@ class App:
     def _convert_plan(self, state: ScanState, latest_only: bool = False) -> list[Any]:
         if not getattr(state.platform, "convertible", False):
             return []
+        if latest_only not in state.convert_plans and self._is_dc(state):
+            ops = list(_mod("dreamcast").plan_convert(state.result, self._chdman() is not None))
+            ops.sort(key=_order_key(CONVERT_ORDER))
+            state.convert_plans[latest_only] = ops
         if latest_only not in state.convert_plans:
             convert = _optional_mod("convert")
             if convert is None:
@@ -1109,9 +1237,8 @@ class App:
         self._save_profile(platform, dataclasses.replace(self._profile(platform), latest_only=value))
 
     def _save_profile(self, platform: Any, profile: Any) -> None:
-        cfg = self._config()
-        self._library_mod().store_profile(cfg, platform, profile)
-        _mod("paths").save_config(cfg)
+        library = self._library_mod()
+        _mod("paths").update_config(lambda cfg: library.store_profile(cfg, platform, profile))
         with self._lock:
             state = self._scan
         if state is not None:
@@ -1173,10 +1300,73 @@ class App:
         ops.sort(key=_order_key(KICKSTART_ORDER))
         return ops
 
+    def _kick_scope(self, raw_platform: Any) -> tuple[Any, ScanState | None]:
+        """The platform a Kickstart request is about (+ the scan it needs, for a DAT-based one).
+
+        ``platform`` given -> that one; otherwise the scanned platform, else the default. A platform with a
+        Kickstart DAT (TOSEC Amiga) needs a scan OF THAT platform; one with its own Kickstart folder
+        (WHDLoad) only needs its platform folder."""
+        name = _str_arg(raw_platform)
+        with self._lock:
+            state = self._scan
+        if name:
+            platform = self._resolve_platform(name)
+        elif state is not None:
+            platform = state.platform
+        else:
+            platform = self._resolve_platform("")
+        if not _has_kickstart(platform):
+            raise ApiError(HTTPStatus.CONFLICT, "This platform has no Kickstart DAT or Kickstart folder")
+        if getattr(platform, "kickstart_folder", ""):
+            return platform, (state if state is not None and state.platform.name == platform.name else None)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No scan results yet - run a scan first")
+        if state.platform.name != platform.name:
+            raise ApiError(HTTPStatus.CONFLICT, f"Scan {platform.name} first (the last scan was of {state.platform.name})")
+        return platform, state
+
+    def _kick_folder(self, platform: Any, state: ScanState | None) -> tuple[Path, Path | None]:
+        """``(platform root, the Kickstart sub-folder or None when it does not exist)`` of a folder-source platform."""
+        if state is not None:
+            root = state.root
+        else:
+            saved = self._folders().get(platform.name)
+            if not saved:
+                raise ApiError(HTTPStatus.CONFLICT, f"Choose the {platform.name} folder first (step 1) - "
+                               f"its Kickstart ROMs are read from the {platform.kickstart_folder}/ folder inside it")
+            root = self._validate_dir(saved)
+        want = platform.kickstart_folder.casefold()
+        try:
+            for child in sorted(root.iterdir(), key=lambda p: p.name):
+                if child.name.casefold() == want and child.is_dir():
+                    return root, child
+        except OSError:
+            pass
+        return root, None
+
+    def _kick_ops(self, platform: Any, state: ScanState | None, dest: Path) -> tuple[list[Any], dict[str, Any]]:
+        """``(ops, extra response fields)`` for the platform's Kickstart plan."""
+        kick = _mod("kickstart")
+        if getattr(platform, "kickstart_folder", ""):
+            root, folder = self._kick_folder(platform, state)
+            ops = list(kick.plan_kickstarts_from_folder(folder, dest))
+            ops.sort(key=_order_key(KICKSTART_ORDER))
+            return ops, {"source": "folder", "root": str(root),
+                         "source_dir": str(folder if folder is not None else root / platform.kickstart_folder),
+                         "source_exists": folder is not None}
+        assert state is not None
+        return self._kick_plan(state, dest), {"source": "dat", "root": str(state.root),
+                                              "kickstart_dat": platform.kickstart_dat}
+
     def _library_plan(self, state: ScanState, move_unmatched: bool = True, savedisk: bool = False,
                       labels: bool = True) -> Any:
         """The cached ``organiser.LibraryPlan`` for the platform's current profile."""
         key = (move_unmatched, savedisk, labels)
+        if key not in state.library_plans and self._is_dc(state):
+            plan = _mod("dreamcast").plan_library(state.result, self._profile(state.platform),
+                                                  move_unmatched=move_unmatched, savedisk=savedisk, labels=labels)
+            plan.ops.sort(key=_order_key(ORGANISE_ORDER))
+            state.library_plans[key] = plan
         if key not in state.library_plans:
             organiser = _mod("organiser")
             planner = getattr(organiser, "plan_library", None)
@@ -1243,6 +1433,8 @@ class App:
         return out
 
     def _matched_item(self, match: Any, state: ScanState, tags_mod: Any = None) -> dict[str, Any]:
+        if hasattr(match, "item"):          # Sega Dreamcast: level / tracks / canonical place
+            return match.item(state)
         entry, root = match.entry, state.root
         primary = _primary(match, state.dat_names)
         dat = _rom_dat(primary[0]) if primary else ""
@@ -1284,13 +1476,17 @@ class App:
         rows: list[dict[str, Any]] = []
         game_status = getattr(_mod("scanner"), "game_status", None)
         if game_status is not None:
+            levels = getattr(state.result, "game_levels", lambda: {})()
             for g in game_status(state.result):
                 rom = g.get("rom")
-                rows.append({"name": g["name"], "dat": g.get("dat", ""), "have": bool(g.get("have")),
-                             "roms": list(g.get("roms") or ()),
-                             "files": [_entry_rel(f, state.root) if hasattr(f, "path") else _rel(f, state.root)
-                                       for f in g.get("files") or ()],
-                             "tags": _tags_json(rom, tags_mod)})
+                row = {"name": g["name"], "dat": g.get("dat", ""), "have": bool(g.get("have")),
+                       "roms": list(g.get("roms") or ()),
+                       "files": [_entry_rel(f, state.root) if hasattr(f, "path") else _rel(f, state.root)
+                                 for f in g.get("files") or ()],
+                       "tags": _tags_json(rom, tags_mod)}
+                if g["name"] in levels:
+                    row["level"], row["kind"] = levels[g["name"]]
+                rows.append(row)
             return rows
         # Fallback (older scanner): every set is either matched or listed in ``missing``.
         groups: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1319,7 +1515,7 @@ class App:
 
     def _rename_item(self, op: Any, root: Path) -> dict[str, Any]:
         to_rel = _rel(op.dst, root)
-        return {
+        item = {
             "from": _rel(op.src, root),
             "to": to_rel,
             "from_name": Path(op.src).name,
@@ -1337,6 +1533,10 @@ class App:
             "reasons": list(getattr(op, "reasons", ()) or ()),
             "item": "file",
         }
+        if hasattr(op, "moves"):           # Sega Dreamcast: a game folder / CHD with its sidecars
+            item.update(dest=getattr(op, "folder", "") or "", game=op.game, level=op.level, unit_kind=op.unit_kind,
+                        n_files=op.n_files, files=len(op.moves) or op.n_files)
+        return item
 
     @staticmethod
     def _convert_item(op: Any, root: Path) -> dict[str, Any]:
@@ -1385,9 +1585,11 @@ class App:
             "version": getattr(importlib.import_module(PACKAGE), "__version__", "0"),
             "release": None, "dats_count": 0, "default_platform": None,
             "last_platform": None, "last_dir": None, "folders": {}, "kickstart_dest": None,
+            "kickstart_dests": {},
             "has_7z": _which_7z() is not None, "dialog_available": _dialog_command() is not None,
             "data_dir": None, "scan": None,
-            "nointro": {"dir": None, "count": 0, "dats": []}, "updates": None,
+            "nointro": {"dir": None, "count": 0, "dats": []}, "redump": {"dir": None, "count": 0, "dats": []},
+            "updates": None,
         }
         try:
             paths = _mod("paths")
@@ -1401,12 +1603,17 @@ class App:
         out["folders"] = self._folders(cfg)
         out["last_platform"] = cfg.get("last_platform")
         out["last_dir"] = out["folders"].get(out["last_platform"]) or cfg.get("last_dir")
-        out["kickstart_dest"] = cfg.get("kickstart_dest")
+        out["kickstart_dest"] = _kick_dest(cfg, LEGACY_KICKSTART_PLATFORM)     # the TOSEC Amiga's (legacy key)
+        dests = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
+        out["kickstart_dests"] = {k: v for k, v in dests.items() if isinstance(v, str)}
+        if out["kickstart_dest"]:
+            out["kickstart_dests"].setdefault(LEGACY_KICKSTART_PLATFORM, out["kickstart_dest"])
         try:
             out["dats_count"] = len(_mod("tosec").list_dats())
         except Exception:
             traceback.print_exc()
         out["nointro"] = self._nointro_status()
+        out["redump"] = self._redump_status()
         try:
             out["updates"] = self.updates_status()
         except Exception:  # noqa: BLE001 - never break the page over the update line
@@ -1450,6 +1657,23 @@ class App:
             traceback.print_exc()
         return out
 
+    @staticmethod
+    def _redump_status() -> dict[str, Any]:
+        """``{dir, count, dats: [{name, version|None, present}]}`` of the Redump DAT folder."""
+        out: dict[str, Any] = {"dir": None, "count": 0, "dats": []}
+        redump = _optional_mod("redump")
+        if redump is None:
+            return out
+        try:
+            out["dir"] = str(_mod("paths").redump_dir())
+            local = {d.name: d for d in redump.list_dats()}
+            out["dats"] = [{"name": n, "version": local[n].version if n in local else None, "present": n in local}
+                           for n in redump.REDUMP_DATS]
+            out["count"] = sum(1 for d in out["dats"] if d["present"])
+        except Exception:
+            traceback.print_exc()
+        return out
+
     def platforms_list(self, query: dict[str, str], body: Any) -> list[dict[str, Any]]:
         cfg = self._config()
         out = []
@@ -1467,11 +1691,11 @@ class App:
         platform = self._resolve_platform(body.get("platform"))
         raw = body.get("path")
         if raw is None or (isinstance(raw, str) and not raw.strip()):
-            cfg = self._config_update(folder_for=(platform.name, None))
+            cfg = self._config_update(folder_for=(platform.name, None), strict=True)
         else:
             path = self._validate_dir(raw)
             _check_scan_root(path)
-            cfg = self._config_update(folder_for=(platform.name, str(path)))
+            cfg = self._config_update(folder_for=(platform.name, str(path)), strict=True)
         return {"folders": self._folders(cfg)}
 
     def platform_options(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -1625,7 +1849,9 @@ class App:
                 if kind == "matched":
                     items = [self._matched_item(m, state, tags_mod) for m in result.matched]
                 elif kind == "unmatched":
-                    items = [{"file": _entry_rel(e, root), "size": e.size, "crc": e.crc} for e in result.unmatched]
+                    items = [{"file": _entry_rel(e, root), "size": e.size, "crc": e.crc,
+                              "reason": getattr(e, "reason", ""), "kind": getattr(e, "kind", "")}
+                             for e in result.unmatched]
                 elif kind == "missing":
                     items = [self._missing_item(r, tags_mod) for r in result.missing]
                 elif kind == "games":
@@ -1720,8 +1946,8 @@ class App:
             ops = self._rename_plan(state, move_unmatched, latest_only)
             todo = sum(1 for op in ops if op.status in ACTIONABLE)
             job.report(0, todo, "Moving files...")
-            res = dict(_call(_mod("organiser").apply_renames, ops, state.root, progress=job.report,
-                             cancel=job.cancel))
+            apply = _mod("dreamcast").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
+            res = dict(_call(apply, ops, state.root, progress=job.report, cancel=job.cancel))
             res["action"] = "apply"
             return self._rescan_into(job, state, res)
 
@@ -1891,7 +2117,8 @@ class App:
             todo = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
                 1 for p in plan.playlists if p.status == "write")
             job.report(0, todo, "Building library...")
-            res = dict(_call(_mod("organiser").apply_renames, plan.ops, state.root, progress=job.report,
+            apply = _mod("dreamcast").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
+            res = dict(_call(apply, plan.ops, state.root, progress=job.report,
                              cancel=job.cancel, playlists=list(plan.playlists)))
             res["action"] = "library"
             return self._rescan_into(job, state, res)
@@ -1910,6 +2137,9 @@ class App:
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         page.update(counts=_status_counts(ops), all=len(ops), root=str(state.root), available=available,
                     latest_only=latest_only, originals_dir=CONVERTED_DIR)
+        if self._is_dc(state):
+            page["chdman"] = self._chdman_info()
+            page["kind"] = "chd"
         return page
 
     def convert_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -1918,13 +2148,22 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, f"{state.platform.name} files are not converted")
         latest_only = self._latest_arg(state, body)
         self._convert_plan(state, latest_only)  # errors (e.g. module missing) before starting a job
+        if self._is_dc(state) and self._chdman() is None:   # never pretend to convert
+            raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
 
         def work(job: Job) -> Any:
             ops = self._convert_plan(state, latest_only)
             todo = sum(1 for op in ops if op.status == "convert")
             job.report(0, todo, "Converting files...")
-            res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
-                             cancel=job.cancel))
+            if self._is_dc(state):
+                chdman = self._chdman()
+                if chdman is None:
+                    raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
+                res = dict(_mod("dreamcast").apply_conversions(ops, state.root, chdman, state.result.index,
+                                                              progress=job.report, cancel=job.cancel))
+            else:
+                res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
+                                 cancel=job.cancel))
             res["action"] = "convert"
             return self._rescan_into(job, state, res)
 
@@ -1960,15 +2199,17 @@ class App:
     def kickstart_dirs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         with self._lock:
             state = self._scan
-        platform = state.platform if state is not None else self._resolve_platform(query.get("platform"))
+        raw = _str_arg(query.get("platform"))
+        platform = self._resolve_platform(raw) if raw else (state.platform if state is not None else self._resolve_platform(""))
         dirs = []
         for item in _mod("kickstart").detect_system_dirs():
             if isinstance(item, dict) and isinstance(item.get("path"), (str, os.PathLike)):
                 dirs.append({"path": str(item["path"]), "label": str(item.get("label") or ""),
                              "exists": bool(item.get("exists", True))})
         dirs.sort(key=lambda d: not d["exists"])  # existing first, otherwise keep order
-        return {"dirs": dirs, "last": self._config().get("kickstart_dest"),
-                "platform": platform.name, "kickstart_dat": platform.kickstart_dat}
+        return {"dirs": dirs, "last": _kick_dest(self._config(), platform.name),
+                "platform": platform.name, "kickstart_dat": platform.kickstart_dat,
+                "kickstart_folder": getattr(platform, "kickstart_folder", "") or ""}
 
     @staticmethod
     def _require_kickstart(state: ScanState) -> None:
@@ -1976,34 +2217,101 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, "This platform has no Kickstart DAT")
 
     def kickstart_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        state = self._require_scan()
-        self._require_kickstart(state)
+        platform, state = self._kick_scope(body.get("platform"))
         dest = self._validate_dest(body.get("dest"))
-        ops = self._kick_plan(state, dest)
+        ops, extra = self._kick_ops(platform, state, dest)
         status = _str_arg(body.get("status"))
-        items = [self._kick_item(op, state.root) for op in ops if not status or op.status == status]
+        root = Path(extra["root"])
+        items = [self._kick_item(op, root) for op in ops if not status or op.status == status]
         page = _page(items, body.get("offset"), body.get("limit"), body.get("q"))
-        page.update(counts=_status_counts(ops), all=len(ops), dest=str(dest), dest_exists=dest.is_dir())
+        page.update(counts=_status_counts(ops), all=len(ops), dest=str(dest), dest_exists=dest.is_dir(),
+                    platform=platform.name, **extra)
         return page
 
-    def kickstart_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        state = self._require_scan()
-        self._require_kickstart(state)
+    def kickstart_dest_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """Remember the Kickstart destination of ONE platform as soon as the user picked it."""
+        platform = self._resolve_platform(body.get("platform"))
+        if not _has_kickstart(platform):
+            raise ApiError(HTTPStatus.CONFLICT, "This platform has no Kickstart DAT or Kickstart folder")
         dest = self._validate_dest(body.get("dest"))
+        self._config_update(kickstart_for=(platform.name, str(dest)), strict=True)
+        return {"platform": platform.name, "dest": str(dest)}
+
+    def kickstart_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        platform, state = self._kick_scope(body.get("platform"))
+        dest = self._validate_dest(body.get("dest"))
+        if getattr(platform, "kickstart_folder", ""):
+            self._kick_folder(platform, state)    # a clear 409 now when the platform folder is unknown
 
         def work(job: Job) -> Any:
-            ops = self._kick_plan(state, dest)  # fresh plan: the folder may have changed
+            ops, extra = self._kick_ops(platform, state, dest)  # fresh plan: the folder may have changed
+            root = Path(extra["root"])
             todo = sum(1 for op in ops if op.status == "copy")
             job.report(0, todo, "Copying Kickstart ROMs...")
             if todo:
                 dest.mkdir(exist_ok=True)
-            res = dict(_call(_mod("kickstart").apply_kickstarts, ops, root=state.root, progress=job.report))
-            self._config_update(kickstart_dest=str(dest))
-            res["counts"] = _status_counts(self._kick_plan(state, dest))
+            res = dict(_call(_mod("kickstart").apply_kickstarts, ops, root=root, progress=job.report))
+            self._config_update(kickstart_for=(platform.name, str(dest)))
+            res["counts"] = _status_counts(self._kick_ops(platform, state, dest)[0])
             res["dest"] = str(dest)
+            res["platform"] = platform.name
             return res
 
         return {"job": self.jobs.start("kickstart", work, cancellable=False).to_dict()}
+
+    # ---- Sega Dreamcast: chdman + Verify fully
+
+    def chdman_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """chdman detection result (``?refresh=1`` forces a new look)."""
+        info = self._chdman_info(refresh=_bool_arg(query.get("refresh")))
+        info["engine"] = str(self._config().get("chd_engine") or "auto")
+        return info
+
+    def chdman_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """Remember (empty = forget) the path of a chdman binary and the engine (``auto`` | ``python``)."""
+        chdtool = _mod("chdtool")
+        raw = body.get("path")
+        values: dict[str, Any] = {}
+        if raw is not None:
+            if not isinstance(raw, str):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "path must be text")
+            raw = raw.strip()
+            if raw:
+                p = Path(raw).expanduser()
+                if not p.is_absolute() or not p.is_file() or not os.access(p, os.X_OK):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, f"Not an executable file: {raw}")
+                raw = str(p)
+            values[chdtool.CONFIG_KEY] = raw
+        engine = body.get("engine")
+        if engine is not None:
+            if engine not in ("auto", "python"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "engine must be auto or python")
+            values["chd_engine"] = engine
+        if not values:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path and / or engine)")
+        self._config_update(strict=True, **values)
+        info = self._chdman_info(refresh=True)
+        info["engine"] = str(self._config().get("chd_engine") or "auto")
+        if raw and not info.get("found"):
+            info["warning"] = f"{raw} did not answer like chdman"
+        return info
+
+    def dc_verify(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """Verify fully: decode EVERY track of the ``identified`` CHDs (audio included) and compare with Redump."""
+        state = self._require_scan()
+        if not self._is_dc(state):
+            raise ApiError(HTTPStatus.CONFLICT, f"{state.platform.name} has no CHD verification")
+        cfg = self._config()
+
+        def work(job: Job) -> Any:
+            res = dict(_mod("dreamcast").verify_units(
+                state.result, self._chdman(), progress=job.report, cancel=job.cancel,
+                engine=str(cfg.get("chd_engine") or "auto"),
+                workers=_mod("chdpool").default_workers(cfg.get("chd_workers"))))
+            res["action"] = "verify"
+            return self._rescan_into(job, state, res)
+
+        return {"job": self.jobs.start("verify", work).to_dict()}
 
     def job_get(self, query: dict[str, str], body: Any) -> dict[str, Any] | None:
         job = self.jobs.current
@@ -2074,11 +2382,15 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/organise/undo"): App.organise_undo,
     ("POST", "/api/convert/plan"): App.convert_plan,
     ("POST", "/api/convert/apply"): App.convert_apply,
+    ("GET", "/api/chdman"): App.chdman_get,
+    ("POST", "/api/chdman"): App.chdman_save,
+    ("POST", "/api/dc/verify"): App.dc_verify,
     ("POST", "/api/m3u/plan"): App.m3u_plan,
     ("POST", "/api/m3u/apply"): App.m3u_apply,
     ("GET", "/api/kickstart/dirs"): App.kickstart_dirs,
     ("POST", "/api/kickstart/plan"): App.kickstart_plan,
     ("POST", "/api/kickstart/apply"): App.kickstart_apply,
+    ("POST", "/api/kickstart/dest"): App.kickstart_dest_save,
     ("GET", "/api/job"): App.job_get,
     ("POST", "/api/job/cancel"): App.job_cancel,
     ("POST", "/api/quit"): App.quit,
@@ -2239,6 +2551,10 @@ def make_server(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     background right after the port is bound."""
     server = RomorgServer((host, port), App(token, auto_update=auto_update), verbose=verbose)
     server.app.shutdown_hook = server.shutdown
+    try:
+        server.app.sweep_chd_temp()
+    except Exception:  # noqa: BLE001 - housekeeping only
+        traceback.print_exc()
     try:
         server.app.updates.start_background()
     except Exception:  # noqa: BLE001 - updates are a convenience, never fatal

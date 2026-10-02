@@ -34,7 +34,7 @@
       <div class="updates-bar" id="updates-bar">
         <div class="updates-main">
           <div class="updates-line grow" id="updates-line">Checking DAT versions...</div>
-          <button class="btn btn-small" id="updates-btn" title="Check TOSEC and No-Intro for newer DATs and install them">Check for updates</button>
+          <button class="btn btn-small" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
         </div>
         <div class="progress hidden" id="updates-progress"><div class="progress-bar" id="updates-progress-bar"></div></div>
         <div class="muted small hidden" id="updates-progress-text"></div>
@@ -77,6 +77,21 @@
       </div>
       <div class="muted small" id="scan-info"></div>
       <div class="job hidden" data-kind="scan"></div>
+      <!-- Sega Dreamcast: how CHDs are read + Verify fully -->
+      <div class="dc-bar hidden" id="dc-bar">
+        <div class="dc-line">
+          <span id="dc-engine-line" class="grow"></span>
+          <button class="btn" id="dc-verify-btn" disabled
+                  title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
+        </div>
+        <div class="muted small" id="dc-levels-help">
+          <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
+          <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
+          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks) you can convert to CHD in step 4.
+        </div>
+        <div class="job hidden" data-kind="verify"></div>
+        <div id="dc-failures" class="notice hidden"></div>
+      </div>
       <div class="notice notice-bad hidden" id="scan-error">
         <span id="scan-error-text"></span>
         <button class="btn btn-small" id="scan-retry">Retry</button>
@@ -197,8 +212,25 @@
 
     <!-- Step 4: Convert -->
     <section class="step" id="step-convert">
-      <h2><span class="step-num">4</span> Convert to No-Intro format (optional)</h2>
-      <p class="muted">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
+      <h2><span class="step-num">4</span> <span id="convert-title">Convert to No-Intro format (optional)</span></h2>
+      <div class="chdman-box hidden" id="chdman-box">
+        <div class="chdman-line" id="chdman-line"></div>
+        <ol class="chdman-steps hidden" id="chdman-steps"></ol>
+        <div class="row">
+          <input type="text" id="chdman-path" class="input grow mono" placeholder="/path/to/chdman (optional override)"
+                 spellcheck="false" autocomplete="off" aria-label="chdman path">
+          <button class="btn btn-small" id="chdman-save">Save path</button>
+          <button class="btn btn-small" id="chdman-refresh">Look again</button>
+        </div>
+        <div class="row">
+          <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
+          <select id="chdman-engine" class="input select">
+            <option value="auto">chdman when available (fast), else the built-in reader</option>
+            <option value="python">always the built-in reader (no temporary files)</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
         byte-swapped N64 dump stays <code>.v64</code> / <code>.n64</code>. Converting writes a clean copy exactly as
         listed in the DAT (headerless <code>.sfc</code>, big-endian <code>.z64</code>) and moves the original to
         <code>_converted_originals/</code> - nothing is deleted, and <b>Undo last</b> reverts it.
@@ -222,7 +254,7 @@
     <!-- Step 6: Kickstarts -->
     <section class="step" id="step-kickstart">
       <h2><span class="step-num">5</span> Kickstarts for RetroArch (PUAE)</h2>
-      <p class="muted">Optional. Copies the Kickstart ROMs you have (matched by MD5 against the
+      <p class="muted" id="kick-intro">Optional. Copies the Kickstart ROMs you have (matched by MD5 against the
         <a href="https://docs.libretro.com/library/puae/" target="_blank" rel="noopener noreferrer">PUAE BIOS list</a>)
         into RetroArch's system / BIOS folder under the file names PUAE expects. Files are copied, never moved,
         and existing files are never overwritten.</p>
@@ -239,6 +271,7 @@
           <button class="btn btn-primary" id="kick-apply-btn" disabled>Copy Kickstarts</button>
           <div class="grow"></div>
         </div>
+        <div class="muted small" id="kick-source"></div>
         <div class="job hidden" data-kind="kickstart"></div>
         <div id="kick-failures" class="notice hidden"></div>
         <div id="kick-empty" class="empty">Run a scan first.</div>

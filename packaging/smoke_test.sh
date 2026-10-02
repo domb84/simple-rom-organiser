@@ -40,19 +40,25 @@ echo "GET /api/status -> $STATUS"
 grep -q '"version"' <<<"$STATUS" || { echo "status missing version" >&2; exit 1; }
 grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >&2; exit 1; }
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
+grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
 
 TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$INDEX" | head -n1)"
 if [[ -n "$TOKEN" ]]; then
   PLATFORMS="$(curl -fsS -H "X-Romorg-Token: $TOKEN" "$URL/api/platforms")"
-  for name in "Commodore Amiga" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
-              "Super Nintendo Entertainment System"; do
+  for name in "Commodore Amiga" "Commodore Amiga - WHDLoad" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
+              "Sega Dreamcast" "Super Nintendo Entertainment System"; do
     grep -q "\"$name\"" <<<"$PLATFORMS" || { echo "platform missing: $name" >&2; exit 1; }
   done
-  echo "GET /api/platforms -> 5 systems"
+  echo "GET /api/platforms -> 7 systems"
   grep -q '"state"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing" >&2; exit 1; }
   grep -q '"rules"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Commodore%20Amiga")" \
     || { echo "/api/library/profile missing the rules" >&2; exit 1; }
   echo "GET /api/updates, /api/library/profile -> ok"
+  grep -q '"found"' <<<"$(curl -fsS "$URL/api/chdman")" || { echo "/api/chdman missing" >&2; exit 1; }
+  grep -q '"redump"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing the Redump source" >&2; exit 1; }
+  grep -q '"style": "redump"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Sega%20Dreamcast")" \
+    || { echo "Dreamcast rules missing" >&2; exit 1; }
+  echo "GET /api/chdman, Dreamcast rules -> ok"
 fi
 if [[ -n "$TOKEN" ]] && curl -fsS -X POST -H "X-Romorg-Token: $TOKEN" -H 'Content-Type: application/json' \
      -d '{}' "$URL/api/quit" >/dev/null; then

@@ -150,8 +150,18 @@ if [[ "$PRECOMPILE" == "1" ]]; then
 fi
 
 # Sanity check: everything the app needs imports with the bundled interpreter alone.
-"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.convert, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
+"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.whdload, romorg.redump, romorg.convert, romorg.chd, romorg.chdtool, romorg.chdpool, romorg.dreamcast, lzma, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
   || die "bundled Python failed the import self-check"
+# CHD reader self-check: raw LZMA1 + raw deflate (cdlz / cdzl hunks) and the big-integer ECC rebuild must work in
+# the bundled interpreter (the lzma module is optional in some Python builds).
+"$PY" -I -B -c 'import lzma, os, zlib; from romorg import cdecc, chd
+f = chd._lzma_filters(18816); data = os.urandom(64) * 300
+c = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=f); blob = c.compress(data) + c.flush()
+assert chd._lzma_raw(blob, len(data), f) == data
+d = zlib.compressobj(9, zlib.DEFLATED, -15); z = d.compress(data) + d.flush()
+assert chd._inflate_raw(z, len(data)) == data
+s = bytearray(os.urandom(2352)); ref = bytearray(s); cdecc.generate_reference(ref); cdecc.generate([s]); assert s == ref' \
+  || die "bundled Python cannot decode CHD hunks (lzma / zlib / ECC self-check failed)"
 
 log "Writing AppRun, desktop entry, icons and metainfo"
 install -m 755 "$PKG/AppRun" "$APPDIR/AppRun"

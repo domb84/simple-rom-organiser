@@ -287,6 +287,12 @@ table.systems td { vertical-align: middle; }
 .folder-row .input { min-width: 0; min-height: 40px; font-size: 14px; }
 .badge.src-tosec { color: var(--info); border-color: var(--info); }
 .badge.src-nointro { color: var(--ok); border-color: var(--ok); }
+.badge.src-whdload { color: var(--accent); border-color: var(--accent); }
+/* saved / unsaved state of a system's folder field */
+.folder-state { font-size: 12px; font-weight: 600; white-space: nowrap; min-width: 64px; text-align: center; }
+.folder-state.saved { color: var(--ok); }
+.folder-state.unsaved, .folder-state.saving { color: var(--warn); }
+.folder-state.error { color: var(--bad); }
 .dat-details { margin: 10px 0; }
 .dat-details summary { color: var(--muted); }
 .dat-details .table-wrap { margin-top: 6px; }
@@ -396,3 +402,19 @@ tr.row-missing .game-name { color: var(--muted); }
 .ranking { margin-top: 6px; font-size: 14px; }
 .vanish-hints { align-items: center; }
 .vanish-box .table-wrap { margin-top: 6px; }
+
+/* ---------- Sega Dreamcast ---------- */
+.badge.src-redump { color: var(--warn); border-color: var(--warn); }
+.dc-bar { background: var(--panel); border-left: 4px solid var(--warn); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+.dc-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.chdman-box { background: var(--panel); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+.chdman-box.missing { border-left-color: var(--bad); }
+.chdman-line { font-weight: 600; margin-bottom: 6px; }
+.chdman-steps { margin: 4px 0 8px; padding-left: 22px; }
+.tag-level { font-weight: 600; }
+.tag-level.verified { color: var(--ok); border-color: #1f6b4a; }
+.tag-level.identified { color: var(--info); border-color: #574a8a; }
+.tag-level.raw { color: var(--warn); border-color: #7a5d1a; }
+.badge.verified { color: var(--ok); border-color: var(--ok); }
+.badge.identified { color: var(--info); border-color: var(--info); }
+.badge.raw { color: var(--warn); border-color: var(--warn); }

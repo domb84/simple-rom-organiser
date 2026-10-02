@@ -102,6 +102,89 @@ class FakeNointro:
         return {"dats": rows, "failed": 0}
 
 
+WHD = "Commodore - Amiga - WHDLoad"
+
+
+class FakeWhdload:
+    """The WHDLoad source: one DAT, own folder (``paths.whdload_dir()``), own ETag."""
+
+    def __init__(self) -> None:
+        self.remote_etag = {WHD: "w1"}
+        self.local: dict[str, str] = {}
+        self.offline = False
+        self.downloads: list[str] = []
+
+    def check_updates(self, names=None, opener=None, directory=None, timeout=10):
+        rows = []
+        for n in (names if names is not None else [WHD]):
+            if self.offline:
+                rows.append({"name": n, "installed": None, "status": "error", "error": "no route"})
+            elif n not in self.local:
+                rows.append({"name": n, "installed": None, "status": "missing"})
+            else:
+                st = "up_to_date" if self.local[n] == self.remote_etag[n] else "update_available"
+                rows.append({"name": n, "installed": "2026-07-05", "status": st})
+        return rows
+
+    def list_dats(self, directory=None):
+        return [DatInfo(n, "2026-07-05", paths.whdload_dir() / f"{n}.dat") for n in sorted(self.local)]
+
+    def update_dats(self, names=None, progress=None, cancel=None, force=False, commit_lock=None, **kw):
+        rows = []
+        for n in names:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            self.downloads.append(n)
+            with commit_lock:
+                (paths.whdload_dir() / f"{n}.dat").write_text("x")
+                changed = self.local.get(n) != self.remote_etag[n]
+                self.local[n] = self.remote_etag[n]
+            rows.append({"name": n, "version": "2026-07-05",
+                         "status": "downloaded" if changed else "unchanged"})
+        return {"dats": rows, "failed": 0}
+
+
+RED = "Sega - Dreamcast"
+
+
+class FakeRedump:
+    """The Redump source: one DAT, own folder (``paths.redump_dir()``), version = remote date."""
+
+    def __init__(self) -> None:
+        self.remote = "2026-06-14 18-25-41"
+        self.local: dict[str, str] = {}
+        self.offline = False
+        self.downloads: list[str] = []
+
+    def check_updates(self, names=None, opener=None, directory=None, timeout=10):
+        rows = []
+        for n in (names if names is not None else [RED]):
+            if self.offline:
+                rows.append({"name": n, "installed": None, "latest": None, "status": "error", "error": "no route"})
+            elif n not in self.local:
+                rows.append({"name": n, "installed": None, "latest": self.remote, "status": "missing"})
+            else:
+                st = "up_to_date" if self.local[n] >= self.remote else "update_available"
+                rows.append({"name": n, "installed": self.local[n], "latest": self.remote, "status": st})
+        return rows
+
+    def list_dats(self, directory=None):
+        return [DatInfo(n, self.local[n], paths.redump_dir() / f"{n}.dat") for n in sorted(self.local)]
+
+    def update_dats(self, names=None, progress=None, cancel=None, force=False, commit_lock=None, **kw):
+        rows = []
+        for n in names:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            self.downloads.append(n)
+            with commit_lock:
+                (paths.redump_dir() / f"{n}.dat").write_text("x")
+                changed = self.local.get(n) != self.remote
+                self.local[n] = self.remote
+            rows.append({"name": n, "version": self.remote, "status": "downloaded" if changed else "unchanged"})
+        return {"dats": rows, "failed": 0}
+
+
 class Base(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -112,11 +195,14 @@ class Base(unittest.TestCase):
         os.environ.pop("ROMORG_OFFLINE", None)
         self.tosec = FakeTosec()
         self.nointro = FakeNointro()
+        self.whdload = FakeWhdload()
+        self.redump = FakeRedump()
         self.clock = lambda: 1_700_000_000.0
         self.mgr = self.make()
 
     def make(self, **kw) -> autoupdate.UpdateManager:
-        return autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, clock=self.clock, **kw)
+        return autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, whdload=self.whdload,
+                                        redump=self.redump, clock=self.clock, **kw)
 
 
 class BackgroundTest(Base):
@@ -164,7 +250,7 @@ class BackgroundTest(Base):
 
     def test_disabled_does_nothing(self) -> None:
         mgr = autoupdate.UpdateManager(
-            tosec=self.tosec, nointro=self.nointro, enabled=False)
+            tosec=self.tosec, nointro=self.nointro, whdload=self.whdload, redump=self.redump, enabled=False)
         mgr.start_background()
         self.assertFalse(mgr.check())
         self.assertFalse(mgr.status()["running"])
@@ -197,6 +283,7 @@ class OfflineTest(Base):
     def go_offline(self) -> None:
         self.tosec.offline = True
         self.nointro.offline = True
+        self.whdload.offline = self.redump.offline = True
 
     def test_offline_with_cache_is_a_quiet_notice(self) -> None:
         self.mgr.start_background()
@@ -210,7 +297,7 @@ class OfflineTest(Base):
         self.assertEqual(st["state"], "idle")
         self.assertEqual(st["notice"], "Offline - using the installed DATs (checked 2023-11-14)")
         # coming back online clears it
-        self.tosec.offline = self.nointro.offline = False
+        self.tosec.offline = self.nointro.offline = self.whdload.offline = self.redump.offline = False
         self.mgr.check()
         wait_idle(self.mgr)
         self.assertFalse(self.mgr.status()["offline"])
@@ -323,13 +410,14 @@ class EnsureTest(Base):
         self.assertEqual(self.tosec.pack_downloads, 1)   # waited, did not start a second download
 
     def test_offline_nothing_cached_raises(self) -> None:
-        self.tosec.offline = self.nointro.offline = True
+        self.tosec.offline = self.nointro.offline = self.whdload.offline = self.redump.offline = True
         with self.assertRaises(autoupdate.UpdateError) as cm:
             self.mgr.ensure(platforms.get_platform("Commodore Amiga"))
         self.assertEqual(cm.exception.code, "offline")
 
     def test_disabled_missing_raises_offline(self) -> None:
-        mgr = autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, enabled=False)
+        mgr = autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, whdload=self.whdload,
+                                       redump=self.redump, enabled=False)
         with self.assertRaises(autoupdate.UpdateError) as cm:
             mgr.ensure(platforms.get_platform("Nintendo 64"))
         self.assertEqual(cm.exception.code, "offline")

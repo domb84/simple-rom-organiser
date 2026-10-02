@@ -29,6 +29,13 @@ INCOMPLETE_DIR = "_incomplete"
 DUPLICATES_DIR = "_duplicates"
 CONVERTED_DIR = "_converted_originals"
 
+# Folders the app never touches inside a platform folder (a PROTECTED name, not a reason folder):
+# a ``Kickstarts/`` folder of the WHDLoad system holds the user's Kickstart ROMs for its own Kickstart
+# step. A platform lists the protected top-level folders it has (``Platform.protected_dirs``); the scanner
+# skips them completely, so scan / organise / Build library / Convert never see or move what is inside.
+KICKSTARTS_DIR = "Kickstarts"
+PROTECTED_DIRS = (KICKSTARTS_DIR,)
+
 # The reserved app folders (every one is a direct child of the platform folder).
 RESERVED_DIRS = (UNMATCHED_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, INCOMPLETE_DIR, DUPLICATES_DIR, CONVERTED_DIR)
 # Folders a library rule / duplicate check sends a matched file to.
@@ -62,6 +69,15 @@ def classify(parts: Sequence[str]) -> Optional[tuple[str, bool]]:
     if top == UNMATCHED_DIR and len(parts) > 2 and parts[1].casefold() in _LEGACY_FOLDED:
         return _CANON[parts[1].casefold()], True
     return top, False
+
+
+def is_protected(parts: Sequence[str], names: Sequence[str] = PROTECTED_DIRS) -> bool:
+    """True for a path (parts relative to the root) inside one of the protected top-level folders ``names``
+    (case-insensitive; a file directly in the root is never protected)."""
+    if len(parts) < 2:
+        return False
+    folded = {n.casefold() for n in names}
+    return parts[0].casefold() in folded
 
 
 def reserved_of(parts: Sequence[str]) -> Optional[str]:

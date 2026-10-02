@@ -39,14 +39,14 @@ class Rom:
     # Logical game ("set"): No-Intro rom name without its extension, so alternates such as
     # NES ".nes"/".unh" or N64 ".z64"/".v64" share it. Empty for TOSEC (every rom counts).
     set_name: str = ""
+    # Redump: the game's ``<category>`` ("Games", "Demos", "Coverdiscs", ...); "" for the other sources.
+    category: str = ""
 
     @property
     def tags(self) -> "Tags":
         """Parsed name tags (regions, languages, version, flags...); cached in tags.py."""
-        from .tags import parse_name
-        if self.set_name:
-            return parse_name(self.set_name, "nointro")
-        return parse_name(self.name, "tosec")
+        from .tags import of_rom
+        return of_rom(self)
 
 
 def unit_key(rom: Rom) -> tuple[str, str]:
@@ -210,6 +210,7 @@ def parse_logiqx(path: Union[str, os.PathLike[str]]) -> DatFile:
                     root.clear()
         elif tag in ("game", "machine"):
             game_name = elem.get("name", "")
+            category = (elem.findtext("category") or "").strip()
             for rom_el in elem.iter("rom"):
                 roms.append(Rom(
                     name=rom_el.get("name", ""),
@@ -219,12 +220,21 @@ def parse_logiqx(path: Union[str, os.PathLike[str]]) -> DatFile:
                     sha1=_hex(rom_el.get("sha1")),
                     game=game_name,
                     dat=dat_label,
+                    category=category,
                 ))
             # Drop finished games from the root to keep memory bounded.
             if root is not None:
                 root.clear()
 
     return DatFile(name=name or dat_label, description=description, version=version, roms=roms)
+
+
+def parse_redump(path: Union[str, os.PathLike[str]]) -> DatFile:
+    """Parse a Redump Logiqx DAT: one *game* is one disc, so every rom of a game (its ``.cue`` and one
+    ``(Track N).bin`` per track) gets ``set_name = game name`` (have / missing count games, not tracks)."""
+    dat = parse_logiqx(path)
+    dat.roms = [replace(r, set_name=r.game) for r in dat.roms]
+    return dat
 
 
 # --------------------------------------------------------------------------- clrmamepro
@@ -307,11 +317,16 @@ def _parse_block(tk: _Tokens) -> list[tuple[str, object]]:
 def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True) -> DatFile:
     """Parse a clrmamepro text DAT (``clrmamepro ( ... )`` header + ``game ( ... )`` blocks)."""
     p = Path(path)
-    text = p.read_text(encoding="utf-8", errors="replace")
+    raw = p.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # some community DATs (the WHDLoad one) are Windows-1252, not UTF-8: "Alien\xb3", "D\xe9but"
+        text = raw.decode("cp1252", errors="replace")
     tk = _Tokens(text, str(p))
     items = tk.items
     n = len(items)
-    name = description = version = homepage = ""
+    name = description = version = homepage = date = ""
     games: list[list[tuple[str, object]]] = []
     while tk.i < n:
         kind, word, pos = items[tk.i]
@@ -334,10 +349,13 @@ def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True)
                         version = value
                     elif key == "homepage":
                         homepage = value
+                    elif key == "date" and not date:
+                        date = value   # e.g. the WHDLoad DAT: ``date "2026-07-05"`` (no ``version``)
         elif low in _GAME_BLOCKS:
             games.append(block)
         # other top-level blocks (resource, ...) are ignored
 
+    version = version or date
     dat_label = name or dat_name_from_filename(p)
     roms: list[Rom] = []
     for block in games:

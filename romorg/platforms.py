@@ -18,10 +18,13 @@ if TYPE_CHECKING:
 class DatSource(str, Enum):
     TOSEC = "tosec"
     NOINTRO = "nointro"
+    WHDLOAD = "whdload"      # MrV2K's WHDLoad database (its own source, folder and DAT)
+    REDUMP = "redump"        # redump.org Logiqx DATs (Sega Dreamcast), HTTP only, own folder
 
 
 LAYOUT_PER_DAT = "per_dat"   # one folder per DAT under the platform root
 LAYOUT_FLAT = "flat"         # everything directly in the platform root
+LAYOUT_GAME_FOLDER = "game_folder"   # one folder per game: <root>/<Redump name>/<Redump name>.chd + sidecars
 
 ALT_SNES_HEADER = "snes_header"
 ALT_N64_BYTEORDER = "n64_byteorder"
@@ -44,6 +47,11 @@ class Platform:
     best_variant_dats: tuple[str, ...] = ()  # DATs where "one best variant per game" applies
     language_dats: tuple[str, ...] = ()      # DATs where the language filter applies (Games, No-Intro)
     region_dats: tuple[str, ...] = ()        # DATs where region priority / "one per game" applies
+    # Own Kickstart step WITHOUT a DAT: the ROMs are taken from this sub-folder of the platform folder
+    # (matched by md5 against kickstart.PUAE_BIOS). Empty = none ("kickstart_dat" may still be set).
+    kickstart_folder: str = ""
+    # Top-level folders of the platform folder the app never scans, moves or sets aside.
+    protected_dirs: tuple[str, ...] = ()
 
 
 def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple[str, ...],
@@ -53,6 +61,9 @@ def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple
                     alt_hashes=alt_hashes, convertible=convertible, folder_hint=folder_hint,
                     latest_dats=(dat,), language_dats=(dat,), region_dats=(dat,))
 
+
+WHDLOAD_DAT = "Commodore - Amiga - WHDLoad"   # == whdload.DAT_NAME == tags.WHDLOAD_DAT_NAME
+WHDLOAD_PLATFORM = "Commodore Amiga - WHDLoad"
 
 PLATFORMS: dict[str, Platform] = {
     "Commodore Amiga": Platform(
@@ -75,6 +86,23 @@ PLATFORMS: dict[str, Platform] = {
         best_variant_dats=("Commodore Amiga - Games - [ADF]",),
         language_dats=("Commodore Amiga - Games - [ADF]",),
     ),
+    # A SEPARATE system from "Commodore Amiga" (TOSEC ADF): own folder, own DAT source, own config keys,
+    # own library profile and Kickstart step; nothing is shared or cross-matched with it.
+    WHDLOAD_PLATFORM: Platform(
+        name=WHDLOAD_PLATFORM,
+        dats=(WHDLOAD_DAT,),
+        m3u_dats=(),
+        kickstart_dat=None,
+        source=DatSource.WHDLOAD.value,
+        layout=LAYOUT_FLAT,
+        extensions=(".lha", ".lzx"),
+        folder_hint="whdload",
+        latest_dats=(WHDLOAD_DAT,),
+        best_variant_dats=(WHDLOAD_DAT,),
+        language_dats=(WHDLOAD_DAT,),
+        kickstart_folder="Kickstarts",
+        protected_dirs=("Kickstarts",),
+    ),
     "Nintendo Game Boy Advance": _nointro(
         "Nintendo Game Boy Advance", "Nintendo - Game Boy Advance",
         (".gba", ".zip", ".7z"), (), False, "gba"),
@@ -88,6 +116,24 @@ PLATFORMS: dict[str, Platform] = {
         "Super Nintendo Entertainment System", "Nintendo - Super Nintendo Entertainment System",
         (".sfc", ".smc", ".swc", ".fig", ".zip", ".7z"), (ALT_SNES_HEADER,), True, "snes"),
 }
+
+REDUMP_DC_DAT = "Sega - Dreamcast"           # == redump.DAT_NAME
+DREAMCAST_PLATFORM = "Sega Dreamcast"
+
+PLATFORMS[DREAMCAST_PLATFORM] = Platform(
+    name=DREAMCAST_PLATFORM,
+    dats=(REDUMP_DC_DAT,),
+    m3u_dats=(),                              # (the stand-alone M3U step is for TOSEC; Build library writes DC playlists)
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_GAME_FOLDER,
+    extensions=(".chd", ".gdi", ".cue", ".bin", ".raw"),
+    convertible=True,                         # raw Redump sets -> CHD (needs chdman)
+    folder_hint="dreamcast",
+    latest_dats=(REDUMP_DC_DAT,),
+    language_dats=(REDUMP_DC_DAT,),
+    region_dats=(REDUMP_DC_DAT,),
+)
 
 DEFAULT_PLATFORM = "Commodore Amiga"
 
@@ -109,8 +155,13 @@ def all_dat_names() -> set[str]:
     return {d for p in PLATFORMS.values() for d in p.dats}
 
 
+def has_kickstart(platform: Any) -> bool:
+    """True when the platform has a Kickstart step (TOSEC firmware DAT or its own Kickstart folder)."""
+    return bool(getattr(platform, "kickstart_dat", None) or getattr(platform, "kickstart_folder", ""))
+
+
 def source_of(platform: Platform) -> str:
-    """The DAT source of a platform as a plain string ("tosec" | "nointro")."""
+    """The DAT source of a platform as a plain string ("tosec" | "nointro" | "whdload")."""
     src = platform.source
     return src.value if isinstance(src, DatSource) else str(src)
 
@@ -119,11 +170,19 @@ _source = source_of
 
 
 def locate_dats(platform: Platform, directory: Optional[Union[str, Path]] = None,
-                nointro_directory: Optional[Union[str, Path]] = None) -> dict[str, "DatInfo"]:
+                nointro_directory: Optional[Union[str, Path]] = None,
+                whdload_directory: Optional[Union[str, Path]] = None,
+                redump_directory: Optional[Union[str, Path]] = None) -> dict[str, "DatInfo"]:
     """``{dat name: DatInfo}`` for the platform's DATs present locally (exact names)."""
-    if _source(platform) == DatSource.NOINTRO.value:
+    if _source(platform) == DatSource.REDUMP.value:
+        from . import redump
+        local = {d.name: d for d in redump.list_dats(redump_directory)}
+    elif _source(platform) == DatSource.NOINTRO.value:
         from . import nointro
         local = {d.name: d for d in nointro.list_dats(nointro_directory)}
+    elif _source(platform) == DatSource.WHDLOAD.value:
+        from . import whdload
+        local = {d.name: d for d in whdload.list_dats(whdload_directory)}
     else:
         from . import tosec
         local = {d.name: d for d in tosec.list_dats(directory)}
@@ -159,10 +218,10 @@ def load_platform_dats(platform: Platform,
     Names are matched exactly, so e.g. "... - Operating Systems - AMIX" is never picked up.
     No-Intro DATs get ``Rom.set_name`` (alternates such as .nes/.unh count as one game).
     """
-    from .datfile import parse_dat
+    from .datfile import parse_dat, parse_redump
 
     local = locate_dats(platform, directory, nointro_directory)
-    nointro_src = _source(platform) == DatSource.NOINTRO.value
+    nointro_src = _source(platform) in (DatSource.NOINTRO.value, DatSource.WHDLOAD.value)   # set names
     loaded: list["DatFile"] = []
     missing: list[str] = []
     for name in platform.dats:
@@ -170,7 +229,10 @@ def load_platform_dats(platform: Platform,
         if info is None:
             missing.append(name)
             continue
-        dat = parse_dat(info.path, set_names=True) if nointro_src else parse_dat(info.path)
+        if _source(platform) == DatSource.REDUMP.value:
+            dat = parse_redump(info.path)       # a game = a disc: every rom of it shares set_name = game
+        else:
+            dat = parse_dat(info.path, set_names=True) if nointro_src else parse_dat(info.path)
         if dat.name != name:
             # Header names normally equal the filename part; keep the platform's name canonical.
             dat.name = name

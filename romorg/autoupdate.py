@@ -38,7 +38,11 @@ from typing import Any, Callable, Optional
 from . import nointro as _nointro
 from . import paths, platforms
 from . import tosec as _tosec
+from . import redump as _redump
+from . import whdload as _whdload
 from .nointro import NOINTRO_DATS, NoIntroError
+from .redump import REDUMP_DATS, RedumpError
+from .whdload import WHDLOAD_DATS, WhdloadError
 from .tosec import Cancelled, ReleaseInfo, TosecError
 
 CHECK_TIMEOUT = 10        # seconds, per network request while checking
@@ -80,7 +84,7 @@ def _is_network_error(exc: BaseException) -> bool:
     if isinstance(exc, TosecError):
         cause = exc.__cause__
         return cause is not None and _is_network_error(cause)
-    if isinstance(exc, NoIntroError):
+    if isinstance(exc, (NoIntroError, WhdloadError, RedumpError)):
         cause = exc.__cause__
         if cause is not None:
             return _is_network_error(cause)
@@ -104,9 +108,12 @@ def _day(iso: Optional[str]) -> str:
 class UpdateManager:
     def __init__(self, tosec: Any = _tosec, nointro: Any = _nointro, enabled: bool = True,
                  clock: Callable[[], float] = time.time,
-                 state_path: Optional[Path] = None) -> None:
+                 state_path: Optional[Path] = None, whdload: Any = _whdload,
+                 redump: Any = _redump) -> None:
         self.tosec = tosec
         self.nointro = nointro
+        self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
+        self.redump = redump     # its own DAT source (Redump, Sega Dreamcast); None = not managed
         self.enabled = bool(enabled) and not paths.offline_forced()
         self.clock = clock
         self.state_path = Path(state_path) if state_path is not None else None
@@ -129,6 +136,10 @@ class UpdateManager:
         self._tosec_error = False
         self._nointro_checked: Optional[str] = None
         self._nointro_rows: dict[str, dict[str, Any]] = {}
+        self._whdload_checked: Optional[str] = None
+        self._whdload_rows: dict[str, dict[str, Any]] = {}
+        self._redump_checked: Optional[str] = None
+        self._redump_rows: dict[str, dict[str, Any]] = {}
         self._updating: Optional[str] = None   # source being downloaded right now
         self._load_state()
 
@@ -150,11 +161,17 @@ class UpdateManager:
         self._tosec_latest = tos.get("latest") if isinstance(tos.get("latest"), str) else None
         self._tosec_checked = tos.get("checked_at") if isinstance(tos.get("checked_at"), str) else None
         self._nointro_checked = noi.get("checked_at") if isinstance(noi.get("checked_at"), str) else None
+        whd = data.get("whdload") if isinstance(data.get("whdload"), dict) else {}
+        self._whdload_checked = whd.get("checked_at") if isinstance(whd.get("checked_at"), str) else None
+        red = data.get("redump") if isinstance(data.get("redump"), dict) else {}
+        self._redump_checked = red.get("checked_at") if isinstance(red.get("checked_at"), str) else None
 
     def _save_state(self) -> None:
         data = {"checked_at": self._last_checked,
                 "tosec": {"latest": self._tosec_latest, "checked_at": self._tosec_checked},
-                "nointro": {"checked_at": self._nointro_checked}}
+                "nointro": {"checked_at": self._nointro_checked},
+                "whdload": {"checked_at": self._whdload_checked},
+                "redump": {"checked_at": self._redump_checked}}
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +199,81 @@ class UpdateManager:
         versions = [v for n, v in local.items() if n in NOINTRO_DATS and v]
         return (max(versions) if versions else None), local
 
+    def _installed_whdload(self) -> tuple[Optional[str], dict[str, Optional[str]]]:
+        if self.whdload is None:
+            return None, {}
+        try:
+            local = {d.name: d.version or None for d in self.whdload.list_dats()}
+        except Exception:  # noqa: BLE001 - status must never fail
+            local = {}
+        versions = [v for n, v in local.items() if n in WHDLOAD_DATS and v]
+        return (max(versions) if versions else None), local
+
+    def _whdload_status(self, installed: Optional[str], local: dict[str, Optional[str]]) -> dict[str, Any]:
+        """(lock held) the ``whdload`` block of :meth:`status`."""
+        rows = []
+        for name in WHDLOAD_DATS:
+            row = self._whdload_rows.get(name, {})
+            st = row.get("status")
+            if self._updating == "whdload" and st in ("update_available", "unknown", "missing"):
+                st = "updating"
+            if not st:
+                st = "unknown" if name in local else "absent"
+            rows.append({"name": name, "version": local.get(name), "status": st})
+        statuses = [r["status"] for r in rows]
+        if self._updating == "whdload":
+            status = "updating"
+        elif any(x == "error" for x in statuses):
+            status = "error"
+        elif installed is None:
+            status = "absent"
+        elif any(x in ("update_available", "missing") for x in statuses):
+            status = "update_available"
+        elif all(x == "up_to_date" for x in statuses):
+            status = "up_to_date"
+        else:
+            status = "unknown"
+        return {"installed": installed, "latest": None, "status": status, "dats": rows,
+                "checked_at": self._whdload_checked}
+
+    def _installed_redump(self) -> tuple[Optional[str], dict[str, Optional[str]]]:
+        if self.redump is None:
+            return None, {}
+        try:
+            local = {d.name: d.version or None for d in self.redump.list_dats()}
+        except Exception:  # noqa: BLE001 - status must never fail
+            local = {}
+        versions = [v for n, v in local.items() if n in REDUMP_DATS and v]
+        return (max(versions) if versions else None), local
+
+    def _redump_status(self, installed: Optional[str], local: dict[str, Optional[str]]) -> dict[str, Any]:
+        """(lock held) the ``redump`` block of :meth:`status`."""
+        rows = []
+        for name in REDUMP_DATS:
+            row = self._redump_rows.get(name, {})
+            st = row.get("status")
+            if self._updating == "redump" and st in ("update_available", "unknown", "missing"):
+                st = "updating"
+            if not st:
+                st = "unknown" if name in local else "absent"
+            rows.append({"name": name, "version": local.get(name), "status": st})
+        statuses = [r["status"] for r in rows]
+        latest = next((r.get("latest") for r in self._redump_rows.values() if r.get("latest")), None)
+        if self._updating == "redump":
+            status = "updating"
+        elif any(x == "error" for x in statuses):
+            status = "error"
+        elif installed is None:
+            status = "absent"
+        elif any(x in ("update_available", "missing") for x in statuses):
+            status = "update_available"
+        elif all(x == "up_to_date" for x in statuses):
+            status = "up_to_date"
+        else:
+            status = "unknown"
+        return {"installed": installed, "latest": latest, "status": status, "dats": rows,
+                "checked_at": self._redump_checked}
+
     def _installed_tosec(self) -> Optional[str]:
         try:
             return self.tosec.installed_release()
@@ -191,6 +283,8 @@ class UpdateManager:
     def status(self) -> dict[str, Any]:
         """Thread-safe JSON snapshot (shape documented in docs/ARCHITECTURE.md, amendment 6)."""
         noi_installed, local = self._installed_nointro()
+        whd_installed, whd_local = self._installed_whdload()
+        red_installed, red_local = self._installed_redump()
         tos_installed = self._installed_tosec()
         with self._lock:
             tos_status = self._tosec_status(tos_installed)
@@ -230,6 +324,8 @@ class UpdateManager:
                           "status": tos_status, "checked_at": self._tosec_checked},
                 "nointro": {"installed": noi_installed, "latest": None, "status": noi_status,
                             "dats": rows, "checked_at": self._nointro_checked},
+                "whdload": self._whdload_status(whd_installed, whd_local),
+                "redump": self._redump_status(red_installed, red_local),
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -347,8 +443,14 @@ class UpdateManager:
             src, names = scope
             if src == "tosec":
                 return self._installed_tosec() is not None
+            if src == "whdload":
+                return self.whdload is not None and any(d.name in names for d in self.whdload.list_dats())
+            if src == "redump":
+                return self.redump is not None and any(d.name in names for d in self.redump.list_dats())
             return any(d.name in names for d in self.nointro.list_dats())
-        return self._installed_tosec() is not None or bool(self.nointro.list_dats())
+        return (self._installed_tosec() is not None or bool(self.nointro.list_dats())
+                or (self.whdload is not None and bool(self.whdload.list_dats()))
+                or (self.redump is not None and bool(self.redump.list_dats())))
 
     def _set_offline(self) -> None:
         """(lock held) quiet notice when DATs are cached, an error when nothing is."""
@@ -368,14 +470,24 @@ class UpdateManager:
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
         names = (list(scope[1]) if scope is not None else list(NOINTRO_DATS)) if want_nointro else []
+        want_whd = self.whdload is not None and (scope is None or scope[0] == "whdload")
+        whd_names = (list(scope[1]) if scope is not None else list(WHDLOAD_DATS)) if want_whd else []
+        want_red = self.redump is not None and (scope is None or scope[0] == "redump")
+        red_names = (list(scope[1]) if scope is not None else list(REDUMP_DATS)) if want_red else []
 
         # ---- check phase (small requests only)
         self._set_progress(0, 0, "Checking for updates", "", forward)
         info: Optional[ReleaseInfo] = None
         tosec_exc: Optional[BaseException] = None
         rows: list[dict[str, Any]] = []
+        whd_rows: list[dict[str, Any]] = []
+        red_rows: list[dict[str, Any]] = []
         if want_nointro:
             rows = list(self.nointro.check_updates(names=names, timeout=CHECK_TIMEOUT))
+        if want_whd:
+            whd_rows = list(self.whdload.check_updates(names=whd_names, timeout=CHECK_TIMEOUT))
+        if want_red:
+            red_rows = list(self.redump.check_updates(names=red_names, timeout=CHECK_TIMEOUT))
         if token.is_set():
             raise Cancelled()
         if want_tosec:
@@ -390,13 +502,25 @@ class UpdateManager:
 
         nointro_net = bool(rows) and all(r.get("status") == "error" for r in rows) and all(
             "HTTP" not in str(r.get("error", "")) for r in rows)
+        whd_net = bool(whd_rows) and all(r.get("status") == "error" for r in whd_rows) and all(
+            "HTTP" not in str(r.get("error", "")) for r in whd_rows)
+        red_net = bool(red_rows) and all(r.get("status") == "error" for r in red_rows) and all(
+            "HTTP" not in str(r.get("error", "")) for r in red_rows)
         tosec_net = tosec_exc is not None and _is_network_error(tosec_exc)
-        checked_ok = (info is not None) or any(r.get("status") != "error" for r in rows)
+        checked_ok = ((info is not None) or any(r.get("status") != "error" for r in rows)
+                      or any(r.get("status") != "error" for r in whd_rows)
+                      or any(r.get("status") != "error" for r in red_rows))
         failed_all = (not want_tosec or tosec_exc is not None) and \
-                     (not want_nointro or all(r.get("status") == "error" for r in rows))
+                     (not want_nointro or all(r.get("status") == "error" for r in rows)) and \
+                     (not want_whd or all(r.get("status") == "error" for r in whd_rows)) and \
+                     (not want_red or all(r.get("status") == "error" for r in red_rows))
         with self._lock:
             for r in rows:
                 self._nointro_rows[r["name"]] = dict(r)
+            for r in whd_rows:
+                self._whdload_rows[r["name"]] = dict(r)
+            for r in red_rows:
+                self._redump_rows[r["name"]] = dict(r)
             self._tosec_error = False
             now = _iso(self.clock())
             if info is not None:
@@ -408,16 +532,23 @@ class UpdateManager:
                 self._last_checked = now
                 if want_nointro and any(r.get("status") != "error" for r in rows):
                     self._nointro_checked = now
+                if want_whd and any(r.get("status") != "error" for r in whd_rows):
+                    self._whdload_checked = now
+                if want_red and any(r.get("status") != "error" for r in red_rows):
+                    self._redump_checked = now
                 self._offline = False
                 self._notice = None
                 self._save_state()
-        if failed_all and (tosec_net or not want_tosec) and (nointro_net or not want_nointro):
+        if failed_all and (tosec_net or not want_tosec) and (nointro_net or not want_nointro) \
+                and (whd_net or not want_whd) and (red_net or not want_red):
             with self._lock:
                 self._set_offline()
             return
         if failed_all:
             msgs = [str(tosec_exc)] if tosec_exc is not None else []
             msgs += [str(r.get("error")) for r in rows[:1]]
+            msgs += [str(r.get("error")) for r in whd_rows[:1]]
+            msgs += [str(r.get("error")) for r in red_rows[:1]]
             raise UpdateError("failed", "; ".join(m for m in msgs if m) or "Update check failed")
 
         errors: list[str] = []
@@ -458,6 +589,84 @@ class UpdateManager:
                             self._scan_stale = True
                     if res.get("failed"):
                         errors.extend(r.get("error", "") for r in res["dats"]
+                                      if r.get("status") == "error" and r.get("error"))
+        if token.is_set():
+            raise Cancelled()
+
+        # ---- the WHDLoad DAT (its own source: one small file, never mixed with the others)
+        whd_todo = [r["name"] for r in whd_rows
+                    if force or r.get("status") in ("update_available", "unknown", "missing")]
+        if whd_todo:
+            before_w = {d.name for d in self.whdload.list_dats()}
+            with self._lock:
+                self._state = "downloading"
+                self._updating = "whdload"
+            try:
+                res_w = self.whdload.update_dats(
+                    names=whd_todo, cancel=token, force=force, commit_lock=self.dat_lock,
+                    progress=lambda d, t, m: self._set_progress(d, t, m, "whdload", forward))
+            except WhdloadError as exc:
+                if _is_network_error(exc) and self._has_cache(scope):
+                    with self._lock:
+                        self._set_offline()
+                else:
+                    errors.append(f"WHDLoad: {exc}")
+                res_w = None
+            finally:
+                with self._lock:
+                    self._updating = None
+            if res_w is not None:
+                with self._lock:
+                    for row in res_w.get("dats", []):
+                        old = self._whdload_rows.setdefault(row["name"], {"name": row["name"]})
+                        if row.get("status") in ("downloaded", "unchanged"):
+                            old["status"] = "up_to_date"
+                        elif row.get("status") == "error":
+                            old["status"] = "error"
+                            old["error"] = row.get("error")
+                        if row.get("status") == "downloaded" and row["name"] in before_w:
+                            self._scan_stale = True
+                    if res_w.get("failed"):
+                        errors.extend(r.get("error", "") for r in res_w["dats"]
+                                      if r.get("status") == "error" and r.get("error"))
+        if token.is_set():
+            raise Cancelled()
+
+        # ---- the Redump DAT (Sega Dreamcast; plain HTTP, downloaded only when its date is newer)
+        red_todo = [r["name"] for r in red_rows
+                    if force or r.get("status") in ("update_available", "unknown", "missing")]
+        if red_todo:
+            before_r = {d.name for d in self.redump.list_dats()}
+            with self._lock:
+                self._state = "downloading"
+                self._updating = "redump"
+            try:
+                res_r = self.redump.update_dats(
+                    names=red_todo, cancel=token, force=force, commit_lock=self.dat_lock,
+                    progress=lambda d, t, m: self._set_progress(d, t, m, "redump", forward))
+            except RedumpError as exc:
+                if _is_network_error(exc) and self._has_cache(scope):
+                    with self._lock:
+                        self._set_offline()
+                else:
+                    errors.append(f"Redump: {exc}")
+                res_r = None
+            finally:
+                with self._lock:
+                    self._updating = None
+            if res_r is not None:
+                with self._lock:
+                    for row in res_r.get("dats", []):
+                        old = self._redump_rows.setdefault(row["name"], {"name": row["name"]})
+                        if row.get("status") in ("downloaded", "unchanged"):
+                            old["status"] = "up_to_date"
+                        elif row.get("status") == "error":
+                            old["status"] = "error"
+                            old["error"] = row.get("error")
+                        if row.get("status") == "downloaded" and row["name"] in before_r:
+                            self._scan_stale = True
+                    if res_r.get("failed"):
+                        errors.extend(r.get("error", "") for r in res_r["dats"]
                                       if r.get("status") == "error" and r.get("error"))
         if token.is_set():
             raise Cancelled()

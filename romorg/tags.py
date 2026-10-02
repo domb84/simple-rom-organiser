@@ -9,6 +9,7 @@ TOSEC:     ``Title v1.2 (demo) (1990)(Publisher)(DE)(de-en)(Disk 1 of 2)[cr X][a
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import re
 from dataclasses import dataclass
@@ -16,6 +17,14 @@ from typing import Any, Iterable, Optional
 
 STYLE_NOINTRO = "nointro"
 STYLE_TOSEC = "tosec"
+STYLE_WHDLOAD = "whdload"      # MrV2K's WHDLoad database: Retroplay .lha names (see parse_whdload)
+STYLE_REDUMP = "redump"        # Redump (Sega Dreamcast): No-Intro style names + <category> + (Disc N)
+# Header name of the Redump DATs that use that style (== redump.DAT_NAME): only the DAT name selects it, so
+# nothing of it can leak into the No-Intro consoles.
+REDUMP_DAT_NAMES = frozenset({"Sega - Dreamcast"})
+# Header name of that DAT (== whdload.DAT_NAME): the only thing that selects the WHDLoad style, so
+# nothing of it can leak into the TOSEC Amiga system.
+WHDLOAD_DAT_NAME = "Commodore - Amiga - WHDLoad"
 
 # region -> "PAL" | "NTSC" | "" (unknown / both)
 REGIONS: dict[str, str] = {}
@@ -119,6 +128,8 @@ class Tags:
     style: str                    # "nointro" | "tosec"
     date: str = ""                # TOSEC date paren ("1990", "1990-05-01"); not part of supersede_key
     publisher: str = ""           # TOSEC paren right after the date (also stays in ``flags``)
+    build: int = 0                # WHDLoad: the 4-digit build number of the archive name (0 = none)
+    category: str = ""            # Redump: the DAT <category> ("Games", "Demos", "Coverdiscs", ...)
 
 
 # --------------------------------------------------------------------------- versions
@@ -382,7 +393,241 @@ def parse_name(name: str, style: str = STYLE_NOINTRO) -> Tags:
     base = _EXT_RE.sub("", name.strip())
     if style == STYLE_TOSEC:
         return _parse_tosec(base)
+    if style == STYLE_WHDLOAD:
+        return parse_whdload(base, "")
+    if style == STYLE_REDUMP:
+        return dataclasses.replace(_parse_nointro(base), style=STYLE_REDUMP)
     return _parse_nointro(base)
+
+
+# --------------------------------------------------------------------------- WHDLoad (Retroplay .lha)
+# Entries of "Commodore - Amiga - WHDLoad": game name ``Title (German) (AGA) (Beta)`` + archive name
+# ``Title_v1.2_De_AGA_0417.lha``. The game name is the identity (clean title, product tags, status); the
+# archive stem adds the version, the 4-digit build number and variant codes the game name may lack
+# (``De``/``EnFrDe``, ``AGA``, ``NTSC``, ``512k``, ``Hack_by_<author>``...). Measured on the real DAT
+# (4121 entries): see docs/ARCHITECTURE.md, Amendment 10.
+
+_WHD_LANG_WORDS: dict[str, str] = {
+    "german": "De", "french": "Fr", "italian": "It", "spanish": "Es", "polish": "Pl", "danish": "Da",
+    "czech": "Cs", "swedish": "Sv", "greek": "El", "finnish": "Fi", "dutch": "Nl", "croatian": "Hr",
+    "norwegian": "No", "portuguese": "Pt", "russian": "Ru", "hungarian": "Hu", "turkish": "Tr",
+    "english": "En",
+}
+# language codes of the archive stem (Retroplay uses Cz / Dk / Se / Gr; "No" is left out: ambiguous
+# with "No_jump" / "No_Music" style words)
+_WHD_STEM_LANGS: dict[str, str] = {
+    "En": "En", "De": "De", "Fr": "Fr", "It": "It", "Es": "Es", "Pl": "Pl", "Cz": "Cs", "Dk": "Da",
+    "Nl": "Nl", "Se": "Sv", "Gr": "El", "Fi": "Fi", "Hr": "Hr", "Pt": "Pt", "Ru": "Ru", "Hu": "Hu",
+    "Tr": "Tr",
+}
+_WHD_MULTILANG_RE = re.compile(r"^(?:(?:%s)){2,}$" % "|".join(_WHD_STEM_LANGS))
+_WHD_VERSION_TOKEN_RE = re.compile(r"^[vV]\d+(?:\.\d+)*[a-z]?(?:-[A-Za-z])?$")   # v1.2, v1.4a, v2.1-B
+_WHD_BUILD_RE = re.compile(r"^\d{4}(?:&\d{4})*$")
+_WHD_MEMORY_RE = re.compile(r"^(\d+(?:\.\d+)?)\s?(?:KB|k|MB|Mb)(?: Chip)?$", re.IGNORECASE)
+_WHD_MEMORY_WORDS = {"low mem", "fast mem", "slow mem", "chip mem", "fast"}
+_WHD_LOW_MEMORY = {"512kb", "512k", "low mem"}
+_WHD_STATUS_RE = re.compile(r"^(?:Beta|Pre Release|Preview|Unreleased|Game Demo|Demo)(?:\s+\d+)?$")
+# canonical display form of the flags a stem token stands for (also folds "2 Disk" -> "Two Disk")
+_WHD_STEM_FLAGS: dict[str, str] = {
+    "image": "Image", "files": "Files", "1disk": "One Disk", "2disk": "Two Disk", "3disk": "Three Disk",
+    "4disk": "Four Disk", "cd": "CD-ROM", "nointro": "No Intro", "lores": "Low Res", "hires": "Hi Res",
+    "atarist": "ST Port", "altversion": "Alt Version", "publicdomain": "PD", "enhanced": "Enhanced",
+    "arcadia": "Arcadia", "mt32": "MT32", "cdtv": "CDTV", "censored": "Censored", "crunched": "Crunched",
+    "nomusic": "No Music", "nospeech": "No Speech", "novoice": "No Voice", "easyplay": "Easy Play",
+    "ecs": "ECS", "ocs": "OCS", "aga": "AGA", "cd32": "CD32", "ntsc": "NTSC", "68020": "68020", "68030": "68030",
+    "68040": "68040", "68060": "68060", "hack": "Hack",
+}
+_WHD_FLAG_ALIASES = {"2 disk": "two disk", "1 disk": "one disk", "3 disk": "three disk",
+                     "4 disk": "four disk", "cd rom": "cd-rom"}
+_WHD_CANON_MEMORY = {"15mb": "1.5MB", "1mbchip": "1MB Chip", "1mb": "1MB", "2mb": "2MB", "8mb": "8MB",
+                     "12mb": "12MB", "512k": "512KB", "512kb": "512KB", "lowmem": "Low Mem",
+                     "fast": "Fast Mem", "slow": "Slow Mem", "chip": "Chip Mem"}
+# Variant-only rules: (rule, paren words casefolded without trailing number). Beta / Pre Release / Preview
+# are pre-release builds; every kind of demo is a demo; nothing in this DAT is marked prototype / bad dump.
+_WHD_PAREN_RULE_OF: dict[str, str] = {
+    "beta": "pre_release", "pre release": "pre_release", "preview": "pre_release",
+    "game demo": "demo", "demo": "demo", "playable demo": "demo",
+    "unreleased": "unreleased",
+}
+_WHD_PAREN_WORDS: dict[str, tuple[str, ...]] = {
+    "pre_release": ("beta", "pre release", "preview"),
+    "demo": ("game demo", "demo", "playable demo"),
+    "unreleased": ("unreleased",),
+}
+
+
+def _whd_canon(flag: str) -> str:
+    """Case/spelling-folded form of a game-name flag (identity + de-duplication)."""
+    f = re.sub(r"\s+", " ", flag.strip().casefold())
+    return _WHD_FLAG_ALIASES.get(f, f)
+
+
+def _whd_memory(flag: str) -> str:
+    """Canonical memory tag (``"512KB"``, ``"1MB"``, ``"Fast Mem"``...) a flag stands for, else ``""``."""
+    f = flag.strip()
+    low = f.casefold()
+    if low in _WHD_MEMORY_WORDS:
+        return _WHD_CANON_MEMORY.get(low.replace(" mem", "").replace(" ", ""), f.title())
+    m = _WHD_MEMORY_RE.match(f)
+    if not m:
+        return ""
+    compact = low.replace(" ", "")
+    if compact in _WHD_CANON_MEMORY:
+        return _WHD_CANON_MEMORY[compact]
+    return f"{m.group(1)}{'KB' if low.endswith(('kb', 'k')) else 'MB'}"
+
+
+def is_whd_memory(flag: str) -> bool:
+    return bool(_whd_memory(flag))
+
+
+def whd_memory_rank(t: Tags) -> int:
+    """0 = no memory tag (standard), 1 = needs more memory (1MB, 2MB, Fast / Slow / Chip Mem ...),
+    2 = low-memory build (512KB / 512k / Low Mem)."""
+    mems = [_whd_memory(f) for f in t.flags]
+    mems = [m for m in mems if m]
+    if not mems:
+        return 0
+    return 2 if any(m.casefold() in _WHD_LOW_MEMORY for m in mems) else 1
+
+
+def _whd_is_variant_flag(flag: str) -> bool:
+    """Flags that describe a variant of the SAME game (chipset, NTSC, memory); everything else is part of
+    the game's identity (disk layout, Image/Files, Hack, Demo kinds, publishers, CDTV, CD-ROM ...)."""
+    return is_chipset(flag) or flag.strip().casefold() == "ntsc" or is_whd_memory(flag)
+
+
+def _parse_whd_game(game: str) -> tuple[str, list[str], list[str], str]:
+    """``(title, language codes, flags, status)`` of a game name (flags exclude languages / status)."""
+    cut = _title_cut(game)
+    title = game[:cut].strip()
+    langs: list[str] = []
+    flags: list[str] = []
+    status = ""
+    for kind, text in _split_groups(game[cut:]):
+        if kind != "(":
+            flags.append(f"[{text}]")
+            continue
+        code = _WHD_LANG_WORDS.get(text.casefold())
+        if code:
+            if code not in langs:
+                langs.append(code)
+            continue
+        if not status and _WHD_STATUS_RE.match(text):
+            status = text
+            continue
+        flags.append(text)
+    return title, langs, flags, status
+
+
+def _parse_whd_stem(stem: str) -> dict[str, Any]:
+    """Version, build number, language codes and variant words of an archive stem."""
+    tokens = [t for t in stem.split("_") if t]
+    vi = next((i for i, t in enumerate(tokens) if i >= 1 and _WHD_VERSION_TOKEN_RE.match(t)), -1)
+    out: dict[str, Any] = {"title": "", "version": "", "build": 0, "langs": [], "flags": [],
+                           "status": "", "author": ""}
+    if vi < 0:
+        out["title"] = "_".join(tokens)
+        rest = tokens[1:]
+    else:
+        out["title"] = "_".join(tokens[:vi])
+        out["version"] = ("v" + tokens[vi][1:]).replace("-", "").lower()   # v2.1-B -> v2.1b
+        rest = tokens[vi + 1:]
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        low = tok.casefold()
+        if low == "by" and i + 1 < len(rest):
+            who = []
+            j = i + 1
+            while j < len(rest) and not _WHD_BUILD_RE.match(rest[j]) and not _WHD_VERSION_TOKEN_RE.match(rest[j]):
+                who.append(rest[j])
+                j += 1
+            out["author"] = "_".join(who)
+            out["flags"].append("Hack")      # "<something>_by_<author>" is a third-party modification
+            i = j
+            continue
+        if _WHD_BUILD_RE.match(tok):
+            out["build"] = max(out["build"], *(int(x) for x in tok.split("&")))
+        elif tok in _WHD_STEM_LANGS and tok != "En":
+            out["langs"].append(_WHD_STEM_LANGS[tok])
+        elif tok == "En":
+            out["langs"].append("En")
+        elif _WHD_MULTILANG_RE.match(tok):
+            out["langs"].extend(_WHD_STEM_LANGS[tok[k:k + 2]] for k in range(0, len(tok), 2))
+        elif low in _WHD_LANG_WORDS:
+            out["langs"].append(_WHD_LANG_WORDS[low])
+        elif low in ("beta", "beta2", "beta3") or (low.startswith("beta") and low[4:].isdigit()):
+            out["status"] = "Beta"
+        elif low == "prerelease":
+            out["status"] = out["status"] or "Pre Release"
+        elif low in _WHD_CANON_MEMORY:
+            out["flags"].append(_WHD_CANON_MEMORY[low])
+        elif low in _WHD_STEM_FLAGS:
+            out["flags"].append(_WHD_STEM_FLAGS[low])
+        elif low in ("fix",):
+            out["flags"].append("Fix")
+        i += 1
+    return out
+
+
+@functools.lru_cache(maxsize=65536)
+def parse_whdload(stem: str, game: str = "") -> Tags:
+    """Tags of one WHDLoad database entry.
+
+    ``stem`` = archive name without extension (``Title_v1.2_De_AGA_0417``), ``game`` = the DAT's game name
+    (``1869 - Erlebte Geschichte (Teil 1) (German) (AGA)``; empty -> only the stem is parsed).
+    Title / status / product flags come from the game name; version, build number and variant words
+    (language codes, chipset, NTSC, memory, Hack_by_<author>) are merged in from the stem. No tag =
+    English / PAL / standard memory / OCS.
+    """
+    stem = _EXT_RE.sub("", stem.strip()) if re.search(r"\.(?:lha|lzx)$", stem, re.IGNORECASE) else stem.strip()
+    st = _parse_whd_stem(stem)
+    if game:
+        title, langs, flags, status = _parse_whd_game(game)
+    else:
+        title, langs, flags, status = st["title"], [], [], ""
+    for code in st["langs"]:
+        if code not in langs:
+            langs.append(code)
+    have = {_whd_canon(f) for f in flags}
+    for f in st["flags"]:
+        if _whd_canon(f) not in have and not (is_whd_memory(f) and any(is_whd_memory(x) and
+                                              _whd_memory(x) == _whd_memory(f) for x in flags)):
+            flags.append(f)
+            have.add(_whd_canon(f))
+    if st["author"]:
+        flags.append("by " + st["author"])
+    if not status:
+        status = st["status"]
+    ntsc = any(f.strip().casefold() == "ntsc" for f in flags)
+    version = st["version"]
+    return Tags(
+        title=title, regions=(), languages=tuple(langs), languages_implied=not langs,
+        version=version, version_key=version_key(version), status=status, flags=tuple(flags),
+        dump_flags=(), bad=False, bios=False, video=("NTSC",) if ntsc else (), style=STYLE_WHDLOAD,
+        build=st["build"])
+
+
+def style_of_rom(rom: Any) -> str:
+    """The tag style of a DAT rom: WHDLoad for that DAT, else No-Intro (set names) or TOSEC."""
+    if getattr(rom, "dat", "") == WHDLOAD_DAT_NAME:
+        return STYLE_WHDLOAD
+    if getattr(rom, "dat", "") in REDUMP_DAT_NAMES:
+        return STYLE_REDUMP
+    return STYLE_NOINTRO if getattr(rom, "set_name", "") else STYLE_TOSEC
+
+
+def of_rom(rom: Any) -> Tags:
+    """Parsed tags of a DAT rom (``datfile.Rom.tags``)."""
+    style = style_of_rom(rom)
+    if style == STYLE_WHDLOAD:
+        return parse_whdload(getattr(rom, "set_name", "") or rom.name, getattr(rom, "game", "") or "")
+    if style == STYLE_REDUMP:
+        return redump_tags(rom.set_name or rom.game, getattr(rom, "category", ""))
+    if style == STYLE_NOINTRO:
+        return parse_name(rom.set_name, STYLE_NOINTRO)
+    return parse_name(rom.name, STYLE_TOSEC)
 
 
 # --------------------------------------------------------------------------- latest version
@@ -524,7 +769,9 @@ _FLAG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("event", re.compile(r"Jam|Compo|Byte-Off|NESDev|SNESDEV|Contest|Competition", re.IGNORECASE)),
     # cartridge boards / mappers / hardware
     ("hardware", re.compile(r"ROM$|^72 pin|^NINA|^Rainbow$|^AGA$|^OCS$|^ECS$|^A\d{3,4}|"
-                            r"Mapper|pin cart|^Dev$", re.IGNORECASE)),
+                            r"Mapper|pin cart|^Dev$|^CD32$|^CDTV$|^MT32$|"
+                            r"^\d+(?:\.\d+)?\s?(?:KB|MB|k)(?: Chip)?$|^(?:Low|Fast|Slow|Chip) Mem$",
+                            re.IGNORECASE)),
 )
 
 
@@ -593,8 +840,24 @@ _CR_RE = re.compile(r"^cr\d*(?:\s.*)?$")
 _MOD_RE = re.compile(r"^(?:t|h|tr|f|a)\d*(?:\s.*)?$")
 
 
-def _paren_rule(part: str) -> Optional[str]:
+# Redump (Sega Dreamcast): the No-Intro words plus the Japanese trial / store-demo discs. Everything the
+# DAT calls a demo is also covered by its <category> (Demos, Coverdiscs); the name tokens catch a disc whose
+# category is missing.
+_REDUMP_DEMO_RE = re.compile(
+    r"^(?:(?:Tentou(?:-you)?|Tokubetsu)\s+)?Taikenban(?:\s+(?:\d+|Disc))?$"
+    r"|^Tentou-you Demo(?:nstration)?(?:\s+Movie)?$|^Trial\b", re.IGNORECASE)
+_REDUMP_DEMO_TOKENS = ("(Taikenban)", "(Tentou Taikenban)", "(Tentou-you Taikenban)",
+                       "(Tokubetsu Taikenban)", "(Tentou-you Demo)", "(Tentou-you Demo Movie)", "(Trial Disk)")
+# <category> -> rule (Games, Applications, Multimedia, Bonus Discs, Video and Add-Ons are kept)
+CATEGORY_RULES: dict[str, str] = {"Demos": "demo", "Coverdiscs": "demo", "Preproduction": "prototype"}
+
+
+def _paren_rule(part: str, style: str = STYLE_TOSEC) -> Optional[str]:
     p = _TRAILING_NUM_RE.sub("", part.strip().casefold())
+    if style == STYLE_WHDLOAD:       # its own vocabulary; nothing of the TOSEC / No-Intro table applies
+        return _WHD_PAREN_RULE_OF.get(p)
+    if style == STYLE_REDUMP and _REDUMP_DEMO_RE.match(part.strip()):
+        return "demo"
     if p in _PAREN_RULE_OF:
         return _PAREN_RULE_OF[p]
     if p.startswith(_PAREN_DEMO_PREFIX):
@@ -602,22 +865,25 @@ def _paren_rule(part: str) -> Optional[str]:
     return None
 
 
-def _paren_rules(text: str) -> list[str]:
+def _paren_rules(text: str, style: str = STYLE_TOSEC) -> list[str]:
     out: list[str] = []
     for part in text.split(", "):
-        r = _paren_rule(part)
+        r = _paren_rule(part, style)
         if r and r not in out:
             out.append(r)
     return out
 
 
-def classify_token(kind: str, text: str) -> Optional[str]:
+def classify_token(kind: str, text: str, style: str = STYLE_TOSEC) -> Optional[str]:
     """Exclusion rule key for one tag (``kind`` ``"("`` or ``"["``, ``text`` without delimiters), else None.
 
-    A ``(a, b)`` paren group returns the first matching part's rule."""
+    A ``(a, b)`` paren group returns the first matching part's rule. ``style`` selects the vocabulary
+    (WHDLoad has its own and no bracket flags)."""
     if kind == "(":
-        rules = _paren_rules(text)
+        rules = _paren_rules(text, style)
         return rules[0] if rules else None
+    if style == STYLE_WHDLOAD:
+        return None
     for rule, pattern, _tokens in _BRACKET_RULES:
         if pattern.match(text):
             return rule
@@ -639,12 +905,14 @@ def exclusion_info(t: Tags) -> list[tuple[str, str]]:
     if t.publisher and t.publisher in flags:
         flags.remove(t.publisher)
     for text in parens + flags:
-        for rule in _paren_rules(text):
+        for rule in _paren_rules(text, t.style):
             add(rule, f"({text})")
     for text in t.dump_flags:
-        rule = classify_token("[", text)
+        rule = classify_token("[", text, t.style)
         if rule:
             add(rule, f"[{text}]")
+    if t.category and CATEGORY_RULES.get(t.category):
+        add(CATEGORY_RULES[t.category], f"(category: {t.category})")
     return out
 
 
@@ -688,6 +956,8 @@ def _edition_flags(t: Tags) -> list[str]:
 
 def chipset(t: Tags) -> tuple[str, ...]:
     """The chipset / platform tags of a TOSEC name (before the disk token), e.g. ``("OCS-AGA",)``."""
+    if t.style == STYLE_WHDLOAD:
+        return tuple(f for f in t.flags if is_chipset(f))
     if t.style != STYLE_TOSEC:
         return ()
     return tuple(f for f in _edition_flags(t) if is_chipset(f))
@@ -716,6 +986,8 @@ def identity_key(t: Tags) -> tuple:
     ``AGA`` / ``OCS-AGA``) and status tokens. Languages and chipsets are ranking attributes, not part
     of it. No-Intro: ``(style, title, regions)`` (latest-per-region is handled by :func:`superseded`;
     one-per-game uses :func:`game_key`)."""
+    if t.style == STYLE_WHDLOAD:
+        return whd_identity_key(t)
     if t.style != STYLE_TOSEC:
         return (t.style, t.title.casefold(), t.regions)
     flags = _edition_flags(t)
@@ -726,6 +998,15 @@ def identity_key(t: Tags) -> tuple:
     statuses = tuple(sorted({text for _r, text in exclusion_info(t)
                              if _r in ("pre_release", "prototype", "demo", "unreleased")}))
     return (t.style, t.title.casefold(), t.regions, t.publisher.casefold(), edition, statuses)
+
+
+def whd_identity_key(t: Tags) -> tuple:
+    """What makes two WHDLoad entries the *same game*: the clean title, the status and every product tag
+    (disk layout, Image/Files, Hack + author, Demo kinds, CDTV, CD-ROM, publishers, cover disks ...).
+    Language, chipset (AGA / CD32 / OCS), NTSC, memory variant, version and build are ranking
+    attributes, not identity. Titles are compared case-insensitively; different spellings stay different."""
+    edition = tuple(sorted({_whd_canon(f) for f in t.flags if not _whd_is_variant_flag(f)}))
+    return (t.style, t.title.casefold(), t.status.casefold(), edition)
 
 
 def partition_key(t: Tags) -> tuple:
@@ -743,16 +1024,54 @@ def game_key(t: Tags) -> tuple:
     ``Unl`` / ``Aftermarket`` / ``Pirate``, publishers, hardware, events, dump flags); regions, languages,
     versions, dates, ``Alt``, ``PAL``/``NTSC`` and re-release tags (``Virtual Console`` ...) are NOT in it.
     TOSEC: :func:`identity_key`."""
-    if t.style == STYLE_TOSEC:
+    if t.style in (STYLE_TOSEC, STYLE_WHDLOAD):
         return identity_key(t)
+    if t.style == STYLE_REDUMP:
+        return redump_game_key(t)
     flags = tuple(sorted(f.casefold() for f in t.flags if flag_kind(f) not in _GAME_KEY_SKIP_KINDS))
     return (t.style, t.title.casefold(), t.status.casefold(), flags,
             tuple(sorted(f for f in t.dump_flags if f != "!")))
 
 
+_REDUMP_KEY_SKIP_KINDS = _GAME_KEY_SKIP_KINDS | {"disk"}
+_DISC_RE = re.compile(r"^Dis[ck] (\d+)$")
+
+
+def disc_number(t: Tags) -> int:
+    """The ``(Disc N)`` number of a Redump name (0 = a single disc game)."""
+    for f in t.flags:
+        m = _DISC_RE.match(f)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
+def redump_game_key(t: Tags) -> tuple:
+    """Identity of a Redump *game* across regions, languages, revisions, re-releases and DISCS: title + status
+    + the tags that make a distinct product (``Unl``, editions, publishers, trial discs...). ``(Disc N)``,
+    dates, video tags, ``Alt`` and ``Rerelease`` are not part of it."""
+    flags = tuple(sorted(f.casefold() for f in t.flags
+                         if flag_kind(f) not in _REDUMP_KEY_SKIP_KINDS and f.casefold() != "rerelease"))
+    return (t.style, t.title.casefold(), t.status.casefold(), flags,
+            tuple(sorted(f for f in t.dump_flags if f != "!")))
+
+
+def redump_tags(name: str, category: str = "") -> Tags:
+    """Tags of a Redump game name, with its DAT ``<category>`` (cached)."""
+    return _redump_tags(name, category)
+
+
+@functools.lru_cache(maxsize=16384)
+def _redump_tags(name: str, category: str) -> Tags:
+    t = parse_name(name, STYLE_REDUMP)
+    return dataclasses.replace(t, category=category) if category else t
+
+
 def title_key(t: Tags) -> tuple:
     """A *title* as the user knows it (used by the vanish report): TOSEC = title + publisher (any
     country, language, edition, status); No-Intro = :func:`game_key` without the status."""
+    if t.style == STYLE_WHDLOAD:
+        return (t.style, t.title.casefold())
     if t.style == STYLE_TOSEC:
         return (t.style, t.title.casefold(), t.publisher.casefold())
     k = game_key(t)
@@ -845,15 +1164,29 @@ def region_rank(regions: Iterable[str], order: list[str]) -> int:
 # --------------------------------------------------------------------------- rule tokens (UI catalog)
 
 def _display_paren(word: str, style: str) -> str:
-    if style == STYLE_NOINTRO:
+    if style in (STYLE_NOINTRO, STYLE_REDUMP):
         return "(" + " ".join(w.capitalize() for w in word.split(" ")) + ")"
     return f"({word})"
 
 
 def rule_tokens(style: str) -> dict[str, list[str]]:
     """``{rule: [exact tokens as they appear in names]}`` for ``style``, generated from the tables
-    :func:`classify_token` uses. No-Intro lists only the words No-Intro uses (and the bracket flags)."""
+    :func:`classify_token` uses. No-Intro lists only the words No-Intro uses (and the bracket flags);
+    WHDLoad lists its own few paren words (``(Beta)``, ``(Game Demo)`` ...) and no bracket flags."""
     out: dict[str, list[str]] = {r: [] for r in RULES}
+    if style == STYLE_REDUMP:
+        for rule, words in _PAREN_WORDS.items():
+            for w in words:
+                if w in _NOINTRO_PAREN_WORDS and w not in ("debug", "debug version", "test program"):
+                    out[rule].append(_display_paren(w, style))
+        out["demo"].extend(_REDUMP_DEMO_TOKENS)
+        for cat, rule in CATEGORY_RULES.items():
+            out[rule].append(f"category {cat}")
+        return out
+    if style == STYLE_WHDLOAD:
+        for rule, words in _WHD_PAREN_WORDS.items():
+            out[rule].extend("(" + " ".join(w.capitalize() for w in word.split(" ")) + ")" for word in words)
+        return out
     for rule, words in _PAREN_WORDS.items():
         for w in words:
             if style == STYLE_NOINTRO and w not in _NOINTRO_PAREN_WORDS:
@@ -869,16 +1202,18 @@ def rule_tokens(style: str) -> dict[str, list[str]]:
     return out
 
 
-def token_rule(token: str) -> Optional[str]:
+def token_rule(token: str, style: str = STYLE_TOSEC) -> Optional[str]:
     """Classify a catalog token (``"(beta)"``, ``"[b ...]"``, ``"(demo-*)"``) with :func:`classify_token`."""
+    if token.startswith("category "):
+        return CATEGORY_RULES.get(token[len("category "):])
     kind, body = token[0], token[1:-1].replace(" ...", " x").replace("*", "x")
-    return classify_token(kind, body)
+    return classify_token(kind, body, style)
 
 
 # --------------------------------------------------------------------------- JSON / diagnostics
 
 def to_json(t: Tags) -> dict[str, Any]:
-    return {
+    out = {
         "regions": list(t.regions),
         "languages": list(t.languages),
         "languages_implied": t.languages_implied,
@@ -892,3 +1227,6 @@ def to_json(t: Tags) -> dict[str, Any]:
         "bad_flags": bad_flags(t),
         "excluded_by": [{"rule": r, "text": x} for r, x in exclusion_info(t)],
     }
+    if t.category:      # Redump only
+        out["category"] = t.category
+    return out

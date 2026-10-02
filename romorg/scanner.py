@@ -1035,7 +1035,8 @@ def _skip_name(name: str) -> bool:
 
 
 def collect_files(root: Path, recursive: bool = True,
-                  problems: Optional[list[tuple[Path, str]]] = None) -> list[Path]:
+                  problems: Optional[list[tuple[Path, str]]] = None,
+                  protected: Sequence[str] = ()) -> list[Path]:
     """All candidate files under root (hidden files/dirs, m3u, .part skipped), sorted.
 
     If ``problems`` is given, files that need the user's attention are appended
@@ -1043,6 +1044,7 @@ def collect_files(root: Path, recursive: bool = True,
     (``*.romorg-tmp-*``) and dangling symbolic links.
     """
     files: list[Path] = []
+    protected_folded = {n.casefold() for n in protected}
     stack = [root]
     while stack:
         d = stack.pop()
@@ -1062,6 +1064,8 @@ def collect_files(root: Path, recursive: bool = True,
                         continue
                     try:
                         if de.is_dir(follow_symlinks=False):
+                            if protected and d == root and de.name.casefold() in protected_folded:
+                                continue    # a protected top-level folder (e.g. Kickstarts/): never scanned
                             if recursive:
                                 stack.append(Path(de.path))
                         elif de.is_file():
@@ -1170,6 +1174,7 @@ def scan(
     use_cache: bool = True,
     alt_hashes: Sequence[str] = (),
     layout: str = LAYOUT_PER_DAT,
+    protected_dirs: Sequence[str] = (),
 ) -> ScanResult:
     """Scan ``root`` (recursively, incl. DAT folders and the reserved ``_unmatched/``,
     ``_excluded/`` ... folders) against ``dats``.
@@ -1185,7 +1190,8 @@ def scan(
 
     ``progress(done_files, total_files, current_name)``; ``cancel`` is a callable
     returning True or a ``threading.Event`` — raises :class:`ScanCancelled`.
-    ``cache_path`` overrides the default ``cache_dir()/hashes.sqlite``.
+    ``cache_path`` overrides the default ``cache_dir()/hashes.sqlite``. ``protected_dirs``: top-level
+    folders of ``root`` that are not scanned at all (``Platform.protected_dirs``, e.g. ``Kickstarts``).
     """
     root = Path(root).expanduser().absolute()
     if not root.is_dir():
@@ -1207,7 +1213,7 @@ def scan(
     errors: list[tuple[Path, str]] = []
 
     problems: list[tuple[Path, str]] = []
-    files = collect_files(root, recursive, problems)
+    files = collect_files(root, recursive, problems, protected_dirs)
     errors.extend(problems)
     total = len(files)
     cache = HashCache((cache_path or default_cache_path()) if use_cache else None)

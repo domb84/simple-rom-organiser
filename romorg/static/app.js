@@ -240,6 +240,15 @@
     return chips.length ? el("div", { class: "tags" }, chips) : null;
   }
 
+  // How well a Dreamcast disc is known: verified (every track decoded) > identified (data tracks) > raw set.
+  const LEVEL_TEXT = {
+    verified: "every track, audio included, was decoded and equals Redump",
+    identified: "every data track equals Redump; audio tracks have the right length (use Verify fully to check the audio)",
+    raw: "an unpacked Redump set (.gdi / .cue + one file per track) - can be converted to CHD",
+  };
+  const levelChip = (level, kind) => (level
+    ? el("span", { class: `tag tag-level ${level}`, text: level === "raw" ? "raw (convertible)" : level, title: LEVEL_TEXT[level] || level }) : null);
+
   // ------------------------------------------------------------------ state
   const state = {
     status: null,
@@ -247,7 +256,9 @@
     platform: null,    // selected platform name
     scan: null,        // {root, platform, layout, dat_names, missing_dats, summary} - of the selected platform
     lastScan: null,    // the server's scan (may be of another platform)
-    drafts: {},        // platform -> unsaved folder text
+    drafts: {},        // platform -> folder text that is not saved yet
+    folderErr: {},     // platform -> why the last save of its folder failed
+    folderBusy: {},    // platform -> a save is in flight
     resultDat: "",     // DAT filter for the result tabs
     tagFilter: { region: "", language: "", video: "", flag: "", rule: "" },
     tagExpanded: {},
@@ -374,7 +385,10 @@
   const currentPlatform = () => state.platforms.find((p) => p.name === state.platform) || null;
   const pctText = (pct) => `${pct.toFixed(pct >= 10 || pct === 0 ? 1 : 2)}%`;
   const isFlat = (p) => !!p && p.layout === "flat";
-  const sourceLabel = (source) => (source === "nointro" ? "No-Intro" : "TOSEC");
+  const sourceLabel = (source) => (source === "nointro" ? "No-Intro" : source === "whdload" ? "WHDLoad"
+    : source === "redump" ? "Redump" : "TOSEC");
+  const isGameFolder = (p) => !!p && p.layout === "game_folder";   // Sega Dreamcast: one folder per game
+  const hasKickstart = (p) => !!(p && (p.has_kickstart !== undefined ? p.has_kickstart : p.kickstart_dat));
   const folderOf = (p) => (p ? (p.name in state.drafts ? state.drafts[p.name] : p.folder || "") : "");
 
   // ------------------------------------------- 1. Systems, folders + DATs
@@ -451,10 +465,11 @@
   /** The single status line, progress bar, offline note and error box of the updates bar. */
   function renderUpdates(u) {
     if (!u) return;
-    const tosec = u.tosec || {}, ni = u.nointro || {};
+    const tosec = u.tosec || {}, ni = u.nointro || {}, whd = u.whdload || {};
     const parts = [
       tosec.installed ? `TOSEC ${tosec.installed}` : "TOSEC not installed",
       ni.installed ? `No-Intro ${ni.installed}` : "No-Intro not installed",
+      whd.installed ? `WHDLoad ${whd.installed}` : "WHDLoad not installed",
     ];
     if (u.last_checked) parts.push(`checked ${checkedText(u.last_checked)}`);
     else if (!u.enabled) parts.push("automatic updates are off");
@@ -463,7 +478,7 @@
     const btn = $("updates-btn");
     btn.textContent = u.running ? "Cancel update" : "Check for updates";
     btn.disabled = !u.enabled && !u.running;
-    btn.title = u.enabled || u.running ? "Check TOSEC and No-Intro for newer DATs and install them" : "Automatic updates are switched off in this run";
+    btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro and WHDLoad for newer DATs and install them" : "Automatic updates are switched off in this run";
 
     const pr = u.progress || {};
     const bar = $("updates-progress-bar");
@@ -515,28 +530,56 @@
       el("div", { class: "sub", text: `${p.dats.length} DATs` }));
   }
 
-  /** One row per system: source, DAT state, folder field + browse / save, Scan. */
+  /** One row per system: source, DAT state, folder field + browse, saved/unsaved state, Scan.
+   *  A folder is saved the moment it is chosen (Browse / Folders), when the field loses focus or Enter is
+   *  pressed, and before a scan - there is no separate Save button to forget. */
   function renderSystems() {
     const dialog = !!(state.status && state.status.dialog_available);
     const rows = state.platforms.map((p) => {
       const input = el("input", {
         type: "text", class: "input grow mono", value: folderOf(p), spellcheck: "false", autocomplete: "off",
         placeholder: `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`, "aria-label": `${p.name} folder`,
+        "data-platform": p.name,
       });
-      const save = el("button", { class: "btn btn-small", text: "Save", title: "Remember this folder" });
+      const stateChip = el("span", { class: "folder-state", "data-folder-state": "" });
+      const clear = el("button", { class: "btn btn-small", text: "Clear", title: "Forget this folder" });
       const scan = el("button", { class: "btn btn-small btn-primary", text: "Scan", "data-needs-idle": "" });
+      const paint = () => {
+        const value = input.value.trim();
+        const saved = p.folder || "";
+        let kind, text, title = "";
+        if (state.folderBusy[p.name]) { kind = "saving"; text = "Saving..."; }
+        else if (state.folderErr[p.name]) { kind = "error"; text = "Not saved"; title = state.folderErr[p.name]; }
+        else if (value !== saved) { kind = "unsaved"; text = "Not saved"; title = "Saved when you leave the field, press Enter or Scan"; }
+        else if (value) { kind = "saved"; text = "Saved"; title = "This folder is remembered"; }
+        else { kind = "empty"; text = ""; }
+        stateChip.className = `folder-state ${kind}`;
+        stateChip.textContent = text;
+        stateChip.title = title;
+        stateChip.dataset.folderState = kind;
+        clear.disabled = !value && !saved;
+      };
       const sync = () => {
         const value = input.value.trim();
         if (value === (p.folder || "")) delete state.drafts[p.name]; else state.drafts[p.name] = input.value;
-        save.disabled = value === (p.folder || "");
+        delete state.folderErr[p.name];
+        paint();
         scan.dataset.blocked = value ? "0" : "1";
         scan.disabled = Jobs.running || !value;
         if (p.name === state.platform) renderScanTarget();
       };
       input.addEventListener("input", sync);
+      // `change` = the field lost focus / Enter after an edit, and what Browse / Folders dispatch
+      input.addEventListener("change", async () => { sync(); await commitFolder(p); paint(); });
       input.addEventListener("keydown", (e) => { if (e.key === "Enter") scanPlatform(p.name); });
-      save.addEventListener("click", () => saveFolder(p, input.value.trim()));
+      clear.addEventListener("click", async () => {
+        input.value = "";
+        sync();
+        await commitFolder(p);
+        paint();
+      });
       scan.addEventListener("click", () => scanPlatform(p.name));
+      p.paintFolder = paint;
       const title = `Choose the ${p.name} folder`;
       const native = dialog ? el("button", { class: "btn btn-small", text: "Browse...", on: { click: (e) => nativeBrowse(e.currentTarget, input, title) } }) : null;
       const folders = el("button", { class: "btn btn-small", text: "Folders...", on: { click: () => FolderBrowser.open(input, title) } });
@@ -549,7 +592,7 @@
         el("div", { class: "sub" }, el("span", { class: `badge src-${p.source}`, text: sourceLabel(p.source) }),
           p.extensions && p.extensions.length ? ` ${p.extensions.join(" ")}` : "")),
       el("td", {}, datCell(p)),
-      el("td", { class: "folder-cell" }, el("div", { class: "folder-row" }, input, native, folders, save)),
+      el("td", { class: "folder-cell" }, el("div", { class: "folder-row" }, input, native, folders, clear, stateChip)),
       el("td", {}, scan));
       sync();
       return row;
@@ -558,18 +601,37 @@
     Jobs.setRunning(Jobs.running);
   }
 
-  async function saveFolder(p, path) {
-    try {
-      const res = await post("/api/folders", { platform: p.name, path });
-      p.folder = (res.folders || {})[p.name] || null;
-      delete state.drafts[p.name];
-      if (state.status) state.status.folders = res.folders || {};
-      toast(p.folder ? `Saved folder for ${p.name}` : `Forgot the folder for ${p.name}`, "ok");
-      renderSystems();
-      renderScanTarget();
-    } catch (err) {
-      toast(err.message, "error");
-    }
+  /** Save the folder text of a system now (serialised per system; the newest text always wins).
+   *  Resolves true when the folder is saved (or was already), false when the server refused it. */
+  const folderQueue = {};
+  function commitFolder(p, quiet = false) {
+    const run = async () => {
+      const path = folderOf(p).trim();
+      if (path === (p.folder || "")) { delete state.drafts[p.name]; return true; }
+      state.folderBusy[p.name] = true;
+      if (p.paintFolder) p.paintFolder();
+      try {
+        const res = await post("/api/folders", { platform: p.name, path });
+        p.folder = (res.folders || {})[p.name] || null;
+        const live = state.platforms.find((x) => x.name === p.name);   // the list may have been reloaded meanwhile
+        if (live && live !== p) { live.folder = p.folder; if (!(p.name in state.drafts) || folderOf(p).trim() === path) renderSystems(); }
+        if (folderOf(p).trim() === path) delete state.drafts[p.name];
+        delete state.folderErr[p.name];
+        if (state.status) state.status.folders = res.folders || {};
+        if (!quiet) toast(p.folder ? `Saved folder for ${p.name}` : `Forgot the folder for ${p.name}`, "ok");
+        renderScanTarget();
+        return true;
+      } catch (err) {
+        state.folderErr[p.name] = err.message;
+        toast(`${p.name}: folder not saved - ${err.message}`, "error", 8000);
+        return false;
+      } finally {
+        delete state.folderBusy[p.name];
+        if (p.paintFolder) p.paintFolder();
+      }
+    };
+    folderQueue[p.name] = (folderQueue[p.name] || Promise.resolve()).then(run, run);
+    return folderQueue[p.name];
   }
 
   function renderPlatform() {
@@ -593,33 +655,49 @@
         : "They are downloaded automatically - just press Scan.");
 
     // Organise step: what goes where for this layout.
+    const gameFolder = isGameFolder(p);
     const flat = isFlat(p);
-    $("organise-title").textContent = flat ? "Organise (rename in the console folder)" : "Organise (into DAT folders)";
-    $("organise-intro").textContent = flat
+    $("organise-title").textContent = gameFolder ? "Organise (one folder per game)"
+      : flat ? "Organise (rename in the console folder)" : "Organise (into DAT folders)";
+    $("organise-intro").textContent = gameFolder
+      ? "Every game gets its own folder named exactly like the Redump entry, holding <name>.chd. Save states, saves and other files "
+        + "that start with the CHD's old name (.zip .md5 .state .srm ...) are renamed with it, so they stay linked; anything else in "
+        + "the folder keeps its name and moves along. A loose .chd in the system folder gets a folder of its own. A CHD that matches "
+        + "no Redump entry moves with its whole folder into _unmatched/. Nothing is overwritten or deleted; every apply writes an undo log."
+      : p && p.source === "whdload"
+      ? "Matched .lha archives get their exact WHDLoad database name (for example 1000ccTurbo_v1.0.lha) and are kept flat in the system "
+        + "folder (files in subfolders are moved up). The archives are never opened - they are matched by the hash of the whole file. "
+        + "Files that match nothing go to _unmatched/ (keeping their subfolders); a Kickstarts/ folder is left alone. "
+        + "Nothing is overwritten, and every apply writes an undo log in the folder."
+      : flat
       ? "Matched files get their exact No-Intro name and are kept flat in the console folder (files in subfolders are moved up; "
         + "archives are named after the game). Files that match nothing go to _unmatched/ (keeping their subfolders); frontend "
         + "media folders such as media/ or images/ are left alone. Nothing is overwritten, and every apply writes an undo log in the folder."
       : "Matched files are moved into one folder per DAT and given their exact TOSEC name; files that match nothing go to "
         + "_unmatched/ (keeping their subfolders). Nothing is overwritten, and every apply writes an undo log in the platform folder.";
-    const hasM3uLayout = !!(p && p.m3u_dats && p.m3u_dats.length);
+    const hasM3uLayout = !!(p && p.m3u_dats && p.m3u_dats.length) || gameFolder;
     $("organise-layout").textContent = !p ? "" : [
       flat ? "<console folder>/" : "<platform folder>/",
-      ...(flat ? ["  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"] : p.dats.map((d) => `  ${d.folder}/`)),
-      ...reserved(hasM3uLayout, !!p.convertible)].join("\n");
+      ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
+        "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"] : []),
+      ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
+        : p.dats.map((d) => `  ${d.folder}/`)),
+      ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [])].join("\n");
     $("organise-latest-only").checked = !!(p && p.latest_only);
     $("m3u-dats").textContent = p && p.m3u_dats.length ? `Playlists are made for: ${p.m3u_dats.map(shortDat).join(", ")}` : "";
     const hasM3u = !!(p && p.m3u_dats && p.m3u_dats.length);
     $("m3u-block").classList.toggle("hidden", !hasM3u);
-    $("lib-labels-wrap").classList.toggle("hidden", !hasM3u);
+    $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !gameFolder);
     $("lib-savedisk-wrap").classList.toggle("hidden", !hasM3u);
     $("library-layout").textContent = $("organise-layout").textContent;
     $("library-title").textContent = "Build library";
     $("library-intro").replaceChildren(
       "One action tidies the whole folder: files are renamed and sorted, and unwanted, older and duplicate files are set aside in their own folders next to the games (",
       el("code", { text: `${EXCLUDED}/` }), ", ", el("code", { text: `${SUPERSEDED}/` }), ", ",
-      ...(hasM3u ? [el("code", { text: `${INCOMPLETE}/` }), ", "] : []),
+      ...(hasM3u && !gameFolder ? [el("code", { text: `${INCOMPLETE}/` }), ", "] : []),
       el("code", { text: `${DUPLICATES}/` }), "; never deleted; files that match nothing go to ", el("code", { text: `${UNMATCHED}/` }), ")",
-      hasM3u ? ", and playlists are written for complete multi-disk games." : ".",
+      hasM3u ? ", and playlists are written for complete multi-disk games."
+        : gameFolder ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; set-aside games move with their whole folder)." : ".",
       " Preview first; ", el("b", { text: "Undo last" }), hasM3u ? " reverts everything, playlists included." : " reverts everything.");
     loadLibraryProfile();
     renderSteps();
@@ -632,7 +710,7 @@
     const p = currentPlatform();
     const visible = {
       "step-convert": !!(p && p.convertible),
-      "step-kickstart": !!(p && p.kickstart_dat),
+      "step-kickstart": hasKickstart(p),
     };
     let n = 0;
     document.querySelectorAll("main > section.step").forEach((section) => {
@@ -663,6 +741,9 @@
     state.convertFilter = "";
     state.m3uFilter = "";
     state.kickFilter = "";
+    kickDirsLoaded = false;                       // each system has its own Kickstart destination
+    $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for Dreamcast playlists
+    setKickDest(currentPlatform());
     $("platform-select").value = name;
     // A finished job box (e.g. the last scan) belongs to the previous system.
     if (!Jobs.running) document.querySelectorAll(".job").forEach((b) => b.classList.add("hidden"));
@@ -719,6 +800,7 @@
       this.target.value = this.current;
       closeModal($("folder-modal"));
       this.target.dispatchEvent(new Event("input"));
+      this.target.dispatchEvent(new Event("change"));   // a system folder is saved right away
     },
   };
 
@@ -726,7 +808,7 @@
     btn.disabled = true;
     try {
       const res = await post("/api/fs/pick", { start: target.value.trim(), title });
-      if (res.path) { target.value = res.path; target.dispatchEvent(new Event("input")); }
+      if (res.path) { target.value = res.path; target.dispatchEvent(new Event("input")); target.dispatchEvent(new Event("change")); }
       else if (res.timeout) toast("The folder dialog did not answer - use \"Folders...\" instead.", "info", 8000);
     } catch (err) {
       toast(err.message, "error");
@@ -751,11 +833,12 @@
     startScan();
   }
 
-  function startScan() {
+  async function startScan() {
     const p = currentPlatform();
     if (!p) { toast("Choose a system first", "error"); return; }
     const path = folderOf(p).trim();
     if (!path) { toast(`Choose the ${p.name} folder first`, "error"); return; }
+    if (!(await commitFolder(p, true))) return;   // remember the folder first (a bad path says why)
     Jobs.start("/api/scan", { path, platform: p.name });
   }
 
@@ -818,6 +901,7 @@
     $("scan-missing-dats").textContent = missingDats.length
       ? `Not checked (DAT not downloaded): ${missingDats.join(", ")}` : "";
 
+    renderDcBar(s);
     const total = games ? first(s.games_total, s.dat_total) : s.dat_total;
     const have = games ? first(s.games_have, s.have) : s.have;
     const missing = games ? first(s.games_missing, s.missing) : s.missing;
@@ -833,7 +917,11 @@
       ...(s.correctly_placed !== undefined ? [card(fmt(s.correctly_placed), isFlat(currentPlatform()) ? "In place (named correctly)" : "In place (named + in DAT folder)", "ok")] : []),
       card(fmt(s.duplicates), "Duplicates", s.duplicates ? "warn" : ""),
       ...(normalised ? [card(fmt(normalised), "Matched with header / byte-swapped", "info")] : []),
-      ...(s.convertible ? [card(fmt(s.convertible), "Convertible to No-Intro format", "info")] : []),
+      ...(s.chd_files !== undefined ? [
+        card(fmt(s.verified), "CHDs verified (every track)", s.verified ? "ok" : ""),
+        card(fmt(s.identified), "CHDs identified (data tracks)", s.identified ? "info" : ""),
+        card(fmt(s.raw), "Raw sets (convertible to CHD)", s.raw ? "warn" : "")]
+        : s.convertible ? [card(fmt(s.convertible), "Convertible to No-Intro format", "info")] : []),
       ...(s.unsupported ? [card(fmt(s.unsupported), "Unsupported archives", "warn")] : []),
       ...(s.errors ? [card(fmt(s.errors), "Read errors", "bad")] : []),
       el("div", { class: "complete-bar" }, progressBar(pct)),
@@ -908,6 +996,52 @@
     table.load();
   }
 
+  /** Name tag chips plus the Dreamcast level chip in ONE chip row (the tag row alone for other systems). */
+  function gameChips(tags, level) {
+    const base = tagChips(tags);
+    if (!level) return base;
+    return el("div", { class: "tags" }, ...(base ? Array.from(base.childNodes) : []), levelChip(level));
+  }
+
+  /** Sega Dreamcast: which engine reads the CHDs, and the Verify fully button. */
+  function renderDcBar(s) {
+    const dc = s.chd_files !== undefined;
+    $("dc-bar").classList.toggle("hidden", !dc);
+    if (!dc) return;
+    $("dc-engine-line").textContent = s.engine === "chdman"
+      ? `CHDs were read with chdman (${s.chdman}) - every track was checked, so they are verified.`
+      : "CHDs were read with the built-in reader (no chdman needed): data tracks are hashed, audio is checked by length "
+        + "until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "");
+    $("dc-verify-btn").dataset.blocked = s.identified ? "0" : "1";
+    $("dc-verify-btn").title = s.identified ? "Decode EVERY track of the identified CHDs (audio included) and compare it with Redump - can take a while"
+      : "Every CHD is already verified";
+    Jobs.setRunning(Jobs.running);
+  }
+
+  async function verifyFully() {
+    const s = (state.scan && state.scan.summary) || {};
+    if (!s.identified) { toast("Every CHD is already verified.", "ok"); return; }
+    const body = el("div", {},
+      el("p", { text: `Decode every track - audio included - of ${fmt(s.identified)} CHD${s.identified === 1 ? "" : "s"} and compare it with Redump?` }),
+      el("ul", {},
+        el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
+        el("li", { text: "With chdman installed this extracts each disc to a temporary folder next to the games (about its full size) and deletes it again." }),
+        el("li", { text: "Without chdman the built-in reader decodes the audio: roughly 1 MB/s per disc. A disc with 400 MB of audio takes minutes. You can cancel at any time." })));
+    if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
+    Jobs.start("/api/dc/verify", {});
+  }
+
+  Jobs.handlers.verify = async (job) => {
+    if ((job.status === "done" || job.status === "cancelled") && job.result) {
+      const r = job.result;
+      const failed = Array.isArray(r.failed) ? r.failed : [];
+      toast(`Verified ${fmt(r.verified || 0)} CHD(s)${failed.length ? `, ${fmt(failed.length)} do not match Redump` : ""}`, failed.length ? "error" : "ok", 8000);
+      showFailures("dc-failures", "Does not match Redump:", failed, (f) => `${f.file}: ${f.error}`,
+        [r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
+    }
+    await refreshScan();
+  };
+
   const first = (...vals) => vals.find((v) => v !== undefined && v !== null);
   const TAG_FACETS = [["region", "regions", "Region"], ["language", "languages", "Language"],
     ["video", "video", "Video"], ["flag", "flags", "Tag"], ["rule", "rules", "Library rules"]];
@@ -976,7 +1110,7 @@
             {
               label: "Game", cls: "wrap", render: (i) => el("div", {},
                 el("div", { class: "game-name", text: i.name }),
-                tagChips(i.tags),
+                gameChips(i.tags, i.level),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
             },
             {
@@ -994,8 +1128,9 @@
             { label: "Local file", cls: "wrap", render: (i) => fileCell(i.file) },
             {
               label: "DAT entry", cls: "wrap", render: (i) => el("div", {},
-                el("div", { text: i.roms[0] || "" }),
-                tagChips(i.tags, i.via, i.byte_order, i.header),
+                el("div", { text: i.game || i.roms[0] || "" }),
+                i.level ? el("div", { class: "tags" }, levelChip(i.level), i.engine ? el("span", { class: "tag", text: i.engine === "files" ? "files" : `via ${i.engine}` }) : null) : null,
+                tagChips(i.tags, i.level ? "" : i.via, i.byte_order, i.header),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat) }) : null,
                 i.roms.length > 1 ? el("div", { class: "sub", text: `+${i.roms.length - 1} other name(s) with identical content` }) : null,
                 i.other_dats && i.other_dats.length ? el("div", { class: "sub", text: `also in: ${i.other_dats.map(shortDat).join(", ")}` }) : null),
@@ -1028,8 +1163,9 @@
           fetch: fetchKind, placeholder: "Search unmatched files...", emptyText: "Every file matched a DAT.",
           columns: [
             { label: "Local file", cls: "wrap", render: (i) => fileCell(i.file) },
+            ...(isGameFolder(currentPlatform()) ? [{ label: "Why", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason || "" }) }] : []),
             { label: "Size", cls: "num", render: (i) => fmtBytes(i.size) },
-            { label: "CRC32", cls: "mono", render: (i) => i.crc || "" },
+            ...(isGameFolder(currentPlatform()) ? [] : [{ label: "CRC32", cls: "mono", render: (i) => i.crc || "" }]),
           ],
         };
       case "unsupported":
@@ -1050,13 +1186,14 @@
 
   // ---------------------------------------------------- 3. Build library
   // The reserved folders: all direct children of the platform folder (the layout sketch lists them).
-  const reserved = (hasM3u, convertible) => [
+  const reserved = (hasM3u, convertible, protectedDirs = []) => [
     [UNMATCHED, "only files that matched nothing"],
     [EXCLUDED, "bad dumps, betas, demos, language/flag exclusions (library rules)"],
     [SUPERSEDED, "older versions / worse variants"],
     ...(hasM3u ? [[INCOMPLETE, "multi-disk games with missing disks"]] : []),
     [DUPLICATES, "extra copies of the same ROM"],
     ...(convertible ? [[CONVERTED, "originals kept by Convert"]] : []),
+    ...protectedDirs.map((d) => [d, "your files - left alone by every step"]),
   ].map(([name, text]) => `  ${(name + "/").padEnd(23)}${text}`);
   const REASON_LABEL = { kept: "Kept", excluded: "Excluded", superseded: "Superseded", incomplete: "Incomplete",
     duplicate: "Duplicates", unmatched: "Unmatched", playlist: "Playlists" };
@@ -1166,7 +1303,9 @@
           on: { click: () => set(moved(prof.languages, i, 1)) } })))) : null;
     return el("div", { class: "rules-group", id: "rules-languages" },
       el("div", { class: "rules-head", text: "Languages" }),
-      el("div", { class: "sub note", text: "No language or country tag means English/neutral (TOSEC convention); (de-en) counts as English; [tr en] counts as an English translation." }),
+      el("div", { class: "sub note", text: info.style === "whdload"
+        ? ((catalogOf(info).find((e) => e.id === "languages") || {}).description || "No language tag means English.")
+        : "No language or country tag means English/neutral (TOSEC convention); (de-en) counts as English; [tr en] counts as an English translation." }),
       known.length ? el("div", { class: "lang-grid" }, boxes) : el("div", { class: "muted small", text: "Languages appear here once the DAT is installed." }),
       order,
       el("div", { class: "sub", text: prof.languages.length ? "Titles with no version in a ticked language are left out." : "Nothing ticked: every language stays." }),
@@ -1312,7 +1451,7 @@
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
       card(fmt(r.excluded), "Excluded", r.excluded ? "warn" : ""),
       card(fmt(r.superseded), "Superseded", r.superseded ? "warn" : ""),
-      card(fmt(r.incomplete), "Incomplete", r.incomplete ? "warn" : ""),
+      ...(isGameFolder(currentPlatform()) ? [] : [card(fmt(r.incomplete), "Incomplete", r.incomplete ? "warn" : "")]),
       card(fmt(r.duplicates), "Duplicates", r.duplicates ? "warn" : ""),
       ...(r.unmatched ? [card(fmt(r.unmatched), `Unmatched → ${UNMATCHED}/`, "warn")] : []),
       ...(pl.write || pl.remove || pl.ok ? [card(fmt(pl.write), "Playlists to write", pl.write ? "info" : ""),
@@ -1338,10 +1477,12 @@
     $("lib-incomplete-box").classList.toggle("hidden", !sets.length);
     if (sets.length && sets.length <= 15) $("lib-incomplete-box").open = true;
     const total = plan.incomplete_total || sets.length;
-    $("lib-incomplete-title").textContent = `Incomplete sets (${fmt(total)}) - disks missing, set aside as _incomplete`;
+    $("lib-incomplete-title").textContent = isGameFolder(currentPlatform())
+      ? `Multi-disc games with a disc missing (${fmt(total)}) - kept where they are, no playlist`
+      : `Incomplete sets (${fmt(total)}) - disks missing, set aside as _incomplete`;
     $("lib-incomplete").replaceChildren(...sets.map((x) => el("li", {},
       el("span", { text: x.name }), " ",
-      el("span", { class: "tag tag-status", text: `missing disk ${x.missing.join(", ")} of ${x.total}` }),
+      el("span", { class: "tag tag-status", text: `missing ${isGameFolder(currentPlatform()) ? "disc" : "disk"} ${x.missing.join(", ")} of ${x.total}` }),
       el("span", { class: "sub", text: ` have ${x.present.length ? x.present.join(", ") : "none"} - ${shortDat(x.dat)}` }))),
     ...(total > sets.length ? [el("li", { class: "muted", text: `... and ${fmt(total - sets.length)} more` })] : []));
   }
@@ -1739,9 +1880,52 @@
 
   // ----------------------------------------------------------- 4. Convert
   let convertTable = null;
-  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64" };
+  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "chdman createcd, then checked against Redump" };
+
+  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track) into a CHD with chdman. "
+    + "The new CHD is checked track by track against Redump BEFORE anything of your set is touched; only if every track matches is it placed in the "
+    + "game folder (named like the Redump entry) and the raw files are moved to _converted_originals/ - nothing is deleted, and Undo last removes "
+    + "the CHD and puts the raw files back. Temporary files go to a hidden folder inside your game folder (never /tmp) and need about twice the disc size free.";
+  let chdmanInfo = null;
+
+  async function loadChdman(refresh = false) {
+    try {
+      chdmanInfo = await get(`/api/chdman${refresh ? "?refresh=1" : ""}`);
+    } catch (err) { chdmanInfo = null; }
+    renderChdman();
+  }
+
+  function renderChdman() {
+    const box = $("chdman-box");
+    const dc = isGameFolder(currentPlatform());
+    box.classList.toggle("hidden", !dc || !chdmanInfo);
+    if (!dc || !chdmanInfo) return;
+    const found = !!chdmanInfo.found;
+    box.classList.toggle("missing", !found);
+    $("chdman-line").textContent = found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.kind === "flatpak" ? "" : ""}`
+      : "chdman not found - converting is disabled (scanning and verifying still work with the built-in reader).";
+    const steps = $("chdman-steps");
+    steps.classList.toggle("hidden", found);
+    steps.replaceChildren(...(found ? [] : (chdmanInfo.steps || []).map((t) => el("li", { text: t }))));
+    if (document.activeElement !== $("chdman-path")) $("chdman-path").value = chdmanInfo.override || "";
+    $("chdman-engine").value = chdmanInfo.engine || "auto";
+  }
+
+  async function saveChdman(body) {
+    try {
+      chdmanInfo = await post("/api/chdman", body);
+      renderChdman();
+      if (chdmanInfo.warning) toast(chdmanInfo.warning, "error", 8000);
+      else toast(chdmanInfo.found ? `chdman: ${chdmanInfo.label}` : "Saved", "ok");
+      if (convertTable) { convertTable.offset = 0; convertTable.load(); }
+    } catch (err) { toast(err.message, "error", 8000); }
+  }
 
   function renderConvertIntro() {
+    const dc = isGameFolder(currentPlatform());
+    $("convert-title").textContent = dc ? "Convert raw Redump sets to CHD (optional, needs chdman)" : "Convert to No-Intro format (optional)";
+    if (dc) $("convert-intro").textContent = CHD_INTRO;
+    if (dc) loadChdman(); else $("chdman-box").classList.add("hidden");
     $("convert-empty").textContent = state.scan ? "Press \"Preview conversions\" to see which files can be converted." : "Run a scan first.";
     $("convert-empty").classList.remove("hidden");
     $("convert-output").classList.add("hidden");
@@ -1751,7 +1935,7 @@
   function renderConvertCards(data) {
     const c = data.counts || {};
     $("convert-cards").replaceChildren(
-      card(fmt(c.convert || 0), "To convert", "info"),
+      card(fmt(c.convert || 0), isGameFolder(currentPlatform()) ? "Raw sets to convert to CHD" : "To convert", "info"),
       card(fmt(c.conflict || 0), "Conflicts (skipped)", c.conflict ? "bad" : ""),
       card(fmt(c.skip || 0), "Skipped", ""));
   }
@@ -1762,13 +1946,14 @@
     if (!convertTable) {
       convertTable = new PagedTable($("convert-table"), {
         placeholder: "Search file names...",
-        emptyText: "Nothing to convert - every matched file is already in No-Intro format.",
+        emptyText: isGameFolder(currentPlatform()) ? "No raw Redump sets found in this folder." : "Nothing to convert - every matched file is already in No-Intro format.",
         fetch: async ({ offset, limit, q }) => {
           const data = await post("/api/convert/plan", { status: state.convertFilter, offset, limit, q, latest_only: latestOnly() });
           renderConvertCards(data);
+          if (data.chdman) { chdmanInfo = { ...(chdmanInfo || {}), ...data.chdman }; renderChdman(); }
           filterChips($("convert-filters"), data.counts || {}, state.convertFilter, ["convert", "conflict", "skip"],
             (key) => { state.convertFilter = key; convertTable.offset = 0; convertTable.load(); });
-          $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert ? "0" : "1";
+          $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert && !(data.chdman && !data.chdman.found) ? "0" : "1";
           Jobs.setRunning(Jobs.running);
           return data;
         },
@@ -1795,14 +1980,23 @@
     } catch (err) { toast(err.message, "error"); return; }
     const n = (data.counts || {}).convert || 0;
     if (!n) { toast("Nothing to convert.", "ok"); return; }
-    const body = el("div", {},
+    if (data.chdman && !data.chdman.found) { toast("chdman was not found - see the instructions above.", "error", 8000); return; }
+    const body = isGameFolder(currentPlatform()) ? el("div", {},
+      el("p", { text: `Convert ${fmt(n)} raw set${n === 1 ? "" : "s"} inside ${state.scan.root} to CHD (chdman ${data.chdman ? data.chdman.label : ""})?` }),
+      el("ul", {},
+        el("li", { text: "The new CHD is decoded again and compared with every Redump track before it is kept; on any mismatch nothing changes." }),
+        el("li", { text: `The raw files are moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
+        el("li", { text: "Temporary files live in a hidden folder inside your game folder and are removed afterwards (about twice the disc size is needed while it runs)." }),
+        el("li", { text: "An undo log is saved as it goes - \"Undo last\" removes the CHD and puts the raw files back." }),
+        el("li", { text: "The folder is re-scanned afterwards. You can cancel; the raw files stay untouched." })))
+    : el("div", {},
       el("p", { text: `Convert ${fmt(n)} file${n === 1 ? "" : "s"} inside ${state.scan.root} into No-Intro format?` }),
       el("ul", {},
         el("li", { text: "A clean copy is written under the exact DAT name and checked against the DAT before it is kept." }),
         el("li", { text: `The original is moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
         el("li", { text: "An undo log is saved as it goes - \"Undo last\" removes the copies and puts the originals back." }),
         el("li", { text: "The folder is re-scanned afterwards." })));
-    if (!(await confirmDialog({ title: "Convert to No-Intro format", body, okText: `Convert ${fmt(n)}` }))) return;
+    if (!(await confirmDialog({ title: isGameFolder(currentPlatform()) ? "Convert to CHD" : "Convert to No-Intro format", body, okText: `Convert ${fmt(n)}` }))) return;
     Jobs.start("/api/convert/apply", { latest_only: latestOnly() });
   }
 
@@ -1909,23 +2103,51 @@
   let kickTable = null;
   let kickDirsLoaded = false;
 
+  /** The Kickstart destination field belongs to the selected system (each has its own saved folder). */
+  function setKickDest(p) {
+    $("kick-dest").value = (p && p.kickstart_dest) || "";
+    kickTable = null;
+    $("kick-output").classList.add("hidden");
+    $("kick-failures").classList.add("hidden");
+  }
+
+  const kickFolderMode = (p) => !!(p && p.kickstart_folder);
+  /** The Kickstart step can run: a folder-source system needs its folder, a DAT-source one a scan of itself. */
+  const kickReady = (p) => (kickFolderMode(p) ? !!folderOf(p).trim() : !!state.scan);
+
   function renderKickIntro() {
-    $("kick-empty").textContent = state.scan ? "Pick a destination, then press \"Preview\"." : "Run a scan first.";
+    const p = currentPlatform();
+    const folderMode = kickFolderMode(p);
+    $("kick-intro").replaceChildren(...(folderMode ? [
+      "Optional. Copies the Kickstart ROMs you put into the ", el("code", { text: `${p.kickstart_folder}/` }),
+      " folder inside this system's folder (matched by MD5 against the ",
+      el("a", { href: "https://docs.libretro.com/library/puae/", target: "_blank", rel: "noopener noreferrer", text: "PUAE BIOS list" }),
+      ") into RetroArch's system / BIOS folder under the file names PUAE expects. PUAE needs these for WHDLoad. ",
+      "That folder is never scanned, moved or organised by the other steps. Files are copied, never moved, and existing files are never overwritten.",
+    ] : [
+      "Optional. Copies the Kickstart ROMs you have (matched by MD5 against the ",
+      el("a", { href: "https://docs.libretro.com/library/puae/", target: "_blank", rel: "noopener noreferrer", text: "PUAE BIOS list" }),
+      ") into RetroArch's system / BIOS folder under the file names PUAE expects. Files are copied, never moved, and existing files are never overwritten.",
+    ]));
+    $("kick-empty").textContent = kickReady(p) ? "Pick a destination, then press \"Preview\"."
+      : folderMode ? `Choose the ${p ? p.name : "system"} folder in step 1 first.` : "Run a scan first.";
     $("kick-empty").classList.remove("hidden");
     $("kick-output").classList.add("hidden");
+    $("kick-source").textContent = "";
     kickTable = null;
-    const p = currentPlatform();
-    if (!kickDirsLoaded && p && p.kickstart_dat) loadKickDirs();
+    if (!kickDirsLoaded && hasKickstart(p)) loadKickDirs();
   }
 
   async function loadKickDirs() {
     let data;
+    const forPlatform = state.platform;
     try {
-      data = await get(`/api/kickstart/dirs?${qs({ platform: state.platform })}`);
+      data = await get(`/api/kickstart/dirs?${qs({ platform: forPlatform })}`);
     } catch (err) {
       $("kick-dirs").replaceChildren(el("div", { class: "muted small", text: `Could not detect RetroArch folders: ${err.message}` }));
       return;
     }
+    if (forPlatform !== state.platform) return;   // the user switched system meanwhile
     kickDirsLoaded = true;
     const dirs = data.dirs || [];
     const input = $("kick-dest");
@@ -1941,11 +2163,25 @@
     const chosen = $("kick-dest").value.trim();
     $("kick-dirs").replaceChildren(...(dirs.length ? dirs.map((d) => el("button", {
       class: `dest-option ${d.path === chosen ? "active" : ""}`, title: d.path,
-      on: { click: () => { $("kick-dest").value = d.path; $("kick-dest").dispatchEvent(new Event("input")); renderKickDirs(dirs); } },
+      on: { click: () => { $("kick-dest").value = d.path; $("kick-dest").dispatchEvent(new Event("input")); $("kick-dest").dispatchEvent(new Event("change")); renderKickDirs(dirs); } },
     },
     el("div", { class: "dest-label" }, el("span", { text: d.label || "Folder" }), " ", badge(d.exists ? "ok" : "missing")),
     el("div", { class: "sub mono", text: d.path }))) : [el("div", { class: "muted small", text: "No RetroArch / EmuDeck / RetroDECK folders found - type or browse to your BIOS folder." })]));
     $("kick-dirs").dataset.dirs = JSON.stringify(dirs);
+  }
+
+  /** Remember the destination of the selected system as soon as it is chosen (not only after a copy). */
+  async function saveKickDest() {
+    const p = currentPlatform();
+    const dest = $("kick-dest").value.trim();
+    if (!p || !dest || !hasKickstart(p) || dest === p.kickstart_dest) return;
+    try {
+      const res = await post("/api/kickstart/dest", { platform: p.name, dest });
+      p.kickstart_dest = res.dest;
+      toast(`Saved the Kickstart folder for ${p.name}`, "ok");
+    } catch (err) {
+      toast(`Kickstart folder not saved - ${err.message}`, "error");
+    }
   }
 
   async function showKickPlan() {
@@ -1953,15 +2189,20 @@
     if (!dest) { toast("Choose a destination folder first", "error"); return; }
     $("kick-empty").classList.add("hidden");
     $("kick-output").classList.remove("hidden");
+    const platform = state.platform;
     kickTable = new PagedTable($("kick-table"), {
       placeholder: "Search Kickstarts...",
       emptyText: "Nothing in this category.",
       fetch: async ({ offset, limit, q }) => {
-        const data = await post("/api/kickstart/plan", { dest, status: state.kickFilter, offset, limit, q });
+        const data = await post("/api/kickstart/plan", { platform, dest, status: state.kickFilter, offset, limit, q });
         const counts = data.counts || {};
-        filterChips($("kick-filters"), counts, state.kickFilter, ["copy", "ok", "conflict", "missing"],
+        filterChips($("kick-filters"), counts, state.kickFilter, ["copy", "ok", "conflict", "missing", "unmatched"],
           (key) => { state.kickFilter = key; kickTable.offset = 0; kickTable.load(); });
         $("kick-apply-btn").dataset.blocked = counts.copy ? "0" : "1";
+        $("kick-source").textContent = data.source === "folder"
+          ? (data.source_exists ? `Kickstart ROMs are read from ${data.source_dir}`
+            : `The folder ${data.source_dir} does not exist yet - create it and drop your Kickstart ROMs into it.`)
+          : "";
         Jobs.setRunning(Jobs.running);
         return data;
       },
@@ -1984,7 +2225,7 @@
     if (!dest) { toast("Choose a destination folder first", "error"); return; }
     let data;
     try {
-      data = await post("/api/kickstart/plan", { dest, limit: 1 });
+      data = await post("/api/kickstart/plan", { platform: state.platform, dest, limit: 1 });
     } catch (err) { toast(err.message, "error"); return; }
     const n = (data.counts || {}).copy || 0;
     if (!n) { toast("Nothing to copy - press Preview to see why.", "ok"); return; }
@@ -1993,7 +2234,7 @@
       body: `Copy ${fmt(n)} Kickstart file${n === 1 ? "" : "s"} into ${data.dest}${data.dest_exists ? "" : " (the folder will be created)"}? Existing files are not overwritten.`,
       okText: `Copy ${fmt(n)}`,
     });
-    if (ok) Jobs.start("/api/kickstart/apply", { dest });
+    if (ok) Jobs.start("/api/kickstart/apply", { platform: state.platform, dest });
   }
 
   Jobs.handlers.kickstart = async (job) => {
@@ -2004,8 +2245,10 @@
       toast(`Copied ${fmt(copied || 0)} Kickstart file(s)${failed ? `, ${fmt(failed)} failed` : ""}`, failed ? "error" : "ok", 8000);
       showFailures("kick-failures", "Could not copy:", Array.isArray(r.failed) ? r.failed : [],
         (f) => `${f.target}: ${f.error}`);
+      const p = state.platforms.find((x) => x.name === r.platform);
+      if (p && r.dest) p.kickstart_dest = r.dest;
     }
-    if (state.scan && $("kick-dest").value.trim()) await showKickPlan();
+    if (kickReady(currentPlatform()) && $("kick-dest").value.trim()) await showKickPlan();
   };
 
   // ----------------------------------------------------------- shared UI
@@ -2022,8 +2265,9 @@
     if (!hasScan || organiseTable === null) $("apply-btn").dataset.blocked = hasScan ? "0" : "1";
     if (!hasScan || m3uTable === null) $("m3u-apply-btn").dataset.blocked = hasScan ? "0" : "1";
     const hasDest = !!$("kick-dest").value.trim();
-    $("kick-plan-btn").dataset.blocked = hasScan && hasDest ? "0" : "1";
-    if (!hasScan || !hasDest || kickTable === null) $("kick-apply-btn").dataset.blocked = hasScan && hasDest ? "0" : "1";
+    const kickOk = kickReady(currentPlatform());
+    $("kick-plan-btn").dataset.blocked = kickOk && hasDest ? "0" : "1";
+    if (!kickOk || !hasDest || kickTable === null) $("kick-apply-btn").dataset.blocked = kickOk && hasDest ? "0" : "1";
     Jobs.setRunning(Jobs.running);
   }
 
@@ -2042,7 +2286,7 @@
   function bind() {
     for (const id of ["scan-btn", "plan-btn", "apply-btn", "undo-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn",
       "convert-plan-btn", "convert-apply-btn", "convert-undo-btn", "m3u-plan-btn", "m3u-apply-btn",
-      "kick-plan-btn", "kick-apply-btn"]) {
+      "kick-plan-btn", "kick-apply-btn", "dc-verify-btn"]) {
       $(id).setAttribute("data-needs-idle", "");
     }
     $("updates-btn").addEventListener("click", () => Updates.check());
@@ -2093,6 +2337,10 @@
       if (organiseTable) { organiseTable.offset = 0; organiseTable.load(); }
       if (convertTable) { convertTable.offset = 0; convertTable.load(); }
     });
+    $("dc-verify-btn").addEventListener("click", verifyFully);
+    $("chdman-save").addEventListener("click", () => saveChdman({ path: $("chdman-path").value.trim() }));
+    $("chdman-refresh").addEventListener("click", () => loadChdman(true));
+    $("chdman-engine").addEventListener("change", (e) => saveChdman({ engine: e.target.value }));
     $("convert-plan-btn").addEventListener("click", showConvertPlan);
     $("convert-apply-btn").addEventListener("click", applyConvert);
     $("convert-undo-btn").addEventListener("click", undoLast);
@@ -2106,7 +2354,8 @@
       try { renderKickDirs(JSON.parse($("kick-dirs").dataset.dirs || "[]")); } catch (_) { /* ignore */ }
       updateActionState();
     }, 150));
-    $("kick-dest").addEventListener("keydown", (e) => { if (e.key === "Enter" && state.scan) showKickPlan(); });
+    $("kick-dest").addEventListener("change", saveKickDest);
+    $("kick-dest").addEventListener("keydown", (e) => { if (e.key === "Enter" && kickReady(currentPlatform())) showKickPlan(); });
     $("kick-browse-btn").addEventListener("click", () => FolderBrowser.open($("kick-dest"), "Choose the RetroArch system / BIOS folder"));
     $("kick-native-browse-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("kick-dest"), "Choose the RetroArch system / BIOS folder"));
     $("kick-plan-btn").addEventListener("click", showKickPlan);
@@ -2119,8 +2368,8 @@
     await loadStatus();
     const s = state.status || {};
     state.platform = (s.scan && s.scan.platform) || s.last_platform || s.default_platform || null;
-    if (s.kickstart_dest) $("kick-dest").value = s.kickstart_dest;
     await loadPlatforms();
+    setKickDest(currentPlatform());
     await refreshScan();
     // Resume tracking a job that was started before a page reload.
     try {
