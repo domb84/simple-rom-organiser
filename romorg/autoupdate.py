@@ -113,7 +113,7 @@ class UpdateManager:
         self.tosec = tosec
         self.nointro = nointro
         self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
-        self.redump = redump     # its own DAT source (Redump, Sega Dreamcast); None = not managed
+        self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
         self.enabled = bool(enabled) and not paths.offline_forced()
         self.clock = clock
         self.state_path = Path(state_path) if state_path is not None else None
@@ -258,7 +258,7 @@ class UpdateManager:
                 st = "unknown" if name in local else "absent"
             rows.append({"name": name, "version": local.get(name), "status": st})
         statuses = [r["status"] for r in rows]
-        latest = next((r.get("latest") for r in self._redump_rows.values() if r.get("latest")), None)
+        latest = max((r["latest"] for r in self._redump_rows.values() if r.get("latest")), default=None)
         if self._updating == "redump":
             status = "updating"
         elif any(x == "error" for x in statuses):
@@ -267,8 +267,8 @@ class UpdateManager:
             status = "absent"
         elif any(x in ("update_available", "missing") for x in statuses):
             status = "update_available"
-        elif all(x == "up_to_date" for x in statuses):
-            status = "up_to_date"
+        elif all(x in ("up_to_date", "absent") for x in statuses):
+            status = "up_to_date"      # (a system whose DAT was never fetched does not count: no folder uses it)
         else:
             status = "unknown"
         return {"installed": installed, "latest": latest, "status": status, "dats": rows,
@@ -632,7 +632,7 @@ class UpdateManager:
         if token.is_set():
             raise Cancelled()
 
-        # ---- the Redump DAT (Sega Dreamcast; plain HTTP, downloaded only when its date is newer)
+        # ---- the Redump DATs (Dreamcast, PlayStation, PlayStation 2; plain HTTP, downloaded only when a date is newer)
         red_todo = [r["name"] for r in red_rows
                     if force or r.get("status") in ("update_available", "unknown", "missing")]
         if red_todo:

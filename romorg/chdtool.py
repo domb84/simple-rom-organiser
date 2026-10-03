@@ -1,4 +1,4 @@
-"""chdman wrapper: detect it, ``extractcd`` / ``createcd`` with progress + prompt cancel, temp-space rules.
+"""chdman wrapper: detect it, ``extractcd`` / ``createcd`` / ``extractdvd`` / ``createdvd`` with progress + prompt cancel, temp-space rules.
 
 chdman (from MAME) is the preferred way to read and write CHDs: it is much faster than the pure-Python reader
 (:mod:`romorg.chd`), above all for FLAC audio. Nothing here is required: without chdman the app still scans
@@ -8,9 +8,11 @@ Detection order (first hit wins): ``$ROMORG_CHDMAN`` / the ``chdman_path`` setti
 ``PATH``, the Flatpak ``org.mamedev.MAME`` (``flatpak run --command=chdman``), common tool folders
 (``~/.local/bin``, ``~/Emulation/tools``, EmuDeck / RetroDECK), ``/usr/bin`` and ``/usr/local/bin``.
 
-Temp files (an extracted disc is about its full raw size, a created CHD up to that) always go to a hidden
-folder **inside the ROM folder** (same filesystem as the ROMs; never ``/tmp``, which may be a small RAM disk):
-``<root>/.romorg-chd-<id>/`` with a ``pid`` file. :func:`sweep_stale` removes the folders of dead runs.
+Scratch space (Amendment 12): an extracted disc is about its full raw size. It is decoded in RAM when that is safe,
+else in the app's own cache folder, never inside the ROM folder - see :mod:`romorg.tempspace` (:func:`acquire_workdir`).
+The NEW CHD of a conversion is the intended output, not scratch: the caller creates it next to its final destination
+as a ``.part`` file. :func:`sweep_stale` only removes leftover ``.romorg-chd-*`` folders (with a ``pid`` file) that
+earlier versions created inside ROM folders.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from . import tempspace
+
 TEMP_PREFIX = ".romorg-chd-"
 ENV_VAR = "ROMORG_CHDMAN"
 CONFIG_KEY = "chdman_path"
@@ -46,7 +50,7 @@ INSTALL_HINT = (
     "chdman was not found. It ships with MAME: open Discover (the app store in Desktop Mode), search for "
     "\"MAME\" (org.mamedev.MAME) and install it, or install any chdman and put it on PATH, or set its path "
     "in the app (chdman path). The pure-Python reader still scans and verifies your CHDs; only converting "
-    "raw Redump sets to CHD needs chdman."
+    "raw Redump sets (cue/bin, gdi, iso) to CHD needs chdman."
 )
 
 
@@ -56,6 +60,10 @@ class ChdmanError(Exception):
     def __init__(self, message: str, cancelled: bool = False) -> None:
         super().__init__(message)
         self.cancelled = cancelled
+
+
+class NoTempSpace(ChdmanError):
+    """Neither RAM nor the disk scratch folder can hold the extraction (the caller uses the pure-Python reader)."""
 
 
 @dataclass
@@ -212,21 +220,33 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def make_workdir(root: Path) -> Path:
-    """A fresh hidden work folder inside ``root`` (the ROM filesystem), owned by this process."""
-    work = Path(root) / f"{TEMP_PREFIX}{uuid.uuid4().hex[:10]}"
-    work.mkdir()
-    (work / "pid").write_text(str(os.getpid()), encoding="ascii")
-    return work
+def acquire_workdir(chdman: Optional[Chdman], track_bytes: int, library: Sequence[Path] = ()) -> tempspace.Workdir:
+    """A marked scratch folder for extracting ``track_bytes`` of tracks (RAM > disk, never inside ``library``).
+
+    Candidates a Flatpak chdman cannot see are skipped. Raises :class:`NoTempSpace` (message = why not)."""
+    def accept(root: Path) -> str:
+        if chdman is None or chdman.kind != "flatpak":
+            return ""
+        perms = flatpak_permissions(chdman.flatpak_app)
+        if perms is not None and not flatpak_covers(perms, Path(root).resolve()):
+            return f"the Flatpak {chdman.flatpak_app} cannot see it"
+        return ""
+
+    try:
+        return tempspace.acquire(tempspace.required_bytes(track_bytes), library, accept)
+    except tempspace.TempUnavailable as exc:
+        raise NoTempSpace(f"not enough temporary space for the decode ({exc})") from exc
 
 
-def remove_workdir(work: Optional[Path]) -> None:
+def remove_workdir(work: Any) -> None:
+    """Delete a scratch folder (:class:`tempspace.Workdir` or path); only ever our marked folders."""
     if work is not None:
-        shutil.rmtree(work, ignore_errors=True)
+        tempspace.remove(work.path if isinstance(work, tempspace.Workdir) else Path(work))
 
 
 def sweep_stale(root: Path, max_age: float = STALE_AGE) -> list[str]:
-    """Delete leftover ``.romorg-chd-*`` folders of dead runs directly inside ``root``; returns the names."""
+    """Delete leftover ``.romorg-chd-*`` folders (with a ``pid`` marker) of dead runs directly inside ``root`` (made by
+    versions before Amendment 12); returns the names."""
     removed: list[str] = []
     try:
         entries = list(Path(root).iterdir())
@@ -238,7 +258,7 @@ def sweep_stale(root: Path, max_age: float = STALE_AGE) -> list[str]:
         try:
             pid = int((p / "pid").read_text(encoding="ascii").strip() or 0)
         except (OSError, ValueError):
-            pid = 0
+            continue            # no pid marker: not ours, never deleted
         try:
             age = time.time() - p.stat().st_mtime
         except OSError:
@@ -437,6 +457,33 @@ def create_cd(chdman: Chdman, source: Path, out_chd: Path, progress: Optional[Pr
     if out_chd.exists():
         raise ChdmanError(f"refusing to overwrite {out_chd}")
     run(chdman, ["createcd", "-i", str(source), "-o", str(out_chd)], progress, "Compressing", cancel)
+    if not out_chd.is_file():
+        raise ChdmanError("chdman did not write the CHD")
+
+
+def extract_dvd(chdman: Chdman, chd: Path, workdir: Path, size: int = 0,
+                progress: Optional[ProgressFn] = None, cancel: Any = None) -> Extraction:
+    """``chdman extractdvd`` of a DVD CHD (``createdvd``) into ``workdir/disc.iso`` (one track of ``size`` bytes)."""
+    check_access(chdman, Path(chd).parent)
+    check_access(chdman, workdir)
+    iso = workdir / "disc.iso"
+    run(chdman, ["extractdvd", "-i", str(chd), "-o", str(iso)], progress, "Extracting", cancel)
+    if not iso.is_file():
+        raise ChdmanError("chdman did not write disc.iso")
+    got = iso.stat().st_size
+    if size and got != size:
+        raise ChdmanError("the extracted ISO size does not match the CHD's metadata")
+    return Extraction(iso, [ExtractedTrack(1, iso, 0, got)])
+
+
+def create_dvd(chdman: Chdman, source: Path, out_chd: Path, progress: Optional[ProgressFn] = None,
+               cancel: Any = None) -> None:
+    """``chdman createdvd -i <iso> -o out.chd`` (``out_chd`` must not exist)."""
+    check_access(chdman, Path(source).parent)
+    check_access(chdman, Path(out_chd).parent)
+    if out_chd.exists():
+        raise ChdmanError(f"refusing to overwrite {out_chd}")
+    run(chdman, ["createdvd", "-i", str(source), "-o", str(out_chd)], progress, "Compressing", cancel)
     if not out_chd.is_file():
         raise ChdmanError("chdman did not write the CHD")
 

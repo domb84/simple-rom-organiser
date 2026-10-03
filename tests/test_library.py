@@ -208,7 +208,7 @@ class AuditFixes(unittest.TestCase):
 
     def test_incomplete_reason_mentions_disks_under_another_identity(self) -> None:
         names = ["B.A.T. II (1992)(Ubi Soft)(DE)(Disk 1 of 2)", "B.A.T. II (1992)(Ubi Soft)(Disk 2 of 2)"]
-        _i, sel, by = run(names, ALL_LANGS)       # (DE) = German: every language selected here
+        _i, sel, by = run(names, replace(ALL_LANGS, borrow_other_editions=False))   # (DE) = German; every language
         d = by[names[0]]
         self.assertEqual((d.action, d.missing, d.elsewhere), (INCOMPLETE, (2,), (2,)))
         self.assertIn("different country / language / edition", d.reason)
@@ -664,7 +664,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in cat if e["kind"] == "exclude"], list(tags.RULES))
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
         opts = {e["id"]: e for e in cat if e["kind"] == "option"}
-        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "rescue", "languages"})
+        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])
@@ -788,6 +788,192 @@ class ProfilePersistence(unittest.TestCase):
                          (("En",), True, ("Europe", "USA", "World", "Japan")))
 
 
+class BorrowTests(unittest.TestCase):
+    """Amendment 12: disks of other editions complete a set (``borrow_other_editions``)."""
+
+    EN = replace(library.default_profile(AMIGA), languages=("En",))
+    OFF = replace(EN, borrow_other_editions=False)
+
+    def go(self, names, profile=None):
+        return run(names, profile or self.EN)
+
+    def test_default_is_on_for_amiga_games_only(self) -> None:
+        self.assertTrue(library.default_profile(AMIGA).borrow_other_editions)
+        self.assertFalse(library.default_profile(GBA).borrow_other_editions)
+        self.assertFalse(LibraryProfile.latest_only_profile().borrow_other_editions)
+        info = library.profile_info(AMIGA)
+        self.assertTrue(info["available"]["borrow_editions"])
+        self.assertFalse(library.profile_info(GBA)["available"]["borrow_editions"])
+        self.assertTrue(info["profile"]["borrow_other_editions"])
+        opt = [e for e in info["catalog"] if e["id"] == "borrow_editions"][0]
+        self.assertEqual((opt["field"], opt["default"], opt["kind"]), ("borrow_other_editions", True, "option"))
+        self.assertIn("country", opt["description"])
+        self.assertIn("never borrowed", opt["description"])
+
+    def test_old_profiles_load_with_the_default_and_roundtrip(self) -> None:
+        old = {"exclude": ["demo"], "latest_only": True, "best_variant": True, "complete_only": True,
+               "languages": ["En"]}
+        q = LibraryProfile.from_dict(old, library.default_profile(AMIGA))
+        self.assertTrue(q.borrow_other_editions)
+        off = replace(q, borrow_other_editions=False)
+        self.assertFalse(LibraryProfile.from_dict(off.to_dict(), library.default_profile(AMIGA)).borrow_other_editions)
+        cfg: dict = {}
+        library.store_profile(cfg, AMIGA, off)
+        self.assertFalse(library.load_profile(cfg, AMIGA).borrow_other_editions)
+        self.assertTrue(library.load_profile({"library": {AMIGA.name: old}}, AMIGA).borrow_other_editions)
+
+    D1 = "Foo (1991)(Pub)(Disk 1 of 3)"
+    D3 = "Foo (1991)(Pub)(Disk 3 of 3)"
+    D2_DE = "Foo (1991)(Pub)(DE)(Disk 2 of 3)"
+
+    def test_missing_disk_from_another_country_even_in_an_unselected_language(self) -> None:
+        names = [self.D1, self.D3, self.D2_DE]
+        _i, sel, by = self.go(names)
+        self.assertEqual([s.name for s in sel.sets], ["Foo (1991)(Pub)"])
+        s = sel.sets[0]
+        self.assertEqual({k: names[v - 1] for k, v in s.slots.items()}, {1: self.D1, 2: self.D2_DE, 3: self.D3})
+        self.assertEqual(sorted(s.borrowed), [2])
+        b = s.borrowed[2]
+        self.assertEqual((b["name"], b["edition"], b["differences"]), (self.D2_DE + ".adf", "(DE)", ["country", "language"]))
+        self.assertEqual(b["text"], f"disk 2 borrowed from the (DE) edition ({self.D2_DE})")
+        # kept - not excluded for language, not superseded - and tagged machine-readably
+        d = by[self.D2_DE]
+        self.assertEqual((d.action, d.codes, d.set_id), (KEEP, (library.BORROWED_CODE,), s.id))
+        self.assertIn("borrowed as disk 2 of Foo (1991)(Pub)", d.reason)
+        self.assertEqual({by[self.D1].action, by[self.D3].action}, {KEEP})
+        self.assertEqual(sel.incomplete, [])
+        self.assertEqual(sel.borrow_summary(), {"sets": 1, "disks": 1, "by_difference": {"country": 1, "language": 1}})
+
+    def test_option_off_restores_the_old_behaviour(self) -> None:
+        names = [self.D1, self.D3, self.D2_DE]
+        _i, sel, by = self.go(names, self.OFF)
+        self.assertEqual(sel.sets, [])
+        self.assertEqual((by[self.D1].action, by[self.D3].action, by[self.D2_DE].action),
+                         (INCOMPLETE, INCOMPLETE, EXCLUDED))
+        self.assertEqual(by[self.D2_DE].codes, ("language",))
+
+    def test_elsewhere_text_is_unchanged_when_off(self) -> None:
+        names = ["B.A.T. II (1992)(Ubi Soft)(DE)(Disk 1 of 2)", "B.A.T. II (1992)(Ubi Soft)(Disk 2 of 2)"]
+        _i, sel, by = run(names, replace(ALL_LANGS, borrow_other_editions=False))
+        self.assertIn("different country / language / edition", by[names[0]].reason)
+        _i, sel, by = run(names, ALL_LANGS)               # option on: the neutral disk 2 completes the DE set
+        self.assertEqual([sel.decisions[k].action for k in (1, 2)], [KEEP, KEEP])
+        self.assertEqual(sel.sets[0].name, "B.A.T. II (1992)(Ubi Soft)(DE)")
+        self.assertEqual(sel.sets[0].borrowed[2]["differences"], ["country", "language"])
+
+    def test_the_other_editions_remaining_disks_keep_their_classification(self) -> None:
+        de = [f"Foo (1991)(Pub)(DE)(Disk {i} of 3)" for i in (1, 2, 3)]
+        names = [self.D1, self.D3, *de]
+        _i, sel, by = self.go(names)
+        self.assertEqual(by[de[1]].action, KEEP)                   # borrowed
+        self.assertEqual((by[de[0]].action, by[de[2]].action), (EXCLUDED, EXCLUDED))   # German, not selected
+        self.assertEqual(by[de[0]].codes, ("language",))
+        self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)"])
+        # German selected too: the German set is complete on its own and kept; the English one still completes
+        _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De")))
+        self.assertEqual({d.action for d in by.values()}, {KEEP})
+        self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)", "Foo (1991)(Pub)(DE)"])
+
+    def test_own_edition_comes_first(self) -> None:
+        d2 = "Foo (1991)(Pub)(Disk 2 of 3)"
+        _i, sel, by = self.go([self.D1, d2, self.D3, self.D2_DE])
+        self.assertEqual(sel.borrow_summary()["sets"], 0)
+        self.assertEqual(by[d2].action, KEEP)
+        self.assertEqual(by[self.D2_DE].action, EXCLUDED)          # the German disk stays out
+
+    def test_language_preference_then_newest(self) -> None:
+        fr = "Foo (1991)(Pub)(FR)(Disk 2 of 3)"
+        _i, sel, _by = self.go([self.D1, self.D3, self.D2_DE, fr], replace(self.EN, languages=("En", "Fr")))
+        self.assertEqual(sel.sets[0].borrowed[2]["name"], fr + ".adf")        # a selected language wins
+        older = "Foo (1990)(Pub)(ES)(Disk 2 of 3)"
+        newer = "Foo (1992)(Pub)(IT)(Disk 2 of 3)"
+        _i, sel, _by = self.go([self.D1, self.D3, older, newer])
+        self.assertEqual(sel.sets[0].borrowed[2]["name"], newer + ".adf")     # neither selected: newest
+        self.assertIn("year", sel.sets[0].borrowed[2]["differences"])
+
+    def test_quality_exclusions_are_never_borrowed(self) -> None:
+        for bad in ("[b corrupt file]", "[v Saddam 1]", "[m]", "[o]", "[u]", "[faked x]", "[unreleased]"):
+            _i, sel, by = self.go([self.D1, self.D3, f"Foo (1991)(Pub)(DE)(Disk 2 of 3){bad}"])
+            self.assertEqual(sel.sets, [], bad)
+            self.assertEqual(by[self.D1].action, INCOMPLETE, bad)
+        for status in ("(pre-release)", "(proto)", "(demo-playable)", "(beta)"):
+            _i, sel, by = self.go([self.D1, self.D3, f"Foo (1991)(Pub)(DE){status}(Disk 2 of 3)"])
+            self.assertEqual(sel.sets, [], status)
+        # ... but with the rule switched off the disk is a normal candidate again
+        names = [self.D1 + "[m]", self.D3 + "[m]", "Foo (1991)(Pub)(DE)(Disk 2 of 3)[m]"]
+        on = replace(self.EN, exclude=self.EN.exclude - {"modified"})
+        self.assertEqual(len(self.go(names, on)[1].sets), 1)
+
+    def test_same_title_publisher_and_disk_count_are_required(self) -> None:
+        for other in ("Foo (1991)(Other)(DE)(Disk 2 of 3)", "Foo (1991)(Pub)(DE)(Disk 2 of 4)",
+                      "Bar (1991)(Pub)(DE)(Disk 2 of 3)", "Foo II (1991)(Pub)(DE)(Disk 2 of 3)"):
+            _i, sel, by = self.go([self.D1, self.D3, other])
+            self.assertEqual(sel.sets, [], other)
+
+    def test_chipset_must_fit(self) -> None:
+        aga1 = "Foo (1991)(Pub)(AGA)(Disk 1 of 2)"
+        aga3 = "Foo (1991)(Pub)(AGA)(Disk 3 of 3)"
+        plain2 = "Foo (1991)(Pub)(DE)(Disk 2 of 2)"
+        _i, sel, _b = self.go([aga1, plain2])                         # an AGA set never takes an OCS disk
+        self.assertEqual(sel.sets, [])
+        _i, sel, _b = self.go([aga1, "Foo (1991)(Pub)(DE)(AGA)(Disk 2 of 2)"])
+        self.assertEqual(len(sel.sets), 1)
+        _i, sel, _b = self.go([aga1, "Foo (1991)(Pub)(DE)(OCS-AGA)(Disk 2 of 2)"])   # a hybrid disk runs on both
+        self.assertEqual(len(sel.sets), 1)
+        ocs1 = "Foo (1991)(Pub)(Disk 1 of 2)"
+        _i, sel, _b = self.go([ocs1, "Foo (1991)(Pub)(DE)(AGA)(Disk 2 of 2)"])        # an OCS set never takes AGA-only
+        self.assertEqual(sel.sets, [])
+        _i, sel, _b = self.go([ocs1, "Foo (1991)(Pub)(DE)(OCS-AGA)(Disk 2 of 2)"])
+        self.assertEqual(len(sel.sets), 1)
+        _i, sel, _b = self.go([ocs1, "Foo (1991)(Pub)(DE)(ECS)(Disk 2 of 2)"])        # ECS counts as OCS
+        self.assertEqual(len(sel.sets), 1)
+        self.assertEqual(aga3[:3], "Foo")
+
+    def test_dump_flags_must_fit_disk_1(self) -> None:
+        d1 = "Foo (1991)(Pub)(Disk 1 of 2)[cr X]"
+        _i, sel, _b = self.go([d1, "Foo (1991)(Pub)(DE)(Disk 2 of 2)[cr Y]"])         # a different crack
+        self.assertEqual(sel.sets, [])
+        _i, sel, _b = self.go([d1, "Foo (1991)(Pub)(DE)(Disk 2 of 2)[cr]"])           # a generic crack flag fits
+        self.assertEqual(len(sel.sets), 1)
+        _i, sel, _b = self.go([d1, "Foo (1991)(Pub)(DE)(Disk 2 of 2)"])               # a bare disk fits any crack
+        self.assertEqual(len(sel.sets), 1)
+        _i, sel, _b = self.go(["Foo (1991)(Pub)(Disk 1 of 2)", "Foo (1991)(Pub)(DE)(Disk 2 of 2)[cr Y]"])
+        self.assertEqual(sel.sets, [])                                                 # uncracked 1 + cracked 2
+        # crack-compatible candidates win over incompatible ones, whatever their language
+        _i, sel, _b = self.go([d1, "Foo (1991)(Pub)(DE)(Disk 2 of 2)[cr Y]", "Foo (1991)(Pub)(FR)(Disk 2 of 2)"])
+        self.assertEqual(sel.sets[0].borrowed[2]["edition"], "(FR)")
+
+    def test_borrowing_only_when_the_group_has_no_complete_set(self) -> None:
+        own = [f"Foo (1991)(Pub)(Disk {i} of 3)" for i in (1, 2, 3)]
+        newer = "Foo v1.1 (1992)(Pub)(Disk 1 of 3)[cr Q]"
+        _i, sel, by = self.go([*own, newer, self.D2_DE])
+        self.assertEqual(sel.borrow_summary()["sets"], 0)           # newer disk 1 + own disks 2/3 is complete as before
+        self.assertEqual(by[own[0]].action, SUPERSEDED)
+        self.assertEqual(by[self.D2_DE].action, EXCLUDED)
+        _i, sel, by = self.go([*own, self.D2_DE])
+        self.assertEqual((sel.borrow_summary()["sets"], by[self.D2_DE].action), (0, EXCLUDED))
+
+    def test_idempotent_and_borrowed_disk_never_superseded(self) -> None:
+        names = [self.D1, self.D3, self.D2_DE, "Foo (1990)(Pub)(DE)(Disk 2 of 3)", "Foo (1991)(Pub)(DE)(Disk 1 of 3)"]
+        items, sel, by = self.go(names)
+        kept = [it for it in items if sel.decisions[it.key].action == KEEP]
+        again = library.select(kept, self.EN, AMIGA)
+        self.assertEqual([again.decisions[it.key].action for it in kept], [KEEP] * len(kept))
+        self.assertEqual([s.name for s in again.sets], [s.name for s in sel.sets])
+        # the older German disk 2 is a plain excluded (language) file, the newest one is borrowed
+        self.assertEqual(by["Foo (1990)(Pub)(DE)(Disk 2 of 3)"].action, EXCLUDED)
+        self.assertEqual(by[self.D2_DE].action, KEEP)
+
+    def test_workbench_and_kickstart_disks_never_borrow(self) -> None:
+        names = ["Workbench v1.3 (1988)(Commodore)(Disk 1 of 2)", "Workbench v1.3 (1988)(Commodore)(DE)(Disk 2 of 2)"]
+        for dat in (WB, KSD):
+            items = amiga_items(names, dat)
+            sel = library.select(items, self.EN, AMIGA)
+            self.assertEqual(sel.borrow_summary()["sets"], 0)
+            self.assertEqual({d.action for d in sel.decisions.values()}, {INCOMPLETE})
+
+
+
 class IdempotenceProperty(unittest.TestCase):
     """Re-selecting the kept output changes nothing, for random profiles and name sets."""
 
@@ -800,6 +986,10 @@ class IdempotenceProperty(unittest.TestCase):
         "C (1990)(P)(ECS-AGA)(Disk 1 of 3)(Program)[cr H]", "C (1990)(P)(ECS-AGA)(Disk 2 of 3)(AGA Data)",
         "C (1990)(P)(ECS-AGA)(Disk 3 of 3)(ECS Data)", "D (1990)(P)(FR)", "D (1990)(P)(FR)[f x]",
         "D (1990)(P)(M3)", "E (1990)(P)[m]", "E (1990)(P)[cr X][m bam]",
+        "F (1991)(P)(Disk 1 of 3)[cr Q]", "F (1991)(P)(Disk 3 of 3)", "F (1991)(P)(DE)(Disk 2 of 3)",
+        "F (1991)(P)(FR)(Disk 2 of 3)[cr Q]", "F (1992)(P)(FR)(Disk 1 of 3)", "F (1992)(P)(DE)(Disk 3 of 3)",
+        "G (1991)(P)(AGA)(Disk 1 of 2)", "G (1991)(P)(DE)(Disk 2 of 2)", "G (1991)(P)(DE)(AGA)(Disk 2 of 2)",
+        "G (1991)(P)(Disk 2 of 2)[b]",
     ]
     NI_NAMES = [
         "G (USA)", "G (USA) (Rev 1)", "G (Europe) (En,Fr,De)", "G (Europe) (Fr,De) (Rev 1)", "G (Japan)", "G (Japan) (En)",
@@ -816,7 +1006,7 @@ class IdempotenceProperty(unittest.TestCase):
             keep_flags=frozenset(f for f in tags.KEEP_FLAGS if rng.random() < 0.8),
             rescue_only_dump=rng.random() < 0.5,
             region_priority=tuple(rng.sample(["Europe", "USA", "World", "Japan", "Germany"], rng.randint(0, 4))),
-            one_per_game=rng.random() < 0.7)
+            one_per_game=rng.random() < 0.7, borrow_other_editions=rng.random() < 0.7)
         items = style_items(names)
         sel = library.select(items, prof, plat)
         kept = [it for it in items if sel.decisions[it.key].action == KEEP]

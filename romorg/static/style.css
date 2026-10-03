@@ -418,3 +418,5 @@ tr.row-missing .game-name { color: var(--muted); }
 .badge.verified { color: var(--ok); border-color: var(--ok); }
 .badge.identified { color: var(--info); border-color: var(--info); }
 .badge.raw { color: var(--warn); border-color: var(--warn); }
+
+.borrow-note { color: var(--muted); margin-top: 2px; }

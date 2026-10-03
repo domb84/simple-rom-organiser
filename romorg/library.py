@@ -30,6 +30,7 @@ KEEP, EXCLUDED, SUPERSEDED, INCOMPLETE = "keep", "excluded", "superseded", "inco
 LANGUAGE_CODE = "language"
 FLAG_CODES = tuple(f"flag_{f}" for f in tags.KEEP_FLAGS)
 ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,)
+BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a set of another edition
 
 _RULE_SHORT = {
     "bad_dump": "bad dump", "virus": "virus-infected", "bad_size": "over/under dump",
@@ -77,6 +78,9 @@ class LibraryProfile:
     rescue_only_dump: bool = False               # keep-every-version DATs: keep the sole [m]/[o]/[u] dump
     region_priority: tuple[str, ...] = tags.DEFAULT_REGION_PRIORITY   # No-Intro: best region first
     one_per_game: bool = True                    # No-Intro: exactly one variant per game
+    # Amiga Games: a disk slot nobody has in the same edition may be filled by a disk of another edition
+    # (country / language / edition flags / version / year) of the same title, publisher and disk count.
+    borrow_other_editions: bool = True
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -90,7 +94,8 @@ class LibraryProfile:
                 "best_variant": self.best_variant, "complete_only": self.complete_only,
                 "languages": list(self.languages), "keep_flags": sorted(self.keep_flags),
                 "rescue_only_dump": self.rescue_only_dump,
-                "region_priority": list(self.region_priority), "one_per_game": self.one_per_game}
+                "region_priority": list(self.region_priority), "one_per_game": self.one_per_game,
+                "borrow_other_editions": self.borrow_other_editions}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -121,17 +126,23 @@ class LibraryProfile:
                    complete_only=flag("complete_only", base.complete_only),
                    languages=langs, keep_flags=keep,
                    rescue_only_dump=flag("rescue_only_dump", base.rescue_only_dump),
-                   region_priority=regions, one_per_game=flag("one_per_game", base.one_per_game))
+                   region_priority=regions, one_per_game=flag("one_per_game", base.one_per_game),
+                   borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
         """The legacy ``latest_only`` flag: no exclusions, no filters, no best variant / completeness."""
         return cls(exclude=frozenset(), latest_only=True, best_variant=False, complete_only=False,
-                   languages=(), one_per_game=False)
+                   languages=(), one_per_game=False, borrow_other_editions=False)
 
 
 def _dats(platform: Any, attr: str) -> tuple[str, ...]:
     return tuple(getattr(platform, attr, ()) or ())
+
+
+def _borrow_scope(platform: Any) -> bool:
+    """Borrowing disks of other editions applies to the TOSEC "Games"-style DATs (``best_variant_dats``) only."""
+    return bool(_dats(platform, "best_variant_dats")) and _style_of_platform(platform) == STYLE_TOSEC
 
 
 def default_profile(platform: "Platform") -> LibraryProfile:
@@ -142,7 +153,8 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         best_variant=bool(_dats(platform, "best_variant_dats")),
         complete_only=bool(_dats(platform, "m3u_dats")),
         languages=("En",) if _dats(platform, "language_dats") else (),
-        one_per_game=bool(_dats(platform, "region_dats")))
+        one_per_game=bool(_dats(platform, "region_dats")),
+        borrow_other_editions=_borrow_scope(platform))
 
 
 def load_profile(cfg: dict, platform: "Platform") -> LibraryProfile:
@@ -189,6 +201,7 @@ class Decision:
     missing: tuple[int, ...] = ()
     reason: str = ""              # human text
     elsewhere: tuple[int, ...] = ()  # incomplete: missing disks the user has under another identity
+    # keep: ``codes == ("borrowed",)`` marks a disk of another edition used to complete a set (``BORROWED_CODE``)
 
 
 @dataclass
@@ -202,6 +215,8 @@ class ChosenSet:
     labels: dict[int, str]
     flags: tuple[str, ...]
     cracked: bool
+    # slot -> {"key": Item.key, "name": rom name, "edition": "(DE)", "differences": ["country", ...], "text": note}
+    borrowed: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -247,6 +262,21 @@ class Selection:
             for c in d.codes:
                 anyc[c] = anyc.get(c, 0) + 1
         return {"exclusive": excl, "any": anyc}
+
+    def borrow_summary(self) -> dict[str, Any]:
+        """``{"sets": playlists completed with borrowed disks, "disks": borrowed disks, "by_difference": {kind: disks}}``."""
+        by: dict[str, int] = {}
+        disks = 0
+        sets = 0
+        for cs in self.sets:
+            if not cs.borrowed:
+                continue
+            sets += 1
+            for b in cs.borrowed.values():
+                disks += 1
+                for d in b.get("differences", ()):
+                    by[d] = by.get(d, 0) + 1
+        return {"sets": sets, "disks": disks, "by_difference": by}
 
     def vanish_summary(self) -> dict[str, Any]:
         """``{"titles": n, "by_reason": {code: n}, "by_code": {code: n}}`` over :attr:`vanished`."""
@@ -377,6 +407,7 @@ class _Set:
     lang_rank: int = 0            # best selected language the set offers (0 = most preferred)
     platform_rank: int = 0        # tags.platform_rank of the anchor (0 = CD32 / best)
     part: tuple = ()              # tags.partition_key of the anchor (language + chipset)
+    borrowed: dict = field(default_factory=dict)   # slot -> note dict of a disk of another edition (see ChosenSet)
 
     @property
     def refs(self) -> tuple:
@@ -390,9 +421,122 @@ def _disk_info(t: tags.Tags) -> Optional[tuple[int, int]]:
     return d[1], d[2]
 
 
+_PAREN_RE = re.compile(r"\(([^()]*)\)")
+_DATE_TOKEN_RE = re.compile(r"^(?:[0-9x?]{4})(?:-[0-9x?]{2}(?:-[0-9x?]{2})?)?$", re.IGNORECASE)
+
+
+def _edition_text(name: str, publisher: str) -> str:
+    """The country / language / edition tokens of a TOSEC name as written, e.g. ``(DE)`` or ``(de)(M3)``
+    (the parentheses between the publisher and the disk token); ``""`` when there are none."""
+    from . import m3u
+
+    stem = tags._EXT_RE.sub("", name.strip())
+    m = m3u._DISK_TOKEN.search(stem)
+    head = stem[:m.start()] if m else stem
+    groups = [g for g in _PAREN_RE.findall(head) if not _DATE_TOKEN_RE.match(g.strip())]
+    if groups and publisher and groups[0] == publisher:
+        groups = groups[1:]
+    return "".join(f"({g})" for g in groups)
+
+
+class _Borrow:
+    """Disks of other editions that may complete a set (``LibraryProfile.borrow_other_editions``).
+
+    One instance per DAT: ``pool`` indexes every eligible multi-disk file - plus the files excluded ONLY by the
+    language filter (the user accepts a disk in an unselected language) - by ``(title, publisher, disk total)``
+    and disk number. Quality exclusions (bad dump, virus, pre-release, demo, ...) and keep-flag exclusions never
+    enter it. A candidate must also have the anchor's status tokens (a demo never completes a game) and a
+    compatible chipset (``tags.chipset_compatible``)."""
+
+    def __init__(self, profile: LibraryProfile, items: Iterable[Item]) -> None:
+        self.profile = profile
+        self.by_key: dict[int, Item] = {}
+        self.tags: dict[int, tags.Tags] = {}
+        self.pool: dict[tuple, dict[int, list[Item]]] = {}
+        for it in sorted(items, key=lambda i: (i.rom.name, i.key)):
+            t = tags.parse_name(it.rom.name, STYLE_TOSEC)
+            d = _disk_info(t)
+            if d is None:
+                continue
+            self.by_key[it.key] = it
+            self.tags[it.key] = t
+            self.pool.setdefault((t.title.casefold(), t.publisher.casefold(), d[1]), {}) \
+                .setdefault(d[0], []).append(it)
+
+    def _tier(self, anchor: tags.Tags, t: tags.Tags) -> int:
+        if tags.identity_key(t) == tags.identity_key(anchor) and tags.partition_key(t) == tags.partition_key(anchor):
+            return 0              # the same edition (a different version / date)
+        langs = self.profile.languages
+        if not langs or tags.variant_languages(t) & set(langs):
+            return 1              # another edition, but in a selected (or neutral) language
+        return 2
+
+    @staticmethod
+    def differences(anchor: tags.Tags, t: tags.Tags) -> list[str]:
+        out: list[str] = []
+        if anchor.regions != t.regions:
+            out.append("country")
+        if tags.variant_languages(anchor) != tags.variant_languages(t) \
+                or (() if anchor.languages_implied else anchor.languages) != (() if t.languages_implied else t.languages):
+            out.append("language")
+        if tags.identity_key(anchor)[4] != tags.identity_key(t)[4]:
+            out.append("edition")
+        if anchor.version != t.version:
+            out.append("version")
+        if tags.date_key(anchor.date) != tags.date_key(t.date):
+            out.append("year")
+        return out
+
+    def fill(self, ss: Any, anchor: Item, anchor_tags: tags.Tags, group_names: Sequence[str]
+             ) -> Optional[dict[int, tuple[Item, dict[str, Any]]]]:
+        """Disks of other editions for EVERY missing slot of ``ss`` (an anchored, incomplete ``m3u.SlotSet``),
+        or None when any slot cannot be filled (no best-effort sets)."""
+        from . import m3u
+
+        a = anchor_tags
+        a_status = tags.identity_key(a)[5]
+        entry = self.pool.get((a.title.casefold(), a.publisher.casefold(), ss.total), {})
+        taken = {c.ref for c in ss.slots.values()}
+        out: dict[int, tuple[Item, dict[str, Any]]] = {}
+        for slot in ss.missing:
+            opts: list[Item] = []
+            seen: set[str] = set()
+            for it in entry.get(slot, ()):
+                if it.key in taken or it.rom.name in seen:
+                    continue
+                t = self.tags[it.key]
+                if tags.identity_key(t)[5] != a_status or not tags.chipset_compatible(a, t):
+                    continue
+                seen.add(it.rom.name)
+                opts.append(it)
+            if not opts:
+                return None
+            cands = [m3u.DiskCand(ref=it.key, name=it.rom.name) for it in opts]
+            vkeys = tags.group_version_keys(sorted({*group_names, *(c.name for c in cands)}), STYLE_TOSEC)
+            best = m3u.pick_borrowed(cands, ss.flags, vkeys, lambda c: self._tier(a, self.tags[c.ref]))
+            if best is None:
+                return None
+            it = self.by_key[best.ref]
+            t = self.tags[it.key]
+            diffs = self.differences(a, t)
+            edition = _edition_text(it.rom.name, t.publisher)
+            if {"country", "language", "edition"} & set(diffs):
+                text = f"disk {slot} borrowed from the {edition or 'untagged'} edition ({_stem(it.rom.name)})"
+            else:
+                text = f"disk {slot} borrowed from another version of the same edition ({_stem(it.rom.name)})"
+            out[slot] = (it, {"key": it.key, "name": it.rom.name, "edition": edition,
+                              "differences": diffs, "text": text})
+            taken.add(it.key)
+        return out
+
+
 def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
-                profile: Optional[LibraryProfile] = None) -> tuple[list[_Set], list[_Set]]:
-    """``(complete sets, incomplete sets)`` of one identity group."""
+                profile: Optional[LibraryProfile] = None,
+                borrow: Optional[_Borrow] = None) -> tuple[list[_Set], list[_Set]]:
+    """``(complete sets, incomplete sets)`` of one identity group.
+
+    With ``borrow`` an anchored incomplete set whose disk count has no complete set in the group is completed
+    by disks of other editions (every missing slot must be fillable)."""
     from . import m3u
 
     parsed = {it.key: tags.parse_name(it.rom.name, STYLE_TOSEC) for it in group}
@@ -400,9 +544,16 @@ def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
     complete: list[_Set] = []
     partial: list[_Set] = []
 
+    def tags_of(it: Item) -> tags.Tags:
+        t = parsed.get(it.key)
+        if t is None:
+            t = parsed[it.key] = tags.parse_name(it.rom.name, STYLE_TOSEC)
+        return t
+
     def make(anchor: Item, slots: dict[int, Item], total: int, labels: dict[int, str],
-             flags: tuple[str, ...], name: str, missing: tuple[int, ...]) -> _Set:
-        ts = [parsed[it.key] for it in slots.values()]
+             flags: tuple[str, ...], name: str, missing: tuple[int, ...],
+             borrowed: Optional[dict[int, dict[str, Any]]] = None) -> _Set:
+        ts = [tags_of(it) for it in slots.values()]
         at = parsed[anchor.key]
         langs = frozenset().union(*(tags.variant_languages(t) for t in ts))
         return _Set(
@@ -412,7 +563,8 @@ def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
             mods=sum(tags.modification_count(t) for t in ts),
             complete=not missing, missing=missing,
             lang_rank=_lang_rank(langs, profile) if profile is not None else 0,
-            platform_rank=tags.platform_rank(at), part=tags.partition_key(at))
+            platform_rank=tags.platform_rank(at), part=tags.partition_key(at),
+            borrowed=dict(borrowed or {}))
 
     multi: list[Item] = []
     for it in sorted(group, key=lambda i: (i.rom.name, i.key)):
@@ -428,10 +580,28 @@ def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
         for it in multi:
             first.setdefault(it.rom.name, it)
         cands = [m3u.DiskCand(ref=it.key, name=name) for name, it in first.items()]
-        for ss in m3u.resolve_slots(cands, vkeys):
+        found = m3u.resolve_slots(cands, vkeys)
+        have_complete = {ss.total for ss in found if ss.complete}
+        for ss in found:
             slots = {i: by_key[c.ref] for i, c in ss.slots.items()}
             anchor = by_key[ss.anchor.ref] if ss.anchor is not None else slots[min(slots)]
             flags = tuple(f for f in ss.flags if not m3u.is_neutral_flag(f))
+            if borrow is not None and ss.anchor is not None and not ss.complete \
+                    and ss.total not in have_complete:
+                filled = borrow.fill(ss, anchor, parsed[anchor.key], [it.rom.name for it in group])
+                if filled is not None:
+                    allslots = dict(slots)
+                    notes: dict[int, dict[str, Any]] = {}
+                    for slot, (bit, note) in filled.items():
+                        allslots[slot] = bit
+                        notes[slot] = note
+                    allslots = dict(sorted(allslots.items()))
+                    names = [m3u.parse_disk_name(it.rom.name) for it in allslots.values()]
+                    labels = {i: (d.label if d else "") for i, d in zip(allslots, names)}
+                    name = m3u._slot_name(ss.title, ss.flags, [d for d in names if d])
+                    s = make(anchor, allslots, ss.total, labels, flags, name, (), notes)
+                    complete.append(s)
+                    continue
             s = make(anchor, slots, ss.total, dict(ss.labels), flags, ss.name, tuple(ss.missing))
             (complete if s.complete else partial).append(s)
     return complete, partial
@@ -470,12 +640,16 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
     #    No-Intro DATs also the language filter
     alive: list[Item] = []
     excluded: list[tuple[Item, list[tuple[str, str]]]] = []
+    lang_only: dict[str, list[Item]] = {}    # excluded ONLY for language: may still be borrowed (see _Borrow)
     for it in items:
         info = eligibility(_rom_name(it), _style(it), profile, languages=it.dat in scope.language,
                            flags=scope.flags(it.dat),
                            parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None)
         if info:
             excluded.append((it, info))
+            if (profile.borrow_other_editions and it.dat in scope.best and _style(it) == STYLE_TOSEC
+                    and all(code == LANGUAGE_CODE for code, _x in info)):
+                lang_only.setdefault(it.dat, []).append(it)
         else:
             alive.append(it)
     # keep-every-version DATs (opt-in): the only dump of a version is not excluded for [m] / [u]
@@ -522,7 +696,9 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
         elif dat in latest_dats | best_dats | m3u_dats and all(_style(i) == STYLE_TOSEC for i in dat_items):
             _select_tosec(dat, dat_items, profile, dat in best_dats and profile.best_variant,
                           dat in latest_dats and profile.latest_only, dat in m3u_dats and profile.complete_only,
-                          sel, decide, next_id, keep_all=dat not in latest_dats | best_dats)
+                          sel, decide, next_id, keep_all=dat not in latest_dats | best_dats,
+                          borrow=(_Borrow(profile, [*dat_items, *lang_only.get(dat, ())])
+                                  if profile.borrow_other_editions and dat in best_dats else None))
         elif dat in latest_dats and (profile.latest_only or (dat in scope.region and profile.one_per_game)):
             _select_nointro(dat, dat_items, profile, dat in scope.region and profile.one_per_game, sel, decide)
         else:
@@ -778,7 +954,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                            reason=f"one version per game: kept {winner_name}")
 
 
-_DISC_TOKEN_RE = re.compile(r"\s*\(Dis[ck] \d+\)")
+_DISC_TOKEN_RE = re.compile(r"\s*\(Dis[ck] (?:\d+|[A-Z])\)")
 
 
 def _disc_free_name(name: str) -> str:
@@ -819,25 +995,35 @@ def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str]
 
 def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best: bool, latest: bool,
                   complete_only: bool, sel: Selection, decide: Any, next_id: list[int],
-                  keep_all: bool = False) -> None:
-    """``keep_all``: a keep-every-version DAT (Kickstart-Disks, Workbench, Firmware)."""
+                  keep_all: bool = False, borrow: Optional[_Borrow] = None) -> None:
+    """``keep_all``: a keep-every-version DAT (Kickstart-Disks, Workbench, Firmware). ``borrow``: complete
+    sets with disks of other editions (the borrowed files are made ``keep`` after every group is decided)."""
+    borrowed_uses: list[tuple[int, int, str, int, dict[str, Any]]] = []
     groups: dict[tuple, list[Item]] = {}
     for it in dat_items:
         groups.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
     # disks of one title + publisher + disk total, whatever their country / language / edition
     # (only used to tell the user that a missing disk exists under another identity)
     pool: dict[tuple, dict[int, set[tuple]]] = {}
+    seen_keys: set[int] = set()
     for gkey, members in groups.items():
         for it in members:
+            seen_keys.add(it.key)
             t = tags.parse_name(it.rom.name, STYLE_TOSEC)
             d = _disk_info(t)
             if d is not None:
                 pool.setdefault((t.title.casefold(), t.publisher.casefold(), d[1]), {}) \
                     .setdefault(d[0], set()).add(gkey)
+    if borrow is not None:        # files excluded only by the language filter are borrowable too
+        for key, t in borrow.tags.items():
+            if key not in seen_keys:
+                d = _disk_info(t)
+                pool.setdefault((t.title.casefold(), t.publisher.casefold(), d[1]), {}) \
+                    .setdefault(d[0], set()).add(tags.identity_key(t))
     for gkey in sorted(groups, key=lambda k: sorted(i.rom.name for i in groups[k])[0]):
         group = groups[gkey]
         vkeys = tags.group_version_keys([i.rom.name for i in group], STYLE_TOSEC)
-        complete, partial = _build_sets(group, vkeys, profile)
+        complete, partial = _build_sets(group, vkeys, profile, borrow)
         kept_sets: list[_Set]
         if not complete:
             kept_sets = []
@@ -861,7 +1047,9 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
                 sel.sets.append(ChosenSet(
                     id=sid, dat=dat, name=s.name, total=s.total,
                     slots={i: it.key for i, it in sorted(s.slots.items())}, labels=dict(s.labels),
-                    flags=s.flags, cracked=s.cracked))
+                    flags=s.flags, cracked=s.cracked, borrowed=dict(s.borrowed)))
+                for slot, note in sorted(s.borrowed.items()):
+                    borrowed_uses.append((note["key"], sid, s.name, slot, note))
             for it in s.slots.values():
                 kept_keys.setdefault(it.key, sid)
         if not complete and not complete_only:
@@ -901,7 +1089,11 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
                 other = pool.get((t.title.casefold(), t.publisher.casefold(), total), {})
                 elsewhere = tuple(m for m in missing if other.get(m, set()) - {gkey})
                 text = "incomplete set: missing disk " + ", ".join(str(m) for m in missing)
-                if elsewhere:
+                if elsewhere and borrow is not None:
+                    text += (f" (disk {', '.join(str(m) for m in elsewhere)} exists under another edition but "
+                             "cannot be borrowed: chipset, dump flags, status or the other edition's own "
+                             "disks do not fit)")
+                elif elsewhere:
                     text += (f" (disk {', '.join(str(m) for m in elsewhere)} exists under a different "
                              "country / language / edition - not mixed in)")
                 decide(it, INCOMPLETE, missing=missing, elsewhere=elsewhere, reason=text)
@@ -913,6 +1105,19 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
                     sel.incomplete.append(IncompleteSet(
                         dat=dat, name=s.name, total=s.total,
                         present={i: it.key for i, it in sorted(s.slots.items())}, missing=s.missing))
+    # A borrowed disk belongs to ANOTHER group (its own decision - language-excluded, superseded, incomplete -
+    # was made independently): it stays, as part of the set it completes. Never superseded / excluded / moved.
+    for key, sid, set_name, slot, note in borrowed_uses:
+        text = f"borrowed as disk {slot} of {set_name} ({note['text']})"
+        d = sel.decisions.get(key)
+        if d is None or d.action != KEEP:
+            sel.decisions[key] = Decision(key=key, action=KEEP, codes=(BORROWED_CODE,), set_id=sid, reason=text)
+        else:
+            if BORROWED_CODE not in d.codes:
+                d.codes = tuple(d.codes) + (BORROWED_CODE,)
+            if d.set_id is None:
+                d.set_id = sid
+            d.reason = (d.reason + "; " if d.reason else "") + text
 
 
 def _pick_best_latest(sets: list[_Set]) -> _Set:
@@ -1063,6 +1268,14 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         [STYLE_NOINTRO, STYLE_REDUMP])
     opt("complete_only", "complete_only", "Complete multi-disk sets only", True,
         "Multi-disk games need every disk; incomplete ones go to _incomplete.", [STYLE_TOSEC])
+    opt("borrow_editions", "borrow_other_editions", "Complete sets with disks from other editions", True,
+        "A multi-disk game that lacks a disk in your edition is completed with that disk from another edition "
+        "you own (matched by checksum): only the country, language, edition flags, version and year may "
+        "differ. The title, publisher and disk count ('Disk N of M') must be the same, the chipset (OCS / AGA / "
+        "CD32) must fit, and the disk must pass every rule above (bad dumps, viruses, pre-releases, prototypes, "
+        "demos, faked, unreleased, modified, size problems are never borrowed). The disk may be in a language "
+        "you did not select; it is kept as part of the set and the playlist says where it came from. "
+        "Off: only disks of one edition form a set.", [STYLE_TOSEC])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])
@@ -1154,6 +1367,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dic
             "region_priority": bool(_dats(platform, "region_dats")),
             "languages": has_langs,
             "keep_flags": bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC,
+            "borrow_editions": _borrow_scope(platform),
             "rescue": bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC,
         },
         "scopes": {

@@ -77,17 +77,18 @@
       </div>
       <div class="muted small" id="scan-info"></div>
       <div class="job hidden" data-kind="scan"></div>
-      <!-- Sega Dreamcast: how CHDs are read + Verify fully -->
+      <!-- disc systems (Dreamcast, PlayStation, PlayStation 2): how CHDs are read + Verify fully -->
       <div class="dc-bar hidden" id="dc-bar">
         <div class="dc-line">
           <span id="dc-engine-line" class="grow"></span>
           <button class="btn" id="dc-verify-btn" disabled
                   title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
         </div>
+        <div class="muted small hidden" id="dc-temp-line"></div>
         <div class="muted small" id="dc-levels-help">
           <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
           <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
-          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks) you can convert to CHD in step 4.
+          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso) you can convert to CHD in step 4.
         </div>
         <div class="job hidden" data-kind="verify"></div>
         <div id="dc-failures" class="notice hidden"></div>

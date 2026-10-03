@@ -18,10 +18,10 @@ from typing import Any, Iterable, Optional
 STYLE_NOINTRO = "nointro"
 STYLE_TOSEC = "tosec"
 STYLE_WHDLOAD = "whdload"      # MrV2K's WHDLoad database: Retroplay .lha names (see parse_whdload)
-STYLE_REDUMP = "redump"        # Redump (Sega Dreamcast): No-Intro style names + <category> + (Disc N)
+STYLE_REDUMP = "redump"        # Redump (Dreamcast, PlayStation, PlayStation 2): No-Intro style names + <category> + (Disc N)
 # Header name of the Redump DATs that use that style (== redump.DAT_NAME): only the DAT name selects it, so
 # nothing of it can leak into the No-Intro consoles.
-REDUMP_DAT_NAMES = frozenset({"Sega - Dreamcast"})
+REDUMP_DAT_NAMES = frozenset({"Sega - Dreamcast", "Sony - PlayStation", "Sony - PlayStation 2"})
 # Header name of that DAT (== whdload.DAT_NAME): the only thing that selects the WHDLoad style, so
 # nothing of it can leak into the TOSEC Amiga system.
 WHDLOAD_DAT_NAME = "Commodore - Amiga - WHDLoad"
@@ -977,6 +977,22 @@ def platform_rank(t: Tags) -> int:
     return PLATFORM_ORDER.index(platform_class(t))
 
 
+def chipset_classes(t: Tags) -> frozenset[str]:
+    """The platform classes a TOSEC disk claims: parts of its chipset tags with ``ECS`` counted as ``OCS``;
+    a disk without a chipset tag is plain ``OCS`` (the TOSEC default). ``OCS-AGA`` = ``{OCS, AGA}``."""
+    parts = {("OCS" if part == "ECS" else part) for c in chipset(t) for part in c.split("-")}
+    return frozenset(parts) or frozenset({PLATFORM_BASE})
+
+
+def chipset_compatible(anchor: Tags, other: Tags) -> bool:
+    """Whether disk ``other`` may stand in a set built around disk 1 ``anchor`` (borrowing across editions).
+
+    Conservative: ``other`` must run on every platform class the anchor claims (``anchor`` classes are a
+    subset of ``other``'s). So an OCS set never takes an AGA-only disk and an AGA set never takes an untagged
+    (OCS) disk; a ``OCS-AGA`` disk fits both an OCS and an AGA set."""
+    return chipset_classes(anchor) <= chipset_classes(other)
+
+
 def identity_key(t: Tags) -> tuple:
     """What makes two names the *same game* across versions, years, disks, dump variants,
     languages and chipsets.
@@ -1034,7 +1050,7 @@ def game_key(t: Tags) -> tuple:
 
 
 _REDUMP_KEY_SKIP_KINDS = _GAME_KEY_SKIP_KINDS | {"disk"}
-_DISC_RE = re.compile(r"^Dis[ck] (\d+)$")
+_DISC_RE = re.compile(r"^Dis[ck] (\d+|[A-Z])$")
 
 
 def disc_number(t: Tags) -> int:
@@ -1042,7 +1058,8 @@ def disc_number(t: Tags) -> int:
     for f in t.flags:
         m = _DISC_RE.match(f)
         if m:
-            return int(m.group(1))
+            g = m.group(1)
+            return int(g) if g.isdigit() else ord(g) - 64      # "(Disc A)" / "(Disc B)" = disc 1 / 2
     return 0
 
 

@@ -347,6 +347,32 @@ def _pick_slot(options: list[_P], fset: frozenset[str], limit: Optional[tuple] =
     return best
 
 
+def pick_borrowed(options: Sequence[DiskCand], anchor_flags: Iterable[str], vkeys: Mapping[str, tuple],
+                  tier: Optional[Any] = None) -> Optional[DiskCand]:
+    """The disk of ANOTHER edition that fills a slot (``borrow_other_editions``, Amendment 12).
+
+    ``options`` = disks (all of the same slot number and disk total) the caller found eligible: same title,
+    publisher and total, no quality exclusion, compatible chipset. The disk must still fit the anchor's dump
+    flags (:func:`_compat`: a different crack, ``[t ..]``, ``[h ..]`` never fits; a bare disk fits any
+    ``[cr X]``). ``tier(cand)`` ranks candidate groups, lowest first (same edition / selected language /
+    any other); within a tier the newest ``(version, date)`` wins, ties by the crack-compatibility order of
+    :func:`_pick_slot` (``vkeys`` only ranks - a borrowed disk may be newer than the anchor)."""
+    fset = frozenset(anchor_flags)
+    ps: list[_P] = []
+    for i, c in enumerate(options):
+        d = parse_disk_name(c.name)
+        if d is None:
+            continue
+        date = _date_key(_tags.parse_name(c.name, _tags.STYLE_TOSEC).date)
+        ps.append(_P(i, c, d, vkeys.get(c.name, (0,)), date))
+    ranks = sorted({(tier(p.cand) if tier else 0) for p in ps})
+    for r in ranks:
+        best = _pick_slot([p for p in ps if (tier(p.cand) if tier else 0) == r], fset, None)
+        if best is not None:
+            return best.cand
+    return None
+
+
 def _slot_name(title: str, flags: tuple[str, ...], chosen: Collection[DiskName]) -> str:
     shared = [f for f in flags if not is_neutral_flag(f) or all(f in d.flags for d in chosen)]
     return title + "".join(shared)
@@ -525,6 +551,7 @@ class M3UOp:
     status: str  # write | ok | conflict | incomplete | stale
     reason: str = ""
     dat: str = ""
+    notes: list[str] = field(default_factory=list)    # "disk 2 borrowed from the (DE) edition (...)" per borrowed disk
 
 
 def _fold(p: Path) -> str:
@@ -805,6 +832,7 @@ class PlaylistSpec:
     dat: str
     total: int
     disks: list[PlaylistDisk]
+    notes: list[str] = field(default_factory=list)    # one line per disk borrowed from another edition
 
 
 def content_of(lines: list[str]) -> str:
@@ -859,7 +887,7 @@ def plan_playlists(specs: Iterable[PlaylistSpec], root: Path, savedisk: bool = F
         extras = [reason]
         if spec.total > PUAE_MAX_DISKS:
             extras.append(f"PUAE only loads the first {PUAE_MAX_DISKS} disks")
-        ops.append(M3UOp(path, lines, status, ", ".join(x for x in extras if x), spec.dat))
+        ops.append(M3UOp(path, lines, status, ", ".join(x for x in extras if x), spec.dat, list(spec.notes)))
     return ops
 
 

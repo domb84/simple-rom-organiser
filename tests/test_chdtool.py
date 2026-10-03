@@ -36,6 +36,7 @@ class ChdtoolBase(unittest.TestCase):
         self.chdman = chdtool.Chdman([str(self.fake)], "configured", str(self.fake))
         self.roms = self.work / "roms"
         self.roms.mkdir()
+        self.scratch = T.isolate_temp(self, self.work)
 
 
 class DetectTest(ChdtoolBase):
@@ -98,8 +99,9 @@ class DetectTest(ChdtoolBase):
 
 class RunTest(ChdtoolBase):
     def test_extract_gdi_and_hash(self) -> None:
-        w = chdtool.make_workdir(self.roms)
-        self.assertEqual(w.parent, self.roms)               # next to the ROMs, never /tmp
+        wd = chdtool.acquire_workdir(self.chdman, 1000, [self.roms])
+        w = wd.path
+        self.assertEqual(w.parent, self.scratch)            # the app's scratch folder, never next to the ROMs
         ticks: list = []
         ex = chdtool.extract_cd(self.chdman, self.chd, w, "gdrom", progress=lambda d, t, m: ticks.append((d, t, m)))
         self.assertEqual([t.number for t in ex.tracks], [1, 2, 3])
@@ -110,7 +112,7 @@ class RunTest(ChdtoolBase):
             import hashlib
             self.assertEqual(sha1, hashlib.sha1(data).hexdigest())
         self.assertTrue(any("%" in m for _d, _t, m in ticks))
-        chdtool.remove_workdir(w)
+        chdtool.remove_workdir(wd)
         self.assertFalse(w.exists())
 
     def test_extract_cue_splits_one_bin_by_track_sizes(self) -> None:
@@ -118,7 +120,8 @@ class RunTest(ChdtoolBase):
         raw.mkdir()
         (raw / "disc.cue").write_text("FILE disc.bin BINARY\n")
         (raw / "disc.bin").write_bytes(b"".join(self.disc.bins))
-        w = chdtool.make_workdir(self.roms)
+        wd = chdtool.acquire_workdir(self.chdman, 1000, [self.roms])
+        w = wd.path
         with mock.patch.dict(os.environ, {"FAKE_RAW": str(raw)}):
             ex = chdtool.extract_cd(self.chdman, self.chd, w, "cd", [len(b) for b in self.disc.bins])
         self.assertEqual([t.offset for t in ex.tracks], [0, len(self.disc.t1), len(self.disc.t1) + len(self.disc.t2)])
@@ -127,7 +130,7 @@ class RunTest(ChdtoolBase):
         self.assertEqual(sha1, hashlib.sha1(self.disc.t2).hexdigest())
         with self.assertRaises(chdtool.ChdmanError):        # layout that does not add up
             chdtool.extract_cd(self.chdman, self.chd, w, "cd", [1, 2, 3])
-        chdtool.remove_workdir(w)
+        chdtool.remove_workdir(wd)
 
     def test_create_cd_and_refuse_to_overwrite(self) -> None:
         out = self.roms / "out.chd"
@@ -174,7 +177,11 @@ class RunTest(ChdtoolBase):
         dead.mkdir()
         (dead / "pid").write_text("999999999")
         (dead / "big.bin").write_bytes(b"x" * 100)
-        mine = chdtool.make_workdir(self.roms)
+        mine = self.roms / f"{chdtool.TEMP_PREFIX}mine"
+        mine.mkdir()
+        (mine / "pid").write_text(str(os.getpid()))
+        nopid = self.roms / f"{chdtool.TEMP_PREFIX}nopid"      # no marker: never deleted
+        nopid.mkdir()
         other = self.roms / f"{chdtool.TEMP_PREFIX}foreign"
         other.mkdir()
         (other / "pid").write_text(str(os.getppid()))           # a live process of another run
@@ -182,7 +189,7 @@ class RunTest(ChdtoolBase):
         keep.mkdir()
         removed = chdtool.sweep_stale(self.roms)
         self.assertEqual(removed, [dead.name])
-        self.assertTrue(mine.exists() and other.exists() and keep.exists())
+        self.assertTrue(mine.exists() and other.exists() and keep.exists() and nopid.exists())
         # an old folder of a live pid is still removed after max_age
         os.utime(other, (1, 1))
         self.assertEqual(chdtool.sweep_stale(self.roms), [other.name])

@@ -49,7 +49,7 @@ if [[ -n "$TOKEN" ]]; then
               "Sega Dreamcast" "Super Nintendo Entertainment System"; do
     grep -q "\"$name\"" <<<"$PLATFORMS" || { echo "platform missing: $name" >&2; exit 1; }
   done
-  echo "GET /api/platforms -> 7 systems"
+  echo "GET /api/platforms -> 9 systems"
   grep -q '"state"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing" >&2; exit 1; }
   grep -q '"rules"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Commodore%20Amiga")" \
     || { echo "/api/library/profile missing the rules" >&2; exit 1; }

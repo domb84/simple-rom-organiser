@@ -1423,3 +1423,162 @@ server with 4 workers 44 s; rescan 0.2 s; **Verify fully** of all four (audio de
 Raw sets and unmatched units are never touched by the library rules; Applications etc. stay; sidecar rule = names starting with the CHD stem (a longer sibling stem wins); an
 incomplete multi-disc game stays in place. **Not verified here:** the real `chdman` (fake script only), a real Flycast / RetroArch load of the playlists, a real exFAT card,
 CD (non-GD) CHDs with pregaps, a Flatpak MAME with and without filesystem access.
+
+
+# AMENDMENT 12 - scratch space outside the library (chdman) and completing Amiga sets with other editions' disks
+
+**Binding; additive (later wins over Amendments 6-11).** Stdlib only. New module `romorg/tempspace.py`, new tests `tests/test_tempspace.py`.
+
+## A. Scratch space policy (`tempspace.py`; replaces the hidden `.romorg-chd-*` folder inside the ROM folder)
+Every large temporary extraction (`chdman extractcd` while scanning, *Verify fully*, the verification of a converted CHD) uses ONE policy
+and NEVER the user's ROM folder.
+* **Required size** = the real track bytes of the CHD (`sum(Track.size)` = (frames - pad) x 2352, from `romorg/chd.py`) + 5 % + 64 MiB (`tempspace.required_bytes`).
+* **Candidates in order** (`tempspace.choose(needed, avoid, accept) -> Plan(kind ram|disk|none, root, reason)`):
+  (a) RAM: `ram_roots()` = `/dev/shm`, `$XDG_RUNTIME_DIR`, `/tmp` - each only when `/proc/mounts` says tmpfs/ramfs - used only if its free space
+  (`statvfs`) >= required AND `MemAvailable` (`/proc/meminfo`) >= required + reserve (default 2 GiB; `ROMORG_TEMP_RESERVE_MB` or config
+  `temp_ram_reserve_mb`; unknown MemAvailable = no RAM) so the machine is not pushed into swap; (b) disk: `$ROMORG_TEMP_DIR` / config `temp_dir`
+  / `<data dir>/cache/tmp` when free space >= required, never inside a library folder (`avoid` = the scanned root) and never under a reserved
+  folder name; (c) otherwise `NoTempSpace` (a `ChdmanError`): the caller falls back to the pure-Python reader and records why. A Flatpak chdman skips
+  candidates it cannot see (`chdtool.acquire_workdir` passes an `accept` check).
+* **Job folders**: `tempspace.acquire()` creates `<root>/romorg-job-<id>/` with a marker file `.romorg-temp-marker` (`{"app","pid","created"}`);
+  `remove()` / `sweep_stale()` delete ONLY folders with that prefix AND marker (dead pid, or older than 24 h; our own active folders stay).
+  Sweeps: server start (`App.sweep_chd_temp`: every candidate root + legacy `.romorg-chd-*` folders that carry a `pid` file inside the saved
+  Dreamcast folder - a legacy folder without `pid` is no longer deleted), start of every scan / verify / convert, `finally:` of every decode (also
+  cancel), and `atexit` (`cleanup_active`). Legacy `chdtool.make_workdir` is gone.
+* **Reporting**: `tempspace.report()` -> `{"ram": n, "disk": n, "python": n, "last": {where, path, reason}, "text"}`; the job message says
+  `decoding in RAM` / `decoding on disk: <path>` (progress label gets ` (in RAM)` / ` (on disk)`), `DcScanResult.temp`, `summary()["temp"]` +
+  `["temp_text"]`, `verify_units(...)["temp"]`, `apply_conversions(...)["temp"]` (carried into the post-job summary by `App._carry_temp`).
+  UI: a small muted line `#dc-temp-line` in the Dreamcast bar; no config field in the UI (config keys / env only).
+* **Conversion output**: the NEW CHD is the intended output, not scratch: `chdman createcd` writes `<dst>.romorg.part` next to its destination
+  (`dreamcast.PART_SUFFIX`), and it is renamed into place (`move_exclusive`) only after verification; a leftover `.part` of a crashed run is replaced;
+  failure / cancel delete it. Space check: `raw_bytes` free next to the games (was 2 x). The verification extract of the new CHD follows the
+  policy above; with no scratch space it is verified with the pure-Python reader (`hash_tracks_python`) instead of failing.
+Tests: `test_tempspace.py` (policy with monkeypatched `mem_available` / `free_bytes` / `ram_roots` / `PROC_MOUNTS`: RAM when plenty, disk when RAM low or
+tmpfs too small, none when nothing fits, reserve configurable, never inside the library / a reserved folder; marker + stale sweep incl. live-pid / unmarked /
+foreign folders; fake chdman scans in RAM / on disk / python fallback with the library tree asserted unchanged DURING the extraction; cancel cleanup; verify;
+conversion `.part` next to the destination).
+
+## B. `borrow_other_editions` (Amiga Games-style DATs)
+USER DECISION: a disk slot may be filled by a disk the user has (matched by checksum) that belongs to ANOTHER edition of the same title.
+* **Profile**: `LibraryProfile.borrow_other_editions: bool = True` (persisted per platform; old profiles load True; `latest_only_profile()` False;
+  `default_profile` True only for TOSEC platforms with `best_variant_dats`). Catalog entry `id borrow_editions`, `field borrow_other_editions`,
+  kind option, tosec only (`rule_catalog`), `profile_info.available.borrow_editions`; `POST /api/library/profile` accepts the field. Scope: DATs in
+  `best_variant_dats` (Games [ADF]) - never Workbench / Kickstart-Disks / Firmware.
+* **Candidate rule** (`library._Borrow`, per DAT): pool key `(title, publisher, disk total)` (title = `Tags.title`, version / date removed) and disk number.
+  A candidate must have the anchor's status tokens (`identity_key[5]`), a compatible chipset (`tags.chipset_compatible(anchor, disk)`: the anchor's platform
+  classes - ECS counted as OCS, untagged = OCS - are a subset of the disk's, so OCS never takes AGA-only, AGA never takes untagged, `OCS-AGA` fits both)
+  and dump flags that fit disk 1 (`m3u._compat`, via `m3u.pick_borrowed`: a different crack / `[t]` / `[h]` never fits, a bare disk fits `[cr X]`). Allowed
+  differences: country, language, edition flags, version, year. NEVER borrowed: anything excluded by a quality rule or a keep-flag (bad dump, virus,
+  pre-release, prototype, demo, faked, unreleased, modified when on, size problems, `flag_*`). Files excluded ONLY by the language filter form the
+  reservoir too (`select` collects them as `lang_only`): the language filter must not exclude a borrowed disk.
+* **Where**: `library._build_sets(..., borrow)` after `m3u.resolve_slots`: an anchored (disk 1 present) incomplete set whose disk total has NO complete set in the
+  group gets EVERY missing slot filled or stays as it was (no best-effort). Per slot, tiers: 0 same edition (same identity + partition) but another
+  version, 1 another edition in a selected / neutral language, 2 any other; inside a tier the newest `(version, date)` wins, ties by `_pick_slot`'s
+  crack-compat order (`m3u.pick_borrowed`). A borrowed disk may be newer than disk 1. Disk 1 still defines the playlist name (recomputed from all chosen disks)
+  and the ranking (`_Set.borrowed`; the best-variant order is unchanged). The group's own natural complete set always wins (no borrowing next to it).
+* **Decisions**: `ChosenSet.borrowed: {slot: {"key","name","edition","differences": [country|language|edition|version|year],"text"}}`; after every group of the
+  DAT is decided, each borrowed file whose decision is not `keep` becomes `Decision(KEEP, codes=("borrowed",), set_id, reason="borrowed as disk N of <set> (...)")`
+  (an excluded-for-language, superseded or incomplete disk of the other edition is rescued; the other edition's remaining disks keep their classification).
+  `Selection.borrow_summary()` -> `{"sets","disks","by_difference"}`. With the option off the old behaviour (and the old `elsewhere` text) is restored exactly;
+  with it on the `elsewhere` text says the disk cannot be borrowed (chipset / dump flags / status).
+* **Plan / API / UI**: `PlaylistSpec.notes` / `M3UOp.notes` (`disk 2 borrowed from the (DE) edition (Foo (1991)(Pub)(DE)(Disk 2 of 3))`; `untagged` when
+  the other edition carries no tag; `another version of the same edition` for version / year only); kept borrowed files get that text as their op reason;
+  `organiser.reason_counts` adds `borrowed_sets` / `borrowed_disks`; `/api/library/plan` adds `borrowed` `{sets, disks, by_difference}` and playlist rows `notes`.
+  UI: rules-panel checkbox generated from the catalog, card *Sets completed with borrowed disks*, a `borrowed` chip + note under the playlist row.
+* **Idempotence**: selection stays location independent; re-selecting only the kept files gives the same playlists (property test with random profiles incl. the
+  option; real DAT checked for English / English + German / all languages, on and off). `BorrowTests` (test_library), `BorrowIntegrationTest` (test_integration:
+  synthetic 3-disk set whose disk 2 is German only -> playlist complete, note, rebuild empty, undo restores).
+* **Numbers** (real Games [ADF] DAT, every ROM present, `scratchpad/library-sim4.md`): English default: incomplete files 120 -> 79, incomplete sets 72 -> 44, playlists
+  1244 -> 1258 (14 sets, 25 disks borrowed: 15 differ in language, 12 edition, 3 country, 1 year; most are translated `[tr en]` disk 1 + the Polish / German
+  disks 2..n); English + German 157 -> 101 files; all languages 215 -> 113 files (26 sets, 58 disks). Changed decisions are confined to the 14 titles that got a borrowed
+  set; every playlist of the old run is unchanged; ABC Monday Night Football and the AGA / OCS picks are identical. Guards that mattered (sets that would otherwise complete
+  with a doubtful disk): chipset 3, dump-flag compatibility 9.
+* **Judgment calls**: borrowing only when the group has no complete set of that disk total (a natural set is never replaced); an untagged disk is OCS, so an AGA set
+  does not take it (conservative; the alternative would add a few sets); the same-edition-but-language-filtered disk (e.g. Polish disk 2 next to a `[tr en]` disk 1) is
+  borrowed with `differences: ["language"]`; `Decision.codes == ("borrowed",)` also marks a disk that was already kept for its own set.
+
+
+# AMENDMENT 13 - Sony PlayStation and PlayStation 2 (one shared disc-system engine)
+
+**Binding; additive (later wins over Amendments 6-12).** Amiga / WHDLoad / the No-Intro consoles are unchanged. Stdlib only.
+
+## Generalisation (`romorg/discsys.py`, thin config modules)
+* `discsys.py` is the former `dreamcast.py` engine, parameterised by `DiscSystem(key, platform, dat_name, label, gd, iso, playlists,
+  iso_convert, iso_convert_key)`; registry `SYSTEMS` (filled by `register()` in `dreamcast.py` = Dreamcast, `playstation.py` = `psx`, `ps2`),
+  `system_for_dat(name)` (the engine finds the system from `DatFile.name`, so `scan(root, dat)`, `plan_tidy(result)`, `plan_library`,
+  `plan_convert`, `apply_conversions`, `verify_units` keep their signatures), `system_for_platform`, `all_systems`, `iso_convert_mode`.
+  `dreamcast.py` re-exports the engine (`from .discsys import *`) so every Amendment 11/12 name and test keeps working. `DcScanResult.system`,
+  `summary()["system"]`; messages use `system.label` ("not part of a PlayStation 2 game"). The server calls `discsys` and adds `disc`
+  (`DiscSystem.to_dict()` + `iso_mode`) to the platform rows and the convert page.
+* Platforms `Sony PlayStation` (`Sony - PlayStation`, folder hint `psx`) and `Sony PlayStation 2` (`Sony - PlayStation 2`, `ps2`): source
+  `redump`, layout `game_folder`, `convertible`, `latest/language/region_dats = (DAT,)`; own folder, config keys, library profile, DAT.
+  `tags.REDUMP_DAT_NAMES` gains both names (the only thing that selects the Redump tag style). `redump.SYSTEMS` slugs `dc`, `psx`, `ps2`,
+  `REDUMP_DATS` = three names; every Redump function takes a DAT name (default Dreamcast); per-DAT rows / manifest entries in the shared
+  `data_dir()/redump`; `autoupdate`'s Redump source is unchanged (one HEAD per DAT per check, a zip only when newer; `ensure(platform)` scopes
+  to that platform's DAT; the aggregated status ignores DATs that were never fetched; `latest` = the newest). Measured URLs:
+  `http://redump.org/datfile/psx/` (zip 4.0 MB), `.../ps2/` (zip 1.3 MB).
+* **Index** (`DcIndex`): a game's tracks = its `(Track N).bin` roms; else its single `<name>.bin` (PS2 CD games, single-track PS1 discs); else
+  its single `<name>.iso` (`DcGame.iso`, PS2 DVD). Sizes tuple = the key (`(iso size,)` for an ISO game).
+
+## chd.py / cdecc.py
+* `cdecc.generate`: for a sector whose mode byte (`s[15]`) is 2 the four header bytes count as zeros for P/Q (ECMA-130, MAME `ecc_source_byte`);
+  `generate_reference` likewise. Needed for MODE2_RAW (PlayStation, PS2 CDs): validated on the real Spider / FIFA / Dave Mirra CHDs (every
+  track equals Redump).
+* `_TYPES`: the cooked types (`MODE1` 2048, `MODE2_FORM1` 2048, `MODE2_FORM2` 2324, `MODE2` 2336) are stored at the START of the frame (offset 0;
+  the previous offsets 16 / 24 were only right for cooked data inside a raw sector - no test and no real file used them). `MODE1` = a PS2 DVD
+  ISO made by `chdman createcd`: 2048 bytes per frame, no pad, no subcode; hashing the whole track equals Redump's `.iso` (measured on all 7 PS2 CHDs).
+* DVD CHDs (`chdman createdvd`): metadata tag `DVD ` and no CD tracks -> `Chd.is_dvd`, one synthetic `Track(type "DVD", frames = logical/2048)`,
+  `iter_track` = the logical bytes (hunks decoded ~1 MiB at a time, prompt cancel); `raw_sha1` is the ISO's SHA-1. Codecs decoded: `zlib`, `lzma`,
+  uncompressed, SELF references (all tested with the test writer). **Not decoded** (`ChdUnsupported`, `needs_chdman = True`, message "needs chdman:
+  the CHD uses the 'zstd' compression ..."): `zstd`, `cdzs`, `huff`, `flac` data (the bundled Python 3.13 has no zstd). Header / metadata always read, so a
+  createdvd CHD is identified even then.
+* `hash_track` unchanged (single thread; a helper hashing thread was measured and gave nothing). No intra-track parallel decode (user decision);
+  the per-file `chdpool` worker pool is unchanged and handles DVD CHDs.
+
+## discsys behaviour
+* **Identification**: DVD CHD without a cached hash: `meta[0] = {sha1: header raw SHA-1, claimed: True}`; `_rom_ok` compares sha1 only for a claimed track
+  (candidates are chosen by size first), `_is_hashed` is false for it, so the level is `identified`, `via "header"`, nothing decoded, nothing cached.
+  *Verify fully* (or chdman) decodes it, stores crc32 / md5 / sha1 and the next scan is `verified` from the cache. A CD CHD (createcd) is decoded and
+  hashed; with no audio track `identified == verified` (all tracks hashed). A claimed hash that is wrong is only found by Verify fully ("track 1 does not
+  match Redump"), after which the cache holds the real hashes and the unit is unmatched.
+* **needs chdman**: a CHD whose codec the reader lacks and that chdman did not identify -> `DcUnit.needs_chdman`, unmatched entry `needs_chdman`, reason
+  "cannot decode this CHD: needs chdman ...", plan status `skip` ("left in place") - it is NEVER moved to `_unmatched/`; `summary()["needs_chdman"]`.
+* **Raw sets**: the sheet kinds are `.gdi` (Dreamcast only) > `.cue` > `.iso` (ISO systems); `sheet_track_files(iso) = [iso]` (never read as text);
+  a loose `.iso` is hashed and matched like a track (level `raw`).
+* **Progress**: `_Progress` message = `<what> (file i/n, NN MB/s, about T left)` (files counted = those that really decode; ETA after 3 s);
+  `discsys.fmt_duration`. Cancel is prompt (per decoded chunk / killed workers).
+* **Library**: unchanged rules (Amendment 11); `(Disc A)` / `(Disc B)` are discs 1 / 2 (`tags._DISC_RE`, `library._DISC_TOKEN_RE`; two PS1 games would
+  otherwise collapse to one). `plan_library`: `DiscSystem.playlists` False (PS2) -> no `PlaylistSpec`, no stale-playlist handling, `plan.playlists == []`.
+* **Convert**: `DcConvertOp.mode` `createcd` (cue / gdi sets) or `createdvd` (a single `.iso` of a system with `iso_convert`, PS2: default `createdvd`,
+  config `ps2_iso_chd` = `dvd` | `cd`); `chdtool.create_dvd` / `extract_dvd` (`chdman createdvd` / `extractdvd`); the new CHD is verified by decoding
+  (chdman `extractdvd` in scratch space, else the built-in reader) against the Redump ISO before anything moves; `/api/convert/plan` rows carry `mode`.
+  PCSX2 reading both createcd and createdvd CHDs is an ASSUMPTION (not verifiable here).
+
+## UI
+`platform.disc` drives the texts: raw kinds (`.cue / .iso`), no playlist promise / labels checkbox for PS2, createcd / createdvd note in the Convert step,
+engine line mentions CHDs that need chdman, speed note (30-45 MB/s per CD/DVD, FLAC 1 MB/s), progress line with file i/n, MB/s and ETA. The systems table,
+DAT status, folders (saved immediately), chips, Verify fully, chdman panel, rules panel (catalog) and Build library preview are the Dreamcast ones.
+
+## Numbers (real DATs 2026-06-15, every game present, defaults)
+* **PlayStation** (10,914 discs; Games 8556 / Demos 1372 / Coverdiscs 271 / Applications 191 / Educational 187 / Preproduction 187 / Bonus Discs 59 /
+  Multimedia 52 / Add-Ons 36 / Video 2 / Audio 1; 367 `(Rev N)`, 1488 `(Disc N)` entries): kept 2270 / excluded 7512 (language 5676, demo 1648, pre-release 178,
+  prototype 10) / superseded 1132; 72 playlists, 18 incomplete multi-disc games; 4798 titles vanish (language 4359, demo 424, prototype 8, pre-release 7);
+  no language filter: 6423 kept, 287 playlists; one-per-game off: 3256; no rules: 10525 kept.
+* **PlayStation 2** (11,774: 8606 `.iso`, 3168 CD; Games 9477 / Demos 1015 / Applications 485 / Coverdiscs 439 / Preproduction 286 / Bonus Discs 37 / Multimedia 18 /
+  Add-Ons 10 / Educational 4 / Video 3; largest ISO 8,539,963,392 bytes): kept 3188 / excluded 6721 (language 4978, demo 1457, pre-release 271, prototype 15) / superseded
+  1865; no playlists (11 complete + 10 incomplete multi-disc sets stay together); 4332 titles vanish; no language filter: 6637 kept; one-per-game off: 4893; no rules 11475.
+  Re-selecting the kept set changes nothing (both).
+* Classified tokens / categories: Demos, Coverdiscs -> demo; Preproduction -> prototype (+ `Beta` pre-release, `Proto`, `Sample`, `Taikenban`, `Trial Edition`);
+  deliberately kept: Applications, Educational, Bonus Discs, Multimedia, Add-Ons, Video, Audio, `Unl`, `Rerelease`, `Alt`, budget lines (`PlayStation the Best`,
+  `Greatest Hits`, `Platinum`), special editions. Unclassified by design: name-only demo-ish discs in Applications / Games categories (e.g. `Omega Boost Trial Version`
+  inside `Play-Pre Vol. 17 (Disc 2)`, `GameShark Sampler`, `Karat ... Taikenban` utilities, `Layer 0/1` betas which are excluded anyway by their Beta tag).
+
+## Real files (read-only validation, built-in reader, one core, no cache)
+FIFA 98 (USA) 21.4 s (25 MB/s), Spider 10.8 s (40 MB/s) - both `verified` = Redump; PS2: Bully (USA) 136 s, Dave Mirra Freestyle BMX 2 (USA) 26 s (MODE2_RAW),
+God of War II (USA) 194 s (8.5 GB, 44 MB/s), Gran Turismo 4 -> *Gran Turismo 4 (USA, Canada) (v1.01)* 118 s, GTA Vice City -> *(USA, Canada) (v3.00)* 145 s, Mat Hoffman's
+Pro BMX 2 (USA) 141 s, Tony Hawk's Pro Skater 4 -> *(USA) (v1.02)* 90 s; all `verified`. Three of the seven user names differ from Redump's (region list / version tag) and are renamed by Organise.
+
+## Judgement calls / not verified
+Budget re-releases and special editions are separate games (never merged); a trial disc inside a Games entry stays; `needs chdman` CHDs are skipped, not moved. **Not verified
+here:** the real chdman (createcd, createdvd, extractdvd: only a fake script), PCSX2 / DuckStation / RetroArch loading the CHDs or playlists, CHDs written by a real
+`chdman createdvd` (only the test writer's; the codecs there are lzma / zlib / none and the header SHA-1 claim follows the documented format), zstd decoding, exFAT.

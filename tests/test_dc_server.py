@@ -251,6 +251,30 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual((s["verified"], s["identified"], s["engine"]), (1, 0, "chdman"))
         self.assertEqual(s["chdman"], str(self.fake))
 
+    def test_scan_reports_where_chdman_decoded_and_never_in_the_library(self) -> None:
+        from romorg import tempspace
+        scratch = self.base / "scratch"
+        ram = self.base / "fake-ram"
+        ram.mkdir()
+        self.use_fake_chdman()
+        self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
+        before = sorted(str(p.relative_to(self.roms)) for p in self.roms.rglob("*"))
+        for mem, where in ((16 * 1024 ** 3, "ram"), (1024 ** 3, "disk")):
+            with mock.patch.dict(os.environ, {tempspace.ENV_DIR: str(scratch)}), \
+                    mock.patch.object(tempspace, "ram_roots", return_value=[ram]), \
+                    mock.patch.object(tempspace, "mem_available", return_value=mem):
+                s = self.scan()
+            if where == "ram":
+                self.assertEqual(s["temp"]["last"]["where"], "ram")
+                self.assertIn("in RAM", s["temp_text"])
+                (self.data / "cache" / "hashes.sqlite").unlink()      # force a new decode for the second round
+            else:
+                self.assertEqual(s["temp"]["last"]["where"], "disk")
+                self.assertIn(str(scratch), s["temp_text"])
+            self.assertEqual(sorted(str(p.relative_to(self.roms)) for p in self.roms.rglob("*")), before)
+        self.assertEqual(list(ram.iterdir()), [])
+        self.assertEqual(list(scratch.iterdir()), [])
+
     def test_convert_plan_apply_and_undo(self) -> None:
         self.use_fake_chdman()
         self.call("/api/chdman", {"engine": "python"})

@@ -118,7 +118,7 @@ class SourceFileTests(unittest.TestCase):
 
     def test_build_self_check_imports_new_modules(self) -> None:
         text = (PKG / "build_appimage.sh").read_text(encoding="utf-8")
-        for module in ("romorg.library", "romorg.autoupdate"):
+        for module in ("romorg.library", "romorg.autoupdate", "romorg.tempspace"):
             self.assertIn(module, text)
             self.assertTrue((ROOT / "romorg" / (module.split(".")[1] + ".py")).is_file(), module)
 

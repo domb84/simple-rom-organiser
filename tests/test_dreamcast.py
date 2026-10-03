@@ -506,6 +506,7 @@ class ConvertTest(unittest.TestCase):
         self.bin = w.base / "bin"
         self.bin.mkdir()
         self.fake = T.install_fake_chdman(self.bin)
+        self.scratch = T.isolate_temp(self, w.base)
         self.disc = w.discs["Epsilon (USA)"]
         self.fixture = w.base / "fixture.chd"
         self.disc.write_chd(self.fixture)
@@ -639,6 +640,7 @@ class ChdmanEngineTest(unittest.TestCase):
         self.bin = self.w.base / "bin"
         self.bin.mkdir()
         self.fake = T.install_fake_chdman(self.bin)
+        self.scratch = T.isolate_temp(self, self.w.base)
         disc = self.w.discs["Beta (Europe)"]
         raw = T.prepare_fake_raw(self.w.base / "fakeraw", disc)
         env = {"FAKE_CHD": str(self.w.base / "unused.chd"), "FAKE_RAW": str(raw), "FAKE_LOG": str(self.w.base / "log.txt")}
@@ -679,9 +681,11 @@ class ChdmanEngineTest(unittest.TestCase):
         self.assertEqual(r.matched[0].unit.via, "python")
 
     def test_no_space_falls_back_to_the_python_reader(self) -> None:
-        with mock.patch("romorg.chdtool.shutil.disk_usage", return_value=mock.Mock(free=1000)):
+        with mock.patch("romorg.tempspace.free_bytes", return_value=1000):
             r = self.w.scan(chdman=self.chdman)
         self.assertEqual(r.matched[0].level, "identified")
+        self.assertEqual(r.temp["python"], 1)
+        self.assertIn("not enough temporary space", r.temp["last"]["reason"])
 
     def test_verify_uses_chdman_when_present(self) -> None:
         r = self.w.scan(engine="python")

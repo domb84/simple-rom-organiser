@@ -244,7 +244,7 @@
   const LEVEL_TEXT = {
     verified: "every track, audio included, was decoded and equals Redump",
     identified: "every data track equals Redump; audio tracks have the right length (use Verify fully to check the audio)",
-    raw: "an unpacked Redump set (.gdi / .cue + one file per track) - can be converted to CHD",
+    raw: "an unpacked Redump set (.gdi / .cue + one file per track, or a single .iso) - can be converted to CHD",
   };
   const levelChip = (level, kind) => (level
     ? el("span", { class: `tag tag-level ${level}`, text: level === "raw" ? "raw (convertible)" : level, title: LEVEL_TEXT[level] || level }) : null);
@@ -387,7 +387,10 @@
   const isFlat = (p) => !!p && p.layout === "flat";
   const sourceLabel = (source) => (source === "nointro" ? "No-Intro" : source === "whdload" ? "WHDLoad"
     : source === "redump" ? "Redump" : "TOSEC");
-  const isGameFolder = (p) => !!p && p.layout === "game_folder";   // Sega Dreamcast: one folder per game
+  const isGameFolder = (p) => !!p && p.layout === "game_folder";   // disc systems (Dreamcast, PlayStation, PlayStation 2): one folder per game
+  const discOf = (p) => (p && p.disc) || null;                         // {key, label, gd, iso, playlists, iso_mode, ...}
+  const discPlaylists = (p) => !!p && isGameFolder(p) && (!discOf(p) || discOf(p).playlists !== false);
+  const rawKinds = (p) => { const d = discOf(p); return d && d.iso ? ".cue / .iso" : d && !d.gd ? ".cue" : ".gdi / .cue"; };
   const hasKickstart = (p) => !!(p && (p.has_kickstart !== undefined ? p.has_kickstart : p.kickstart_dat));
   const folderOf = (p) => (p ? (p.name in state.drafts ? state.drafts[p.name] : p.folder || "") : "");
 
@@ -679,7 +682,8 @@
     $("organise-layout").textContent = !p ? "" : [
       flat ? "<console folder>/" : "<platform folder>/",
       ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
-        "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"] : []),
+        discPlaylists(p) ? "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"
+          : "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc, no playlist)"] : []),
       ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
         : p.dats.map((d) => `  ${d.folder}/`)),
       ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [])].join("\n");
@@ -687,7 +691,7 @@
     $("m3u-dats").textContent = p && p.m3u_dats.length ? `Playlists are made for: ${p.m3u_dats.map(shortDat).join(", ")}` : "";
     const hasM3u = !!(p && p.m3u_dats && p.m3u_dats.length);
     $("m3u-block").classList.toggle("hidden", !hasM3u);
-    $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !gameFolder);
+    $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !discPlaylists(p));
     $("lib-savedisk-wrap").classList.toggle("hidden", !hasM3u);
     $("library-layout").textContent = $("organise-layout").textContent;
     $("library-title").textContent = "Build library";
@@ -697,7 +701,8 @@
       ...(hasM3u && !gameFolder ? [el("code", { text: `${INCOMPLETE}/` }), ", "] : []),
       el("code", { text: `${DUPLICATES}/` }), "; never deleted; files that match nothing go to ", el("code", { text: `${UNMATCHED}/` }), ")",
       hasM3u ? ", and playlists are written for complete multi-disk games."
-        : gameFolder ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; set-aside games move with their whole folder)." : ".",
+        : discPlaylists(p) ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; set-aside games move with their whole folder)."
+        : gameFolder ? " (the discs of a multi-disc game stay together; no playlists are written for this system - its emulator does not use them)." : ".",
       " Preview first; ", el("b", { text: "Undo last" }), hasM3u ? " reverts everything, playlists included." : " reverts everything.");
     loadLibraryProfile();
     renderSteps();
@@ -742,7 +747,7 @@
     state.m3uFilter = "";
     state.kickFilter = "";
     kickDirsLoaded = false;                       // each system has its own Kickstart destination
-    $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for Dreamcast playlists
+    $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for disc-system playlists
     setKickDest(currentPlatform());
     $("platform-select").value = name;
     // A finished job box (e.g. the last scan) belongs to the previous system.
@@ -1011,7 +1016,11 @@
     $("dc-engine-line").textContent = s.engine === "chdman"
       ? `CHDs were read with chdman (${s.chdman}) - every track was checked, so they are verified.`
       : "CHDs were read with the built-in reader (no chdman needed): data tracks are hashed, audio is checked by length "
-        + "until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "");
+        + "until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "")
+        + (s.needs_chdman ? ` ${fmt(s.needs_chdman)} CHD(s) use a compression the built-in reader cannot decode (zstd) - they are left in place; install chdman to identify them.` : "");
+    const tempText = s.temp_text || (s.temp && s.temp.text) || "";
+    $("dc-temp-line").textContent = tempText;
+    $("dc-temp-line").classList.toggle("hidden", !tempText);
     $("dc-verify-btn").dataset.blocked = s.identified ? "0" : "1";
     $("dc-verify-btn").title = s.identified ? "Decode EVERY track of the identified CHDs (audio included) and compare it with Redump - can take a while"
       : "Every CHD is already verified";
@@ -1025,8 +1034,8 @@
       el("p", { text: `Decode every track - audio included - of ${fmt(s.identified)} CHD${s.identified === 1 ? "" : "s"} and compare it with Redump?` }),
       el("ul", {},
         el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
-        el("li", { text: "With chdman installed this extracts each disc to a temporary folder next to the games (about its full size) and deletes it again." }),
-        el("li", { text: "Without chdman the built-in reader decodes the audio: roughly 1 MB/s per disc. A disc with 400 MB of audio takes minutes. You can cancel at any time." })));
+        el("li", { text: "With chdman installed each disc is extracted to scratch space (about its full size) and deleted again: in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder. If neither has room the built-in reader is used." }),
+        el("li", { text: "Without chdman the built-in reader decodes data at roughly 30-45 MB/s per CD/DVD (a 8 GB PlayStation 2 DVD takes about 3-4 minutes; several files run side by side) and FLAC audio at about 1 MB/s (a disc with 400 MB of audio takes minutes). You can cancel at any time." })));
     if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
     Jobs.start("/api/dc/verify", {});
   }
@@ -1358,7 +1367,8 @@
     }
     const opts = optionEntries(info);
     if (opts.length || info.ranking) {
-      const datsOf = { latest_only: scopes.latest_dats, best_variant: scopes.best_variant_dats, complete_only: scopes.complete_dats };
+      const datsOf = { latest_only: scopes.latest_dats, best_variant: scopes.best_variant_dats, complete_only: scopes.complete_dats,
+        borrow_editions: scopes.best_variant_dats };
       groups.push(el("div", { class: "rules-group", id: "rules-options" },
         el("div", { class: "rules-head", text: "Options" }),
         el("div", { class: "rules-grid" }, opts.map((e) => {
@@ -1456,6 +1466,7 @@
       ...(r.unmatched ? [card(fmt(r.unmatched), `Unmatched → ${UNMATCHED}/`, "warn")] : []),
       ...(pl.write || pl.remove || pl.ok ? [card(fmt(pl.write), "Playlists to write", pl.write ? "info" : ""),
         card(fmt(pl.remove), "Playlists to remove", pl.remove ? "warn" : "")] : []),
+      ...(r.borrowed_sets ? [card(fmt(r.borrowed_sets), `Sets completed with borrowed disks (${fmt(r.borrowed_disks || 0)} disk${r.borrowed_disks === 1 ? "" : "s"})`, "info")] : []),
       ...(r.conflict || pl.conflict ? [card(fmt((r.conflict || 0) + (pl.conflict || 0)), "Conflicts (skipped)", "bad")] : []),
       ...(vanish.titles ? [card(fmt(vanish.titles), "Games that vanish", "warn")] : []),
     );
@@ -1490,7 +1501,8 @@
   /** Reason / note cell of one preview row. */
   function libraryNote(i) {
     if (i.item === "playlist") {
-      return el("div", {}, el("span", { class: "muted", text: i.reason || `${i.disks} disk${i.disks === 1 ? "" : "s"}` }));
+      return el("div", {}, el("span", { class: "muted", text: i.reason || `${i.disks} disk${i.disks === 1 ? "" : "s"}` }),
+        ...(i.notes || []).map((n) => el("div", { class: "borrow-note small" }, el("span", { class: "tag tag-status", text: "borrowed" }), " ", n)));
     }
     const bits = [];
     if (i.code === "excluded") {
@@ -1881,11 +1893,12 @@
   // ----------------------------------------------------------- 4. Convert
   let convertTable = null;
   const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "chdman createcd, then checked against Redump" };
+  const MODE_TEXT = { createcd: "chdman createcd, then checked against Redump", createdvd: "chdman createdvd, then checked against Redump" };
 
-  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track) into a CHD with chdman. "
+  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track, or a single .iso) into a CHD with chdman (createcd for CD images, createdvd for a PlayStation 2 .iso). "
     + "The new CHD is checked track by track against Redump BEFORE anything of your set is touched; only if every track matches is it placed in the "
     + "game folder (named like the Redump entry) and the raw files are moved to _converted_originals/ - nothing is deleted, and Undo last removes "
-    + "the CHD and puts the raw files back. Temporary files go to a hidden folder inside your game folder (never /tmp) and need about twice the disc size free.";
+    + "the CHD and puts the raw files back. The new CHD is written next to its final place (needs the disc size free there); the check decodes it in scratch space (RAM or the app's cache folder, never in your game folder).";
   let chdmanInfo = null;
 
   async function loadChdman(refresh = false) {
@@ -1965,7 +1978,7 @@
               el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })),
               i.status === "convert" ? el("div", { class: "sub mono-path", text: `original kept as ${i.original_to}` }) : null),
           },
-          { label: "How", cls: "wrap", render: (i) => el("span", { class: "muted", text: VIA_TEXT[i.via] || i.via || "-" }) },
+          { label: "How", cls: "wrap", render: (i) => el("span", { class: "muted", text: MODE_TEXT[i.mode] || VIA_TEXT[i.via] || i.via || "-" }) },
           { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
         ],
       });
@@ -1986,7 +1999,7 @@
       el("ul", {},
         el("li", { text: "The new CHD is decoded again and compared with every Redump track before it is kept; on any mismatch nothing changes." }),
         el("li", { text: `The raw files are moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
-        el("li", { text: "Temporary files live in a hidden folder inside your game folder and are removed afterwards (about twice the disc size is needed while it runs)." }),
+        el("li", { text: "The new CHD is written next to its final place as a .part file (about the raw size must be free there) and renamed only after the check; the check itself uses scratch space outside your game folder." }),
         el("li", { text: "An undo log is saved as it goes - \"Undo last\" removes the CHD and puts the raw files back." }),
         el("li", { text: "The folder is re-scanned afterwards. You can cancel; the raw files stay untouched." })))
     : el("div", {},

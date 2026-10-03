@@ -83,19 +83,19 @@ class RedumpTest(unittest.TestCase):
         self.assertEqual(redump.remote_version({}), ("", ""))
 
     def test_check_missing_then_download_then_up_to_date(self) -> None:
-        rows = redump.check_updates(opener=self.opener(), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         self.assertEqual((rows[0]["status"], rows[0]["latest"], rows[0]["installed"]),
                          ("missing", "2026-06-14 18-25-41", None))
         self.assertEqual(self.requests[0][0], "HEAD")
         self.assertEqual(self.requests[0][2], f"simple-rom-organiser/{redump.__version__}")
-        res = redump.update_dats(opener=self.opener(), directory=self.dir)
+        res = redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         self.assertEqual((res["downloaded"], res["failed"], res["count"]), (1, 0, 1))
         self.assertTrue((self.dir / f"{NAME}.dat").is_file())
         self.assertFalse(list(self.dir.glob("*.part")))
         info = redump.find_dat(NAME, self.dir)
         self.assertEqual(info.version, "2026-06-14 18-25-41")
         self.assertEqual(redump.read_manifest(self.dir)[NAME]["filename"], self.fname)
-        rows = redump.check_updates(opener=self.opener(), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         self.assertEqual(rows[0]["status"], "up_to_date")
         self.requests.clear()
         again = redump.download_dat(NAME, self.dir, opener=self.opener())
@@ -103,28 +103,28 @@ class RedumpTest(unittest.TestCase):
         self.assertEqual([r[0] for r in self.requests], ["GET"])
 
     def test_unchanged_download_does_not_read_the_body(self) -> None:
-        redump.update_dats(opener=self.opener(), directory=self.dir)
+        redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         resp = FakeResp(make_zip(self.dat_text), 200, self.fname)
         redump.download_dat(NAME, self.dir, opener=lambda r: resp)
         self.assertTrue(resp.closed)
         self.assertEqual(resp.read_calls, 0)
 
     def test_newer_remote_is_an_update(self) -> None:
-        redump.update_dats(opener=self.opener(), directory=self.dir)
+        redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         newer = "Sega - Dreamcast - Datfile (2) (2026-09-01 10-00-00).zip"
-        rows = redump.check_updates(opener=self.opener(version_file=newer), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(version_file=newer), directory=self.dir)
         self.assertEqual(rows[0]["status"], "update_available")
         older = "Sega - Dreamcast - Datfile (2) (2025-01-01 10-00-00).zip"
-        rows = redump.check_updates(opener=self.opener(version_file=older), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(version_file=older), directory=self.dir)
         self.assertEqual(rows[0]["status"], "up_to_date")        # never "downgrade"
 
     def test_head_refused_falls_back_to_a_header_only_get(self) -> None:
-        rows = redump.check_updates(opener=self.opener(head_status=405), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(head_status=405), directory=self.dir)
         self.assertEqual(rows[0]["status"], "missing")
         self.assertEqual([r[0] for r in self.requests], ["HEAD", "GET"])
 
     def test_atomic_replace_keeps_old_dat_on_a_broken_download(self) -> None:
-        redump.update_dats(opener=self.opener(), directory=self.dir)
+        redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         before = (self.dir / f"{NAME}.dat").read_bytes()
         for body in (b"not a zip", make_zip("<html>nope</html>"), make_zip(self.dat_text.replace(NAME, "Other"))):
             with self.assertRaises(redump.RedumpError):
@@ -149,12 +149,12 @@ class RedumpTest(unittest.TestCase):
 
     def test_offline_with_cache_and_without(self) -> None:
         err = urllib.error.URLError("no route")
-        rows = redump.check_updates(opener=self.opener(fail=err), directory=self.dir)
+        rows = redump.check_updates(names=[redump.DAT_NAME], opener=self.opener(fail=err), directory=self.dir)
         self.assertEqual(rows[0]["status"], "error")
         with self.assertRaises(redump.RedumpError):
-            redump.update_dats(opener=self.opener(fail=err), directory=self.dir)
-        redump.update_dats(opener=self.opener(), directory=self.dir)
-        res = redump.update_dats(opener=self.opener(fail=err), directory=self.dir, force=True)   # cached DAT stays
+            redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(fail=err), directory=self.dir)
+        redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
+        res = redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(fail=err), directory=self.dir, force=True)   # cached DAT stays
         self.assertEqual((res["failed"], res["count"]), (1, 1))
         self.assertTrue(redump.find_dat(NAME, self.dir))
 

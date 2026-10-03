@@ -12,6 +12,8 @@ Supported systems:
 | Nintendo Entertainment System | *Nintendo - Nintendo Entertainment System* | No-Intro, via libretro-database |
 | Super Nintendo Entertainment System | *Nintendo - Super Nintendo Entertainment System* | No-Intro, via libretro-database |
 | Sega Dreamcast | *Sega - Dreamcast* (1516 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
+| Sony PlayStation | *Sony - PlayStation* (10,914 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
+| Sony PlayStation 2 | *Sony - PlayStation 2* (11,774 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
 every file against the system's DATs, shows what you have and what is missing, renames
@@ -32,8 +34,9 @@ untagged over NTSC, then the newest version (highest build number last). Differe
 (`Two Disk` / `One Disk` installs, `Image` / `Files`, demos, cover disks, hacks, CDTV, CD-ROM) are
 never merged. No dump-flag, multi-disk or playlist options exist for it.
 
-**Sega Dreamcast (Redump)** is the one *folder per game* system: `<system folder>/<Redump name>/<Redump name>.chd`
-plus the sidecar files next to it (see [Sega Dreamcast: CHD + Redump](#sega-dreamcast-chd--redump)). CHD files are
+**Sega Dreamcast, Sony PlayStation and Sony PlayStation 2 (Redump)** are the *folder per game* systems (one shared engine): `<system folder>/<Redump name>/<Redump name>.chd`
+plus the sidecar files next to it (see [Sega Dreamcast: CHD + Redump](#sega-dreamcast-chd--redump) and
+[Sony PlayStation / PlayStation 2](#sony-playstation--playstation-2-chd--redump)). CHD files are
 matched per track against the Redump hashes by a built-in pure-Python CHD reader (or by `chdman` when you
 have it), raw Redump sets (`.gdi` / `.cue` + track files) are recognised too and can be converted to CHD.
 
@@ -44,7 +47,7 @@ What it does:
    only when its release date differs from the installed one), the four No-Intro DATs in the
    [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro)
    mirror on GitHub (a few MB, consoles; only changed files are fetched) and the Redump
-   Dreamcast DAT (one HEAD request; the 0.7 MB zip only when its date is newer). Nothing to download by hand.
+   Dreamcast / PlayStation / PlayStation 2 DATs (one HEAD request per DAT; the 0.7 / 4 / 1.3 MB zips only when their date is newer). Nothing to download by hand.
 2. **Systems & folders**: one row per system with its DAT status and folder (native dialog,
    or the built-in folder browser with shortcuts for Home and SD cards / USB drives under
    `/run/media`). Each folder is remembered.
@@ -367,6 +370,25 @@ complete set, named after its newest disk 1:
 title, publisher, country and language and compatible dump flags (an unflagged disk fits a
 `[cr X]` disk 1); excluded variants (pre-release, `[b]` ...) are never borrowed from.
 
+**Complete sets with disks from other editions** (rules panel, *Complete sets with disks from other
+editions*, on by default, Amiga Games only - never Workbench / Kickstart-Disks). When your edition of a
+multi-disk game lacks a disk but you own that disk from another edition (matched by checksum), the
+set is completed with it. Only the **country, language, edition flags, version and year** may differ:
+the title, publisher and disk count (`Disk N of M`) must be identical, the chipset must fit (an OCS set never
+takes an AGA-only disk and the other way round; an `OCS-AGA` disk fits both; ECS counts as OCS), the dump
+flags must fit disk 1 (an unflagged disk fits a `[cr X]` disk 1, a different crack never does) and the disk must
+pass every exclusion rule (bad dumps, viruses, pre-releases, prototypes, demos, faked, unreleased, modified, size
+problems are never borrowed). The disk may be in a language you did not select: the language filter does not
+exclude it and it stays in the library as part of the set (the other edition's remaining disks are classified
+as usual, e.g. `_excluded/` for language). A slot is filled from the same edition first, then from another
+edition in a selected (or neutral) language, then from any compatible one; the newest wins. Disk 1 still names the
+playlist. The preview shows the *Sets completed with borrowed disks* count and a note per borrowed disk
+(`disk 2 borrowed from the (DE) edition (Foo (1991)(Pub)(DE)(Disk 2 of 3))`); the file's reason says
+`borrowed as disk 2 of ...`. Borrowing only happens for a game that has no complete set of its own with that
+disk count. Switch the option off to get the old behaviour (such sets go to `_incomplete/`). On the real TOSEC
+Games DAT with every ROM present and the default English-only rules this completes 14 sets (41 files that
+would have been `_incomplete`); with no language filter 26 sets (102 files).
+
 **Undo.** One undo log covers the moves and the playlists: **Undo last** moves the files
 back, removes the playlists the build created (only if unchanged) and restores the outdated
 playlists it deleted.
@@ -430,20 +452,27 @@ parallel worker processes (up to 4) and shows progress / Cancel; a disc with 400
 
 **chdman (optional).** If found (`chdman` on `PATH`, the Flatpak `org.mamedev.MAME` - Discover -> MAME ships
 chdman -, `~/.local/bin`, `~/Emulation/tools`, a path you save in the Convert step, or `$ROMORG_CHDMAN`), the
-scan extracts each CHD to a hidden temporary folder **inside your game folder** (the same file system as the
-ROMs - never `/tmp`, which can be a small RAM disk; about the disc's size is needed, checked first), hashes every
-track and deletes the temp files: the result is *verified* straight away. Leftover temp folders of a crashed run
-are swept at start-up. If chdman fails or there is no room the built-in reader takes over. A Flatpak chdman can
-only see folders the Flatpak is allowed to: if it cannot see your SD card the error shows the exact fix, e.g.
+scan extracts each CHD to **scratch space - never your game folder** - hashes every track and deletes the
+scratch files: the result is *verified* straight away. One policy decides where (about the disc's real track
+bytes + 5 % + 64 MiB is needed): (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or `/tmp` when it is a tmpfs) when
+it has the room AND the machine has that much memory available PLUS a 2 GiB safety reserve (so it never pushes the
+Deck into swap; `ROMORG_TEMP_RESERVE_MB` or config `temp_ram_reserve_mb` changes the reserve); (2) otherwise the
+disk folder `<data dir>/cache/tmp` (`$ROMORG_TEMP_DIR` / config `temp_dir`; never inside a game folder) when it has
+the room; (3) otherwise the built-in reader is used (no temp files) and the job message says why. The progress line
+and a small line in the Dreamcast bar say where it decoded (*decoding in RAM* / *decoding on disk: path*). Every
+job uses its own marked folder; leftovers of a crashed run (marker + dead process) are swept at start-up and before each
+scan, and a cancel deletes them at once. If chdman fails the built-in reader takes over. A Flatpak chdman can
+only see folders the Flatpak is allowed to (RAM / cache locations it cannot see are skipped): if it cannot see your SD card the error shows the exact fix, e.g.
 `flatpak override --user --filesystem=/run/media/deck org.mamedev.MAME`. You can force the built-in reader in
 the Convert step ("always the built-in reader"). Without chdman the Convert step is disabled and says how to get it.
 
 **Convert raw sets to CHD** (needs chdman). A folder with a `.gdi` (or a `.cue` with one file per track) and its
-track files that matches a Redump game is flagged *raw (convertible)*. *Convert* runs `chdman createcd` into the
-hidden temp folder, **decodes the new CHD again and compares every track with Redump** (chdman `extractcd`), and
-only if all tracks match places the CHD in `<Redump name>/<Redump name>.chd` and moves the raw files to
+track files that matches a Redump game is flagged *raw (convertible)*. *Convert* runs `chdman createcd` writing the new CHD
+as `<Redump name>.chd.romorg.part` next to its final place (that is the intended output, not scratch), **decodes it again in
+scratch space (RAM / cache, same policy as above; the built-in reader if neither fits) and compares every track with Redump**, and
+only if all tracks match renames it into `<Redump name>/<Redump name>.chd` and moves the raw files to
 `_converted_originals/<their path>` (nothing is deleted). Any failure, mismatch, missing space or Cancel leaves the raw files
-untouched and no temp files behind. About twice the disc size must be free during a conversion. **Undo last**
+untouched and no `.part` / temp files behind. About the disc size must be free next to the games during a conversion. **Undo last**
 removes the new CHD (after checking its SHA-1) and puts the raw files back.
 
 **Library rules for Redump names** (`Title (Region) (Languages) (Rev A) (Disc 1)`), in the same panel as the
@@ -458,6 +487,52 @@ is chosen as a whole and ALL its discs are kept (the newest revision of every di
 `Shenmue (Europe) (En,Fr,De,Es)/Shenmue (Europe) (En,Fr,De,Es).m3u` -> `Shenmue ... (Disc 1).chd`,
 `../Shenmue ... (Disc 2)/...`; a game with a disc missing keeps its discs where they are (no playlist) and is listed.
 Disc labels (`|Disc 2`) are off by default (not every frontend reads them).
+
+## Sony PlayStation / PlayStation 2: CHD + Redump
+
+Both systems are built exactly like the Dreamcast (same engine, same screens, same guarantees): own folder per
+system, own Redump DAT (`Sony - PlayStation`: 10,914 discs; `Sony - PlayStation 2`: 11,774 discs; no cross-matching),
+**one folder per game** named like the Redump entry: `<system folder>/<Redump name>/<Redump name>.chd` plus sidecars.
+A loose CHD (the usual PS2 library: `Gran Turismo 4 (USA).chd` next to its `.state` / `.srm` / `.mcr` files) gets its
+own folder; the folder, the CHD and every file that starts with the CHD's old name are renamed to the Redump name
+(so `Tony Hawk's Pro Skater 4 (USA).chd` becomes `Tony Hawk's Pro Skater 4 (USA) (v1.02)/...` and its save states
+follow); other files in a game folder move along; a game folder that matches nothing goes whole to `_unmatched/`; raw
+sets are left alone except via *Convert*. Preview first, undo log, nothing overwritten.
+
+**What is matched.** PlayStation: every game is a `.cue` + `(Track N).bin` per track (a single-track disc: one
+`.bin`). PlayStation 2: 8,606 DVD games are ONE `.iso`, 3,168 CD games are `.cue` + `.bin`. A CHD made with
+`chdman createcd` stores a DVD ISO as a `MODE1` track of 2048 bytes per 2448-byte frame (no padding, no subcode in the
+extracted file), a PlayStation disc as `MODE2_RAW`; the built-in reader decodes both (MODE 2 sectors get their sync and
+error-correction bytes rebuilt, with the header counted as zeros as the CD standard says) and the result must equal
+the Redump size and crc32 / md5 / sha1 - a PS2 CHD matches only if the whole ISO (or every bin track) is identical. A DVD
+CHD made by `chdman createdvd` (metadata `DVD `, 2048-byte units) carries the ISO's SHA-1 in its header, so it is
+*identified* instantly without decoding; **Verify fully** decodes it (*verified*). CHDs that use a codec the built-in reader
+lacks (Zstandard - newer chdman versions use it by default) are reported as *needs chdman* and **left in place** (never moved to
+`_unmatched/`); with chdman installed they are read by chdman. PS2 DVD games have no audio tracks, so for them
+*identified* from a decode is already fully verified.
+
+**Big-file scan times (built-in reader, Steam Deck, one core per file).** The decode runs at about 25-60 MB/s of
+disc data (cdlz / cdzl hunks, depending on how compressible the data is): measured on the real files, a 4.6 GB
+ISO takes ~2 min, God of War II (8.5 GB dual-layer) ~3.2 min, the seven PS2 CHDs of the test library (38 GB of ISO data) about
+14 min on one core, a PlayStation disc 10-25 s. Several files are decoded in parallel (up to 4 worker processes).
+The scan shows *file i/n, MB/s and an ETA*, can be cancelled at any time, and every result is cached by (path, size,
+modification time, CHD header SHA-1): the first scan is slow, every rescan takes a fraction of a second.
+
+**Library rules** (Build library; same rules and defaults as the Dreamcast): region priority Europe > USA > World >
+Japan > others, English by default, ONE release per game, discs of a multi-disc game always stay together, newest
+revision wins within a region; Redump categories *Demos* and *Coverdiscs* are demos, *Preproduction* is
+prototype / pre-release (plus the `(Beta)`, `(Proto)`, `(Sample)` and Japanese `(Taikenban)` tokens), while
+*Applications*, *Educational*, *Bonus Discs*, *Multimedia*, *Add-Ons* are kept on purpose. Budget re-releases
+(`(PlayStation the Best)`, `(Greatest Hits)`, `(Platinum)` ...), `(Unl)` and special editions are different products and are never merged;
+`(Rev N)` / `(vX.Y)` are revisions (newest wins); `(Disc A)` / `(Disc B)` count as discs 1 / 2.
+**Playlists:** PlayStation multi-disc games get an `.m3u` with relative paths next to disc 1 (RetroArch and DuckStation read it);
+**PlayStation 2 gets none** - PCSX2 does not use `.m3u` playlists (the policy is a per-system setting).
+
+**Convert (needs chdman).** A PlayStation `.cue` + `.bin` set (or a PS2 CD set) is converted with `chdman createcd`;
+a single PS2 `.iso` with `chdman createdvd` (config key `ps2_iso_chd` = `dvd` (default) | `cd` makes it `createcd`, which
+produces the same kind of CHD as the one in your library). The new CHD is decoded again and compared with Redump before
+the originals move to `_converted_originals/`. *Assumption, not verified here:* PCSX2 loads both `createcd` and
+`createdvd` CHDs (the createcd ones are what the test library uses). Without chdman the step is disabled and explains how to get it.
 
 ## Convert to No-Intro format (SNES, N64)
 
@@ -637,7 +712,7 @@ The UI is sized for the Deck's 1280x800 screen with large touch targets. The nat
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro
 DATs and their `manifest.json` - kept separate, so updating the TOSEC pack never touches
 them), `cache/` (downloaded pack zip, hash cache), `updates.json` (when the DATs were last
-checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
+checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
 are written into your platform folder.
 
 ## Adding a platform
@@ -669,7 +744,7 @@ DATs are fetched from
   stored in its own folder and never touched by TOSEC / No-Intro updates. **That repository
   states no licence: this app downloads only the DAT (a list of names and hashes), never any
   game file.** The DAT is Windows-1252 encoded; it is read as such.
-- **Redump (Sega Dreamcast)**: `http://redump.org/datfile/dc/` over **plain HTTP** (HTTPS is refused by
+- **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2)**: `http://redump.org/datfile/dc/`, `.../psx/` and `.../ps2/` over **plain HTTP** (HTTPS is refused by
   the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
   (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the
   old DAT atomically; it is stored in its own `redump/` folder. Offline, the installed DAT keeps working.

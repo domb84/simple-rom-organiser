@@ -231,7 +231,7 @@ KICKSTART_ORDER = ("copy", "conflict", "ok", "missing", "unmatched")
 CONVERT_ORDER = ("convert", "conflict", "skip")
 MAX_TITLE = 120
 LAYOUT_PER_DAT, LAYOUT_FLAT = "per_dat", "flat"
-LAYOUT_GAME_FOLDER = "game_folder"   # Sega Dreamcast: <root>/<Redump name>/<Redump name>.chd
+LAYOUT_GAME_FOLDER = "game_folder"   # disc systems: <root>/<Redump name>/<Redump name>.chd
 CHDMAN_TTL = 60.0                    # seconds a chdman detection result is reused
 SOURCE_TOSEC, SOURCE_NOINTRO = "tosec", "nointro"
 # Result kinds whose rows carry name tags (filterable by region / language / video / flag / rule).
@@ -241,7 +241,7 @@ TAG_FILTERS = ("region", "language", "video", "flag", "rule")
 LIBRARY_REASONS = ("kept", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
-                "rescue_only_dump", "region_priority", "one_per_game")
+                "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -956,11 +956,15 @@ class App:
             return value
 
     def sweep_chd_temp(self) -> list[str]:
-        """Startup housekeeping: delete leftover ``.romorg-chd-*`` temp folders (dead runs) in the Dreamcast folder."""
+        """Startup housekeeping: delete leftover ``.romorg-chd-*`` temp folders (dead runs) in the disc systems' folders."""
         chdtool = _optional_mod("chdtool")
         removed: list[str] = []
         if chdtool is None:
             return removed
+        tempspace = _optional_mod("tempspace")
+        if tempspace is not None:        # job folders of dead runs in RAM / the app cache (marker + dead pid only)
+            tempspace.configure(self._config())
+            removed += tempspace.sweep_stale()
         for platform in _mod("platforms").list_platforms():
             if _layout(platform) != LAYOUT_GAME_FOLDER:
                 continue
@@ -968,6 +972,24 @@ class App:
             if folder and os.path.isdir(folder):
                 removed += chdtool.sweep_stale(Path(folder))
         return removed
+
+    def _configure_temp(self, cfg: dict | None = None) -> None:
+        """Scratch-space settings (``temp_dir``, ``temp_ram_reserve_mb``; env vars win) for the next decode."""
+        tempspace = _optional_mod("tempspace")
+        if tempspace is not None:
+            tempspace.configure(cfg if cfg is not None else self._config())
+
+    @staticmethod
+    def _carry_temp(state: ScanState, res: dict[str, Any]) -> None:
+        """Keep the 'where did the decode go' report visible after the job's re-scan (which decodes nothing)."""
+        temp = res.get("temp")
+        if not temp:
+            return
+        if isinstance(res.get("summary"), dict):
+            res["summary"]["temp"] = temp
+            res["summary"]["temp_text"] = temp.get("text", "")
+        if hasattr(state.result, "temp"):
+            state.result.temp = temp
 
     # ---- chdman (Sega Dreamcast): detected lazily, result reused for a minute
 
@@ -1059,6 +1081,7 @@ class App:
             "extensions": list(getattr(platform, "extensions", ()) or ()),
             "convertible": bool(getattr(platform, "convertible", False)),
             "chd": layout == LAYOUT_GAME_FOLDER,
+            "disc": self._disc_info(platform, cfg),
             "folder": self._folders(cfg).get(platform.name),
             "latest_only": self._latest_only(platform, cfg),
             "library": self._profile_for_info(platform, cfg),
@@ -1071,6 +1094,17 @@ class App:
             "kickstart_dest": _kick_dest(cfg, platform.name),
             "protected_dirs": list(getattr(platform, "protected_dirs", ()) or ()),
         }
+
+    @staticmethod
+    def _disc_info(platform: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
+        """The disc-system settings of a Redump + CHD platform (None for the others)."""
+        discsys = _optional_mod("discsys")
+        system = discsys.system_for_platform(platform.name) if discsys is not None else None
+        if system is None:
+            return None
+        info = system.to_dict()
+        info["iso_mode"] = discsys.iso_convert_mode(system, cfg)
+        return info
 
     def _profile_for_info(self, platform: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -1144,9 +1178,10 @@ class App:
                            "no_dats")
         job.report(0, 0, "Scanning...")
         layout = _layout(platform)
-        if layout == LAYOUT_GAME_FOLDER:     # Sega Dreamcast: CHD / raw sets, matched per track
+        if layout == LAYOUT_GAME_FOLDER:     # disc systems (Dreamcast, PlayStation, PlayStation 2): CHD / raw sets, matched per track
             cfg = self._config()
-            result = _mod("dreamcast").scan(
+            self._configure_temp(cfg)
+            result = _mod("discsys").scan(
                 root, dats, progress=job.report, cancel=job.cancel if cancellable else None,
                 chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
                 workers=_mod("chdpool").default_workers(cfg.get("chd_workers")),
@@ -1176,7 +1211,7 @@ class App:
     def _rename_plan(self, state: ScanState, move_unmatched: bool = True, latest_only: bool = False) -> list[Any]:
         key = (move_unmatched, latest_only)
         if key not in state.rename_plans and self._is_dc(state):
-            state.rename_plans[key] = sorted(_mod("dreamcast").plan_tidy(state.result, move_unmatched),
+            state.rename_plans[key] = sorted(_mod("discsys").plan_tidy(state.result, move_unmatched),
                                               key=_order_key(ORGANISE_ORDER))
         if key not in state.rename_plans:
             kwargs: dict[str, Any] = {"missing_dats": list(state.missing_dats), "move_unmatched": move_unmatched,
@@ -1200,7 +1235,7 @@ class App:
         if not getattr(state.platform, "convertible", False):
             return []
         if latest_only not in state.convert_plans and self._is_dc(state):
-            ops = list(_mod("dreamcast").plan_convert(state.result, self._chdman() is not None))
+            ops = list(_mod("discsys").plan_convert(state.result, self._chdman() is not None, self._config()))
             ops.sort(key=_order_key(CONVERT_ORDER))
             state.convert_plans[latest_only] = ops
         if latest_only not in state.convert_plans:
@@ -1363,7 +1398,7 @@ class App:
         """The cached ``organiser.LibraryPlan`` for the platform's current profile."""
         key = (move_unmatched, savedisk, labels)
         if key not in state.library_plans and self._is_dc(state):
-            plan = _mod("dreamcast").plan_library(state.result, self._profile(state.platform),
+            plan = _mod("discsys").plan_library(state.result, self._profile(state.platform),
                                                   move_unmatched=move_unmatched, savedisk=savedisk, labels=labels)
             plan.ops.sort(key=_order_key(ORGANISE_ORDER))
             state.library_plans[key] = plan
@@ -1541,7 +1576,7 @@ class App:
     @staticmethod
     def _convert_item(op: Any, root: Path) -> dict[str, Any]:
         src = _rel(op.src, root)
-        return {
+        row = {
             "from": f"{src}::{op.member}" if getattr(op, "member", None) else src,
             "to": _rel(op.dst, root),
             "original_to": _rel(op.original_dst, root),
@@ -1550,6 +1585,9 @@ class App:
             "rom_name": getattr(op, "rom_name", "") or "",
             "via": getattr(op, "via", "") or "",
         }
+        if getattr(op, "mode", ""):          # disc systems: the chdman command (createcd | createdvd)
+            row["mode"] = op.mode
+        return row
 
     @staticmethod
     def _m3u_item(op: Any, root: Path) -> dict[str, Any]:
@@ -1563,6 +1601,7 @@ class App:
             "disks": sum(1 for line in lines if line.strip() and not line.startswith("#")),
             "status": op.status,
             "reason": getattr(op, "reason", "") or "",
+            "notes": list(getattr(op, "notes", ()) or ()),
         }
 
     @staticmethod
@@ -1752,7 +1791,8 @@ class App:
             changes["keep_flags"] = frozenset(names("keep_flags", getattr(tags, "KEEP_FLAGS", None), "flag types"))
         if "region_priority" in body:
             changes["region_priority"] = tuple(names("region_priority", getattr(tags, "REGIONS", None), "regions"))
-        for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game"):
+        for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
+                    "borrow_other_editions"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         self._save_profile(platform, dataclasses.replace(profile, **changes))
@@ -1946,7 +1986,7 @@ class App:
             ops = self._rename_plan(state, move_unmatched, latest_only)
             todo = sum(1 for op in ops if op.status in ACTIONABLE)
             job.report(0, todo, "Moving files...")
-            apply = _mod("dreamcast").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
+            apply = _mod("discsys").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
             res = dict(_call(apply, ops, state.root, progress=job.report, cancel=job.cancel))
             res["action"] = "apply"
             return self._rescan_into(job, state, res)
@@ -2028,6 +2068,15 @@ class App:
         return {"exclusive": dict(out.get("exclusive", {})), "any": dict(out.get("any", {}))}
 
     @staticmethod
+    def _borrow_summary(plan: Any) -> dict[str, Any]:
+        """``{"sets", "disks", "by_difference"}``: playlists completed with disks of other editions."""
+        sel = getattr(plan, "selection", None)
+        func = getattr(sel, "borrow_summary", None)
+        out = func() if callable(func) else {}
+        return {"sets": int(out.get("sets", 0)), "disks": int(out.get("disks", 0)),
+                "by_difference": dict(out.get("by_difference", {}))}
+
+    @staticmethod
     def _vanish_summary(plan: Any) -> dict[str, Any]:
         func = getattr(plan, "vanish_summary", None)
         out = func() if callable(func) else {}
@@ -2099,6 +2148,7 @@ class App:
                        "remove": sum(1 for op in ops if op.status == "delete"),
                        "conflict": statuses.count("conflict")},
             incomplete_sets=incomplete,
+            borrowed=self._borrow_summary(plan),
             incomplete_total=len(getattr(plan.selection, "incomplete", ()) or ()),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
             warnings=[w["text"] for w, _ in state.items[wkey]],
@@ -2117,7 +2167,7 @@ class App:
             todo = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
                 1 for p in plan.playlists if p.status == "write")
             job.report(0, todo, "Building library...")
-            apply = _mod("dreamcast").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
+            apply = _mod("discsys").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
             res = dict(_call(apply, plan.ops, state.root, progress=job.report,
                              cancel=job.cancel, playlists=list(plan.playlists)))
             res["action"] = "library"
@@ -2140,6 +2190,7 @@ class App:
         if self._is_dc(state):
             page["chdman"] = self._chdman_info()
             page["kind"] = "chd"
+            page["disc"] = self._disc_info(state.platform, self._config())
         return page
 
     def convert_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -2159,13 +2210,16 @@ class App:
                 chdman = self._chdman()
                 if chdman is None:
                     raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
-                res = dict(_mod("dreamcast").apply_conversions(ops, state.root, chdman, state.result.index,
+                self._configure_temp()
+                res = dict(_mod("discsys").apply_conversions(ops, state.root, chdman, state.result.index,
                                                               progress=job.report, cancel=job.cancel))
             else:
                 res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
                                  cancel=job.cancel))
             res["action"] = "convert"
-            return self._rescan_into(job, state, res)
+            self._rescan_into(job, state, res)
+            self._carry_temp(state, res)
+            return res
 
         return {"job": self.jobs.start("convert", work).to_dict()}
 
@@ -2302,14 +2356,17 @@ class App:
         if not self._is_dc(state):
             raise ApiError(HTTPStatus.CONFLICT, f"{state.platform.name} has no CHD verification")
         cfg = self._config()
+        self._configure_temp(cfg)
 
         def work(job: Job) -> Any:
-            res = dict(_mod("dreamcast").verify_units(
+            res = dict(_mod("discsys").verify_units(
                 state.result, self._chdman(), progress=job.report, cancel=job.cancel,
                 engine=str(cfg.get("chd_engine") or "auto"),
                 workers=_mod("chdpool").default_workers(cfg.get("chd_workers"))))
             res["action"] = "verify"
-            return self._rescan_into(job, state, res)
+            self._rescan_into(job, state, res)
+            self._carry_temp(state, res)
+            return res
 
         return {"job": self.jobs.start("verify", work).to_dict()}
 

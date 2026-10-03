@@ -22,7 +22,7 @@ from romorg import cdecc, chd, datfile, flacdec  # noqa: E402
 
 SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
                "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
-REAL_DAT = next(iter(glob.glob(str(SCRATCH / "redump" / "*.dat"))), "")
+REAL_DAT = next(iter(glob.glob(str(SCRATCH / "redump" / "Sega - Dreamcast*.dat"))), "")
 REAL_DIR = Path("/home/deck/MEGA/Emulation/roms/dreamcast")
 REAL_TITLES = ["De La Jet Set Radio (Japan) (En,Ja,Fr,De,Es)",
                "Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A)",

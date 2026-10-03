@@ -6,6 +6,14 @@ uncompressed) and exposes the *tracks* the way ``chdman extractcd`` writes them
 (raw 2352-byte sectors, subcode dropped, GD-ROM pad frames dropped, audio in CD
 little-endian byte order), so the bytes can be hashed and compared with Redump.
 
+Track types: ``MODE1_RAW`` / ``MODE2_RAW`` / ``AUDIO`` are 2352-byte sectors; the cooked types
+(``MODE1`` = 2048 bytes, ``MODE2_FORM1`` 2048, ``MODE2_FORM2`` 2324, ``MODE2`` 2336) are stored at the
+START of each 2448-byte frame and extracted without padding / subcode (that is how ``chdman createcd`` keeps a
+PlayStation 2 DVD ISO: a ``MODE1`` track, 2048 bytes per frame). DVD CHDs of ``chdman createdvd`` (metadata
+``DVD ``, 2048-byte units, header raw SHA-1 = the ISO's SHA-1) are exposed as one synthetic ``DVD`` track.
+Codecs the built-in reader cannot decode (``zstd`` / ``cdzs``, ``huff``, ``flac`` data) raise
+:class:`ChdUnsupported` with ``needs_chdman`` set.
+
 Nothing is ever loaded as a whole: hunks are read, decoded and handed out one
 at a time.
 
@@ -51,7 +59,23 @@ class ChdError(Exception):
 
 
 class ChdUnsupported(ChdError):
-    """A valid CHD that this reader cannot decode (old version, zstd, parent, ...)."""
+    """A valid CHD that this reader cannot decode (old version, zstd, parent, ...).
+
+    ``needs_chdman``: chdman could decode it (a codec the built-in reader lacks)."""
+
+    needs_chdman = False
+
+
+_CODEC_NAMES = {"zstd": "Zstandard", "cdzs": "Zstandard (CD)", "huff": "Huffman", "flac": "FLAC data",
+                "avhu": "AV Huffman"}
+
+
+def _unsupported_codec(codec: str) -> ChdUnsupported:
+    name = _CODEC_NAMES.get(codec)
+    exc = ChdUnsupported(f"needs chdman: the CHD uses the '{codec}' compression"
+                         + (f" ({name})" if name else "") + ", which the built-in reader cannot decode")
+    exc.needs_chdman = True
+    return exc
 
 
 def is_chd(path) -> bool:
@@ -164,16 +188,20 @@ class _Huffman:
 
 # --------------------------------------------------------------------------- metadata
 _TRACK_TAGS = {b"CHT2", b"CHTR", b"CHGD", b"CHGT"}
+_DVD_TAG = b"DVD "
+DVD_SECTOR = 2048
 _TYPES = {
-    # name: (sector bytes in the extracted file, offset inside the 2352 raw sector)
-    "MODE1": (2048, 16), "MODE1/2048": (2048, 16),
+    # name: (bytes of one sector in the extracted file, offset inside the frame's 2352 bytes). A cooked type is
+    # stored by chdman at the start of the frame (offset 0), the raw types fill all 2352 bytes.
+    "MODE1": (2048, 0), "MODE1/2048": (2048, 0),
     "MODE1_RAW": (2352, 0), "MODE1/2352": (2352, 0),
-    "MODE2": (2336, 16), "MODE2/2336": (2336, 16),
-    "MODE2_FORM1": (2048, 24), "MODE2/2048": (2048, 24),
-    "MODE2_FORM2": (2324, 24), "MODE2/2324": (2324, 24),
-    "MODE2_FORM_MIX": (2336, 16),
+    "MODE2": (2336, 0), "MODE2/2336": (2336, 0),
+    "MODE2_FORM1": (2048, 0), "MODE2/2048": (2048, 0),
+    "MODE2_FORM2": (2324, 0), "MODE2/2324": (2324, 0),
+    "MODE2_FORM_MIX": (2336, 0),
     "MODE2_RAW": (2352, 0), "MODE2/2352": (2352, 0),
     "AUDIO": (2352, 0),
+    "DVD": (2048, 0),          # the synthetic track of a createdvd CHD
 }
 
 
@@ -458,12 +486,19 @@ class Chd:
         for t in tracks:
             t.start = start
             start += t.frames + (-t.frames) % CD_TRACK_PADDING
-        self.tracks = tracks
         self.is_gd = any(t.gd for t in tracks)
         self.is_cd = bool(tracks)
+        self.is_dvd = (not tracks) and any(tag == _DVD_TAG for tag, _b in self.metadata)
+        if self.is_dvd:
+            # chdman createdvd: the ISO is the logical data (2048-byte units); header raw SHA-1 = the ISO's SHA-1
+            if self.unit_bytes != DVD_SECTOR or self.logical_bytes % DVD_SECTOR or self.hunk_bytes % DVD_SECTOR:
+                raise ChdUnsupported("a DVD CHD with an unusual unit / hunk size")
+            tracks = [Track(number=1, type="DVD", subtype="NONE", frames=self.logical_bytes // DVD_SECTOR)]
+            start = tracks[0].frames
+        self.tracks = tracks
         self.total_frames = start
         self.frames_per_hunk = self.hunk_bytes // self.unit_bytes if self.unit_bytes else 0
-        if tracks and self.unit_bytes != CD_FRAME:
+        if self.is_cd and self.unit_bytes != CD_FRAME:
             raise ChdError("CD metadata but unit size is not 2448")
 
     # -- hunks
@@ -507,7 +542,7 @@ class Chd:
                 self._filters = _lzma_filters(self.hunk_bytes)
             raw = _lzma_raw(comp, self.hunk_bytes, self._filters)
         else:
-            raise ChdUnsupported("compression '%s' is not supported" % codec)
+            raise _unsupported_codec(codec)
         if len(raw) != self.hunk_bytes:
             raise ChdError("hunk %d decoded to the wrong size" % index)
         if not with_subcode and self.is_cd:
@@ -609,7 +644,11 @@ class Chd:
 
     def iter_track(self, track: Track, cancel: Optional[Callable[[], bool]] = None,
                    skip_audio: bool = False) -> Iterator[bytes]:
-        """The extracted bytes of a track, as ``chdman extractcd`` writes its bin / gdi file."""
+        """The extracted bytes of a track, as ``chdman extractcd`` writes its bin / gdi file (a DVD CHD: the ISO,
+        as ``chdman extractdvd`` writes it)."""
+        if self.is_dvd:
+            yield from self._iter_dvd(cancel)
+            return
         ssize, soff = track.sector_size, track.sector_offset
         audio = track.is_audio
         for chunk in self.iter_frames(track.start, track.data_frames):
@@ -625,6 +664,28 @@ class Chd:
             else:
                 n = len(chunk) // CD_SECTOR
                 yield b"".join(chunk[i * CD_SECTOR + soff:i * CD_SECTOR + soff + ssize] for i in range(n))
+
+    def _iter_dvd(self, cancel: Optional[Callable[[], bool]] = None) -> Iterator[bytes]:
+        remaining = self.logical_bytes
+        # decoded a few hunks at a time so small hunks (2-4 KiB) do not cost one Python iteration each
+        per = max(1, (1 << 20) // self.hunk_bytes)
+        i = 0
+        while remaining > 0 and i < self.hunk_count:
+            if cancel is not None and cancel():
+                raise InterruptedError("cancelled")
+            parts = []
+            for _ in range(per):
+                if i >= self.hunk_count:
+                    break
+                parts.append(self.read_hunk_raw(i, with_subcode=False))
+                i += 1
+            data = b"".join(parts)
+            if len(data) > remaining:
+                data = data[:remaining]
+            remaining -= len(data)
+            yield data
+        if remaining:
+            raise ChdError("the CHD holds less data than its header says")
 
     def verify_raw_sha1(self, progress: Optional[Callable[[int, int], None]] = None,
                         cancel: Optional[Callable[[], bool]] = None) -> bool:
@@ -645,7 +706,7 @@ class Chd:
         return {"version": self.version, "compressors": [c for c in self.compressors if c],
                 "logical_bytes": self.logical_bytes, "hunk_bytes": self.hunk_bytes,
                 "hunks": self.hunk_count, "sha1": self.sha1, "raw_sha1": self.raw_sha1,
-                "kind": "gdrom" if self.is_gd else "cd" if self.is_cd else "data",
+                "kind": "gdrom" if self.is_gd else "cd" if self.is_cd else "dvd" if self.is_dvd else "data",
                 "tracks": [t.to_dict() for t in self.tracks]}
 
 

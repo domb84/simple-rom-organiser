@@ -1758,6 +1758,16 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual(res["profile"]["languages"], ["De", "En"])
         self.assertEqual(res["profile"]["keep_flags"], ["h", "t"])  # untouched by the partial update
         self.assertEqual(self.post("/api/library/profile", {"platform": "Commodore Amiga", "languages": []})["profile"]["languages"], [])
+        info = self.get("/api/library/profile?platform=Commodore%20Amiga")
+        self.assertTrue(info["profile"]["borrow_other_editions"])           # default on (Amendment 12)
+        self.assertTrue(info["available"]["borrow_editions"])
+        self.assertIn("borrow_editions", [e["id"] for e in info["catalog"]])
+        res = self.post("/api/library/profile", {"platform": "Commodore Amiga", "borrow_other_editions": False})
+        self.assertFalse(res["profile"]["borrow_other_editions"])
+        saved = json.loads((self.data / "config.json").read_text())["library"]["Commodore Amiga"]
+        self.assertFalse(saved["borrow_other_editions"])
+        self.assertTrue(self.post("/api/library/profile", {"platform": "Commodore Amiga", "reset": True})
+                        ["profile"]["borrow_other_editions"])
         for body in ({"languages": ["Xx"]}, {"languages": "En"}, {"keep_flags": ["zz"]}, {"keep_flags": "cr"},
                      {"region_priority": ["Atlantis"]}, {"region_priority": "USA"}):
             status, _, _ = self.request("POST", "/api/library/profile", {"platform": "Commodore Amiga", **body})
@@ -1905,6 +1915,8 @@ class LibraryServerTests(ServerTestCase):
         playlist = [i for i in by_cat["playlist"] if i["item"] == "playlist"][0]
         self.assertEqual((playlist["status"], playlist["disks"], playlist["name"]),
                          ("write", 2, "ABC v1.1 (1991)(Pub)[cr SR].m3u"))
+        self.assertEqual(playlist["notes"], [])
+        self.assertEqual(plan["borrowed"], {"sets": 0, "disks": 0, "by_difference": {}})
         for reason, expected in (("excluded", 1), ("kept", 1), ("duplicate", 1), ("unmatched", 1), ("playlist", 2)):
             self.assertEqual(self.post("/api/library/plan", {"reason": reason})["total"], expected, reason)
         self.assertEqual(self.post("/api/library/plan", {"reason": "excluded", "q": "bad"})["total"], 1)

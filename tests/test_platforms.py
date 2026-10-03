@@ -60,7 +60,7 @@ class PlatformTests(unittest.TestCase):
                 self.assertEqual(platforms.source_of(p), "whdload")
                 self.assertEqual((p.latest_dats, p.best_variant_dats), (p.dats, p.dats))
                 continue
-            if p.name == platforms.DREAMCAST_PLATFORM:   # its own source: checked in test_dreamcast.py
+            if p.name in (platforms.DREAMCAST_PLATFORM, platforms.PSX_PLATFORM, platforms.PS2_PLATFORM):   # its own source: checked in test_dreamcast.py
                 self.assertEqual(platforms.source_of(p), "redump")
                 self.assertEqual((p.latest_dats, p.best_variant_dats), (p.dats, ()))
                 continue
@@ -114,7 +114,7 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(DatSource.NOINTRO, "nointro")
         names = [p.name for p in list_platforms()]
         self.assertEqual(names, sorted(names, key=str.lower))
-        self.assertEqual(len(names), 7)   # Amiga, Amiga - WHDLoad, GBA, N64, NES, Sega Dreamcast, SNES
+        self.assertEqual(len(names), 9)   # Amiga, Amiga - WHDLoad, GBA, N64, NES, Sega Dreamcast, Sony PlayStation (2), SNES
         self.assertEqual(platforms.DEFAULT_PLATFORM, "Commodore Amiga")
         self.assertIn("Nintendo - Nintendo 64", platforms.all_dat_names())
         # positional construction (old signature) still works with the defaults

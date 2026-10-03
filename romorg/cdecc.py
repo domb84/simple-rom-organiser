@@ -90,6 +90,17 @@ def _p_getters(n: int):
     return g
 
 
+_ZERO4 = b"\x00\x00\x00\x00"
+
+
+def _body(s, end: int) -> bytes:
+    """The bytes the parity covers: ``12..end``; in a MODE 2 sector (mode byte 2: PlayStation, CD-i,
+    Video CD) the 4 header bytes count as zeros (ECMA-130 / MAME ``ecc_source_byte``)."""
+    if s[15] == 2:
+        return _ZERO4 + bytes(s[16:end])
+    return bytes(s[12:end])
+
+
 def generate(sectors: Sequence) -> None:
     """Fill sync header + P/Q parity (in place) of every 2352-byte sector in the list.
 
@@ -99,13 +110,13 @@ def generate(sectors: Sequence) -> None:
     if not n:
         return
     # ---- P parity: rows of 86 bytes, 24 steps ----
-    blkp = b"".join([s[12:2076] for s in sectors])
+    blkp = b"".join([_body(s, 2076) for s in sectors])
     rows = [b"".join(g(blkp)) for g in _p_getters(n)]
     first, second = _horner(rows, 86 * n)
     for i, s in enumerate(sectors):
         s[2076:2248] = first[i * 86:(i + 1) * 86] + second[i * 86:(i + 1) * 86]
     # ---- Q parity (covers header, data and P) ----
-    blk = b"".join([s[12:2248] for s in sectors])
+    blk = b"".join([_body(s, 2248) for s in sectors])
     lanes = 52 * n
     m7f, m01 = _masks(lanes)
     keep, lastmask = _rot_masks(2 * n)
@@ -156,6 +167,10 @@ def generate_reference(sector: bytearray) -> None:
             sector[dest_off + major] = a
             sector[dest_off + major + major_count] = a ^ b
     # careful: Horner variable is ``a`` here, plain xor is ``b`` (see _horner)
+    header = bytes(sector[12:16])
+    if sector[15] == 2:          # MODE 2: the header counts as zeros
+        sector[12:16] = _ZERO4
     block(12, 86, 24, 2, 86, _P_OFF)
     block(12, 52, 43, 86, 88, _Q_OFF)
+    sector[12:16] = header
     sector[0:12] = SYNC

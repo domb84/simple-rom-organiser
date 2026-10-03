@@ -646,6 +646,8 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], move_unmatched
         selection = library.select(items, profile, _platform_for(result, platform))
         for key, (op, u) in owners.items():
             d = selection.decisions.get(key)
+            if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
+                _add_reason(op, d.reason.split("; ")[-1])      # "borrowed as disk N of <set> (...)"
             if d is None or d.action == library.KEEP:
                 continue
             code = d.action
@@ -755,7 +757,8 @@ def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missin
             disks.append(m3u.PlaylistDisk(slot, final, unit.member if unit.archive else None,
                                           cs.labels.get(slot, "")))
         if len(disks) == len(cs.slots) and disks:
-            specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks))
+            specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks,
+                                          [b["text"] for _i, b in sorted(cs.borrowed.items())]))
     playlists = m3u.plan_playlists(specs, root, savedisk=savedisk, labels=labels, member_counts=counts)
 
     moving = [str(op.src) for op in ops if op.status in MOVE_STATUSES]
@@ -961,6 +964,8 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
                          "unmatched", "conflict", "skip", "playlists_write", "playlists_ok",
                          "playlists_remove", "playlists_conflict"), 0)
     out.update(dict.fromkeys((f"excluded_{c}" for c in library.ALL_CODES), 0))
+    borrow = plan.selection.borrow_summary()
+    out["borrowed_sets"], out["borrowed_disks"] = borrow["sets"], borrow["disks"]
     for op in plan.ops:
         if op.status == DELETE_STATUS:
             out["playlists_remove"] += 1

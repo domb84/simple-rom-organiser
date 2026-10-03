@@ -310,7 +310,7 @@ class TagsTest(unittest.TestCase):
             self.assertIn("whdload", e["applies_to"])
         # the existing styles do not gain / lose entries because of it
         self.assertNotIn("whdload", [e for e in library.rule_catalog("tosec") if e["id"] == "cr"][0]["applies_to"])
-        self.assertEqual(len(library.rule_catalog("tosec")), 9 + 6 + 5)
+        self.assertEqual(len(library.rule_catalog("tosec")), 9 + 6 + 6)
 
     def test_rom_tags_dispatch(self) -> None:
         rom = datfile.Rom("G_v1.0_AGA.lha", 1, "0", "", "", "G (AGA)", DAT, "G_v1.0_AGA")
@@ -807,7 +807,7 @@ class FolderPersistenceTest(ServerCase):
             d.mkdir(parents=True)
             dirs[p["name"]] = str(d.resolve())
             self.call("/api/folders", {"platform": p["name"], "path": str(d)})
-        self.assertEqual(len(dirs), 7)
+        self.assertEqual(len(dirs), 9)
         # a profile save, a kickstart dest and a scan-time update later, nothing is forgotten
         self.call("/api/library/profile", {"platform": "Nintendo 64", "languages": ["En", "De"]})
         self.call("/api/platforms/options", {"platform": "Nintendo 64", "latest_only": False})

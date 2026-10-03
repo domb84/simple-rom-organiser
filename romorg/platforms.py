@@ -19,7 +19,7 @@ class DatSource(str, Enum):
     TOSEC = "tosec"
     NOINTRO = "nointro"
     WHDLOAD = "whdload"      # MrV2K's WHDLoad database (its own source, folder and DAT)
-    REDUMP = "redump"        # redump.org Logiqx DATs (Sega Dreamcast), HTTP only, own folder
+    REDUMP = "redump"        # redump.org Logiqx DATs (Dreamcast, PlayStation, PlayStation 2), HTTP only, own folder
 
 
 LAYOUT_PER_DAT = "per_dat"   # one folder per DAT under the platform root
@@ -133,6 +133,42 @@ PLATFORMS[DREAMCAST_PLATFORM] = Platform(
     latest_dats=(REDUMP_DC_DAT,),
     language_dats=(REDUMP_DC_DAT,),
     region_dats=(REDUMP_DC_DAT,),
+)
+
+REDUMP_PSX_DAT = "Sony - PlayStation"
+PSX_PLATFORM = "Sony PlayStation"
+REDUMP_PS2_DAT = "Sony - PlayStation 2"
+PS2_PLATFORM = "Sony PlayStation 2"
+
+# The Sony systems are built exactly like the Dreamcast (own folder, own Redump DAT, own config keys and library
+# profile, folder per game); nothing is shared or cross-matched between them (romorg.discsys / romorg.playstation).
+PLATFORMS[PSX_PLATFORM] = Platform(
+    name=PSX_PLATFORM,
+    dats=(REDUMP_PSX_DAT,),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_GAME_FOLDER,
+    extensions=(".chd", ".cue", ".bin"),
+    convertible=True,
+    folder_hint="psx",
+    latest_dats=(REDUMP_PSX_DAT,),
+    language_dats=(REDUMP_PSX_DAT,),
+    region_dats=(REDUMP_PSX_DAT,),
+)
+PLATFORMS[PS2_PLATFORM] = Platform(
+    name=PS2_PLATFORM,
+    dats=(REDUMP_PS2_DAT,),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_GAME_FOLDER,
+    extensions=(".chd", ".iso", ".cue", ".bin"),
+    convertible=True,
+    folder_hint="ps2",
+    latest_dats=(REDUMP_PS2_DAT,),
+    language_dats=(REDUMP_PS2_DAT,),
+    region_dats=(REDUMP_PS2_DAT,),
 )
 
 DEFAULT_PLATFORM = "Commodore Amiga"

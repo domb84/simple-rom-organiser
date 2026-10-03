@@ -1,9 +1,10 @@
-"""Test-only helpers: a minimal CHD v5 *writer*, synthetic Dreamcast-style discs, a tiny FLAC encoder,
-a Redump-style DAT generator and a fake ``chdman`` shell script.
+"""Test-only helpers: a minimal CHD v5 *writer*, synthetic Dreamcast / PlayStation / PlayStation 2 discs, a tiny
+FLAC encoder, a Redump-style DAT generator and a fake ``chdman`` shell script.
 
 The writer exists only here (the app only ever reads CHDs; creating them is chdman's job).  It can write
 an uncompressed map or a compressed (Huffman coded, with RLE and self references) map, and ``cdlz`` /
-``cdzl`` / ``cdfl`` / ``zlib`` / ``lzma`` / uncompressed hunks.
+``cdzl`` / ``cdfl`` / ``zlib`` / ``lzma`` / uncompressed hunks, cooked (``MODE1`` 2048-byte, as ``chdman createcd``
+keeps a PlayStation 2 ISO) and ``MODE2_RAW`` tracks, and DVD CHDs (``DVD `` metadata, 2048-byte units).
 """
 
 from __future__ import annotations
@@ -45,6 +46,63 @@ def mode1_sector(lba: int, data: bytes) -> bytes:
     sec[16:2064] = data
     cdecc.generate_reference(sec)
     return bytes(sec)
+
+
+def _msf(lba: int) -> bytes:
+    m, rest = divmod(lba + 150, 75 * 60)
+    s, f = divmod(rest, 75)
+    bcd = lambda v: (v // 10) << 4 | v % 10  # noqa: E731
+    return bytes((bcd(m), bcd(s), bcd(f)))
+
+
+def mode2_form1_sector(lba: int, data: bytes) -> bytes:
+    """A MODE 2 form 1 raw sector (PlayStation): sync, header (mode 2), subheader, 2048 data bytes, EDC, P/Q parity
+    (computed with the header counted as zeros, as the real ECC of mode 2 does)."""
+    assert len(data) == 2048
+    sec = bytearray(2352)
+    sec[12:16] = _msf(lba) + b"\x02"
+    sec[16:24] = bytes((0, 0, 0x08, 0, 0, 0, 0x08, 0))
+    sec[24:2072] = data
+    sec[2072:2076] = (zlib.crc32(data) & 0xFFFFFFFF).to_bytes(4, "little")       # placeholder EDC
+    cdecc.generate_reference(sec)
+    return bytes(sec)
+
+
+def mode2_form2_sector(lba: int, data: bytes) -> bytes:
+    """A MODE 2 form 2 raw sector: 2324 data bytes + 4 EDC bytes, no parity (stored raw by the CHD codecs)."""
+    assert len(data) == 2324
+    sec = bytearray(2352)
+    sec[0:12] = cdecc.SYNC
+    sec[12:16] = _msf(lba) + b"\x02"
+    sec[16:24] = bytes((0, 0, 0x20, 0, 0, 0, 0x20, 0))
+    sec[24:2348] = data
+    sec[2348:2352] = (zlib.crc32(data) & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(sec)
+
+
+def make_mode2_track(frames: int, seed: int, start_lba: int = 0) -> bytes:
+    """A PlayStation-style data track: mostly form 1 sectors with some form 2 (XA audio / video) sectors."""
+    rnd = random.Random(seed)
+    out = []
+    for i in range(frames):
+        if i % 5 == 3:
+            out.append(mode2_form2_sector(start_lba + i, bytes(rnd.choice(b"WXYZ\x01") for _ in range(2324))))
+        else:
+            block = bytes(rnd.choice(b"ABCDEFGH \x00") for _ in range(256)) * 8
+            out.append(mode2_form1_sector(start_lba + i, block))
+    return b"".join(out)
+
+
+def make_iso(sectors: int, seed: int) -> bytes:
+    """A PlayStation 2 style ISO: ``sectors`` x 2048 compressible bytes (a few zero runs and a text-like body)."""
+    rnd = random.Random(seed)
+    out = []
+    for i in range(sectors):
+        if i % 7 == 6:
+            out.append(bytes(2048))
+        else:
+            out.append(bytes(rnd.choice(b"ABCDEFGHIJ \x00") for _ in range(128)) * 16)
+    return b"".join(out)
 
 
 def make_data_track(frames: int, seed: int, start_lba: int = 0) -> bytes:
@@ -225,18 +283,24 @@ def build_chd(path, tracks: Sequence[dict], codecs: Sequence[str] = ("cdlz", "cd
               generic: Optional[str] = None, metadata_tag: Optional[bytes] = None) -> dict:
     """Write a CHD v5.
 
-    ``tracks``: dicts ``{"type": "MODE1_RAW"|"AUDIO"|..., "data": bytes (frames*2352, audio little-endian),
-    "pad": int = 0}``; ``pad`` zero frames are appended inside ``FRAMES`` (GD-ROM) and every track is padded
-    with extra frames to a multiple of 4 like chdman does.  ``generic`` ("zlib" | "lzma" | "none") stores
-    plain 2448-byte-frame hunks instead of the CD codecs.  Returns ``{"raw_sha1", "frames", ...}``.
+    ``tracks``: dicts ``{"type": "MODE1_RAW"|"MODE2_RAW"|"AUDIO"|"MODE1"|..., "data": bytes (frames*2352, audio
+    little-endian; a cooked type such as ``MODE1`` has frames*2048 bytes, stored at the start of each frame like
+    ``chdman createcd`` does), "pad": int = 0}``; ``pad`` zero frames are appended inside ``FRAMES`` (GD-ROM) and
+    every track is padded with extra frames to a multiple of 4 like chdman does.  ``generic`` ("zlib" | "lzma" |
+    "none") stores plain 2448-byte-frame hunks instead of the CD codecs.  Returns ``{"raw_sha1", "frames", ...}``.
     """
     hunk_bytes = hunk_frames * FRAME
     frames_out: list[bytes] = []
     meta: list[bytes] = []
     track_kinds: list[str] = []
+    sizes = []
     for n, t in enumerate(tracks, 1):
         data = t["data"]
-        assert len(data) % SECTOR == 0
+        ssize = chdlib._TYPES[t["type"]][0]
+        sizes.append(ssize)
+        assert len(data) % ssize == 0
+        if ssize != SECTOR:         # cooked: every sector sits at the start of a zero padded 2352-byte frame
+            data = b"".join(data[i:i + ssize] + bytes(SECTOR - ssize) for i in range(0, len(data), ssize))
         nframes = len(data) // SECTOR + t.get("pad", 0)
         body = data + bytes(t.get("pad", 0) * SECTOR)
         extra = (-nframes) % 4
@@ -268,7 +332,7 @@ def build_chd(path, tracks: Sequence[dict], codecs: Sequence[str] = ("cdlz", "cd
     # frame -> track kind (for the codec choice)
     kind_of_frame: list[str] = []
     for n, t in enumerate(tracks):
-        nframes = len(t["data"]) // SECTOR + t.get("pad", 0)
+        nframes = len(t["data"]) // sizes[n] + t.get("pad", 0)
         kind_of_frame += [track_kinds[n]] * (nframes + (-nframes) % 4)
     kind_of_frame += ["D"] * (hunks_n * hunk_frames - len(kind_of_frame))
 
@@ -323,6 +387,13 @@ def build_chd(path, tracks: Sequence[dict], codecs: Sequence[str] = ("cdlz", "cd
                 ctype = comp_slot[codec]
         hunk_entries.append((ctype, len(comp), len(out), crc))
         out += comp
+    return _finish_chd(path, out, hunk_entries, hunks_n, meta_blob, hunk_bytes, FRAME, raw, logical, compressed_map,
+                       generic, codecs, 124, extra={"frames": total_frames})
+
+
+def _finish_chd(path, out: bytearray, hunk_entries, hunks_n: int, meta_blob, hunk_bytes: int, unit: int, raw: bytes,
+                logical: int, compressed_map: bool, generic, codecs, meta_off: int, extra=None) -> dict:
+    """Write the map (compressed or not) and the header of a CHD whose metadata and hunks are already in ``out``."""
     map_off = len(out)
     if not compressed_map:
         assert generic == "none"
@@ -384,12 +455,54 @@ def build_chd(path, tracks: Sequence[dict], codecs: Sequence[str] = ("cdlz", "cd
     raw_sha1 = hashlib.sha1(raw[:logical]).digest()
     header = bytearray()
     header += b"MComprHD" + struct.pack(">II", 124, 5) + b"".join(hdr_comp)
-    header += struct.pack(">QQQII", logical, map_off, meta_off, hunk_bytes, FRAME)
+    header += struct.pack(">QQQII", logical, map_off, meta_off, hunk_bytes, unit)
     header += raw_sha1 + hashlib.sha1(raw_sha1 + bytes(meta_blob)).digest() + bytes(20)
     assert len(header) == 124
     out[:124] = header
     Path(path).write_bytes(bytes(out))
-    return {"raw_sha1": raw_sha1.hex(), "hunks": hunks_n, "frames": total_frames}
+    info = {"raw_sha1": raw_sha1.hex(), "hunks": hunks_n}
+    info.update(extra or {})
+    return info
+
+
+def build_dvd_chd(path, iso: bytes, codecs: Sequence[str] = ("lzma", "zlib", "huff", "flac"), hunk_sectors: int = 2,
+                  pick=None, compressed_map: bool = True) -> dict:
+    """Write a DVD CHD like ``chdman createdvd``: metadata ``DVD ``, 2048-byte units, the ISO as the logical data,
+    header raw SHA-1 = the ISO's SHA-1. ``pick(hunk_index)`` chooses the codec of a hunk (``lzma`` | ``zlib`` |
+    ``none``, or any other name from ``codecs``: a hunk of that codec with garbage data, to test the reader's
+    refusal of codecs it cannot decode, e.g. ``zstd``). Identical hunks become SELF references."""
+    unit = 2048
+    assert len(iso) % unit == 0
+    hunk_bytes = hunk_sectors * unit
+    hunks_n = (len(iso) + hunk_bytes - 1) // hunk_bytes
+    raw = iso + bytes(hunks_n * hunk_bytes - len(iso))
+    meta_blob = b"DVD " + bytes([1]) + (1).to_bytes(3, "big") + (0).to_bytes(8, "big") + b"\0"
+    out = bytearray(124) + meta_blob
+    entries = []
+    seen: dict[bytes, int] = {}
+    for h in range(hunks_n):
+        raw_h = raw[h * hunk_bytes:(h + 1) * hunk_bytes]
+        crc = _crc16(raw_h)
+        if compressed_map and raw_h in seen:
+            entries.append((5, 0, seen[raw_h], 0))
+            continue
+        seen.setdefault(raw_h, h)
+        codec = (pick(h) if pick else ("lzma" if h % 2 == 0 else "zlib")) if compressed_map else "none"
+        if codec == "none":
+            comp, ctype = raw_h, 4
+        elif codec == "zlib":
+            c = zlib.compressobj(9, zlib.DEFLATED, -15)
+            comp, ctype = c.compress(raw_h) + c.flush(), list(codecs).index("zlib")
+        elif codec == "lzma":
+            c = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=chdlib._lzma_filters(hunk_bytes))
+            comp, ctype = c.compress(raw_h) + c.flush(), list(codecs).index("lzma")
+        else:
+            comp, ctype = b"not really " + codec.encode(), list(codecs).index(codec)
+        entries.append((ctype, len(comp), len(out), crc))
+        out += comp
+    return _finish_chd(path, out, entries, hunks_n, meta_blob, hunk_bytes, unit, raw, len(iso), compressed_map,
+                       "none" if not compressed_map else None, codecs, 124,
+                       extra={"sha1": hashlib.sha1(iso).hexdigest()})
 
 
 # --------------------------------------------------------------------------- Redump-style discs + DAT
@@ -446,22 +559,29 @@ def _digests(data: bytes) -> tuple[str, str, str]:
     return "%08x" % (zlib.crc32(data) & 0xFFFFFFFF), hashlib.md5(data).hexdigest(), hashlib.sha1(data).hexdigest()
 
 
-def game_xml(name: str, category: str, bins: Sequence[bytes], two_digit: bool = False) -> str:
+def game_xml(name: str, category: str, bins: Sequence[bytes], two_digit: bool = False, style: str = "tracks") -> str:
+    """``style``: ``tracks`` (``.cue`` + ``(Track N).bin``), ``bin`` (``.cue`` + ONE ``<name>.bin``: PlayStation 2
+    CD games, single-track discs) or ``iso`` (ONE ``<name>.iso``: PlayStation 2 DVD games)."""
     cue = f"FILE x BINARY\n{name}".encode()
     crc, md5, sha1 = _digests(cue)
-    rows = [f'\t\t<rom name="{escape(name)}.cue" size="{len(cue)}" crc="{crc}" md5="{md5}" sha1="{sha1}"/>']
+    rows = [] if style == "iso" else [
+        f'\t\t<rom name="{escape(name)}.cue" size="{len(cue)}" crc="{crc}" md5="{md5}" sha1="{sha1}"/>']
     for i, b in enumerate(bins, 1):
         crc, md5, sha1 = _digests(b)
         tn = f"{i:02d}" if two_digit else str(i)
-        rows.append(f'\t\t<rom name="{escape(name)} (Track {tn}).bin" size="{len(b)}" crc="{crc}" '
+        fn = (f"{name}.iso" if style == "iso" else f"{name}.bin" if style == "bin"
+              else f"{name} (Track {tn}).bin")
+        rows.append(f'\t\t<rom name="{escape(fn)}" size="{len(b)}" crc="{crc}" '
                     f'md5="{md5}" sha1="{sha1}"/>')
     return (f'\t<game name="{escape(name)}">\n\t\t<category>{category}</category>\n'
             f'\t\t<description>{escape(name)}</description>\n' + "\n".join(rows) + "\n\t</game>\n")
 
 
-def write_dat(path: Path, games: Sequence[tuple[str, str, Sequence[bytes]]], version: str = "2026-06-14 18-25-41",
+def write_dat(path: Path, games: Sequence[tuple], version: str = "2026-06-14 18-25-41",
               name: str = "Sega - Dreamcast") -> Path:
-    body = "".join(game_xml(n, c, b, two_digit=(i % 2 == 1)) for i, (n, c, b) in enumerate(games))
+    """``games``: ``(name, category, [track bytes])`` or ``(name, category, [bytes], style)`` (see :func:`game_xml`)."""
+    body = "".join(game_xml(g[0], g[1], g[2], two_digit=(i % 2 == 1), style=(g[3] if len(g) > 3 else "tracks"))
+                   for i, g in enumerate(games))
     path.write_text(
         '<?xml version="1.0"?>\n<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" '
         '"http://www.logiqx.com/Dats/datafile.dtd">\n<datafile>\n\t<header>\n'
@@ -481,7 +601,7 @@ case "$cmd" in
   help|-help|--help)
     echo "chdman - MAME Compressed Hunks of Data (CHD) manager 0.fake"
     echo "Usage: chdman <command> [options]"
-    echo "  createcd extractcd info verify"
+    echo "  createcd createdvd extractcd extractdvd info verify"
     exit 1 ;;
 esac
 in=""; out=""; outbin=""
@@ -511,11 +631,24 @@ case "$cmd" in
     [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
     dir=$(dirname "$out")
     printf 'Extracting, 50.0%% complete...\r'
+    [ -n "$FAKE_SLOW_EXTRACT" ] && sleep 20
     case "$out" in
       *.gdi) cp "$FAKE_RAW"/disc.gdi "$out"; for f in "$FAKE_RAW"/disc[0-9]*; do cp "$f" "$dir"/; done ;;
       *) cp "$FAKE_RAW"/disc.cue "$out"; cp "$FAKE_RAW"/disc.bin "$outbin" ;;
     esac
     echo ;;
+  createdvd)
+    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
+    [ -e "$out" ] && { echo "Error: output file already exists" >&2; exit 1; }
+    printf 'Compressing, 50.0%% complete... (ratio=50.0%%)\r'
+    echo
+    cp "${FAKE_DVD_CHD:-$FAKE_CHD}" "$out" ;;
+  extractdvd)
+    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
+    printf 'Extracting, 50.0%% complete...\r'
+    [ -n "$FAKE_SLOW_EXTRACT" ] && sleep 20
+    echo
+    cp "$FAKE_ISO" "$out" ;;
   *) echo "unknown command" >&2; exit 2 ;;
 esac
 exit 0
@@ -541,3 +674,25 @@ def prepare_fake_raw(folder: Path, disc: Disc) -> Path:
         lba += len(d) // SECTOR
     (folder / "disc.gdi").write_text("\n".join(lines) + "\n")
     return folder
+
+
+def prepare_fake_raw_cd(folder: Path, tracks: Sequence[bytes]) -> Path:
+    """The files the fake ``extractcd`` hands out for a (non-GD) CD CHD: ``disc.cue`` + ONE ``disc.bin``."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "disc.bin").write_bytes(b"".join(tracks))
+    (folder / "disc.cue").write_text('FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
+    return folder
+
+
+def isolate_temp(testcase, base: Path, ram: bool = False) -> Path:
+    """Send romorg.tempspace scratch files to ``base/scratch`` (disk mode; RAM candidates off unless ``ram``)."""
+    from unittest import mock
+    from romorg import tempspace
+    scratch = Path(base) / "scratch"
+    patches = [mock.patch.dict(os.environ, {tempspace.ENV_DIR: str(scratch)})]
+    if not ram:
+        patches.append(mock.patch.object(tempspace, "ram_roots", return_value=[]))
+    for p in patches:
+        p.start()
+        testcase.addCleanup(p.stop)
+    return scratch

@@ -764,6 +764,82 @@ class LibraryIntegrationTest(unittest.TestCase):
         self.assertEqual((out["failed"], out["playlists_written"]), ([], 3))
 
 
+class BorrowIntegrationTest(unittest.TestCase):
+    """Amendment 12 end to end: disk 2 only exists as the German edition; Build library completes the set."""
+
+    D = ["Foo (1991)(Pub)(Disk 1 of 3)[cr X].adf", "Foo (1991)(Pub)(DE)(Disk 2 of 3).adf",
+         "Foo (1991)(Pub)(Disk 3 of 3).adf"]
+    OTHER = "Foo (1991)(Pub)(DE)(Disk 1 of 3).adf"        # the German edition's own, unneeded disk 1
+    M3U = "Foo (1991)(Pub)[cr X].m3u"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(base / "data")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.dats_dir = base / "dats"
+        self.dats_dir.mkdir()
+        self.root = base / "amiga"
+        self.root.mkdir()
+        self.platform = platforms.get_platform("Commodore Amiga")
+        self.blobs = {n: blob(1024) for n in [*self.D, self.OTHER]}
+        write_dat(self.dats_dir, GAMES, DAT_FILES[GAMES], {n[:-4]: [(n, self.blobs[n])] for n in self.blobs})
+        for dat in (WB, KSD, FW):
+            write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
+        for i, n in enumerate([*self.D, self.OTHER]):
+            (self.root / f"d{i}.adf").write_bytes(self.blobs[n])
+        self.original = snapshot(self.root)
+
+    def plan(self, **changes):
+        dats, missing = platforms.load_platform_dats(self.platform, self.dats_dir)
+        res = scanner.scan(self.root, dats, use_cache=False)
+        profile = dataclasses.replace(library.default_profile(self.platform), **changes)
+        return organiser.plan_library(res, profile, missing_dats=missing)
+
+    def test_build_rebuild_empty_undo(self) -> None:
+        plan = self.plan()
+        rel = {op.src.name: (op.dst.relative_to(self.root).as_posix(), op.code) for op in plan.ops if op.kind != "m3u"}
+        self.assertEqual(rel["d0.adf"][0], f"{GAMES}/{self.D[0]}")
+        self.assertEqual(rel["d1.adf"], (f"{GAMES}/{self.D[1]}", ""))          # borrowed: kept, not _excluded
+        self.assertEqual(rel["d3.adf"], (f"_excluded/d3.adf", "excluded"))      # the other edition's spare disk
+        [pl] = plan.playlists
+        self.assertEqual((pl.path.name, pl.status), (self.M3U, "write"))
+        self.assertEqual([ln.split("|")[0] for ln in pl.lines[1:]], [self.D[0], self.D[1], self.D[2]])
+        self.assertEqual(pl.notes, [f"disk 2 borrowed from the (DE) edition ({self.D[1][:-4]})"])
+        row = [op for op in plan.ops if op.src.name == "d1.adf"][0]
+        self.assertIn("borrowed as disk 2", row.reason)
+        rc = organiser.reason_counts(plan)
+        self.assertEqual((rc["borrowed_sets"], rc["borrowed_disks"], rc["incomplete"], rc["excluded"]), (1, 1, 0, 1))
+
+        out = organiser.apply_renames(plan.ops, self.root, dat_names=self.platform.dats, playlists=plan.playlists)
+        self.assertEqual((out["failed"], out["playlists_written"]), ([], 1))
+        built = snapshot(self.root)
+        text = (self.root / GAMES / self.M3U).read_text()
+        self.assertEqual(text.count(".adf"), 3)
+
+        plan2 = self.plan()                                  # re-running Build library: nothing to do
+        self.assertEqual({op.status for op in plan2.ops}, {"ok"})
+        self.assertEqual({p.status for p in plan2.playlists}, {"ok"})
+        self.assertEqual(organiser.reason_counts(plan2)["borrowed_sets"], 1)
+        out2 = organiser.apply_renames(plan2.ops, self.root, playlists=plan2.playlists)
+        self.assertEqual((out2["moved"], out2["playlists_written"], out2["undo_log"]), (0, 0, None))
+        self.assertEqual(snapshot(self.root), built)
+
+        u = organiser.undo(Path(out["undo_log"]))
+        self.assertEqual(u["failed"], [])
+        self.assertEqual(snapshot(self.root), self.original)
+
+    def test_option_off_leaves_the_set_incomplete(self) -> None:
+        plan = self.plan(borrow_other_editions=False)
+        self.assertEqual(plan.playlists, [])
+        codes = {op.src.name: op.code for op in plan.ops if op.kind != "m3u"}
+        self.assertEqual((codes["d0.adf"], codes["d1.adf"], codes["d2.adf"]), ("incomplete", "excluded", "incomplete"))
+        self.assertEqual(organiser.reason_counts(plan)["borrowed_sets"], 0)
+
+
+
 def _rels(plan, root: Path) -> dict[str, tuple[str, str]]:
     """src rel -> (dst rel, reason code) for the file ops of a library plan."""
     return {op.src.relative_to(root).as_posix(): (op.dst.relative_to(root).as_posix(), op.code or "")
