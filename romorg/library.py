@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import tags
 from .tags import STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC, STYLE_WHDLOAD
@@ -29,7 +29,10 @@ KEEP, EXCLUDED, SUPERSEDED, INCOMPLETE = "keep", "excluded", "superseded", "inco
 # ``tags.KEEP_FLAGS`` entry. ``Decision.codes`` of an excluded item lists every code that applies.
 LANGUAGE_CODE = "language"
 FLAG_CODES = tuple(f"flag_{f}" for f in tags.KEEP_FLAGS)
-ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,)
+# Rating filter codes (Amendment 18): applied after every other rule, at GAME level.
+RATING_LOW, RATING_NOT_TOP, RATING_UNRATED = "rating_low", "rating_not_top", "rating_unrated"
+RATING_CODES = (RATING_LOW, RATING_NOT_TOP, RATING_UNRATED)
+ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,) + RATING_CODES
 BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a set of another edition
 
 _RULE_SHORT = {
@@ -39,7 +42,12 @@ _RULE_SHORT = {
     "flag_cr": "crack flag", "flag_h": "hack flag", "flag_t": "trainer flag",
     "flag_a": "alternate flag", "flag_f": "fix flag", "flag_tr": "translation flag",
     "language": "not in the selected languages",
+    "rating_low": "rated below the minimum", "rating_not_top": "not among the top rated games",
+    "rating_unrated": "no usable rating",
 }
+
+RANK_SCOPES = ("dat", "owned")
+DEFAULT_MIN_VOTES = 5
 
 
 # --------------------------------------------------------------------------- profile
@@ -65,6 +73,32 @@ def _norm_regions(raw: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _num(v: Any) -> Optional[float]:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        return None
+    return float(v)
+
+
+def _norm_min_rating(v: Any) -> Optional[float]:
+    n = _num(v)
+    return None if n is None or n <= 0 or n > 10 else round(n, 1)
+
+
+def _norm_top_n(v: Any) -> Optional[int]:
+    n = _num(v)
+    return None if n is None or n < 1 else int(n)
+
+
+def _valid_votes(v: Any) -> bool:
+    n = _num(v)
+    return n is not None and n >= 1
+
+
+def _norm_votes(v: Any) -> int:
+    n = _num(v)
+    return DEFAULT_MIN_VOTES if n is None or n < 1 else int(n)
+
+
 @dataclass(frozen=True)
 class LibraryProfile:
     exclude: frozenset[str] = frozenset(RULES)   # enabled exclusion rules
@@ -81,6 +115,13 @@ class LibraryProfile:
     # Amiga Games: a disk slot nobody has in the same edition may be filled by a disk of another edition
     # (country / language / edition flags / version / year) of the same title, publisher and disk count.
     borrow_other_editions: bool = True
+    # Ratings (Amendment 18; LaunchBox community ratings, 0-10). Inactive (nothing changes, no data needed) while
+    # both ``min_rating`` and ``top_n`` are None.
+    min_rating: Optional[float] = None           # games rated below this are excluded (None = off)
+    top_n: Optional[int] = None                  # keep only the N best-rated games (None = off)
+    min_votes: int = DEFAULT_MIN_VOTES           # a game with fewer votes counts as UNRATED
+    keep_unrated: bool = False                   # with a rating filter: keep games that have no usable rating
+    rank_scope: str = "dat"                      # top_n ranks against the whole DAT target set ("dat") or only your games ("owned")
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -88,6 +129,15 @@ class LibraryProfile:
         object.__setattr__(self, "languages", _norm_languages(self.languages))
         object.__setattr__(self, "keep_flags", frozenset(f for f in self.keep_flags if f in tags.KEEP_FLAGS))
         object.__setattr__(self, "region_priority", _norm_regions(self.region_priority))
+        object.__setattr__(self, "min_rating", _norm_min_rating(self.min_rating))
+        object.__setattr__(self, "top_n", _norm_top_n(self.top_n))
+        object.__setattr__(self, "min_votes", _norm_votes(self.min_votes))
+        object.__setattr__(self, "rank_scope", self.rank_scope if self.rank_scope in RANK_SCOPES else "dat")
+
+    @property
+    def rating_active(self) -> bool:
+        """True when a rating filter (minimum rating and / or top N) is set."""
+        return self.min_rating is not None or self.top_n is not None
 
     def to_dict(self) -> dict:
         return {"exclude": sorted(self.exclude), "latest_only": self.latest_only,
@@ -95,7 +145,9 @@ class LibraryProfile:
                 "languages": list(self.languages), "keep_flags": sorted(self.keep_flags),
                 "rescue_only_dump": self.rescue_only_dump,
                 "region_priority": list(self.region_priority), "one_per_game": self.one_per_game,
-                "borrow_other_editions": self.borrow_other_editions}
+                "borrow_other_editions": self.borrow_other_editions,
+                "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
+                "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -121,13 +173,25 @@ class LibraryProfile:
         regions = base.region_priority
         if isinstance(d.get("region_priority"), (list, tuple)):
             regions = _norm_regions(d["region_priority"])
+        rating = {}
+        if "min_rating" in d:
+            rating["min_rating"] = d["min_rating"]
+        if "top_n" in d:
+            rating["top_n"] = d["top_n"]
+        if "min_votes" in d and _valid_votes(d["min_votes"]):
+            rating["min_votes"] = d["min_votes"]
+        if isinstance(d.get("rank_scope"), str) and d["rank_scope"] in RANK_SCOPES:
+            rating["rank_scope"] = d["rank_scope"]
         return cls(exclude=exclude, latest_only=flag("latest_only", base.latest_only),
                    best_variant=flag("best_variant", base.best_variant),
                    complete_only=flag("complete_only", base.complete_only),
                    languages=langs, keep_flags=keep,
                    rescue_only_dump=flag("rescue_only_dump", base.rescue_only_dump),
                    region_priority=regions, one_per_game=flag("one_per_game", base.one_per_game),
-                   borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions))
+                   borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions),
+                   **{**{"min_rating": base.min_rating, "top_n": base.top_n, "min_votes": base.min_votes,
+                         "rank_scope": base.rank_scope}, **rating},
+                   keep_unrated=flag("keep_unrated", base.keep_unrated))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -239,11 +303,14 @@ class Vanished:
     codes: tuple[str, ...]        # every code that blocks a variant on its own (incl. ``reason``)
     languages: tuple[str, ...] = ()   # reason == "language": the languages its variants do have
     variants: int = 0
+    detail: str = ""              # rating reasons: "rated 6.2 (12 votes)" of the closest variant
 
 
 @dataclass
 class Selection:
     decisions: dict[int, Decision] = field(default_factory=dict)
+    # Rating filter summary (empty while no filter is set): see :func:`apply_ratings`
+    rating: dict[str, Any] = field(default_factory=dict)
     sets: list[ChosenSet] = field(default_factory=list)
     incomplete: list[IncompleteSet] = field(default_factory=list)
     vanished: list[Vanished] = field(default_factory=list)
@@ -306,6 +373,21 @@ def _tags_of(item: Item) -> tags.Tags:
     if _style(item) == STYLE_WHDLOAD:    # game name + archive stem (the stem alone lacks the status)
         return tags.parse_whdload(_rom_name(item), getattr(item.rom, "game", "") or "")
     return tags.parse_name(_rom_name(item), _style(item))
+
+
+def game_key(item: Item) -> tuple:
+    """The identity of the GAME an item belongs to, exactly as :func:`select` groups variants: TOSEC / WHDLoad
+    ``tags.identity_key`` (title, country, publisher, edition and status tags), No-Intro / Redump ``tags.game_key``
+    (title, status, product tags; regions, languages, versions and disc numbers are not part of it)."""
+    return (item.dat, tags.game_key(_tags_of(item)))      # tags.game_key = identity_key for TOSEC / WHDLoad
+
+
+def rom_title(rom: "Rom", dat: str = "") -> str:
+    """The game title of a DAT rom as the library (and the ratings) know it: name without year, publisher, regions,
+    languages, versions, disk / disc numbers and dump flags."""
+    item = Item(key=0, dat=dat or getattr(rom, "dat", ""), rom=rom, style=tags.style_of_rom(rom), path=Path(rom.name),
+                member=None)
+    return _tags_of(item).title
 
 
 def _describe(info: Sequence[tuple[str, str]]) -> str:
@@ -625,8 +707,40 @@ def _pick_best(sets: list[_Set]) -> _Set:
 
 # --------------------------------------------------------------------------- select
 
-def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> Selection:
-    """Decide keep / excluded / superseded / incomplete per item (see the module docstring)."""
+class RatingsUnavailable(Exception):
+    """A rating filter is set but no rating data was supplied (never filter silently with missing data)."""
+
+
+@dataclass
+class RatingContext:
+    """What the rating filter needs: a title lookup and, for ``rank_scope == "dat"``, the rank of the cutoff game.
+
+    ``lookup(title) -> (rating out of 10, votes) | None`` (already bound to the platform); ``cutoff`` = the rank key of
+    the N-th best game of the whole target set (see :func:`target_cutoff`; ``INF_KEY`` = fewer than N rated games, no cap)."""
+    lookup: Callable[[str], Optional[tuple[float, int]]]
+    cutoff: Optional[tuple] = None
+
+
+INF_KEY: tuple = (float("inf"),)
+
+
+def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
+           ratings: Optional[RatingContext] = None) -> Selection:
+    """Decide keep / excluded / superseded / incomplete per item (see the module docstring).
+
+    With a rating filter in ``profile`` (``profile.rating_active``) ``ratings`` is required (:class:`RatingsUnavailable`
+    otherwise) and the filter is applied last, at game level (:func:`apply_ratings`)."""
+    if profile.rating_active and ratings is None:
+        raise RatingsUnavailable("a rating filter is set but no rating data was supplied")
+    sel = _select_base(items, profile, platform)
+    if profile.rating_active:
+        apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
+    sel.vanished = _vanished(items, sel)
+    return sel
+
+
+def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> Selection:
+    """Every rule except the rating filter."""
     sel = Selection()
     next_id = [1]
 
@@ -714,9 +828,162 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform")
             d.reason = why
     sel.incomplete = [x for x in sel.incomplete
                       if x.kept or any(sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
-    sel.vanished = _vanished(items, sel)
     return sel
 
+
+
+# --------------------------------------------------------------------------- the rating filter
+
+def _stable(obj: Any) -> str:
+    """Deterministic text of a game key (no set / hash ordering)."""
+    if isinstance(obj, (set, frozenset)):
+        return "{" + ",".join(sorted(_stable(x) for x in obj)) + "}"
+    if isinstance(obj, (tuple, list)):
+        return "(" + ",".join(_stable(x) for x in obj) + ")"
+    return repr(obj)
+
+
+def _rank_key(rating: float, votes: int, title: str, unit: tuple) -> tuple:
+    """Order of the rated games: rating high to low, then votes, then title, then the game key (total order)."""
+    return (-rating, -votes, title.casefold(), _stable(unit))
+
+
+@dataclass
+class _Unit:
+    key: tuple
+    owner: Item
+    items: list[Item]
+    title: str
+    rated: Optional[tuple[float, int]]      # None = unrated (no match / fewer votes than ``min_votes``)
+    complete: bool                          # no member is a partial Redump set (``Decision.missing``)
+
+    def rank(self) -> tuple:
+        assert self.rated is not None
+        return _rank_key(self.rated[0], self.rated[1], self.title, self.key)
+
+
+def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: LibraryProfile,
+           lookup: Callable[[str], Optional[tuple[float, int]]]) -> list[_Unit]:
+    """The kept GAMES of the rated DATs (a game = :func:`game_key`; a disk borrowed from another edition belongs to the
+    game of the set it completes) with their rating."""
+    from . import ratings as _ratings
+
+    rdats = set(_ratings.rated_dats(platform))
+    by_key = {it.key: it for it in items}
+    owner_of: dict[int, Item] = {}
+    for cs in sel.sets:
+        borrowed = {b["key"] for b in cs.borrowed.values()}
+        own = [by_key[k] for _slot, k in sorted(cs.slots.items()) if k not in borrowed and k in by_key]
+        if own:
+            for k in cs.slots.values():
+                owner_of[k] = own[0]
+    units: dict[tuple, _Unit] = {}
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is None or d.action != KEEP or it.dat not in rdats:
+            continue
+        owner = owner_of.get(it.key, it)
+        key = game_key(owner)
+        u = units.get(key)
+        if u is None:
+            title = _tags_of(owner).title
+            r = lookup(title)
+            if r is not None and r[1] < profile.min_votes:
+                r = None
+            u = units[key] = _Unit(key, owner, [], title, r, True)
+        u.items.append(it)
+        if d.missing:
+            u.complete = False
+    return sorted(units.values(), key=lambda u: _stable(u.key))
+
+
+def _cutoff(units: Sequence[_Unit], profile: LibraryProfile) -> tuple:
+    """Rank key of the ``top_n``-th best complete, rated game at or above ``min_rating`` (``INF_KEY``: fewer)."""
+    if profile.top_n is None:
+        return INF_KEY
+    pool = sorted(u.rank() for u in units
+                  if u.rated is not None and u.complete
+                  and (profile.min_rating is None or u.rated[0] >= profile.min_rating))
+    # (cut at the rating / votes / title of the N-th game: every game of that title stays or goes together)
+    return pool[profile.top_n - 1][:3] if len(pool) >= profile.top_n else INF_KEY
+
+
+def target_cutoff(target_items: Sequence[Item], profile: LibraryProfile, platform: Any,
+                  lookup: Callable[[str], Optional[tuple[float, int]]],
+                  base: Optional[Selection] = None) -> tuple:
+    """The cutoff of ``rank_scope == "dat"``: the rank key of the N-th best game of the whole DAT target set (the games
+    every OTHER rule keeps when every rom is present). ``base``: that selection when the caller already has it."""
+    if profile.top_n is None:
+        return INF_KEY
+    if base is None:
+        base = _select_base(target_items, profile, platform)
+    return _cutoff(_units(target_items, base, platform, profile, lookup), profile)
+
+
+def rating_coverage(items: Sequence[Item], sel: Selection, platform: Any, profile: LibraryProfile,
+                    lookup: Callable[[str], Optional[tuple[float, int]]]) -> dict[str, Any]:
+    """How many of the games ``sel`` keeps (before any rating filter) have a usable rating:
+    ``{"games", "rated", "ge": [n for rating >= 0.5, 1.0 ... 10.0]}`` (``ge`` drives the live "N games >= x" hint)."""
+    units = _units(items, sel, platform, profile, lookup)
+    ratings = [u.rated[0] for u in units if u.rated is not None]
+    return {"games": len(units), "rated": len(ratings),
+            "ge": [sum(1 for r in ratings if r >= k / 2.0) for k in range(1, 21)]}
+
+
+def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile, platform: Any,
+                  ctx: RatingContext) -> None:
+    """The rating filter, AFTER every other rule, per GAME (all variants / disks / discs of a game share its rating).
+
+    * rated = the title matches LaunchBox and has at least ``min_votes`` votes; everything else is unrated.
+    * ``min_rating``: a rated game below it gets ``rating_low``.
+    * ``top_n``: a rated game ranked after the N-th best (rating, votes, title) gets ``rating_not_top``; games with the
+      same title as the N-th stay or go together, so "top 300" can keep a few more than 300. The N-th best
+      is searched among the games at or above ``min_rating`` of the whole DAT target set (``rank_scope == "dat"``,
+      ``ctx.cutoff``) or of the games kept here (``"owned"``).
+    * a game without a usable rating gets ``rating_unrated`` unless ``keep_unrated`` (then it is kept IN ADDITION).
+    Excluded games turn every kept file into ``excluded`` and their playlists / incomplete reports vanish.
+    Summary in ``sel.rating``."""
+    units = _units(items, sel, platform, profile, ctx.lookup)
+    if profile.top_n is None:
+        cutoff = INF_KEY
+    elif profile.rank_scope == "dat":
+        if ctx.cutoff is None:
+            raise RatingsUnavailable("top N against the whole DAT needs the target cutoff (see target_cutoff)")
+        cutoff = ctx.cutoff
+    else:
+        cutoff = _cutoff(units, profile)
+    dropped: dict[str, int] = {}
+    kept_games = rated_games = 0
+    gone: set[int] = set()
+    for u in units:
+        codes: list[str] = []
+        if u.rated is None:
+            if not profile.keep_unrated:
+                codes.append(RATING_UNRATED)
+            detail = "no usable rating"
+        else:
+            rated_games += 1
+            r, v = u.rated
+            detail = f"rated {r:.1f} ({v} vote{'' if v == 1 else 's'})"
+            if profile.min_rating is not None and r < profile.min_rating:
+                codes.append(RATING_LOW)
+            if profile.top_n is not None and u.rank()[:3] > cutoff:
+                codes.append(RATING_NOT_TOP)
+        if not codes:
+            kept_games += 1
+            continue
+        dropped[codes[0]] = dropped.get(codes[0], 0) + 1
+        for it in u.items:
+            sel.decisions[it.key] = Decision(key=it.key, action=EXCLUDED, codes=tuple(codes), detail=detail,
+                                             reason=f"excluded: {_describe([(c, '') for c in codes]).strip()} ({detail})")
+            gone.add(it.key)
+    if gone:
+        sel.sets = [cs for cs in sel.sets if not (set(cs.slots.values()) & gone)]
+        sel.incomplete = [x for x in sel.incomplete if not (x.kept and set(x.present.values()) <= gone)]
+    sel.rating = {"min_rating": profile.min_rating, "top_n": profile.top_n, "min_votes": profile.min_votes,
+                  "keep_unrated": profile.keep_unrated, "rank_scope": profile.rank_scope,
+                  "games": len(units), "rated": rated_games, "unrated": len(units) - rated_games,
+                  "kept": kept_games, "excluded": len(units) - kept_games, "excluded_by": dropped}
 
 def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
     """Titles of which no local variant is kept, with the reason (language first, then flags, rules)."""
@@ -724,7 +991,8 @@ def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
     for it in items:
         groups.setdefault((it.dat, tags.title_key(_tags_of(it))), []).append(it)
     out: list[Vanished] = []
-    priority = {c: i for i, c in enumerate((LANGUAGE_CODE,) + FLAG_CODES + RULES + (INCOMPLETE,))}
+    # (a rating code only ever hits a variant that passed every other rule: it is the real blocker, so it ranks first)
+    priority = {c: i for i, c in enumerate(RATING_CODES + (LANGUAGE_CODE,) + FLAG_CODES + RULES + (INCOMPLETE,))}
     for (dat, _k), members in groups.items():
         decs = [sel.decisions.get(m.key) for m in members]
         if any(d is None or d.action == KEEP for d in decs):
@@ -746,8 +1014,10 @@ def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
             for m in members:
                 seen |= tags.variant_languages(_tags_of(m))
             langs = tuple(sorted(seen, key=lambda c: (c != "En", c)))
+        bd = sel.decisions.get(members[best].key)
         out.append(Vanished(dat=dat, title=t.title, name=members[best].rom.name, reason=codes[0],
-                            codes=tuple(codes), languages=langs, variants=len(members)))
+                            codes=tuple(codes), languages=langs, variants=len(members),
+                            detail=bd.detail if bd is not None and codes[0] in RATING_CODES else ""))
     out.sort(key=lambda v: (v.dat, v.title.casefold(), v.name))
     return out
 
@@ -1288,6 +1558,31 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "Best region first. When one version per game is kept, the first region listed here wins "
         "(unlisted regions follow in alphabetical order).", [STYLE_NOINTRO, STYLE_REDUMP],
         default_value=list(tags.DEFAULT_REGION_PRIORITY))
+    # ---- Ratings group (Amendment 18). Numbers / a choice, rendered by the UI from these entries only.
+    def rating(id_: str, label: str, kind: str, desc: str, **extra: Any) -> None:
+        out.append({"id": id_, "field": extra.pop("field", id_), "label": label, "kind": kind, "group": "ratings",
+                    "tokens": [], "description": desc, "applies_to": list(_ALL), **extra})
+
+    rating("min_rating", "Minimum rating", "number",
+           "Leave out games rated below this (0-10, LaunchBox community rating). Empty = off. Games with no usable "
+           "rating are left out too unless 'Keep unrated games' is ticked.",
+           default=None, min=0.5, max=10, step=0.5, unit="/10", filter=True, summary="rated \u2265 {v}",
+           hint="coverage_ge")
+    rating("top_n", "Top N games", "number",
+           "Keep only the N best-rated games (rating, then votes, then title). Empty = off.",
+           default=None, min=1, max=100000, step=1, unit="games", integer=True, filter=True, summary="top {v}")
+    rating("min_votes", "Minimum votes", "number",
+           f"A game with fewer votes than this counts as unrated (default {DEFAULT_MIN_VOTES}).",
+           default=DEFAULT_MIN_VOTES, min=1, max=100000, step=1, unit="votes", integer=True,
+           summary="min {v} votes", summary_when_filter=True)
+    rating("keep_unrated", "Keep unrated games", "option",
+           "While a rating filter is set, games without a usable rating are left out. Tick to keep them in addition "
+           "to the rated games that pass.", default=False, summary="keep unrated", summary_when_filter=True)
+    rating("rank_scope", "Rank against", "choice",
+           "Whole DAT: the top N is taken from every game the other rules keep for the whole DAT, so adding files "
+           "never pushes others out and totals read 'have K of N'. Only my games: rank among the games you own.",
+           default="dat", choices=[{"value": "dat", "label": "The whole DAT"}, {"value": "owned", "label": "Only my games"}],
+           summary_when_filter=True)
     return [e for e in out if platform_style in e["applies_to"]]
 
 
@@ -1348,6 +1643,12 @@ def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any
     return rows
 
 
+def _ratings_supported(platform: Any) -> bool:
+    from . import ratings
+
+    return ratings.supported(platform)
+
+
 def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dict[str, Any]:
     """Everything the Build library panel needs for one platform (see ARCHITECTURE.md, Amendment 8)."""
     prof = profile if profile is not None else default_profile(platform)
@@ -1369,7 +1670,10 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dic
             "keep_flags": bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC,
             "borrow_editions": _borrow_scope(platform),
             "rescue": bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC,
+            "ratings": _ratings_supported(platform),
         },
+        "rating_codes": list(RATING_CODES),
+        "reason_labels": {c: _RULE_SHORT[c] for c in RATING_CODES},
         "scopes": {
             "latest_dats": list(_dats(platform, "latest_dats")),
             "best_variant_dats": list(_dats(platform, "best_variant_dats")),
@@ -1393,17 +1697,25 @@ def vanish_report(sel: Selection, limit: Optional[int] = 200, reason: str = "") 
     out = sel.vanish_summary()
     items = []
     for v in sel.vanished:
+        hint = ""
         if reason and v.reason != reason:
             continue
         if v.reason == LANGUAGE_CODE:
             text = "no version in selected languages" + (f" (has {', '.join(v.languages)})" if v.languages else "")
         elif v.reason == INCOMPLETE:
             text = "only incomplete sets"
+        elif v.reason in RATING_CODES:
+            text = {RATING_LOW: "below the minimum rating", RATING_NOT_TOP: "not among the top rated games",
+                    RATING_UNRATED: "no usable rating (not in the LaunchBox data, or too few votes)"}[v.reason]
+            if v.detail and v.reason != RATING_UNRATED:
+                text += f" ({v.detail})"
+            hint = {RATING_LOW: "lower the minimum rating", RATING_NOT_TOP: "raise Top N",
+                    RATING_UNRATED: "tick Keep unrated games (or lower Minimum votes)"}[v.reason]
         else:
             text = "every version excluded: " + _RULE_SHORT.get(v.reason, v.reason)
         items.append({"dat": v.dat, "title": v.title, "name": v.name, "reason": v.reason,
                       "codes": list(v.codes), "languages": list(v.languages), "variants": v.variants,
-                      "text": text})
+                      "text": text, "hint": hint, "detail": v.detail})
         if limit is not None and len(items) >= limit:
             break
     out["items"] = items

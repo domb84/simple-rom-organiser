@@ -197,6 +197,20 @@ class DcEndpointTests(DcServerCase):
         self.assertTrue((self.roms / "x" / "y.chd").is_file())
         self.assertFalse((self.roms / "Beta (Europe)").exists())
 
+    def test_stale_move_unmatched_false_is_ignored_unmatched_always_moves(self) -> None:
+        self.call("/api/chdman", {"engine": "python"})
+        self.put("Beta (Europe)", "x/y.chd", ["y.state"])
+        (self.roms / "stray.txt").write_text("junk")
+        self.scan()
+        for path in ("/api/organise/plan", "/api/library/plan"):
+            plan = self.call(path, {"platform": PLAT, "move_unmatched": False})   # an old client: no 400, ignored
+            names = [r.get("name") or r.get("from") or "" for r in plan["items"]]
+            self.assertTrue(any("stray.txt" in str(r) and "_unmatched" in str(r) for r in plan["items"]), (path, names))
+        self.call("/api/library/apply", {"move_unmatched": False})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertTrue((self.roms / "_unmatched" / "stray.txt").is_file())
+        self.assertFalse((self.roms / "stray.txt").exists())
+
     def test_library_profile_plan_apply(self) -> None:
         self.call("/api/chdman", {"engine": "python"})
         self.put("Alpha (USA) (En,Fr)", "a1/a.chd")
@@ -207,7 +221,7 @@ class DcEndpointTests(DcServerCase):
         self.put("Big Game (USA) (Disc 2)", "b2/b.chd")
         info = self.call(f"/api/library/profile?platform={urllib.parse.quote(PLAT)}")
         self.assertEqual(info["style"], "redump")
-        ids = [c["id"] for c in info["catalog"]]
+        ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
         self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "languages",
                                "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
@@ -247,6 +261,52 @@ class DcEndpointTests(DcServerCase):
 
     def test_verify_needs_a_dreamcast_scan(self) -> None:
         self.call("/api/dc/verify", {}, expect=409)       # no scan yet
+
+    def test_checksums_per_track_identified_verified_raw_missing_unmatched(self) -> None:
+        import hashlib
+        import zlib
+        self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
+        self.discs["Gamma (Japan)"].write_raw(self.roms / "raw" / "gamma", "Gamma (Japan)")
+        (self.roms / "junk.chd").write_bytes(b"not a chd")
+        self.scan()
+
+        def rows(kind: str) -> list:
+            return self.call(f"/api/scan/results?kind={kind}&limit=100&checksums=1")["items"]
+
+        disc = self.discs["Beta (Europe)"]
+        beta = next(i for i in rows("matched") if i["game"] == "Beta (Europe)")["checksums"]
+        self.assertEqual((beta["kind"], beta["level"], beta["source"]), ("disc", "identified", "redump"))
+        t1, t2, t3 = beta["tracks"]
+        self.assertEqual((t1["state"], t2["state"], t3["state"]), ("hashed", "length", "hashed"))
+        self.assertEqual(t1["dat"]["sha1"], hashlib.sha1(disc.t1).hexdigest())
+        self.assertEqual(t1["local"], {"crc32": f"{zlib.crc32(disc.t1) & 0xffffffff:08x}",
+                                      "md5": hashlib.md5(disc.t1).hexdigest(), "sha1": hashlib.sha1(disc.t1).hexdigest()})
+        self.assertEqual(t1["equal"], {"crc32": True, "md5": True, "sha1": True})
+        self.assertEqual(t2["local"], {"crc32": None, "md5": None, "sha1": None})   # audio: length only, never invented
+        self.assertEqual(t2["equal"], {"crc32": None, "md5": None, "sha1": None})
+        self.assertEqual(t2["dat"]["sha1"], hashlib.sha1(disc.t2).hexdigest())      # but the DAT side is known
+        self.assertEqual((beta["tracks"][1]["type"], t1["number"]), ("AUDIO", 1))
+        # verified after Verify fully: the audio track gets its hashes
+        self.run_job("/api/dc/verify", {})
+        beta = next(i for i in rows("matched") if i["game"] == "Beta (Europe)")["checksums"]
+        self.assertEqual((beta["level"], beta["tracks"][1]["state"]), ("verified", "hashed"))
+        self.assertEqual(beta["tracks"][1]["equal"]["sha1"], True)
+        # raw set: per-track file hashes (CRC32 + SHA-1)
+        raw = next(i for i in rows("matched") if i["game"] == "Gamma (Japan)")["checksums"]
+        self.assertEqual(raw["level"], "raw")
+        self.assertTrue(all(t["state"] == "hashed" and t["equal"]["sha1"] for t in raw["tracks"]))
+        # missing / games: DAT side only
+        miss = next(i for i in rows("missing") if i["name"] == "Alpha (USA) (En,Fr)")["checksums"]
+        self.assertEqual([t["state"] for t in miss["tracks"]], ["none"] * 3)
+        self.assertIsNone(miss["tracks"][0]["local"])
+        self.assertEqual(miss["tracks"][0]["dat"]["md5"], hashlib.md5(self.discs["Alpha (USA) (En,Fr)"].t1).hexdigest())
+        game = next(i for i in rows("games") if i["name"] == "Beta (Europe)")["checksums"]
+        self.assertEqual(game["kind"], "disc")
+        self.assertEqual(game["tracks"][0]["equal"]["sha1"], True)
+        # unmatched: no hashes are invented for something that is not even a CHD
+        junk = next(i for i in rows("unmatched") if i["file"].endswith("junk.chd"))["checksums"]
+        self.assertIn(junk["kind"], ("unmatched", "disc_unmatched"))
+        self.assertEqual(junk.get("tracks", []), [])
 
     def test_scan_with_chdman_is_verified(self) -> None:
         self.use_fake_chdman()

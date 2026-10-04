@@ -20,6 +20,7 @@ import functools
 import importlib
 import importlib.resources
 import inspect
+import itertools
 import json
 import os
 import re
@@ -105,9 +106,10 @@ class CancelToken(threading.Event):
 class Job:
     """A background task with progress reporting."""
 
-    def __init__(self, job_id: int, kind: str, cancellable: bool = True) -> None:
+    def __init__(self, job_id: int, kind: str, cancellable: bool = True, platform: str | None = None) -> None:
         self.id = job_id
         self.kind = kind
+        self.platform = platform           # the system the job works on (the UI shows it on that system's card)
         self.cancellable = cancellable
         self.status = "running"
         self.progress: dict[str, Any] = {"done": 0, "total": 0, "message": ""}
@@ -144,6 +146,7 @@ class Job:
             return {
                 "id": self.id,
                 "kind": self.kind,
+                "platform": self.platform,
                 "status": self.status,
                 "cancellable": self.cancellable,
                 "progress": dict(self.progress),
@@ -163,11 +166,12 @@ class JobManager:
         self._current: Job | None = None
         self._next_id = 1
 
-    def start(self, kind: str, fn: Callable[[Job], Any], cancellable: bool = True) -> Job:
+    def start(self, kind: str, fn: Callable[[Job], Any], cancellable: bool = True,
+              platform: str | None = None) -> Job:
         with self._lock:
             if self._current is not None and self._current.status == "running":
                 raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is already running")
-            job = Job(self._next_id, kind, cancellable)
+            job = Job(self._next_id, kind, cancellable, platform)
             self._next_id += 1
             self._current = job
         job.thread = threading.Thread(target=self._run, args=(job, fn), name=f"job-{kind}", daemon=True)
@@ -237,11 +241,15 @@ SOURCE_TOSEC, SOURCE_NOINTRO = "tosec", "nointro"
 # Result kinds whose rows carry name tags (filterable by region / language / video / flag / rule).
 TAG_KINDS = ("matched", "missing", "games")
 TAG_FILTERS = ("region", "language", "video", "flag", "rule")
+# Result kinds whose rows can show checksums (/api/scan/checksums, ``checksums=1`` on /api/scan/results).
+CHECKSUM_KINDS = ("matched", "missing", "unmatched", "games")
+HASH_KEYS = ("crc32", "md5", "sha1")
 # Reason categories of the Build library plan (row filter ``reason``).
 LIBRARY_REASONS = ("kept", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
-                "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions")
+                "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions",
+                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -249,6 +257,9 @@ RULE_LABELS = {
     "demo": "Demos, samples, kiosk", "faked": "Faked [faked]", "unreleased": "Unreleased",
     "modified": "Modified [m]",
 }
+
+
+_SCAN_SERIAL = itertools.count(1)
 
 
 @dataclass
@@ -262,11 +273,11 @@ class ScanState:
     missing_dats: list[str]            # platform DATs that are not downloaded
     recursive: bool = True
     layout: str = LAYOUT_PER_DAT       # platform layout: "per_dat" | "flat"
-    # by (move_unmatched, latest_only)
-    rename_plans: dict[tuple[bool, bool], list[Any]] = field(default_factory=dict)
-    # Build library plans (organiser.LibraryPlan) by (move_unmatched, savedisk, labels); cleared when
+    # by latest_only
+    rename_plans: dict[bool, list[Any]] = field(default_factory=dict)
+    # Build library plans (organiser.LibraryPlan) by (savedisk, labels); cleared when
     # the library profile changes.
-    library_plans: dict[tuple[bool, bool, bool], Any] = field(default_factory=dict)
+    library_plans: dict[tuple[bool, bool], Any] = field(default_factory=dict)
     dats_sig: tuple = ()               # signature of the DAT files this scan parsed
     dats_changed: bool = False         # a DAT update was installed after the scan
     convert_plans: dict[bool, list[Any]] = field(default_factory=dict)  # by latest_only
@@ -275,6 +286,14 @@ class ScanState:
     # once per scan so paging / searching is a cheap slice.
     items: dict[Any, list[tuple[dict[str, Any], str]]] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
+    # The scan objects behind the rows of each checksum kind (same index as the row's ``id``), a lazy
+    # entry-path -> Match index and the multi-disk sets of the matched disks (built on first use).
+    sources: dict[str, list[Any]] = field(default_factory=dict)
+    match_index: dict[str, Any] | None = None
+    disk_sets: dict[int, Any] | None = None
+    # Identity of this scan inside the running app (new for every scan / re-scan): keys the library totals
+    # and the ``plan_id`` of a Build library preview.
+    serial: int = field(default_factory=lambda: next(_SCAN_SERIAL))
 
 
 def _call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -371,6 +390,10 @@ def _order_key(order: tuple[str, ...]) -> Callable[[Any], int]:
 
 def _rom_dat(rom: Any) -> str:
     return getattr(rom, "dat", "") or ""
+
+
+def _rom_key_of(rom: Any) -> tuple[str, str]:
+    return (getattr(rom, "dat", ""), getattr(rom, "set_name", "") or getattr(rom, "name", ""))
 
 
 def _primary(match: Any, order: list[str]) -> list[Any]:
@@ -643,6 +666,42 @@ def _kick_dest(cfg: dict[str, Any], platform_name: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _slug(name: str) -> str:
+    """URL-safe form of a system name for the UI routes (``#/system/<slug>/<tab>``)."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "system"
+
+
+def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: float | None = None) -> dict[str, Any]:
+    """The small last-scan record kept per platform in config.json (Amendment 15): counts + time + folder.
+
+    Never holds lists or per-file data - it only feeds the system cards of the home screen."""
+    by_game = summary.get("count_by") == "game"
+
+    def num(*keys: str) -> int:
+        for key in keys:
+            value = summary.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return int(value)
+        return 0
+
+    total = num("games_total", "dat_total") if by_game else num("dat_total")
+    have = num("games_have", "have") if by_game else num("have")
+    missing = num("games_missing", "missing") if by_game else num("missing")
+    record: dict[str, Any] = {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() if now is None else now)),
+        "folder": str(root), "count_by": "game" if by_game else "rom",
+        "total": total, "have": have, "missing": missing,
+        "pct": round(100.0 * have / total, 2) if total else 0.0,
+        "matched_files": num("matched_files"), "unmatched_files": num("unmatched_files"),
+        "duplicates": num("duplicates"), "errors": num("errors"),
+        "dats": [str(n) for n in (dat_names or ())][:8],
+    }
+    if summary.get("chd_files") is not None:           # disc systems
+        record.update(chd_files=num("chd_files"), identified=num("identified"), verified=num("verified"),
+                      raw=num("raw"))
+    return record
+
+
 def _undo_log_count(data: Any) -> int | None:
     """Number of moves recorded in an undo log (list, or dict holding a list)."""
     if isinstance(data, list):
@@ -696,6 +755,10 @@ class App:
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
+        self._totals_mgr: Any = None                           # totals.TotalsManager (library totals, Amendment 17)
+        self._cutoffs: dict[str, tuple[tuple, Any]] = {}       # platform -> (key, rank key of the N-th best game) (Amendment 18)
+        if hasattr(self.updates, "ratings_wanted"):
+            self.updates.ratings_wanted = self._ratings_wanted
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
 
@@ -734,12 +797,14 @@ class App:
     def _config_update(self, folder_for: tuple[str, str | None] | None = None,
                        latest_for: tuple[str, bool] | None = None, strict: bool = False,
                        kickstart_for: tuple[str, str | None] | None = None,
+                       record_for: tuple[str, dict[str, Any] | None] | None = None,
                        **values: Any) -> dict[str, Any]:
         """Merge values into config.json and return the saved config.
 
         ``folder_for=(platform, path)`` remembers a platform's folder (``path=None`` forgets it);
         ``latest_for=(platform, bool)`` remembers the "latest version only" choice;
-        ``kickstart_for=(platform, path)`` remembers a platform's Kickstart destination.
+        ``kickstart_for=(platform, path)`` remembers a platform's Kickstart destination;
+        ``record_for=(platform, record)`` remembers the small last-scan summary of a platform (Amendment 15).
         The change is applied to the LATEST config.json under ``paths.update_config``'s lock, so a
         concurrent writer (scan, profile save, ...) can never be overwritten by a stale snapshot.
         ``strict``: a failed write raises ``ApiError(500)`` instead of being swallowed.
@@ -747,7 +812,7 @@ class App:
         def mutate(cfg: dict[str, Any]) -> None:
             cfg.update(values)
             for key, pair in (("folders", folder_for), ("latest_only", latest_for),
-                              ("kickstart_dests", kickstart_for)):
+                              ("kickstart_dests", kickstart_for), ("scan_records", record_for)):
                 if pair is None:
                     continue
                 table = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
@@ -796,6 +861,79 @@ class App:
         cfg = self._config() if cfg is None else cfg
         return self._library_mod().load_profile(cfg, platform)
 
+    # ---------------------------------------------------------------- ratings (Amendment 18)
+
+    def _ratings_wanted(self) -> bool:
+        """True when a rating filter is enabled in any platform's saved profile (the updater then keeps the data fresh)."""
+        library = _optional_mod("library")
+        if library is None:
+            return False
+        cfg = self._config()
+        try:
+            return any(library.load_profile(cfg, p).rating_active for p in _mod("platforms").list_platforms())
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            return False
+
+    @staticmethod
+    def _ratings_store() -> Any:
+        return _mod("ratings").default_store()
+
+    def _rating_lookup(self, platform: Any) -> Callable[[str], Any] | None:
+        """``title -> (rating, votes) | None`` of the installed index, or None when it is not installed."""
+        store = self._ratings_store()
+        if not store.available():
+            return None
+        return lambda title: store.lookup(platform, title)
+
+    def _ratings_sig(self) -> str:
+        """Identity of the installed index (changes when it is rebuilt); "" when none is installed."""
+        man = self._ratings_store().meta()
+        return str(man.get("built_at", "")) if man else ""
+
+    def _ratings_pending(self, platform: Any, profile: Any) -> bool:
+        """True when ``profile`` needs ratings that are not installed (and a download is asked for)."""
+        if not profile.rating_active or self._rating_lookup(platform) is not None:
+            return False
+        try:
+            self.updates.request_ratings()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        return True
+
+    def _rating_context(self, platform: Any, profile: Any) -> Any:
+        """``library.RatingContext`` for a plan (None without a rating filter). Raises 409 ``ratings_pending`` while the
+        data is missing: a filter is never applied with missing data."""
+        if not profile.rating_active:
+            return None
+        library = self._library_mod()
+        lookup = self._rating_lookup(platform)
+        if lookup is None:
+            self._ratings_pending(platform, profile)
+            ust = self.updates.status()
+            status = ust.get("ratings") or {}
+            if not ust.get("enabled"):
+                msg = ("The ratings data is not installed and automatic downloads are switched off in this run - "
+                       "start the app without --no-update (or without ROMORG_OFFLINE) to download it, or clear the rating filter.")
+            elif status.get("error"):
+                msg = f"The ratings data could not be installed: {status['error']} (press Download ratings in the Ratings rules to retry)"
+            else:
+                msg = "The ratings data is not installed yet - it is being downloaded. Preview and Build wait for it."
+            raise ApiError(HTTPStatus.CONFLICT, msg, "ratings_pending")
+        cutoff = None
+        if profile.top_n is not None and profile.rank_scope == "dat":
+            totals = _mod("totals")
+            dats, _missing = self._platform_dats(platform)
+            key = (totals.profile_signature(profile), totals.signature_text(self._dats_signature(platform)), self._ratings_sig())
+            cached = self._cutoffs.get(platform.name)
+            if cached is not None and cached[0] == key:
+                cutoff = cached[1]
+            else:
+                items = totals.target_items(platform, list(dats))
+                cutoff = library.target_cutoff(items, profile, platform, lookup)
+                self._cutoffs[platform.name] = (key, cutoff)
+        return library.RatingContext(lookup, cutoff)
+
     @staticmethod
     def _profile_json(profile: Any) -> dict[str, Any]:
         data = profile.to_dict() if hasattr(profile, "to_dict") else dataclasses.asdict(profile)
@@ -842,6 +980,14 @@ class App:
                     "then the newest version (highest build number last)")
         return "Preference: cracked, then " + " over ".join(order) + ", then newest (your language order comes first)"
 
+    @staticmethod
+    def _ranking_short() -> str:
+        """The chipset ranking in a few words ("AGA over OCS"), for the one-line rules summary."""
+        library = _optional_mod("library")
+        tags = getattr(library, "tags", None) or _optional_mod("tags")
+        order = list(getattr(tags, "PLATFORM_ORDER", None) or ("CD32", "AGA", "OCS"))
+        return " over ".join(order)
+
     def _profile_info(self, platform: Any, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         """The ``/api/library/profile`` answer for one platform (Amendment 8: catalog, languages, regions)."""
         library = self._library_mod()
@@ -869,13 +1015,14 @@ class App:
         build = getattr(library, "profile_info", None)
         if build is not None:
             extra = build(platform, profile)
-            for key in ("style", "catalog", "regions", "language_names"):
+            for key in ("style", "catalog", "regions", "language_names", "rating_codes", "reason_labels"):
                 if key in extra:
                     info[key] = extra[key]
             info["available"] = {**info["available"], **extra.get("available", {})}
             info["scopes"] = {**info["scopes"], **extra.get("scopes", {})}
         info["available_languages"] = self._available_languages(platform) if info["available"].get("languages") else []
         info["ranking"] = self._ranking_text(info.get("style") or SOURCE_TOSEC) if info["available"].get("best_variant") else ""
+        info["ranking_short"] = self._ranking_short() if info["available"].get("best_variant") else ""
         return info
 
     @staticmethod
@@ -1096,7 +1243,15 @@ class App:
             "has_kickstart": bool(platform.kickstart_dat or getattr(platform, "kickstart_folder", "")),
             "kickstart_dest": _kick_dest(cfg, platform.name),
             "protected_dirs": list(getattr(platform, "protected_dirs", ()) or ()),
+            "slug": _slug(platform.name),
+            "last_scan": self._last_scan(cfg, platform.name),
         }
+
+    @staticmethod
+    def _last_scan(cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
+        table = cfg.get("scan_records") if isinstance(cfg.get("scan_records"), dict) else {}
+        record = table.get(name)
+        return record if isinstance(record, dict) else None
 
     @staticmethod
     def _disc_info(platform: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -1202,7 +1357,16 @@ class App:
                           dats_sig=sig)
         with self._lock:
             self._scan = state
+        self._record_scan(state)
         return state
+
+    def _record_scan(self, state: ScanState) -> None:
+        """Remember the last scan summary of this system (cards survive a restart; never raises)."""
+        try:
+            record = scan_record(self._summary(state), state.root, state.dat_names)
+            self._config_update(record_for=(state.platform.name, record))
+        except Exception:  # noqa: BLE001 - a convenience only
+            traceback.print_exc()
 
     def _summary(self, state: ScanState) -> dict[str, Any]:
         if state.summary is None:
@@ -1211,13 +1375,13 @@ class App:
             state.summary = summary
         return dict(state.summary)
 
-    def _rename_plan(self, state: ScanState, move_unmatched: bool = True, latest_only: bool = False) -> list[Any]:
-        key = (move_unmatched, latest_only)
+    def _rename_plan(self, state: ScanState, latest_only: bool = False) -> list[Any]:
+        key = latest_only
         if key not in state.rename_plans and self._is_dc(state):
-            state.rename_plans[key] = sorted(_mod("discsys").plan_tidy(state.result, move_unmatched),
+            state.rename_plans[key] = sorted(_mod("discsys").plan_tidy(state.result),
                                               key=_order_key(ORGANISE_ORDER))
         if key not in state.rename_plans:
-            kwargs: dict[str, Any] = {"missing_dats": list(state.missing_dats), "move_unmatched": move_unmatched,
+            kwargs: dict[str, Any] = {"missing_dats": list(state.missing_dats),
                                       "layout": state.layout}
             if latest_only:  # only passed when wanted: older organisers lack the option
                 kwargs["latest_only"] = True
@@ -1226,12 +1390,11 @@ class App:
             state.rename_plans[key] = ops
         return state.rename_plans[key]
 
-    def _rename_rows(self, state: ScanState, move_unmatched: bool = True,
-                     latest_only: bool = False) -> list[tuple[dict[str, Any], str]]:
-        key = ("rename", move_unmatched, latest_only)
+    def _rename_rows(self, state: ScanState, latest_only: bool = False) -> list[tuple[dict[str, Any], str]]:
+        key = ("rename", latest_only)
         if key not in state.items:
             state.items[key] = _rows([self._rename_item(op, state.root)
-                                      for op in self._rename_plan(state, move_unmatched, latest_only)])
+                                      for op in self._rename_plan(state, latest_only)])
         return state.items[key]
 
     def _convert_plan(self, state: ScanState, latest_only: bool = False) -> list[Any]:
@@ -1396,13 +1559,19 @@ class App:
         return self._kick_plan(state, dest), {"source": "dat", "root": str(state.root),
                                               "kickstart_dat": platform.kickstart_dat}
 
-    def _library_plan(self, state: ScanState, move_unmatched: bool = True, savedisk: bool = False,
+    def _library_plan(self, state: ScanState, savedisk: bool = False,
                       labels: bool = True) -> Any:
         """The cached ``organiser.LibraryPlan`` for the platform's current profile."""
-        key = (move_unmatched, savedisk, labels)
+        key = (savedisk, labels)
+        cached = state.library_plans.get(key)
+        if cached is not None and getattr(cached, "profile", None) not in (None, self._profile(state.platform)):
+            # the rules changed behind our back (config.json edited, another client): never serve an old plan
+            self._drop_plans(state)
         if key not in state.library_plans and self._is_dc(state):
-            plan = _mod("discsys").plan_library(state.result, self._profile(state.platform),
-                                                  move_unmatched=move_unmatched, savedisk=savedisk, labels=labels)
+            prof = self._profile(state.platform)
+            rctx = self._rating_context(state.platform, prof)
+            plan = _mod("discsys").plan_library(state.result, prof, savedisk=savedisk, labels=labels,
+                                                **({"ratings": rctx} if rctx is not None else {}))
             plan.ops.sort(key=_order_key(ORGANISE_ORDER))
             state.library_plans[key] = plan
         if key not in state.library_plans:
@@ -1410,9 +1579,12 @@ class App:
             planner = getattr(organiser, "plan_library", None)
             if planner is None:
                 raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "Build library is not available in this version")
-            plan = _call(planner, state.result, self._profile(state.platform),
-                         missing_dats=list(state.missing_dats), move_unmatched=move_unmatched,
-                         layout=state.layout, savedisk=savedisk, labels=labels, platform=state.platform)
+            prof = self._profile(state.platform)
+            rctx = self._rating_context(state.platform, prof)
+            plan = _call(planner, state.result, prof,
+                         missing_dats=list(state.missing_dats),
+                         layout=state.layout, savedisk=savedisk, labels=labels, platform=state.platform,
+                         **({"ratings": rctx} if rctx is not None else {}))
             try:
                 plan.ops.sort(key=_order_key(ORGANISE_ORDER))  # stable: keeps organiser order per status
             except AttributeError:
@@ -1429,7 +1601,7 @@ class App:
             return str(item["code"])
         return "unmatched" if item.get("dest") in RESERVED_DIRS else "kept"
 
-    def _library_rows(self, state: ScanState, key: tuple[bool, bool, bool]) -> list[tuple[dict[str, Any], str]]:
+    def _library_rows(self, state: ScanState, key: tuple[bool, bool]) -> list[tuple[dict[str, Any], str]]:
         ikey = ("library", key)
         if ikey not in state.items:
             plan = self._library_plan(state, *key)
@@ -1509,6 +1681,16 @@ class App:
         return {"name": rom.name, "game": rom.game, "size": rom.size, "crc": rom.crc, "dat": _rom_dat(rom),
                 "set_name": getattr(rom, "set_name", "") or "", "tags": _tags_json(rom, tags_mod)}
 
+    @staticmethod
+    def _game_title(rom: Any, dat: str = "") -> str:
+        library = _optional_mod("library")
+        if library is None or rom is None:
+            return ""
+        try:
+            return library.rom_title(rom, dat)
+        except Exception:  # noqa: BLE001 - informative only
+            return ""
+
     def _game_items(self, state: ScanState, tags_mod: Any = None) -> list[dict[str, Any]]:
         """One row per logical game ("set") of every loaded DAT: have / missing, roms and local files."""
         rows: list[dict[str, Any]] = []
@@ -1521,7 +1703,7 @@ class App:
                        "roms": list(g.get("roms") or ()),
                        "files": [_entry_rel(f, state.root) if hasattr(f, "path") else _rel(f, state.root)
                                  for f in g.get("files") or ()],
-                       "tags": _tags_json(rom, tags_mod)}
+                       "tags": _tags_json(rom, tags_mod), "title": self._game_title(rom, g.get("dat", ""))}
                 if g["name"] in levels:
                     row["level"], row["kind"] = levels[g["name"]]
                 rows.append(row)
@@ -1532,7 +1714,8 @@ class App:
             for rom in _primary(match, state.dat_names):
                 key = (_rom_dat(rom), getattr(rom, "set_name", "") or rom.name)
                 row = groups.setdefault(key, {"name": key[1], "dat": key[0], "have": True, "roms": [],
-                                              "files": [], "tags": _tags_json(rom, tags_mod)})
+                                              "files": [], "tags": _tags_json(rom, tags_mod),
+                                              "title": self._game_title(rom, key[0])})
                 if rom.name not in row["roms"]:
                     row["roms"].append(rom.name)
                 rel = _entry_rel(match.entry, state.root)
@@ -1541,7 +1724,8 @@ class App:
         for rom in state.result.missing:
             key = (_rom_dat(rom), getattr(rom, "set_name", "") or rom.name)
             groups.setdefault(key, {"name": key[1], "dat": key[0], "have": False, "roms": [rom.name],
-                                    "files": [], "tags": _tags_json(rom, tags_mod)})
+                                    "files": [], "tags": _tags_json(rom, tags_mod),
+                                    "title": self._game_title(rom, key[0])})
         order = {name: i for i, name in enumerate(state.dat_names)}
         rows = sorted(groups.values(), key=lambda r: (order.get(r["dat"], len(order)), r["name"].casefold()))
         return rows
@@ -1676,7 +1860,7 @@ class App:
             out["scan"] = {
                 "root": str(state.root), "platform": state.platform.name, "layout": state.layout,
                 "dat_names": list(state.dat_names), "missing_dats": list(state.missing_dats),
-                "recursive": state.recursive, "summary": self._summary(state),
+                "recursive": state.recursive, "summary": self._summary(state), "id": state.serial,
             }
         return out
 
@@ -1763,6 +1947,21 @@ class App:
         started = bool(self.updates.check(force=_bool_arg((body or {}).get("force"))))
         return {"started": started, "updates": self.updates_status()}
 
+    def ratings_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/ratings``: the LaunchBox ratings index (status block of the updater plus the credit line)."""
+        block = dict(self.updates.status().get("ratings") or {})
+        ratings = _mod("ratings")
+        block.setdefault("credit", ratings.CREDIT)
+        block.setdefault("credit_url", ratings.CREDIT_URL)
+        block["supported"] = [p.name for p in _mod("platforms").list_platforms() if ratings.supported(p)]
+        block["refresh_days"] = ratings.REFRESH_DAYS
+        return block
+
+    def ratings_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """The "Download ratings" button: fetch + index the LaunchBox data now (background; progress in /api/updates)."""
+        started = bool(self.updates.request_ratings())
+        return {"started": started, "ratings": self.ratings_get({}, None), "updates": self.updates_status()}
+
     def updates_cancel(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return {"cancelled": bool(self.updates.cancel())}
 
@@ -1800,8 +1999,45 @@ class App:
                     "borrow_other_editions"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
+        changes.update(self._rating_changes(body, library))
         self._save_profile(platform, dataclasses.replace(profile, **changes))
         return self._profile_info(platform)
+
+    @staticmethod
+    def _rating_changes(body: dict[str, Any], library: Any) -> dict[str, Any]:
+        """The rating fields of a profile save (strict: a wrong type or range is a 400, never silently ignored)."""
+        out: dict[str, Any] = {}
+
+        def number(key: str, lo: float, hi: float, integer: bool, nullable: bool) -> Any:
+            v = body[key]
+            if v is None or v == "":
+                if nullable:
+                    return None
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} needs a number")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be a number")
+            if integer and float(v) != int(v):
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be a whole number")
+            if not lo <= v <= hi:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be between {lo:g} and {hi:g}")
+            return int(v) if integer else round(float(v), 1)
+
+        if "min_rating" in body:
+            v = number("min_rating", 0, 10, False, True)
+            out["min_rating"] = None if not v else v          # 0 = off
+        if "top_n" in body:
+            out["top_n"] = number("top_n", 1, 1_000_000, True, True)
+        if "min_votes" in body:
+            out["min_votes"] = number("min_votes", 1, 1_000_000, True, False)
+        if "keep_unrated" in body:
+            if not isinstance(body["keep_unrated"], bool):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "keep_unrated must be true or false")
+            out["keep_unrated"] = body["keep_unrated"]
+        if "rank_scope" in body:
+            if body["rank_scope"] not in library.RANK_SCOPES:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"rank_scope must be one of: {', '.join(library.RANK_SCOPES)}")
+            out["rank_scope"] = body["rank_scope"]
+        return out
 
     def dats_list(self, query: dict[str, str], body: Any) -> list[dict[str, Any]]:
         q = query.get("q", "").strip().lower()
@@ -1872,7 +2108,7 @@ class App:
                                 last_dir=str(root))
             return self._summary(state)
 
-        return {"job": self.jobs.start("scan", work).to_dict()}
+        return {"job": self.jobs.start("scan", work, platform=platform.name).to_dict()}
 
     def scan_results(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         state = self._require_scan()
@@ -1882,40 +2118,33 @@ class App:
         facets = None
         if kind == "rename":
             latest = _bool_arg(query.get("latest_only"), self._latest_only(state.platform))
-            rows = self._rename_rows(state, _bool_arg(query.get("move_unmatched"), True), latest)
+            rows = self._rename_rows(state, latest)
             if dat:
                 folder = canonical if (canonical := folders.canonical_name(dat)) else _safe_name(dat)
                 rows = [r for r in rows if r[0]["dest"] == folder]
         elif kind == "m3u":
             rows = self._m3u_rows(state, False, True)
         elif kind in ("matched", "unmatched", "missing", "unsupported", "errors", "games"):
-            if kind not in state.items:
-                tags_mod = _optional_mod("tags") if kind in TAG_KINDS else None
-                if kind == "matched":
-                    items = [self._matched_item(m, state, tags_mod) for m in result.matched]
-                elif kind == "unmatched":
-                    items = [{"file": _entry_rel(e, root), "size": e.size, "crc": e.crc,
-                              "reason": getattr(e, "reason", ""), "kind": getattr(e, "kind", "")}
-                             for e in result.unmatched]
-                elif kind == "missing":
-                    items = [self._missing_item(r, tags_mod) for r in result.missing]
-                elif kind == "games":
-                    items = self._game_items(state, tags_mod)
-                elif kind == "unsupported":
-                    items = [{"file": _rel(p, root)} for p in result.unsupported]
-                else:
-                    items = [{"file": _rel(p, root), "error": str(msg)} for p, msg in result.errors]
-                state.items[kind] = _rows(items)
+            self._kind_rows(state, kind)
             rows = state.items[kind]
             if dat and kind in TAG_KINDS:
                 rows = [r for r in rows if r[0]["dat"] == dat]
+            rated_q = ""
             if kind == "games":
                 have = query.get("have", "").strip()
                 if have:
                     wanted = _bool_arg(have)
                     rows = [r for r in rows if r[0]["have"] is wanted]
+                self._annotate_ratings(state, rows)
+                rated_q = query.get("rated", "").strip()
+                if rated_q:
+                    wanted = _bool_arg(rated_q)
+                    rows = [r for r in rows if (r[0].get("rating") is not None) is wanted]
+                if query.get("sort", "").strip() == "rating":
+                    rows = sorted(rows, key=lambda r: (r[0].get("rating") is None, -(r[0].get("rating") or 0),
+                                                       -(r[0].get("votes") or 0), r[0]["name"].casefold()))
             if kind in TAG_KINDS:
-                key = ("facets", kind, dat, query.get("have", "").strip() if kind == "games" else "")
+                key = ("facets", kind, dat, (query.get("have", "").strip() + "|" + rated_q) if kind == "games" else "")
                 if key not in state.items:
                     state.items[key] = _facets(rows)  # type: ignore[assignment]
                 facets = state.items[key]
@@ -1926,14 +2155,286 @@ class App:
         page["kind"] = kind
         if facets is not None:
             page["facets"] = facets
+        if kind in CHECKSUM_KINDS and _bool_arg(query.get("checksums")):
+            # only the rows of this page, built from the scan result in memory (nothing is re-hashed)
+            page["items"] = [dict(it, checksums=self._checksums(state, kind, it)) for it in page["items"]]
         return page
+
+    def _annotate_ratings(self, state: ScanState, rows: list[tuple[dict[str, Any], str]]) -> None:
+        """Browse -> Games: ``rating`` (0-10) / ``votes`` / ``rating_match`` on every game of a rated DAT (None = unrated or
+        no ratings installed). Computed once per scan and ratings index, on the first page that needs it."""
+        ratings = _mod("ratings")
+        lookup_store = self._ratings_store()
+        sig = self._ratings_sig() if lookup_store.available() else ""
+        key = ("ratings", sig)
+        if state.items.get(key) is True:
+            return
+        rated = set(ratings.rated_dats(state.platform))
+        for item, _text in self._kind_rows(state, "games"):
+            item["rating"] = item["votes"] = item["rating_match"] = None
+            if not sig or item.get("dat") not in rated:
+                continue
+            title = item.get("title") or ""
+            d = lookup_store.detail(state.platform, title) if title else None
+            if d is not None:
+                item["rating"], item["votes"], item["rating_match"] = d["rating"], d["votes"], d["kind"]
+        for k in [k for k in state.items if isinstance(k, tuple) and k and k[0] == "ratings"]:
+            del state.items[k]
+        state.items[key] = True  # type: ignore[assignment]
+
+    def _kind_rows(self, state: ScanState, kind: str) -> list[tuple[dict[str, Any], str]]:
+        """The (item, search text) rows of one result kind, built once per scan.
+
+        Every row of the checksum kinds carries ``id`` (its index in the unfiltered list) so that
+        ``/api/scan/checksums`` can find the scan objects behind it."""
+        if kind in state.items:
+            return state.items[kind]
+        result, root = state.result, state.root
+        tags_mod = _optional_mod("tags") if kind in TAG_KINDS else None
+        sources: list[Any] | None = None
+        if kind == "matched":
+            sources = list(result.matched)
+            items = [self._matched_item(m, state, tags_mod) for m in sources]
+        elif kind == "unmatched":
+            sources = list(result.unmatched)
+            items = [{"file": _entry_rel(e, root), "size": e.size, "crc": e.crc,
+                      "reason": getattr(e, "reason", ""), "kind": getattr(e, "kind", "")}
+                     for e in sources]
+        elif kind == "missing":
+            sources = list(result.missing)
+            items = [self._missing_item(r, tags_mod) for r in sources]
+        elif kind == "games":
+            items = self._game_items(state, tags_mod)
+        elif kind == "unsupported":
+            items = [{"file": _rel(p, root)} for p in result.unsupported]
+        else:
+            items = [{"file": _rel(p, root), "error": str(msg)} for p, msg in result.errors]
+        if kind in CHECKSUM_KINDS:
+            for i, item in enumerate(items):
+                item["id"] = i
+            if sources is not None:
+                state.sources[kind] = sources
+        state.items[kind] = _rows(items)
+        return state.items[kind]
+
+    # ------------------------------------------------------- checksums (Amendment 15)
+
+    def scan_checksums(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """The checksum detail of ONE result row (``kind`` + the row's ``id``), from the scan in memory."""
+        state = self._require_scan()
+        kind = query.get("kind", "matched")
+        if kind not in CHECKSUM_KINDS:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"No checksums for result kind: {kind}")
+        rows = self._kind_rows(state, kind)
+        idx = _int_arg(query.get("id"), -1, -1)
+        if not 0 <= idx < len(rows):
+            raise ApiError(HTTPStatus.NOT_FOUND, "No such result row")
+        return self._checksums(state, kind, rows[idx][0])
+
+    @staticmethod
+    def _rom_hashes(rom: Any) -> dict[str, Any]:
+        return {"name": getattr(rom, "name", ""), "size": getattr(rom, "size", None),
+                "crc32": getattr(rom, "crc", "") or None, "md5": getattr(rom, "md5", "") or None,
+                "sha1": getattr(rom, "sha1", "") or None}
+
+    @staticmethod
+    def _equal(dat: dict[str, Any], local: dict[str, Any] | None) -> dict[str, Any]:
+        """Per hash: True / False when both sides know it, None when one of them is unknown."""
+        out: dict[str, Any] = {}
+        for key in HASH_KEYS:
+            a, b = dat.get(key), (local or {}).get(key)
+            out[key] = None if not a or not b else a == b
+        return out
+
+    def _match_index(self, state: ScanState) -> dict[str, Any]:
+        if state.match_index is None:
+            index: dict[str, Any] = {}
+            for m in state.result.matched:
+                index.setdefault(_entry_rel(m.entry, state.root), m)
+                rel = getattr(m.entry, "rel", None)
+                if isinstance(rel, str):
+                    index.setdefault(rel, m)
+            state.match_index = index
+        return state.match_index
+
+    def _local_file(self, state: ScanState, entry: Any, match: Any = None, dat_rom: Any = None) -> dict[str, Any]:
+        """The hashes the scan holds for a local file (CRC32 + SHA-1; MD5 is not computed while scanning;
+        an archive member has only the CRC32 stored in the archive)."""
+        member = getattr(entry, "member", None)
+        raw = {"crc32": getattr(entry, "crc", "") or None, "md5": None, "sha1": getattr(entry, "sha1", None) or None}
+        out: dict[str, Any] = {"file": _entry_rel(entry, state.root), "size": getattr(entry, "size", None),
+                               "archive": bool(member), "member": member or None, "raw": raw,
+                               "via": "raw", "via_text": "", "normalised": None}
+        via = (getattr(match, "matched_via", "raw") or "raw") if match is not None else "raw"
+        if via != "raw":
+            header = getattr(match, "header", 0) or 0
+            order = getattr(match, "byte_order", "") or ""
+            out["via"] = via
+            out["via_text"] = (
+                f"{header}-byte {'SNES copier' if header == 512 else 'iNES' if header == 16 else ''} header skipped before hashing"
+                .replace("  ", " ") if via == "headerless"
+                else f"{order + ' ' if order else ''}byte order swapped to the DAT's before hashing"
+                if via == "byteswapped" else via)
+            out["normalised"] = {"crc32": getattr(match, "alt_crc", "") or None, "md5": None,
+                                 "sha1": getattr(match, "alt_sha1", "") or None,
+                                 "size": getattr(dat_rom, "size", None)}
+        return out
+
+    def _file_payload(self, state: ScanState, match: Any) -> dict[str, Any]:
+        """A matched local file (loose, archive member, or normalised) against its primary DAT rom."""
+        primary = _primary(match, state.dat_names) or list(getattr(match, "roms", []) or [])
+        rom = primary[0] if primary else None
+        dat = self._rom_hashes(rom) if rom is not None else {}
+        local = self._local_file(state, match.entry, match, rom)
+        effective = local["normalised"] or local["raw"]
+        local["equal"] = self._equal(dat, effective)
+        out = {"kind": "file", "source": _source(state.platform), "dat_name": _rom_dat(rom) if rom is not None else "",
+               "dat": [dat] if dat else [], "also_named": max(0, len(primary) - 1), "local": [local]}
+        disks = self._disk_set_info(state, match)
+        if disks:
+            out["disks"] = disks
+        return out
+
+    def _set_roms(self, state: ScanState, dat_name: str, rom: Any = None, set_key: str = "") -> list[Any]:
+        """Every DAT rom of a set (No-Intro alternates share a set name) - or just ``rom``."""
+        for d in getattr(state.result, "dats", None) or []:
+            if getattr(d, "name", "") == dat_name and hasattr(d, "sets") and set_key:
+                roms = d.sets().get(set_key)
+                if roms:
+                    return list(roms)
+        return [rom] if rom is not None else []
+
+    def _disc_payload(self, state: ScanState, unit: Any, game: Any, entry: Any = None, matched: bool = True) -> dict[str, Any]:
+        """Per-track DAT vs local hashes of a disc unit (CHD or raw set)."""
+        dat_tracks = list(getattr(game, "tracks", []) or [])
+        tracks = []
+        for i, t in enumerate(getattr(unit, "tracks", []) or []):
+            rom = dat_tracks[i] if i < len(dat_tracks) else None
+            claimed = bool(t.get("claimed"))
+            hashed = bool(t.get("sha1")) and not claimed
+            local = {"crc32": t.get("crc32") if hashed else None, "md5": t.get("md5") if hashed else None,
+                     "sha1": t.get("sha1") if (hashed or claimed) else None}
+            dat = self._rom_hashes(rom) if rom is not None else {}
+            tracks.append({"number": t.get("number"), "type": t.get("type") or "", "size": t.get("size"),
+                           "dat": dat, "local": local,
+                           "state": "hashed" if hashed else "header" if claimed else "length",
+                           "equal": self._equal(dat, local) if matched else {k: None for k in HASH_KEYS}})
+        if not tracks:                       # a game nobody has: just the DAT side
+            for i, rom in enumerate(dat_tracks):
+                tracks.append({"number": i + 1, "type": "", "size": rom.size, "dat": self._rom_hashes(rom),
+                               "local": None, "state": "none", "equal": {k: None for k in HASH_KEYS}})
+        out = {"kind": "disc", "source": _source(state.platform), "dat_name": getattr(game, "dat_name", ""),
+               "game": getattr(game, "name", ""), "level": getattr(unit, "level", "") if unit is not None else "",
+               "disc_kind": getattr(unit, "disc_kind", "") if unit is not None else "",
+               "tracks": tracks, "local": []}
+        if unit is not None and entry is not None:
+            out["local"] = [{"file": _entry_rel(entry, state.root), "size": getattr(entry, "size", None),
+                             "chd_sha1": getattr(unit, "sha1", "") or None, "kind": getattr(unit, "kind", "")}]
+        return out
+
+    def _unit_of(self, state: ScanState, entry: Any) -> Any:
+        for u in getattr(state.result, "units", None) or []:
+            if os.fspath(u.path) == os.fspath(entry.path):
+                return u
+        return None
+
+    def _disk_set_info(self, state: ScanState, match: Any) -> dict[str, Any] | None:
+        """The multi-disk set a matched disk belongs to: every disk with its DAT and local hashes."""
+        if not getattr(state.platform, "m3u_dats", None):
+            return None
+        if state.disk_sets is None:
+            table: dict[int, Any] = {}
+            try:
+                for ds in _mod("m3u").group_disk_sets(state.result, dats=tuple(state.platform.m3u_dats)):
+                    for m in ds.disks.values():
+                        table.setdefault(id(m), ds)
+            except Exception:  # noqa: BLE001 - informative only
+                table = {}
+            state.disk_sets = table
+        ds = state.disk_sets.get(id(match))
+        if ds is None:
+            return None
+        disks = []
+        for n in sorted(set(ds.disks) | set(ds.missing)):
+            m = ds.disks.get(n)
+            if m is None:
+                disks.append({"number": n, "missing": True})
+                continue
+            rom = ds.roms.get(n)
+            dat = self._rom_hashes(rom) if rom is not None else {}
+            local = self._local_file(state, m.entry, m, rom)
+            local["equal"] = self._equal(dat, local["normalised"] or local["raw"])
+            disks.append({"number": n, "missing": False, "dat": dat, "local": local, "this": m is match})
+        return {"name": ds.key, "total": ds.total, "complete": bool(ds.complete), "disks": disks}
+
+    def _checksums(self, state: ScanState, kind: str, item: dict[str, Any]) -> dict[str, Any]:
+        """DAT vs local checksums of one result row (see Amendment 15 for the payload shape)."""
+        idx = item.get("id")
+        src = state.sources.get(kind) or []
+        obj = src[idx] if isinstance(idx, int) and 0 <= idx < len(src) else None
+        label = _source(state.platform)
+        if kind == "matched" and obj is not None:
+            if hasattr(obj, "unit") and obj.unit is not None and getattr(obj.unit, "game", None) is not None:
+                return self._disc_payload(state, obj.unit, obj.unit.game, obj.entry)
+            return self._file_payload(state, obj)
+        if kind == "unmatched" and obj is not None:
+            unit = self._unit_of(state, obj) if getattr(state.result, "units", None) else None
+            if unit is not None and getattr(unit, "tracks", None):
+                out = self._disc_payload(state, unit, None, obj, matched=False)
+                out["kind"] = "disc_unmatched"
+                return out
+            local = self._local_file(state, obj)
+            local["equal"] = {k: None for k in HASH_KEYS}
+            return {"kind": "unmatched", "source": label, "dat": [], "local": [local]}
+        if kind == "missing" and obj is not None:
+            game = getattr(getattr(state.result, "index", None), "games", {}).get(getattr(obj, "game", "")) \
+                if getattr(state.result, "index", None) is not None else None
+            if game is not None:
+                return self._disc_payload(state, None, game, matched=False)
+            roms = self._set_roms(state, _rom_dat(obj), obj, getattr(obj, "set_name", "") or getattr(obj, "name", ""))
+            return {"kind": "missing", "source": label, "dat_name": _rom_dat(obj),
+                    "dat": [self._rom_hashes(r) for r in roms], "local": []}
+        if kind == "games":
+            return self._game_checksums(state, item)
+        return {"kind": "none", "source": label, "dat": [], "local": []}
+
+    def _game_checksums(self, state: ScanState, item: dict[str, Any]) -> dict[str, Any]:
+        label = _source(state.platform)
+        index = self._match_index(state)
+        matches = []
+        for rel in item.get("files") or []:
+            m = index.get(rel)
+            if m is not None and m not in matches:
+                matches.append(m)
+        disc_index = getattr(state.result, "index", None)
+        if disc_index is not None and getattr(disc_index, "games", None) is not None:   # disc systems
+            game = disc_index.games.get(item.get("name", ""))
+            best = next((m for m in matches if getattr(m, "unit", None) is not None), None)
+            if best is not None:
+                return self._disc_payload(state, best.unit, best.unit.game, best.entry)
+            return self._disc_payload(state, None, game, matched=False) if game is not None else \
+                {"kind": "none", "source": label, "dat": [], "local": []}
+        roms = self._set_roms(state, item.get("dat", ""), None, item.get("name", ""))
+        if not roms:
+            return {"kind": "none", "source": label, "dat": [], "local": []}
+        dat_rows = [self._rom_hashes(r) for r in roms]
+        locals_ = []
+        for m in matches[:6]:
+            prim = _primary(m, state.dat_names)
+            rom = next((r for r in prim if _rom_key_of(r) == _rom_key_of(roms[0])), prim[0] if prim else roms[0])
+            local = self._local_file(state, m.entry, m, rom)
+            local["equal"] = self._equal(self._rom_hashes(rom), local["normalised"] or local["raw"])
+            locals_.append(local)
+        return {"kind": "file" if locals_ else "missing", "source": label, "dat_name": item.get("dat", ""),
+                "dat": dat_rows, "also_named": 0, "local": locals_, "more_files": max(0, len(matches) - 6)}
 
     def organise_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
-        move_unmatched = _bool_arg(body.get("move_unmatched"), True)
+        if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse a cached plan
+            self._drop_plans(state)
         latest_only = self._latest_arg(state, body)
-        ops = self._rename_plan(state, move_unmatched, latest_only)
-        rows = self._rename_rows(state, move_unmatched, latest_only)
+        ops = self._rename_plan(state, latest_only)
+        rows = self._rename_rows(state, latest_only)
         status = _str_arg(body.get("status"))
         dest = _str_arg(body.get("dest"))  # "." = the root folder itself
         by_dest: dict[str, int] = {}
@@ -1947,15 +2448,15 @@ class App:
             folder = "" if dest == "." else dest
             rows = [r for r in rows
                     if (not status or r[0]["status"] == status) and (not dest or r[0]["dest"] == folder)]
-        key = ("warnings", move_unmatched, latest_only)
+        key = ("warnings", latest_only)
         if key not in state.items:
             state.items[key] = [(dict(text=w), "") for w in self._plan_warnings(
-                state, self._rename_rows(state, move_unmatched, latest_only))]
+                state, self._rename_rows(state, latest_only))]
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         page.update(counts=_status_counts(ops), all=len(ops), root=str(state.root),
                     actionable=sum(by_dest.values()), by_dest=by_dest,
                     to_unmatched=by_dest.get(UNMATCHED_DIR, 0), unmatched_dir=UNMATCHED_DIR, reserved_dirs=list(RESERVED_DIRS),
-                    move_unmatched=move_unmatched, missing_dats=list(state.missing_dats),
+                    missing_dats=list(state.missing_dats),
                     warnings=[w["text"] for w, _ in state.items[key]],
                     latest_only=latest_only, to_superseded=to_superseded, superseded_dir=SUPERSEDED_DIR,
                     layout=state.layout)
@@ -1984,11 +2485,10 @@ class App:
 
     def organise_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
-        move_unmatched = _bool_arg(body.get("move_unmatched"), True)
         latest_only = self._latest_arg(state, body)
 
         def work(job: Job) -> Any:
-            ops = self._rename_plan(state, move_unmatched, latest_only)
+            ops = self._rename_plan(state, latest_only)
             todo = sum(1 for op in ops if op.status in ACTIONABLE)
             job.report(0, todo, "Moving files...")
             apply = _mod("discsys").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
@@ -1996,7 +2496,7 @@ class App:
             res["action"] = "apply"
             return self._rescan_into(job, state, res)
 
-        return {"job": self.jobs.start("organise", work, cancellable=False).to_dict()}
+        return {"job": self.jobs.start("organise", work, cancellable=False, platform=state.platform.name).to_dict()}
 
     def _root_for(self, raw: Any) -> Path:
         if isinstance(raw, str) and raw.strip():
@@ -2049,11 +2549,12 @@ class App:
             res["action"] = "undo"
             return self._rescan_into(job, state, res)
 
-        return {"job": self.jobs.start(kind, work, cancellable=False).to_dict()}
+        return {"job": self.jobs.start(kind, work, cancellable=False, platform=state.platform.name).to_dict()}
 
     @staticmethod
-    def _library_flags(body: dict[str, Any]) -> tuple[bool, bool, bool]:
-        return (_bool_arg(body.get("move_unmatched"), True), _bool_arg(body.get("savedisk")),
+    def _library_flags(body: dict[str, Any]) -> tuple[bool, bool]:
+        # a stale client may still send ``move_unmatched``: unmatched files are always moved, it is ignored
+        return (_bool_arg(body.get("savedisk")),
                 _bool_arg(body.get("labels"), True))
 
     @staticmethod
@@ -2088,6 +2589,66 @@ class App:
         return {"titles": int(out.get("titles", 0)), "by_reason": dict(out.get("by_reason", {})),
                 "by_code": dict(out.get("by_code", {}))}
 
+    def _plan_id(self, state: ScanState, key: tuple[bool, bool]) -> str:
+        """Identity of the Build library plan for this scan + these rules + these options (``plan_id``)."""
+        profile = self._profile(state.platform)
+        sig = _mod("totals").profile_signature(profile)
+        if profile.rating_active:                     # a rebuilt ratings index changes the plan
+            sig += "-" + _mod("totals").signature_text([self._ratings_sig()])[:6]
+        return f"{state.serial}.{sig}.{int(key[0])}{int(key[1])}"
+
+    def _totals(self) -> Any:
+        """The background library-totals worker (created on first use)."""
+        with self._lock:
+            if self._totals_mgr is None:
+                totals = _mod("totals")
+
+                def persist(name: str, record: dict[str, Any]) -> None:
+                    def mutate(cfg: dict[str, Any]) -> None:
+                        table = cfg.get("library_totals") if isinstance(cfg.get("library_totals"), dict) else {}
+                        table[name] = record
+                        cfg["library_totals"] = table
+                    _mod("paths").update_config(mutate)
+
+                self._totals_mgr = totals.TotalsManager(
+                    lambda platform: list(self._platform_dats(platform)[0]), persist, self._rating_lookup)
+            return self._totals_mgr
+
+    def library_totals(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/library/totals?platform=``: "with your library rules: have N of M games" (Amendment 17).
+
+        Never blocks: the whole-DAT selection runs on a background worker; ``calculating`` is true until it is
+        ready (``stale`` = the numbers shown are of the previous rules / scan)."""
+        platform = self._resolve_platform(query.get("platform"))
+        totals = _mod("totals")
+        cfg = self._config()
+        profile = self._profile(platform, cfg)
+        infos = self._locate_dats(platform)
+        if not infos:
+            return {"platform": platform.name, "available": False, "calculating": False, "stale": False, "scanned": False,
+                    "error": "", "target_games": None, "have_games": None, "missing_games": None, "percent": None,
+                    "not_preferred": None, "owned_but_excluded": None, "owned_incomplete": None, "computed_at": None,
+                    "profile_signature": totals.profile_signature(profile), "by_dat": {}}
+        pending = self._ratings_pending(platform, profile)
+        if pending:     # a rating filter without its data: no number would be right (the download was asked for)
+            return {"platform": platform.name, "available": True, "calculating": False, "stale": False, "scanned": False,
+                    "error": "", "target_games": None, "have_games": None, "missing_games": None, "percent": None,
+                    "not_preferred": None, "owned_but_excluded": None, "owned_incomplete": None, "computed_at": None,
+                    "profile_signature": totals.profile_signature(profile), "by_dat": {}, "ratings_pending": True,
+                    "rating_coverage": None, "rating": None}
+        dats_sig = totals.signature_text(tuple(self._dats_signature(platform)) + (self._ratings_sig(),))
+        with self._lock:
+            state = self._scan
+        if state is not None and state.platform.name != platform.name:
+            state = None
+        table = cfg.get("library_totals") if isinstance(cfg.get("library_totals"), dict) else {}
+        persisted = table.get(platform.name) if isinstance(table.get(platform.name), dict) else None
+        out = self._totals().request(platform, profile, dats_sig, state, persisted)
+        out["available"] = True
+        out["ratings_pending"] = False
+        out["rank_scope"] = profile.rank_scope if profile.top_n is not None else None
+        return out
+
     def library_vanished(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Paged, searchable list of the titles that have no kept version (``library.vanish_report``)."""
         state = self._require_scan()
@@ -2112,6 +2673,8 @@ class App:
         """ONE preview of Build library: file moves / renames by reason plus the playlists to write."""
         state = self._require_scan()
         key = self._library_flags(body)
+        if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse the cached plan
+            self._drop_plans(state)
         plan = self._library_plan(state, *key)
         rows = self._library_rows(state, key)
         file_rows = [r for r in rows if r[0].get("item") == "file"]
@@ -2147,6 +2710,7 @@ class App:
                                "missing": sorted(entry.missing), "present": sorted(present)})
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         page.update(
+            plan_id=self._plan_id(state, key), files=len(ops),
             root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile),
             counts=_status_counts(ops), reasons=reasons, by_dest=by_dest,
             playlists={"write": writes, "ok": statuses.count("ok"),
@@ -2156,6 +2720,7 @@ class App:
             borrowed=self._borrow_summary(plan),
             incomplete_total=len(getattr(plan.selection, "incomplete", ()) or ()),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
+            rating=dict(getattr(plan.selection, "rating", None) or {}),
             warnings=[w["text"] for w, _ in state.items[wkey]],
             actionable=actionable, empty=actionable == 0,
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
@@ -2165,6 +2730,10 @@ class App:
     def library_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
         key = self._library_flags(body)
+        sent = _str_arg(body.get("plan_id"))
+        if sent and sent != self._plan_id(state, key):
+            raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
+                           "recalculate the preview and check it again", "stale_plan")
         self._library_plan(state, *key)  # errors (e.g. module missing) before starting a job
 
         def work(job: Job) -> Any:
@@ -2178,10 +2747,12 @@ class App:
             res["action"] = "library"
             return self._rescan_into(job, state, res)
 
-        return {"job": self.jobs.start("library", work, cancellable=False).to_dict()}
+        return {"job": self.jobs.start("library", work, cancellable=False, platform=state.platform.name).to_dict()}
 
     def convert_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
+        if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse a cached plan
+            self._drop_plans(state)
         available = bool(getattr(state.platform, "convertible", False))
         latest_only = self._latest_arg(state, body)
         ops = self._convert_plan(state, latest_only) if available else []
@@ -2229,10 +2800,12 @@ class App:
             self._carry_temp(state, res)
             return res
 
-        return {"job": self.jobs.start("convert", work).to_dict()}
+        return {"job": self.jobs.start("convert", work, platform=state.platform.name).to_dict()}
 
     def m3u_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
+        if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse a cached plan
+            self._drop_plans(state)
         ops = self._m3u_plan(state, _bool_arg(body.get("savedisk")), _bool_arg(body.get("labels"), True))
         status = _str_arg(body.get("status"))
         rows = self._m3u_rows(state, _bool_arg(body.get("savedisk")), _bool_arg(body.get("labels"), True))
@@ -2256,7 +2829,7 @@ class App:
                 del state.items[key]
             return res
 
-        return {"job": self.jobs.start("m3u", work, cancellable=False).to_dict()}
+        return {"job": self.jobs.start("m3u", work, cancellable=False, platform=state.platform.name).to_dict()}
 
     def kickstart_dirs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         with self._lock:
@@ -2319,7 +2892,7 @@ class App:
             res["platform"] = platform.name
             return res
 
-        return {"job": self.jobs.start("kickstart", work, cancellable=False).to_dict()}
+        return {"job": self.jobs.start("kickstart", work, cancellable=False, platform=platform.name).to_dict()}
 
     # ---- Sega Dreamcast: chdman + Verify fully
 
@@ -2386,7 +2959,7 @@ class App:
             self._carry_temp(state, res)
             return res
 
-        return {"job": self.jobs.start("verify", work).to_dict()}
+        return {"job": self.jobs.start("verify", work, platform=state.platform.name).to_dict()}
 
     def job_get(self, query: dict[str, str], body: Any) -> dict[str, Any] | None:
         job = self.jobs.current
@@ -2439,7 +3012,10 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/updates"): App.updates_get,
     ("POST", "/api/updates/check"): App.updates_check,
     ("POST", "/api/updates/cancel"): App.updates_cancel,
+    ("GET", "/api/ratings"): App.ratings_get,
+    ("POST", "/api/ratings/download"): App.ratings_download,
     ("GET", "/api/library/profile"): App.library_profile,
+    ("GET", "/api/library/totals"): App.library_totals,
     ("POST", "/api/library/profile"): App.library_profile_save,
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,
@@ -2451,6 +3027,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/fs/pick"): App.fs_pick,
     ("POST", "/api/scan"): App.scan_start,
     ("GET", "/api/scan/results"): App.scan_results,
+    ("GET", "/api/scan/checksums"): App.scan_checksums,
     ("POST", "/api/organise/plan"): App.organise_plan,
     ("POST", "/api/organise/apply"): App.organise_apply,
     ("GET", "/api/organise/undo-logs"): App.undo_logs,
@@ -2556,7 +3133,7 @@ class Handler(BaseHTTPRequestHandler):
             data = handler(app, query, body)
             self._send_json(HTTPStatus.OK, data)
         except ApiError as exc:
-            self._send_json(exc.status, {"error": exc.message})
+            self._send_json(exc.status, {"error": exc.message, **({"code": exc.error_code} if exc.error_code else {})})
         except Exception as exc:
             traceback.print_exc()
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(exc).__name__}: {exc}"})

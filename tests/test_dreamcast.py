@@ -295,14 +295,12 @@ class TidyTest(unittest.TestCase):
         ops = dreamcast.plan_tidy(self.w.scan())
         self.assertEqual({o.status for o in ops}, {"ok"})
 
-    def test_move_unmatched_off_leaves_things(self) -> None:
-        d = T.Disc("other", 99, frames=(9, 5, 10))
-        (self.w.root / "Mystery").mkdir()
-        d.write_chd(self.w.root / "Mystery" / "m.chd")
+    def test_move_unmatched_parameter_is_gone(self) -> None:
         (self.w.root / "readme.txt").write_text("hi")
-        ops = dreamcast.plan_tidy(self.w.scan(), move_unmatched=False)
-        self.assertEqual({o.status for o in ops}, {"skip"})
-        self.assertEqual(dreamcast.file_ops(ops), [])
+        with self.assertRaises(TypeError):
+            dreamcast.plan_tidy(self.w.scan(), move_unmatched=False)
+        ops = dreamcast.plan_tidy(self.w.scan())
+        self.assertEqual({o.status for o in ops if Path(o.src).name == "readme.txt"}, {"move"})
 
     def test_junk_rules_keep_files_and_frontend_dirs(self) -> None:
         for name in ("gamelist.xml", "save.srm", "random.dat"):
@@ -321,13 +319,13 @@ class TidyTest(unittest.TestCase):
         taken = self.w.root / "Beta (Europe)"
         taken.mkdir()
         (taken / "Beta (Europe).chd").write_bytes(b"someone else's file")      # not a CHD of the game
-        before = tree(self.w.root)
-        ops = dreamcast.plan_tidy(self.w.scan(), move_unmatched=False)          # it stays where it is
-        gop = [o for o in ops if o.game == "Beta (Europe)"][0]
-        self.assertEqual(gop.status, "conflict")
-        self.assertIn("exists", gop.reason)
+        ops = dreamcast.plan_tidy(self.w.scan())
         self.apply(ops)
-        self.assertEqual(tree(self.w.root), before)
+        # the stranger's file is not part of the game: it is set aside, never overwritten or lost
+        self.assertEqual((self.w.root / "_unmatched" / "Beta (Europe)" / "Beta (Europe).chd").read_bytes(),
+                         b"someone else's file")
+        self.assertTrue((self.w.root / "Beta (Europe)" / "Beta (Europe).chd").is_file())
+        self.assertNotEqual((self.w.root / "Beta (Europe)" / "Beta (Europe).chd").read_bytes(), b"someone else's file")
 
     def test_duplicates_keep_the_canonical_copy(self) -> None:
         self.w.chd("Beta (Europe)", "Beta (Europe)/Beta (Europe).chd", ["Beta (Europe).state"])

@@ -65,6 +65,14 @@ def redump_dir() -> Path:
     return _ensure(data_dir() / "redump")
 
 
+def ratings_dir() -> Path:
+    """Directory holding the LaunchBox ratings index (``ratings.sqlite`` + manifest.json).
+
+    Its own sibling of ``dats/``, ``nointro/``, ``whdload/`` and ``redump/``: no DAT updater ever touches it.
+    """
+    return _ensure(data_dir() / "ratings")
+
+
 def nointro_dir() -> Path:
     """Directory holding the No-Intro DATs (libretro mirror) + manifest.json.
 

@@ -38,9 +38,11 @@ from typing import Any, Callable, Optional
 from . import nointro as _nointro
 from . import paths, platforms
 from . import tosec as _tosec
+from . import ratings as _ratings
 from . import redump as _redump
 from . import whdload as _whdload
 from .nointro import NOINTRO_DATS, NoIntroError
+from .ratings import RatingsError
 from .redump import REDUMP_DATS, RedumpError
 from .whdload import WHDLOAD_DATS, WhdloadError
 from .tosec import Cancelled, ReleaseInfo, TosecError
@@ -84,7 +86,7 @@ def _is_network_error(exc: BaseException) -> bool:
     if isinstance(exc, TosecError):
         cause = exc.__cause__
         return cause is not None and _is_network_error(cause)
-    if isinstance(exc, (NoIntroError, WhdloadError, RedumpError)):
+    if isinstance(exc, (NoIntroError, WhdloadError, RedumpError, RatingsError)):
         cause = exc.__cause__
         if cause is not None:
             return _is_network_error(cause)
@@ -109,11 +111,16 @@ class UpdateManager:
     def __init__(self, tosec: Any = _tosec, nointro: Any = _nointro, enabled: bool = True,
                  clock: Callable[[], float] = time.time,
                  state_path: Optional[Path] = None, whdload: Any = _whdload,
-                 redump: Any = _redump) -> None:
+                 redump: Any = _redump, ratings: Any = _ratings,
+                 ratings_wanted: Optional[Callable[[], bool]] = None) -> None:
         self.tosec = tosec
         self.nointro = nointro
         self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
         self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
+        # LaunchBox ratings (Amendment 18): fetched only when ``ratings_wanted()`` (a rating filter is set somewhere) or the
+        # user asks; None = not managed. The index lives in its own folder (paths.ratings_dir()).
+        self.ratings = ratings
+        self.ratings_wanted = ratings_wanted
         self.enabled = bool(enabled) and not paths.offline_forced()
         self.clock = clock
         self.state_path = Path(state_path) if state_path is not None else None
@@ -140,6 +147,11 @@ class UpdateManager:
         self._whdload_rows: dict[str, dict[str, Any]] = {}
         self._redump_checked: Optional[str] = None
         self._redump_rows: dict[str, dict[str, Any]] = {}
+        self._ratings_checked: Optional[str] = None
+        self._ratings_row: dict[str, Any] = {}
+        self._ratings_error: Optional[str] = None
+        self._ratings_offline = False
+        self._ratings_queued = False
         self._updating: Optional[str] = None   # source being downloaded right now
         self._load_state()
 
@@ -165,13 +177,16 @@ class UpdateManager:
         self._whdload_checked = whd.get("checked_at") if isinstance(whd.get("checked_at"), str) else None
         red = data.get("redump") if isinstance(data.get("redump"), dict) else {}
         self._redump_checked = red.get("checked_at") if isinstance(red.get("checked_at"), str) else None
+        rat = data.get("ratings") if isinstance(data.get("ratings"), dict) else {}
+        self._ratings_checked = rat.get("checked_at") if isinstance(rat.get("checked_at"), str) else None
 
     def _save_state(self) -> None:
         data = {"checked_at": self._last_checked,
                 "tosec": {"latest": self._tosec_latest, "checked_at": self._tosec_checked},
                 "nointro": {"checked_at": self._nointro_checked},
                 "whdload": {"checked_at": self._whdload_checked},
-                "redump": {"checked_at": self._redump_checked}}
+                "redump": {"checked_at": self._redump_checked},
+                "ratings": {"checked_at": self._ratings_checked}}
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -274,6 +289,48 @@ class UpdateManager:
         return {"installed": installed, "latest": latest, "status": status, "dats": rows,
                 "checked_at": self._redump_checked}
 
+    def _wanted_ratings(self) -> bool:
+        try:
+            return bool(self.ratings_wanted()) if self.ratings_wanted is not None else False
+        except Exception:  # noqa: BLE001 - status must never fail
+            return False
+
+    def _ratings_status(self) -> dict[str, Any]:
+        """(lock held) the ``ratings`` block of :meth:`status`: the LaunchBox index, never part of the DAT statuses."""
+        if self.ratings is None:
+            return {"managed": False, "wanted": False, "installed": None, "status": "absent"}
+        try:
+            man = self.ratings.installed()
+        except Exception:  # noqa: BLE001
+            man = None
+        wanted = self._wanted_ratings()
+        if self._updating == "ratings":
+            status = "updating"
+        elif self._ratings_error:
+            status = "error"
+        elif man is None:
+            status = "absent"
+        elif self._ratings_row.get("status") == "update_available":
+            status = "update_available"
+        else:
+            status = "up_to_date"
+        out: dict[str, Any] = {
+            "managed": True, "wanted": wanted, "status": status,
+            "installed": self.ratings.source_date(man) if man else None,
+            "built_at": man.get("built_at") if man else None,
+            "games": man.get("games") if man else None, "entries": man.get("entries") if man else None,
+            "size": None, "parse_seconds": man.get("parse_seconds") if man else None,
+            "latest": self._ratings_row.get("latest"), "checked_at": self._ratings_checked,
+            "offline": self._ratings_offline, "error": self._ratings_error,
+            "credit": self.ratings.CREDIT, "credit_url": self.ratings.CREDIT_URL,
+            "age_days": self.ratings.age_days(man) if man else None}
+        if man:
+            try:
+                out["size"] = self.ratings.index_path().stat().st_size
+            except OSError:
+                pass
+        return out
+
     def _installed_tosec(self) -> Optional[str]:
         try:
             return self.tosec.installed_release()
@@ -326,6 +383,7 @@ class UpdateManager:
                             "dats": rows, "checked_at": self._nointro_checked},
                 "whdload": self._whdload_status(whd_installed, whd_local),
                 "redump": self._redump_status(red_installed, red_local),
+                "ratings": self._ratings_status(),
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -360,6 +418,19 @@ class UpdateManager:
             return False
         return self._spawn(force=force)
 
+    def request_ratings(self) -> bool:
+        """The "Download ratings" button / a rating filter that needs data now: fetch the LaunchBox index on the update
+        thread (no 7-day gate). False if disabled (offline mode) or an update is already running."""
+        if not self.enabled or self.ratings is None:
+            return False
+        if self._spawn(scope=("ratings", ())):
+            return True
+        with self._lock:
+            if self._running and self._updating != "ratings":
+                self._ratings_queued = True        # another update runs: the ratings follow it
+                return True
+        return False
+
     def cancel(self) -> bool:
         with self._lock:
             if not self._running:
@@ -367,13 +438,13 @@ class UpdateManager:
             self._cancel.set()
             return True
 
-    def _spawn(self, force: bool = False) -> bool:
+    def _spawn(self, force: bool = False, scope: Optional[tuple[str, tuple[str, ...]]] = None) -> bool:
         with self._lock:
             if self._running:
                 return False
             self._running = True
             self._begin()
-        t = threading.Thread(target=self._run, kwargs={"force": force, "claimed": True},
+        t = threading.Thread(target=self._run, kwargs={"force": force, "claimed": True, "scope": scope},
                              name="romorg-updates", daemon=True)
         self._thread = t
         t.start()
@@ -436,11 +507,17 @@ class UpdateManager:
                 self._state = "error" if self._error else "idle"
                 self._cancel.clear()
                 self._progress = {"done": 0, "total": 0, "message": "", "source": ""}
+                queued = self._ratings_queued and not (scope is not None and scope[0] == "ratings")
+                self._ratings_queued = False
                 self._cond.notify_all()
+            if queued:
+                self._spawn(scope=("ratings", ()))
 
     def _has_cache(self, scope: Optional[tuple[str, tuple[str, ...]]]) -> bool:
         if scope is not None:
             src, names = scope
+            if src == "ratings":
+                return self.ratings is not None and self.ratings.installed() is not None
             if src == "tosec":
                 return self._installed_tosec() is not None
             if src == "whdload":
@@ -467,6 +544,9 @@ class UpdateManager:
 
     def _do(self, force: bool, scope: Optional[tuple[str, tuple[str, ...]]], token: _Token,
             forward: Optional[Progress]) -> None:
+        if scope is not None and scope[0] == "ratings":
+            self._do_ratings(token, forward, explicit=True)
+            return
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
         names = (list(scope[1]) if scope is not None else list(NOINTRO_DATS)) if want_nointro else []
@@ -698,8 +778,76 @@ class UpdateManager:
                 finally:
                     with self._lock:
                         self._updating = None
+        if scope is None:
+            self._do_ratings(token, forward, explicit=False)      # its own errors never fail the DAT update
         if errors:
             raise UpdateError("failed", "; ".join(errors))
+
+    def _do_ratings(self, token: _Token, forward: Optional[Progress], explicit: bool) -> None:
+        """Check the LaunchBox data and, when needed and newer, download + index it (``explicit``: the user asked, no gate).
+
+        Without ``explicit`` nothing happens unless a rating filter is enabled somewhere (``ratings_wanted``); an index
+        younger than 7 days is not even asked about. Errors land in the ``ratings`` status block only; offline = the
+        cached index stays in use."""
+        if self.ratings is None or (not explicit and not self._wanted_ratings()):
+            return
+        if token.is_set():
+            raise Cancelled()
+        self._set_progress(0, 0, "Checking the LaunchBox ratings", "ratings", forward)
+        row = self.ratings.check_update(timeout=CHECK_TIMEOUT, gate=not explicit)
+        now = _iso(self.clock())
+        with self._lock:
+            self._ratings_row = dict(row)
+            if row.get("status") != "error":
+                if row.get("etag") or row.get("latest") or explicit:     # a request was made
+                    self._ratings_checked = now
+                    self._save_state()
+                self._ratings_error = None
+                self._ratings_offline = False
+        status = row.get("status")
+        if status == "error":
+            err = str(row.get("error", ""))
+            with self._lock:
+                if self.ratings.installed() is not None:
+                    self._ratings_offline = True       # quiet: the cached index stays in use
+                    self._ratings_error = None
+                else:
+                    self._ratings_offline = True
+                    self._ratings_error = "The LaunchBox ratings can not be downloaded (offline?): " + err
+            return
+        if status not in ("missing", "update_available"):
+            return
+        with self._lock:
+            self._state = "downloading"
+            self._updating = "ratings"
+        try:
+            self.ratings.download_and_build(
+                progress=lambda d, t, m: self._ratings_progress(d, t, m, forward), cancel=token)
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                if _is_network_error(exc) and self.ratings.installed() is not None:
+                    self._ratings_offline = True
+                else:
+                    self._ratings_error = str(exc) or exc.__class__.__name__
+                    self._ratings_offline = _is_network_error(exc)
+        else:
+            with self._lock:
+                self._ratings_error = None
+                self._ratings_offline = False
+                self._ratings_row = {"status": "up_to_date"}
+                self._ratings_checked = _iso(self.clock())
+                self._save_state()
+        finally:
+            with self._lock:
+                self._updating = None
+
+    def _ratings_progress(self, done: int, total: int, message: str, forward: Optional[Progress]) -> None:
+        with self._lock:
+            if message.lower().startswith(("build", "ratings index")):
+                self._state = "installing"
+        self._set_progress(done, total, message, "ratings", forward)
 
     def _tosec_progress(self, done: int, total: int, message: str, forward: Optional[Progress]) -> None:
         with self._lock:

@@ -10,278 +10,327 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-title">Simple ROM Organiser</span>
-      <span class="muted" id="app-version"></span>
+  <!-- Global header: on every view -->
+  <header class="topbar" id="topbar">
+    <div class="topbar-main">
+      <a class="brand" href="#/" id="brand-link" title="Back to all systems">
+        <span class="brand-title">Simple ROM Organiser</span>
+        <span class="muted" id="app-version"></span>
+      </a>
+      <div class="updates-line grow" id="updates-line" aria-live="polite">Checking DAT versions...</div>
+      <button class="btn btn-small" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
+      <button class="btn btn-small btn-ghost" id="quit-btn" title="Stop the app">Quit</button>
     </div>
-    <nav class="stepnav" aria-label="Steps" id="stepnav">
-      <a href="#step-systems" data-label="Systems">1 Systems</a>
-      <a href="#step-scan" data-label="Scan">2 Scan</a>
-      <a href="#step-library" data-label="Build library">3 Build library</a>
-      <a href="#step-convert" data-label="Convert">4 Convert</a>
-      <a href="#step-kickstart" data-label="Kickstarts">5 Kickstarts</a>
-    </nav>
-    <button class="btn btn-ghost" id="quit-btn" title="Stop the app">Quit</button>
+    <div class="topbar-extra">
+      <div class="progress hidden" id="updates-progress"><div class="progress-bar" id="updates-progress-bar"></div></div>
+      <div class="muted small hidden" id="updates-progress-text"></div>
+      <div class="muted small hidden" id="updates-note"></div>
+      <div class="notice notice-bad hidden" id="updates-error">
+        <span id="updates-error-text"></span>
+        <button class="btn btn-small" id="updates-retry">Retry</button>
+      </div>
+    </div>
+    <!-- the running job (scan / verify / build / convert ...), with Cancel -->
+    <div class="job hidden" id="job-bar" role="status"></div>
   </header>
 
   <main>
     <div id="banner" class="banner hidden" role="alert"></div>
 
-    <!-- Step 1: Systems, folders + DATs -->
-    <section class="step" id="step-systems">
-      <h2><span class="step-num">1</span> Systems &amp; folders</h2>
-      <div class="updates-bar" id="updates-bar">
-        <div class="updates-main">
-          <div class="updates-line grow" id="updates-line">Checking DAT versions...</div>
-          <button class="btn btn-small" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
-        </div>
-        <div class="progress hidden" id="updates-progress"><div class="progress-bar" id="updates-progress-bar"></div></div>
-        <div class="muted small hidden" id="updates-progress-text"></div>
-        <div class="muted small hidden" id="updates-note"></div>
-        <div class="notice notice-bad hidden" id="updates-error">
-          <span id="updates-error-text"></span>
-          <button class="btn btn-small" id="updates-retry">Retry</button>
-        </div>
-        <div class="muted small" id="dats-dir"></div>
+    <!-- ===================== HOME: one card per system ===================== -->
+    <section class="view" id="view-home" aria-labelledby="home-title">
+      <div class="view-head">
+        <h1 id="home-title">Your systems</h1>
+        <span class="muted">Pick a system to scan it, browse what you have and build a tidy library.</span>
       </div>
-      <p class="muted">Pick the ROM folder of each system (for example <code>/run/media/deck/SD/roms/snes</code>).
-        Every system keeps its own folder; subfolders are always included. Press <b>Scan</b> on a row to check it.</p>
-      <div class="table-wrap">
-        <table class="systems">
-          <thead><tr><th>System</th><th>DAT</th><th>Folder</th><th></th></tr></thead>
-          <tbody id="systems-body"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
-        </table>
-      </div>
-      <div id="dats-missing" class="notice hidden"></div>
-      <details class="dat-details" id="platform-details">
-        <summary id="platform-details-title">DAT files</summary>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>DAT</th><th>Version</th><th>Folder</th><th>Status</th></tr></thead>
-            <tbody id="platform-dats"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
-          </table>
-        </div>
-      </details>
-
+      <div id="home-groups"><div class="empty">Loading systems...</div></div>
+      <div class="muted small" id="dats-dir"></div>
     </section>
 
-    <!-- Step 2: Scan -->
-    <section class="step" id="step-scan">
-      <h2><span class="step-num">2</span> Scan</h2>
-      <div class="row">
-        <label for="platform-select" class="label-inline">System</label>
-        <select id="platform-select" class="input select"></select>
-        <div class="mono grow scan-folder" id="scan-folder"></div>
+    <!-- ===================== SYSTEM PAGE with four tabs ===================== -->
+    <section class="view hidden" id="view-system" aria-labelledby="sys-title">
+      <div class="sys-head">
+        <a class="back-link" href="#/" id="back-link">&lsaquo; Systems</a>
+        <h1 id="sys-title"></h1>
+        <span class="badge" id="sys-source"></span>
+        <span class="muted small grow" id="sys-sub"></span>
         <button class="btn btn-primary" id="scan-btn">Scan folder</button>
       </div>
-      <div class="muted small" id="scan-info"></div>
-      <div class="job hidden" data-kind="scan"></div>
-      <!-- disc systems (Dreamcast, PlayStation, PlayStation 2): how CHDs are read + Verify fully -->
-      <div class="dc-bar hidden" id="dc-bar">
-        <div class="dc-line">
-          <span id="dc-engine-line" class="grow"></span>
-          <button class="btn" id="dc-verify-btn" disabled
-                  title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
-        </div>
-        <div class="muted small hidden" id="dc-speed-line"></div>
-        <div class="muted small hidden" id="dc-temp-line"></div>
-        <div class="muted small" id="dc-levels-help">
-          <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
-          <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
-          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso) you can convert to CHD in step 4.
-        </div>
-        <div class="job hidden" data-kind="verify"></div>
-        <div id="dc-failures" class="notice hidden"></div>
-      </div>
-      <div class="notice notice-bad hidden" id="scan-error">
-        <span id="scan-error-text"></span>
-        <button class="btn btn-small" id="scan-retry">Retry</button>
-      </div>
-      <div id="scan-empty" class="empty">Choose a folder for the system in step 1, then press <b>Scan</b>.</div>
-      <div id="scan-output" class="hidden">
-        <div id="scan-missing-dats" class="notice hidden"></div>
-        <div class="cards" id="summary-cards"></div>
-        <h3 id="dat-cards-title">Per DAT</h3>
-        <div class="dat-cards" id="dat-cards"></div>
-        <div class="tabs" role="tablist" id="result-tabs"></div>
-        <div id="result-table"></div>
-      </div>
-    </section>
 
-    <!-- Step 3: Build library -->
-    <section class="step" id="step-library">
-      <h2><span class="step-num">3</span> <span id="library-title">Build library</span></h2>
-      <p class="muted" id="library-intro">One action tidies the whole folder: files are renamed and sorted, unwanted and duplicate
-        files are set aside in their own folders (<code>_excluded/</code>, <code>_superseded/</code>, <code>_duplicates/</code> ...; never deleted), and playlists are written for complete multi-disk games.
-        Preview first; <b>Undo last</b> reverts everything, playlists included.</p>
+      <div class="tabs systabs" role="tablist" id="sys-tabs" aria-label="System sections">
+        <button class="tab" role="tab" id="tabbtn-overview" data-tab="overview" aria-controls="tab-overview">Overview</button>
+        <button class="tab" role="tab" id="tabbtn-library" data-tab="library" aria-controls="tab-library">Library</button>
+        <button class="tab" role="tab" id="tabbtn-browse" data-tab="browse" aria-controls="tab-browse">Browse</button>
+        <button class="tab" role="tab" id="tabbtn-tools" data-tab="tools" aria-controls="tab-tools">Tools</button>
+      </div>
 
-      <details class="rules-panel" id="library-rules-box" open>
-        <summary>Library rules <span class="muted small" id="library-rules-summary"></span></summary>
-        <div class="rules-body" id="library-rules"></div>
-        <div class="row">
-          <button class="btn btn-small" id="library-reset">Reset to defaults</button>
-          <span class="muted small" id="library-rules-note"></span>
+      <!-- ---------- Overview ---------- -->
+      <div class="tabpanel" role="tabpanel" id="tab-overview" aria-labelledby="tabbtn-overview" tabindex="-1">
+        <div id="ov-notices"></div>
+        <div class="panel" id="folder-panel">
+          <h2>Folder</h2>
+          <p class="muted small" id="folder-help">The ROM folder of this system, for example <code id="folder-example"></code>. Subfolders are always included. It is saved the moment you choose it.</p>
+          <div class="folder-row">
+            <input type="text" id="folder-input" class="input grow mono" spellcheck="false" autocomplete="off" aria-label="System folder">
+            <button class="btn hidden" id="folder-native-btn">Browse...</button>
+            <button class="btn" id="folder-browse-btn">Folders...</button>
+            <button class="btn" id="folder-clear-btn">Clear</button>
+            <span class="folder-state" id="folder-state" data-folder-state=""></span>
+          </div>
+          <div class="muted small" id="scan-info"></div>
+          <div class="notice notice-bad hidden" id="scan-error">
+            <span id="scan-error-text"></span>
+            <button class="btn btn-small" id="scan-retry">Retry</button>
+          </div>
         </div>
-      </details>
 
-      <pre class="layout" id="library-layout"></pre>
-      <div class="row">
-        <label class="check"><input type="checkbox" id="lib-move-unmatched" checked> Move unmatched files into <code>_unmatched/</code></label>
-        <label class="check" id="lib-labels-wrap"><input type="checkbox" id="lib-labels" checked> Disk labels in playlists</label>
-        <label class="check" id="lib-savedisk-wrap"><input type="checkbox" id="lib-savedisk"> Add save disk (#SAVEDISK)</label>
+        <div class="totals-pair" id="totals-pair">
+          <section class="totals-block" id="totals-all" aria-labelledby="totals-all-title">
+            <h3 id="totals-all-title">All DAT entries</h3>
+            <div id="totals-all-body"></div>
+          </section>
+          <section class="totals-block totals-lib" id="totals-lib" aria-labelledby="totals-lib-title">
+            <h3 id="totals-lib-title">With your library rules</h3>
+            <div id="totals-lib-body" role="status" aria-live="polite"></div>
+          </section>
+        </div>
+
+        <div class="panel">
+          <h2>DAT</h2>
+          <div id="dat-status-line"></div>
+          <div id="dats-missing" class="notice hidden"></div>
+          <details class="dat-details" id="platform-details">
+            <summary id="platform-details-title">DAT files</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>DAT</th><th>Version</th><th>Folder</th><th>Status</th></tr></thead>
+                <tbody id="platform-dats"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <div id="scan-empty" class="empty"></div>
+        <div id="scan-output" class="hidden">
+          <div id="scan-missing-dats" class="notice hidden"></div>
+          <div class="cards" id="summary-cards"></div>
+          <h3 id="dat-cards-title">Per DAT</h3>
+          <div class="dat-cards" id="dat-cards"></div>
+        </div>
       </div>
-      <div class="row">
-        <button class="btn" id="lib-plan-btn" disabled>Preview library</button>
-        <button class="btn btn-primary" id="lib-apply-btn" disabled>Build library</button>
-        <button class="btn" id="lib-undo-btn" disabled>Undo last</button>
-        <div class="grow"></div>
-      </div>
-      <div class="job hidden" data-kind="library"></div>
-      <div id="lib-failures" class="notice hidden"></div>
-      <div id="lib-warnings" class="notice hidden"></div>
-      <div id="lib-empty" class="empty">Run a scan first.</div>
-      <div id="lib-output" class="hidden">
-        <div class="cards" id="lib-cards"></div>
-        <div id="lib-uptodate" class="notice notice-ok hidden">Nothing to do - the library is already built.</div>
-        <details class="incomplete-box hidden" id="lib-incomplete-box">
-          <summary id="lib-incomplete-title">Incomplete sets</summary>
-          <ul class="incomplete-list" id="lib-incomplete"></ul>
+
+      <!-- ---------- Library ---------- -->
+      <div class="tabpanel hidden" role="tabpanel" id="tab-library" aria-labelledby="tabbtn-library" tabindex="-1">
+        <p class="muted" id="library-intro"></p>
+
+        <div class="totals-pair" id="lib-totals-pair">
+          <section class="totals-block" aria-labelledby="lib-totals-all-title">
+            <h3 id="lib-totals-all-title">All DAT entries</h3>
+            <div id="lib-totals-all-body"></div>
+          </section>
+          <section class="totals-block totals-lib" aria-labelledby="lib-totals-lib-title">
+            <h3 id="lib-totals-lib-title">With your library rules</h3>
+            <div id="lib-totals-lib-body" role="status" aria-live="polite"></div>
+          </section>
+        </div>
+
+        <div class="notice ratings-banner hidden" id="lib-ratings-banner" role="status" aria-live="polite"></div>
+
+        <details class="rules-panel" id="library-rules-box">
+          <summary>
+            <span class="rules-title">Library rules</span>
+            <span class="rules-summary" id="library-rules-summary"></span>
+            <span class="edit-hint" aria-hidden="true"></span>
+          </summary>
+          <div class="rules-body" id="library-rules"></div>
+          <div class="row">
+            <button class="btn btn-small" id="library-reset">Reset to defaults</button>
+            <span class="muted small" id="library-rules-note"></span>
+          </div>
         </details>
-        <details class="incomplete-box vanish-box hidden" id="lib-vanish-box">
-          <summary id="lib-vanish-title">Games that vanish</summary>
-          <p class="muted small">These titles have no version that survives your rules, so none of their files stay in the library
-            (they are set aside in <code>_excluded/</code>, <code>_superseded/</code> or <code>_incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
-          <div class="chips" id="lib-vanish-filters"></div>
-          <div class="chips vanish-hints" id="lib-vanish-hints"></div>
-          <div id="lib-vanish-table"></div>
-        </details>
-        <div class="chips" id="lib-reason-filters"></div>
-        <div class="chips hidden" id="lib-why-filters"></div>
-        <div class="chips" id="lib-status-filters"></div>
-        <div id="lib-table"></div>
+
+        <div id="lib-gate" class="empty hidden"></div>
+        <div id="lib-body">
+          <details class="dat-details"><summary>Folder layout after building</summary><pre class="layout" id="library-layout"></pre></details>
+          <div class="row">
+            <label class="check" id="lib-labels-wrap"><input type="checkbox" id="lib-labels" checked> Disk labels in playlists</label>
+            <label class="check" id="lib-savedisk-wrap"><input type="checkbox" id="lib-savedisk"> Add save disk (#SAVEDISK)</label>
+          </div>
+          <div class="row">
+            <button class="btn" id="lib-plan-btn" disabled>Preview library</button>
+            <button class="btn btn-primary" id="lib-apply-btn" disabled>Build library</button>
+            <button class="btn" id="lib-undo-btn" disabled>Undo last</button>
+            <div class="grow"></div>
+          </div>
+          <div id="lib-failures" class="notice hidden"></div>
+          <div id="lib-warnings" class="notice hidden"></div>
+          <div id="lib-empty" class="empty">Press "Preview library" to see what would happen.</div>
+          <div id="lib-output" class="hidden">
+            <div class="cards" id="lib-cards"></div>
+            <div id="lib-uptodate" class="notice notice-ok hidden">Nothing to do - the library is already built.</div>
+            <details class="incomplete-box hidden" id="lib-incomplete-box">
+              <summary id="lib-incomplete-title">Incomplete sets</summary>
+              <ul class="incomplete-list" id="lib-incomplete"></ul>
+            </details>
+            <details class="incomplete-box vanish-box hidden" id="lib-vanish-box">
+              <summary id="lib-vanish-title">Games that vanish</summary>
+              <p class="muted small">These titles have no version that survives your rules, so none of their files stay in the library
+                (they are set aside in <code>_excluded/</code>, <code>_superseded/</code> or <code>_incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
+              <div class="chips" id="lib-vanish-filters"></div>
+              <div class="chips vanish-hints" id="lib-vanish-hints"></div>
+              <div id="lib-vanish-table"></div>
+            </details>
+            <div class="chips" id="lib-reason-filters"></div>
+            <div class="chips hidden" id="lib-why-filters"></div>
+            <div class="chips" id="lib-status-filters"></div>
+            <div id="lib-table"></div>
+          </div>
+
+          <details class="advanced" id="advanced-box">
+            <summary>Advanced: organise only / playlists only</summary>
+            <div class="advanced-block" id="step-organise">
+              <h4 id="organise-title">Organise</h4>
+              <p class="muted" id="organise-intro"></p>
+              <pre class="layout" id="organise-layout"></pre>
+              <div class="row">
+                <label class="check" title="Same as the Library rules setting (remembered per system)."><input type="checkbox" id="organise-latest-only"> Latest versions only (older ones go to <code>_superseded/</code>)</label>
+              </div>
+              <div class="row">
+                <button class="btn" id="plan-btn" disabled>Preview changes</button>
+                <button class="btn btn-primary" id="apply-btn" disabled>Apply</button>
+                <button class="btn" id="undo-btn" disabled>Undo last</button>
+                <div class="grow"></div>
+              </div>
+              <div id="organise-failures" class="notice hidden"></div>
+              <div id="organise-warnings" class="notice hidden"></div>
+              <div id="organise-empty" class="empty">Run a scan first.</div>
+              <div id="organise-output" class="hidden">
+                <div class="cards" id="organise-cards"></div>
+                <div class="chips" id="organise-filters"></div>
+                <div class="chips" id="organise-dest-filters"></div>
+                <div id="organise-table"></div>
+              </div>
+            </div>
+            <div class="advanced-block" id="m3u-block">
+              <h4>M3U playlists (multi-disk games)</h4>
+              <p class="muted">For RetroArch / PUAE: one playlist per complete multi-disk set, written next to disk 1
+                (after organising: inside the DAT folder). Load the <code>.m3u</code> as the game and swap disks via Disk Control.</p>
+              <div class="muted small" id="m3u-dats"></div>
+              <div class="row">
+                <label class="check"><input type="checkbox" id="m3u-labels" checked> Disk labels</label>
+                <label class="check"><input type="checkbox" id="m3u-savedisk"> Add save disk (#SAVEDISK)</label>
+                <div class="grow"></div>
+                <button class="btn" id="m3u-plan-btn" disabled>Preview playlists</button>
+                <button class="btn btn-primary" id="m3u-apply-btn" disabled>Write playlists</button>
+              </div>
+              <div id="m3u-failures" class="notice hidden"></div>
+              <div id="m3u-empty" class="empty">Run a scan first.</div>
+              <div id="m3u-output" class="hidden">
+                <div class="chips" id="m3u-filters"></div>
+                <div id="m3u-table"></div>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
 
-      <details class="advanced" id="advanced-box">
-        <summary>Advanced: tidy only / playlists only</summary>
-        <div class="advanced-block" id="step-organise">
-      <h4 id="organise-title">Organise</h4>
-      <p class="muted" id="organise-intro"></p>
-      <pre class="layout" id="organise-layout"></pre>
-      <div class="row">
-        <label class="check"><input type="checkbox" id="organise-move-unmatched" checked> Move unmatched files into <code>_unmatched/</code></label>
-        <label class="check" title="Same as the Library rules setting (remembered per system)."><input type="checkbox" id="organise-latest-only"> Latest versions only (older ones go to <code>_superseded/</code>)</label>
-      </div>
-      <div class="row">
-        <button class="btn" id="plan-btn" disabled>Preview changes</button>
-        <button class="btn btn-primary" id="apply-btn" disabled>Apply</button>
-        <button class="btn" id="undo-btn" disabled>Undo last</button>
-        <div class="grow"></div>
-      </div>
-      <div class="job hidden" data-kind="organise"></div>
-      <div id="organise-failures" class="notice hidden"></div>
-      <div id="organise-warnings" class="notice hidden"></div>
-      <div id="organise-empty" class="empty">Run a scan first.</div>
-      <div id="organise-output" class="hidden">
-        <div class="cards" id="organise-cards"></div>
-        <div class="chips" id="organise-filters"></div>
-        <div class="chips" id="organise-dest-filters"></div>
-        <div id="organise-table"></div>
-      </div>
+      <!-- ---------- Browse (rendered only when opened) ---------- -->
+      <div class="tabpanel hidden" role="tabpanel" id="tab-browse" aria-labelledby="tabbtn-browse" tabindex="-1">
+        <div id="browse-gate" class="empty hidden"></div>
+        <div id="browse-body" class="hidden">
+          <div class="tabs" role="tablist" id="result-tabs" aria-label="Result lists"></div>
+          <div id="result-table"></div>
         </div>
-        <div class="advanced-block" id="m3u-block">
-      <h4>M3U playlists (multi-disk games)</h4>
-      <p class="muted">For RetroArch / PUAE: one playlist per complete multi-disk set, written next to disk 1
-        (after organising: inside the DAT folder). Load the <code>.m3u</code> as the game and swap disks via Disk Control.</p>
-      <div class="muted small" id="m3u-dats"></div>
-      <div class="row">
-        <label class="check"><input type="checkbox" id="m3u-labels" checked> Disk labels</label>
-        <label class="check"><input type="checkbox" id="m3u-savedisk"> Add save disk (#SAVEDISK)</label>
-        <div class="grow"></div>
-        <button class="btn" id="m3u-plan-btn" disabled>Preview playlists</button>
-        <button class="btn btn-primary" id="m3u-apply-btn" disabled>Write playlists</button>
       </div>
-      <div class="job hidden" data-kind="m3u"></div>
-      <div id="m3u-failures" class="notice hidden"></div>
-      <div id="m3u-empty" class="empty">Run a scan first.</div>
-      <div id="m3u-output" class="hidden">
-        <div class="chips" id="m3u-filters"></div>
-        <div id="m3u-table"></div>
-      </div>
-        </div>
-      </details>
-    </section>
 
-    <!-- Step 4: Convert -->
-    <section class="step" id="step-convert">
-      <h2><span class="step-num">4</span> <span id="convert-title">Convert to No-Intro format (optional)</span></h2>
-      <div class="chdman-box hidden" id="chdman-box">
-        <div class="chdman-line" id="chdman-line"></div>
-        <ol class="chdman-steps hidden" id="chdman-steps"></ol>
-        <div class="row">
-          <input type="text" id="chdman-path" class="input grow mono" placeholder="/path/to/chdman (optional override)"
-                 spellcheck="false" autocomplete="off" aria-label="chdman path">
-          <button class="btn btn-small" id="chdman-save">Save path</button>
-          <button class="btn btn-small" id="chdman-refresh">Look again</button>
-        </div>
-        <div class="row">
-          <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
-          <select id="chdman-engine" class="input select">
-            <option value="auto">the built-in reader (parallel, fast); chdman only for CHDs it cannot decode</option>
-            <option value="python">always the built-in reader (never chdman, no temporary files)</option>
-            <option value="chdman">always chdman (extracts every disc to temporary space)</option>
-          </select>
-        </div>
-      </div>
-      <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
-        byte-swapped N64 dump stays <code>.v64</code> / <code>.n64</code>. Converting writes a clean copy exactly as
-        listed in the DAT (headerless <code>.sfc</code>, big-endian <code>.z64</code>) and moves the original to
-        <code>_converted_originals/</code> - nothing is deleted, and <b>Undo last</b> reverts it.
-        Single-file <code>.zip</code> archives are converted into a new <code>.zip</code>; extract <code>.7z</code> files first.</p>
-      <div class="row">
-        <button class="btn" id="convert-plan-btn" disabled>Preview conversions</button>
-        <button class="btn btn-primary" id="convert-apply-btn" disabled>Convert</button>
-        <button class="btn" id="convert-undo-btn" disabled>Undo last</button>
-        <div class="grow"></div>
-      </div>
-      <div class="job hidden" data-kind="convert"></div>
-      <div id="convert-failures" class="notice hidden"></div>
-      <div id="convert-empty" class="empty">Run a scan first.</div>
-      <div id="convert-output" class="hidden">
-        <div class="cards" id="convert-cards"></div>
-        <div class="chips" id="convert-filters"></div>
-        <div id="convert-table"></div>
-      </div>
-    </section>
+      <!-- ---------- Tools: only what applies to this system ---------- -->
+      <div class="tabpanel hidden" role="tabpanel" id="tab-tools" aria-labelledby="tabbtn-tools" tabindex="-1">
+        <section class="panel tool" id="tool-convert">
+          <h2 id="convert-title">Convert to No-Intro format (optional)</h2>
+          <div class="chdman-box hidden" id="chdman-box">
+            <div class="chdman-line" id="chdman-line"></div>
+            <ol class="chdman-steps hidden" id="chdman-steps"></ol>
+            <div class="row">
+              <input type="text" id="chdman-path" class="input grow mono" placeholder="/path/to/chdman (optional override)"
+                     spellcheck="false" autocomplete="off" aria-label="chdman path">
+              <button class="btn btn-small" id="chdman-save">Save path</button>
+              <button class="btn btn-small" id="chdman-refresh">Look again</button>
+            </div>
+            <div class="row">
+              <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
+              <select id="chdman-engine" class="input select">
+                <option value="auto">the built-in reader (parallel, fast); chdman only for CHDs it cannot decode</option>
+                <option value="python">always the built-in reader (never chdman, no temporary files)</option>
+                <option value="chdman">always chdman (extracts every disc to temporary space)</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
+            byte-swapped N64 dump stays <code>.v64</code> / <code>.n64</code>. Converting writes a clean copy exactly as
+            listed in the DAT (headerless <code>.sfc</code>, big-endian <code>.z64</code>) and moves the original to
+            <code>_converted_originals/</code> - nothing is deleted, and <b>Undo last</b> reverts it.
+            Single-file <code>.zip</code> archives are converted into a new <code>.zip</code>; extract <code>.7z</code> files first.</p>
+          <div class="row">
+            <button class="btn" id="convert-plan-btn" disabled>Preview conversions</button>
+            <button class="btn btn-primary" id="convert-apply-btn" disabled>Convert</button>
+            <button class="btn" id="convert-undo-btn" disabled>Undo last</button>
+            <div class="grow"></div>
+          </div>
+          <div id="convert-failures" class="notice hidden"></div>
+          <div id="convert-empty" class="empty">Run a scan first.</div>
+          <div id="convert-output" class="hidden">
+            <div class="cards" id="convert-cards"></div>
+            <div class="chips" id="convert-filters"></div>
+            <div id="convert-table"></div>
+          </div>
+        </section>
 
-    <!-- Step 6: Kickstarts -->
-    <section class="step" id="step-kickstart">
-      <h2><span class="step-num">5</span> Kickstarts for RetroArch (PUAE)</h2>
-      <p class="muted" id="kick-intro">Optional. Copies the Kickstart ROMs you have (matched by MD5 against the
-        <a href="https://docs.libretro.com/library/puae/" target="_blank" rel="noopener noreferrer">PUAE BIOS list</a>)
-        into RetroArch's system / BIOS folder under the file names PUAE expects. Files are copied, never moved,
-        and existing files are never overwritten.</p>
-      <div id="kick-body">
-        <h3>Destination folder</h3>
-        <div class="dest-list" id="kick-dirs"></div>
-        <div class="row">
-          <input type="text" id="kick-dest" class="input grow mono" placeholder="~/Emulation/bios" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="kick-native-browse-btn">Browse...</button>
-          <button class="btn" id="kick-browse-btn">Folders...</button>
-        </div>
-        <div class="row">
-          <button class="btn" id="kick-plan-btn" disabled>Preview</button>
-          <button class="btn btn-primary" id="kick-apply-btn" disabled>Copy Kickstarts</button>
-          <div class="grow"></div>
-        </div>
-        <div class="muted small" id="kick-source"></div>
-        <div class="job hidden" data-kind="kickstart"></div>
-        <div id="kick-failures" class="notice hidden"></div>
-        <div id="kick-empty" class="empty">Run a scan first.</div>
-        <div id="kick-output" class="hidden">
-          <div class="chips" id="kick-filters"></div>
-          <div id="kick-table"></div>
-        </div>
+        <!-- disc systems (Dreamcast, PlayStation, PlayStation 2): how CHDs are read + Verify fully -->
+        <section class="panel tool" id="tool-verify">
+          <h2>Verify CHDs</h2>
+          <div class="dc-bar" id="dc-bar">
+            <div class="dc-line">
+              <span id="dc-engine-line" class="grow"></span>
+              <button class="btn" id="dc-verify-btn" disabled
+                      title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
+            </div>
+            <div class="muted small hidden" id="dc-speed-line"></div>
+            <div class="muted small hidden" id="dc-temp-line"></div>
+            <div class="muted small" id="dc-levels-help">
+              <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
+              <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
+              <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso) you can convert to CHD in Convert.
+            </div>
+            <div id="dc-failures" class="notice hidden"></div>
+          </div>
+          <div id="verify-empty" class="empty">Run a scan first.</div>
+        </section>
+
+        <section class="panel tool" id="tool-kickstart">
+          <h2>Kickstarts for RetroArch (PUAE)</h2>
+          <p class="muted" id="kick-intro"></p>
+          <div id="kick-body">
+            <h3>Destination folder</h3>
+            <div class="dest-list" id="kick-dirs"></div>
+            <div class="row">
+              <input type="text" id="kick-dest" class="input grow mono" placeholder="~/Emulation/bios" spellcheck="false" autocomplete="off" aria-label="Kickstart destination folder">
+              <button class="btn hidden" id="kick-native-browse-btn">Browse...</button>
+              <button class="btn" id="kick-browse-btn">Folders...</button>
+            </div>
+            <div class="row">
+              <button class="btn" id="kick-plan-btn" disabled>Preview</button>
+              <button class="btn btn-primary" id="kick-apply-btn" disabled>Copy Kickstarts</button>
+              <div class="grow"></div>
+            </div>
+            <div class="muted small" id="kick-source"></div>
+            <div id="kick-failures" class="notice hidden"></div>
+            <div id="kick-empty" class="empty">Run a scan first.</div>
+            <div id="kick-output" class="hidden">
+              <div class="chips" id="kick-filters"></div>
+              <div id="kick-table"></div>
+            </div>
+          </div>
+        </section>
       </div>
     </section>
   </main>

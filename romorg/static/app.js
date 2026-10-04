@@ -57,7 +57,11 @@
     }
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty body */ }
-    if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `${res.status} ${res.statusText}`);
+      if (data && data.code) err.code = data.code;
+      throw err;
+    }
     return data;
   }
   const get = (path) => api("GET", path);
@@ -147,7 +151,7 @@
       this.q = "";
       this.seq = 0;
       this.search = el("input", {
-        type: "search", class: "input grow", placeholder: this.opts.placeholder, autocomplete: "off",
+        type: "search", class: "input grow", placeholder: this.opts.placeholder, autocomplete: "off", "aria-label": this.opts.placeholder,
         on: { input: debounce(() => { this.q = this.search.value.trim(); this.offset = 0; this.load(); }, 250) },
       });
       this.countEl = el("span", { class: "muted" });
@@ -155,8 +159,17 @@
       this.prev = el("button", { class: "btn btn-small", text: "Previous", on: { click: () => this.go(-1) } });
       this.next = el("button", { class: "btn btn-small", text: "Next", on: { click: () => this.go(1) } });
       this.pageInfo = el("span", { class: "muted" });
+      const tools = [this.search, this.countEl];
+      if (this.opts.detail) {
+        // global switch: every visible row shows its checksums (the page is then fetched with them)
+        this.allBox = el("input", { type: "checkbox", id: "show-checksums", checked: state.showChecksums ? "" : null });
+        this.allBox.checked = !!state.showChecksums;
+        this.allBox.addEventListener("change", () => { state.showChecksums = this.allBox.checked; this.load(); });
+        tools.push(el("label", { class: "check", title: "Show the DAT checksums of every game below - and those of your own file when it matched" },
+          this.allBox, "Show checksums"));
+      }
       container.replaceChildren(
-        el("div", { class: "ptable-tools" }, this.search, this.countEl),
+        el("div", { class: "ptable-tools" }, ...tools),
         this.body,
         el("div", { class: "pager" }, this.pageInfo, this.prev, this.next),
       );
@@ -171,7 +184,8 @@
       const seq = ++this.seq;
       let data;
       try {
-        data = await this.opts.fetch({ offset: this.offset, limit: this.opts.pageSize, q: this.q });
+        data = await this.opts.fetch({ offset: this.offset, limit: this.opts.pageSize, q: this.q,
+          checksums: !!(this.opts.detail && state.showChecksums) });
       } catch (err) {
         if (seq === this.seq) this.body.replaceChildren(el("div", { class: "empty error", text: err.message }));
         return;
@@ -187,15 +201,53 @@
       if (!items.length) {
         this.body.replaceChildren(el("div", { class: "empty", text: this.q ? `No results for "${this.q}".` : this.opts.emptyText }));
       } else {
-        const head = el("tr", {}, this.opts.columns.map((c) => el("th", { text: c.label })));
-        const rows = items.map((item) => el("tr", { class: this.opts.rowClass ? this.opts.rowClass(item) : null },
-          this.opts.columns.map((c) => el("td", { class: c.cls || "" }, c.render(item)))));
+        const detail = this.opts.detail;
+        const head = el("tr", {}, this.opts.columns.map((c) => (c.sortKey
+          ? el("th", { "aria-sort": state.gamesSort === c.sortKey ? "descending" : "none" },
+            el("button", { class: "th-sort", type: "button", title: "Sort by rating, best first",
+              text: `${c.label}${state.gamesSort === c.sortKey ? " \u25BC" : ""}`,
+              on: { click: () => { state.gamesSort = state.gamesSort === c.sortKey ? "" : c.sortKey; this.offset = 0; this.load(); } } }))
+          : el("th", { text: c.label }))), detail ? el("th", { class: "cs-col", text: "Checksums" }) : null);
+        const rows = [];
+        for (const item of items) {
+          const tr = el("tr", { class: this.opts.rowClass ? this.opts.rowClass(item) : null },
+            this.opts.columns.map((c) => el("td", { class: c.cls || "" }, c.render(item))));
+          rows.push(tr);
+          if (detail) rows.push(...this.detailRows(item, tr, detail, this.opts.columns.length + 1));
+        }
         this.body.replaceChildren(el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, head), el("tbody", {}, rows))));
       }
       const end = Math.min(this.offset + items.length, total);
       this.pageInfo.textContent = total ? `${fmt(this.offset + 1)}-${fmt(end)} of ${fmt(total)}` : "";
       this.prev.disabled = this.offset === 0;
       this.next.disabled = end >= total;
+    }
+
+    /** The "Checksums" toggle cell of a row (appended to it) and the full-width panel row below it. */
+    detailRows(item, tr, detail, span) {
+      const panel = el("td", { colspan: String(span), class: "cs-cell" });
+      const row = el("tr", { class: "detail-row hidden" }, panel);
+      const btn = el("button", { class: "btn btn-small cs-toggle", "aria-expanded": "false", text: "Show",
+        title: "DAT checksums and the checksums of your matching file" });
+      const set = async (open) => {
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.textContent = open ? "Hide" : "Show";
+        row.classList.toggle("hidden", !open);
+        if (open && !panel.firstChild) {
+          panel.replaceChildren(el("span", { class: "muted", text: "Loading checksums..." }));
+          try {
+            const payload = item.checksums || await get(`/api/scan/checksums?${qs({ kind: detail.kind, id: item.id })}`);
+            item.checksums = payload;
+            panel.replaceChildren(checksumPanel(payload));
+          } catch (err) {
+            panel.replaceChildren(el("span", { class: "error-text", text: err.message }));
+          }
+        }
+      };
+      btn.addEventListener("click", () => set(btn.getAttribute("aria-expanded") !== "true"));
+      tr.append(el("td", { class: "cs-col" }, btn));
+      if (state.showChecksums) set(true);
+      return [row];
     }
   }
 
@@ -270,11 +322,16 @@
     vanishReason: "",
     libStats: null,    // numbers of the last plan: {reasons, vanish, exclusions}
     gamesHave: "",     // "" | "1" | "0"
+    gamesRated: "",    // "" | "1" (rated) | "0" (unrated)  -  Browse > Games
+    gamesSort: "",     // "" | "rating"
     convertFilter: "",
     organiseFilter: "",
     organiseDest: "",
     m3uFilter: "",
     kickFilter: "",
+    tab: "overview",   // the open tab of the system page
+    scanFailed: {},    // platform -> error text of its last failed scan
+    showChecksums: false,   // Browse: checksum rows expanded for every visible row
   };
 
   // ------------------------------------------------------------------- jobs
@@ -284,6 +341,7 @@
     running: false,
 
     track(job) {
+      this.last = job;
       this.render(job);
       this.setRunning(job.status === "running");
       clearTimeout(this.timer);
@@ -320,8 +378,11 @@
       if (job.status === "error") toast(`${job.kind} failed: ${job.error}`, "error", 9000);
       if (job.kind === "scan") {
         const failed = job.status === "error";
-        $("scan-error").classList.toggle("hidden", !failed);
-        $("scan-error-text").textContent = failed ? job.error : "";
+        if (!job.platform || job.platform === state.platform) {
+          $("scan-error").classList.toggle("hidden", !failed);
+          $("scan-error-text").textContent = failed ? job.error : "";
+        }
+        state.scanFailed[job.platform || ""] = failed ? job.error : "";
       }
       if (job.status === "cancelled") toast(`${job.kind} cancelled`, "info");
       const handler = this.handlers[job.kind];
@@ -330,45 +391,55 @@
 
     setRunning(running) {
       this.running = running;
-      document.querySelectorAll("[data-needs-idle]").forEach((b) => { b.disabled = running || b.dataset.blocked === "1"; });
-    },
-
-    render(job) {
-      document.querySelectorAll(".job").forEach((box) => {
-        if (box.dataset.kind !== job.kind) { if (job.status === "running") box.classList.add("hidden"); return; }
-        box.classList.remove("hidden", "error", "done");
-        if (job.status === "error") box.classList.add("error");
-        if (job.status === "done") box.classList.add("done");
-        const { done, total, message } = job.progress || {};
-        const pct = total > 0 ? Math.min(100, (100 * done) / total) : null;
-        const isBytes = total > 1e6 && /download|updat/i.test(message || "");
-        let countText = "";
-        if (total > 0) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(done)} / ${fmt(total)}`;
-        let msg = message || "";
-        if (job.status === "done") msg = "Finished";
-        if (job.status === "error") msg = `Error: ${job.error}`;
-        if (job.status === "cancelled") msg = "Cancelled";
-
-        const bar = el("div", { class: "progress-bar" });
-        const progress = el("div", { class: "progress" }, bar);
-        if (job.status === "running" && pct === null) progress.classList.add("indeterminate");
-        else bar.style.width = `${job.status === "done" ? 100 : pct || 0}%`;
-
-        const head = el("div", { class: "job-head" },
-          el("span", { class: "job-msg", text: msg, title: msg }),
-          el("span", { class: "job-count", text: countText + (pct !== null && job.status === "running" ? `  (${pct.toFixed(0)}%)` : "") }));
-        if (job.status === "running" && job.cancellable) {
-          head.append(el("button", {
-            class: "btn btn-small", text: "Cancel",
-            on: { click: async (e) => { e.target.disabled = true; try { await post("/api/job/cancel"); } catch (err) { toast(err.message, "error"); } } },
-          }));
-        } else if (job.status !== "running") {
-          head.append(el("button", { class: "btn btn-small btn-ghost", text: "Hide", on: { click: () => box.classList.add("hidden") } }));
-        }
-        box.replaceChildren(head, progress);
+      document.querySelectorAll("[data-needs-idle]").forEach((b) => {
+        // blocked: nothing to act on; busy: its preview is being calculated; stale: its preview is out of date
+        b.disabled = running || b.dataset.blocked === "1" || b.dataset.busy === "1" || b.dataset.stale === "1";
       });
     },
+
+    /** The one global job bar in the header, plus the live progress of the system card the job belongs to. */
+    render(job) {
+      const box = $("job-bar");
+      box.classList.remove("hidden", "error", "done");
+      if (job.status === "error") box.classList.add("error");
+      if (job.status === "done") box.classList.add("done");
+      const { done, total, message } = job.progress || {};
+      const pct = total > 0 ? Math.min(100, (100 * done) / total) : null;
+      const isBytes = total > 1e6 && /download|updat/i.test(message || "");
+      let countText = "";
+      if (total > 0) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(done)} / ${fmt(total)}`;
+      let msg = message || "";
+      if (job.status === "done") msg = "Finished";
+      if (job.status === "error") msg = `Error: ${job.error}`;
+      if (job.status === "cancelled") msg = "Cancelled";
+      const what = `${JOB_LABEL[job.kind] || job.kind}${job.platform ? ` · ${job.platform}` : ""}`;
+
+      const bar = el("div", { class: "progress-bar" });
+      const progress = el("div", { class: "progress" }, bar);
+      if (job.status === "running" && pct === null) progress.classList.add("indeterminate");
+      else bar.style.width = `${job.status === "done" ? 100 : pct || 0}%`;
+
+      const head = el("div", { class: "job-head" },
+        el("b", { class: "job-what", text: what }),
+        el("span", { class: "job-msg", text: msg, title: msg }),
+        el("span", { class: "job-count", text: countText + (pct !== null && job.status === "running" ? `  (${pct.toFixed(0)}%)` : "") }));
+      if (job.status === "running" && job.cancellable) {
+        head.append(el("button", {
+          class: "btn btn-small", text: "Cancel",
+          on: { click: async (e) => { e.target.disabled = true; try { await post("/api/job/cancel"); } catch (err) { toast(err.message, "error"); } } },
+        }));
+      } else if (job.status !== "running") {
+        head.append(el("button", { class: "btn btn-small btn-ghost", text: "Hide", on: { click: () => box.classList.add("hidden") } }));
+      }
+      box.replaceChildren(head, progress);
+      renderCardJob(job, msg, countText, pct);
+      clearTimeout(this.hideTimer);
+      if (job.status === "done" || job.status === "cancelled") this.hideTimer = setTimeout(() => box.classList.add("hidden"), 8000);
+    },
   };
+
+  const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
+    m3u: "Playlists", kickstart: "Kickstarts" };
 
 
   const UNMATCHED = "_unmatched";
@@ -394,7 +465,7 @@
   const hasKickstart = (p) => !!(p && (p.has_kickstart !== undefined ? p.has_kickstart : p.kickstart_dat));
   const folderOf = (p) => (p ? (p.name in state.drafts ? state.drafts[p.name] : p.folder || "") : "");
 
-  // ------------------------------------------- 1. Systems, folders + DATs
+  // ------------------------------------------- status, systems and folders
   async function loadStatus() {
     try {
       state.status = await get("/api/status");
@@ -408,6 +479,7 @@
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
     $("kick-native-browse-btn").classList.toggle("hidden", !s.dialog_available);
+    $("folder-native-btn").classList.toggle("hidden", !s.dialog_available);
   }
 
   // ------------------------------------------------ DAT updates (automatic)
@@ -425,6 +497,7 @@
       const was = this.wasRunning;
       state.updates = u;
       renderUpdates(u);
+      renderRatingsStatus();
       clearTimeout(this.timer);
       this.wasRunning = !!(u && u.running);
       if (this.wasRunning) this.timer = setTimeout(() => this.load(), 1500);
@@ -434,6 +507,8 @@
     async finished(u) {
       await loadStatus();
       await loadPlatforms();
+      loadTotals();                      // new DATs: the library totals follow them
+      Previews.retryPending();           // a preview that waited for the ratings data runs again
       if (u && u.scan_stale) toast("DATs updated - rescan to use them.", "info", 8000);
     },
 
@@ -474,10 +549,14 @@
       ni.installed ? `No-Intro ${ni.installed}` : "No-Intro not installed",
       whd.installed ? `WHDLoad ${whd.installed}` : "WHDLoad not installed",
     ];
+    const rat = u.ratings || {};
+    if (rat.installed) parts.push(`Ratings ${rat.installed}`);
+    else if (rat.wanted) parts.push("Ratings not installed");
     if (u.last_checked) parts.push(`checked ${checkedText(u.last_checked)}`);
     else if (!u.enabled) parts.push("automatic updates are off");
     const labels = { checking: "Checking for updates...", downloading: "Updating DATs...", installing: "Installing DATs..." };
-    $("updates-line").textContent = (u.running ? `${labels[u.state] || "Updating..."}  ` : "") + parts.join(" · ");
+    const ratingsRun = u.running && (u.progress || {}).source === "ratings";
+    $("updates-line").textContent = (u.running ? `${ratingsRun ? "Updating the ratings..." : (labels[u.state] || "Updating...")}  ` : "") + parts.join(" · ");
     const btn = $("updates-btn");
     btn.textContent = u.running ? "Cancel update" : "Check for updates";
     btn.disabled = !u.enabled && !u.running;
@@ -503,12 +582,48 @@
     $("updates-note").classList.toggle("stale", !!u.scan_stale && !err);
   }
 
+  // ------------------------------------------------------------- routing
+  // Hash routes (no server support needed; back / forward / reload just work):
+  //   #/                                  home: one card per system
+  //   #/system/<slug>/<tab>[?view=...]    <tab> = overview | library | browse | tools
+  const TABS = ["overview", "library", "browse", "tools"];
+  const slugOf = (p) => p.slug || String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const Route = {
+    /** "#/system/snes/browse?view=missing&have=0" -> {view: "system", slug, tab, params}; anything else -> home. */
+    parse(hash) {
+      const text = String(hash || "").replace(/^#/, "");
+      const [path, query = ""] = text.split("?");
+      const parts = path.split("/").filter(Boolean);
+      if (parts[0] === "system" && parts[1]) {
+        const tab = TABS.includes(parts[2]) ? parts[2] : "overview";
+        return { view: "system", slug: decodeURIComponent(parts[1]), tab, params: Object.fromEntries(new URLSearchParams(query)) };
+      }
+      return { view: "home", slug: "", tab: "", params: {} };
+    },
+    build(slug, tab = "overview", params = {}) {
+      const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
+      return `#/system/${encodeURIComponent(slug)}/${tab}${q ? `?${q}` : ""}`;
+    },
+  };
+  const inSystem = () => !!state.route && state.route.view === "system";
+  const platformBySlug = (slug) => state.platforms.find((p) => slugOf(p) === slug) || null;
+  const goto = (hash) => { if (location.hash === hash) applyRoute(); else location.hash = hash; };
+  const gotoSystem = (p, tab = "overview", params = {}) => goto(Route.build(slugOf(p), tab, params));
+  /** Keep the address in step with the Browse view (no new history entry, so Back still leaves the page). */
+  function syncBrowseHash() {
+    const p = currentPlatform();
+    if (!p || !inSystem() || state.tab !== "browse") return;
+    const params = { view: activeTab || "", have: state.gamesHave, dat: state.resultDat };
+    history.replaceState(null, "", Route.build(slugOf(p), "browse", params));
+    state.route = Route.parse(location.hash);
+  }
+
   async function loadPlatforms() {
     try {
       state.platforms = await get("/api/platforms");
     } catch (err) {
       state.platforms = [];
-      $("systems-body").replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "muted", text: `Could not load systems: ${err.message}` })));
+      $("home-groups").replaceChildren(el("div", { class: "empty error", text: `Could not load systems: ${err.message}` }));
       return;
     }
     const names = state.platforms.map((p) => p.name);
@@ -516,92 +631,186 @@
       const s = state.status || {};
       state.platform = [s.scan && s.scan.platform, s.last_platform, s.default_platform].find((n) => names.includes(n)) || names[0] || null;
     }
-    $("platform-select").replaceChildren(...state.platforms.map((p) =>
-      el("option", { value: p.name, selected: p.name === state.platform, text: p.complete ? p.name : `${p.name} (DATs missing)` })));
-    renderSystems();
-    renderPlatform();
+    renderHome();
+    if (inSystem()) { renderSystemHead(); renderPlatform(); }
   }
 
-  function datCell(p) {
+  // --------------------------------------------------------- home: system cards
+  /** Home groups come from what a system is (no system names here): disc systems, cartridge consoles, computers. */
+  const GROUPS = [
+    ["computers", "Computers", (p) => !isGameFolder(p) && p.source !== "nointro"],
+    ["consoles", "Cartridge consoles", (p) => !isGameFolder(p) && p.source === "nointro"],
+    ["discs", "Disc systems", (p) => isGameFolder(p)],
+  ];
+
+  const groupOf = (p) => (GROUPS.find((g) => g[2](p)) || GROUPS[0])[0];
+  const datVersion = (p) => {
     const present = p.dats.filter((d) => d.present);
-    const version = present.length ? present[0].version : null;
-    if (p.dats.length === 1) {
-      return present.length ? el("span", { class: "mono", text: version || "present" }) : badge("missing");
+    return present.length ? present[0].version : null;
+  };
+
+  /** DAT status text of a system: installed version, or missing / updating. */
+  function datStatus(p) {
+    const updating = !!(state.updates && state.updates.running);
+    const present = p.dats.filter((d) => d.present);
+    if (!p.dats.length || present.length === 0) return { kind: "missing", text: updating ? "DAT updating..." : "DAT missing" };
+    if (present.length < p.dats.length) {
+      return { kind: "missing", text: updating ? "DAT updating..." : `${present.length} of ${p.dats.length} DATs installed` };
     }
-    return el("div", {},
-      present.length === p.dats.length ? el("span", { class: "mono", text: version || "" }) : badge("missing", `${present.length} of ${p.dats.length}`),
-      el("div", { class: "sub", text: `${p.dats.length} DATs` }));
+    const v = datVersion(p);
+    return { kind: "ok", text: v ? `DAT ${String(v).split(" ")[0]}` : "DAT installed", title: v ? `DAT version ${v}` : "" };
   }
 
-  /** One row per system: source, DAT state, folder field + browse, saved/unsaved state, Scan.
-   *  A folder is saved the moment it is chosen (Browse / Folders), when the field loses focus or Enter is
-   *  pressed, and before a scan - there is no separate Save button to forget. */
-  function renderSystems() {
-    const dialog = !!(state.status && state.status.dialog_available);
-    const rows = state.platforms.map((p) => {
-      const input = el("input", {
-        type: "text", class: "input grow mono", value: folderOf(p), spellcheck: "false", autocomplete: "off",
-        placeholder: `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`, "aria-label": `${p.name} folder`,
-        "data-platform": p.name,
-      });
-      const stateChip = el("span", { class: "folder-state", "data-folder-state": "" });
-      const clear = el("button", { class: "btn btn-small", text: "Clear", title: "Forget this folder" });
-      const scan = el("button", { class: "btn btn-small btn-primary", text: "Scan", "data-needs-idle": "" });
-      const paint = () => {
-        const value = input.value.trim();
-        const saved = p.folder || "";
-        let kind, text, title = "";
-        if (state.folderBusy[p.name]) { kind = "saving"; text = "Saving..."; }
-        else if (state.folderErr[p.name]) { kind = "error"; text = "Not saved"; title = state.folderErr[p.name]; }
-        else if (value !== saved) { kind = "unsaved"; text = "Not saved"; title = "Saved when you leave the field, press Enter or Scan"; }
-        else if (value) { kind = "saved"; text = "Saved"; title = "This folder is remembered"; }
-        else { kind = "empty"; text = ""; }
-        stateChip.className = `folder-state ${kind}`;
-        stateChip.textContent = text;
-        stateChip.title = title;
-        stateChip.dataset.folderState = kind;
-        clear.disabled = !value && !saved;
-      };
-      const sync = () => {
-        const value = input.value.trim();
-        if (value === (p.folder || "")) delete state.drafts[p.name]; else state.drafts[p.name] = input.value;
-        delete state.folderErr[p.name];
-        paint();
-        scan.dataset.blocked = value ? "0" : "1";
-        scan.disabled = Jobs.running || !value;
-        if (p.name === state.platform) renderScanTarget();
-      };
-      input.addEventListener("input", sync);
-      // `change` = the field lost focus / Enter after an edit, and what Browse / Folders dispatch
-      input.addEventListener("change", async () => { sync(); await commitFolder(p); paint(); });
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") scanPlatform(p.name); });
-      clear.addEventListener("click", async () => {
-        input.value = "";
-        sync();
-        await commitFolder(p);
-        paint();
-      });
-      scan.addEventListener("click", () => scanPlatform(p.name));
-      p.paintFolder = paint;
-      const title = `Choose the ${p.name} folder`;
-      const native = dialog ? el("button", { class: "btn btn-small", text: "Browse...", on: { click: (e) => nativeBrowse(e.currentTarget, input, title) } }) : null;
-      const folders = el("button", { class: "btn btn-small", text: "Folders...", on: { click: () => FolderBrowser.open(input, title) } });
-      const row = el("tr", {
-        class: `system-row ${p.name === state.platform ? "selected" : ""}`,
-        on: { click: (e) => { if (!e.target.closest("button, input")) selectPlatform(p.name); } },
-      },
-      el("td", { class: "wrap" },
-        el("div", { class: "system-name" }, el("span", { text: p.name })),
-        el("div", { class: "sub" }, el("span", { class: `badge src-${p.source}`, text: sourceLabel(p.source) }),
-          p.extensions && p.extensions.length ? ` ${p.extensions.join(" ")}` : "")),
-      el("td", {}, datCell(p)),
-      el("td", { class: "folder-cell" }, el("div", { class: "folder-row" }, input, native, folders, clear, stateChip)),
-      el("td", {}, scan));
-      sync();
-      return row;
+  const scanTime = (rec) => (rec && rec.at ? checkedText(rec.at) : "");
+
+  /** What the card's single primary button does in the system's current state. */
+  function cardAction(p) {
+    const rec = p.last_scan;
+    const live = state.lastScan && state.lastScan.platform === p.name;
+    if (!p.folder) return { label: "Set folder", kind: "folder" };
+    if (!rec && !live) return { label: "Scan", kind: "scan" };
+    if (rec && rec.folder && rec.folder !== p.folder) return { label: "Scan", kind: "scan" };
+    return { label: "Build library", kind: "library" };
+  }
+
+  function systemCard(p) {
+    const rec = p.last_scan;
+    const dat = datStatus(p);
+    const action = cardAction(p);
+    const stale = !!(rec && rec.folder && p.folder && rec.folder !== p.folder);
+    const disc = rec && rec.chd_files !== undefined;
+    const have = rec ? rec.have : 0, total = rec ? rec.total : 0;
+    const pct = rec ? (rec.pct !== undefined ? rec.pct : (total ? (100 * have) / total : 0)) : 0;
+    const result = rec ? el("div", { class: "syscard-result" },
+      el("div", { class: "syscard-big" },
+        el("span", { class: "value", text: fmt(have) }), el("span", { class: "muted", text: ` of ${fmt(total)} (${pctText(pct)})` })),
+      progressBar(pct),
+      el("div", { class: "syscard-stats" },
+        el("span", { class: "stat-missing", text: `Missing ${fmt(rec.missing)}` }),
+        ...(disc ? [el("span", { text: `Identified ${fmt(rec.identified)}` }), el("span", { text: `Verified ${fmt(rec.verified)}` })] : [])))
+      : el("div", { class: "syscard-result muted", text: "Not scanned yet" });
+    const when = rec ? `Scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "";
+    const job = el("div", { class: "card-job hidden" },
+      el("div", { class: "cj-msg small" }), el("div", { class: "progress" }, el("div", { class: "progress-bar" })));
+    const button = el("button", {
+      class: "btn btn-primary syscard-action", text: action.label, "data-action": action.kind,
+      on: { click: (e) => { e.stopPropagation(); cardPrimary(p, action.kind); } },
     });
-    $("systems-body").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colspan: "4", class: "muted", text: "No systems defined." }))]));
+    if (action.kind === "scan" || action.kind === "library") button.setAttribute("data-needs-idle", "");
+    if (action.kind === "scan") button.setAttribute("data-scan", "");
+    return el("article", { class: `syscard ${dat.kind === "missing" ? "dat-missing" : ""}`, "data-platform": p.name },
+      el("h3", { class: "syscard-title" }, el("a", { class: "syscard-link", href: Route.build(slugOf(p), "overview"), text: p.name })),
+      el("div", { class: "syscard-meta" },
+        el("span", { class: `badge src-${p.source}`, text: sourceLabel(p.source) }),
+        el("span", { class: `dat-chip ${dat.kind}`, text: dat.text, title: dat.title || null })),
+      p.folder ? el("div", { class: "mono syscard-folder", title: p.folder }, el("bdi", { text: p.folder }))
+        : el("div", { class: "muted syscard-nofolder", text: "No folder set" }),
+      result, job,
+      el("div", { class: "syscard-foot" }, el("span", { class: "muted small syscard-when", text: when }), button));
+  }
+
+  function renderHome() {
+    const box = $("home-groups");
+    if (!state.platforms.length) { box.replaceChildren(el("div", { class: "empty", text: "No systems defined." })); return; }
+    const groups = GROUPS.map(([key, title, test]) => {
+      const list = state.platforms.filter((p) => groupOf(p) === key);
+      return list.length ? el("section", { class: "group", "aria-label": title },
+        el("h2", { class: "group-title", text: title }), el("div", { class: "syscards" }, list.map(systemCard))) : null;
+    });
+    box.replaceChildren(...groups.filter(Boolean));
     Jobs.setRunning(Jobs.running);
+    if (Jobs.last) renderCardJob(Jobs.last);
+  }
+
+  /** The card's primary button. Scan: also start it. Set folder: choose it right here. Build library: open the tab. */
+  function cardPrimary(p, kind) {
+    if (kind === "folder") chooseFolder(p);
+    else if (kind === "scan") scanPlatform(p.name);
+    else gotoSystem(p, "library");
+  }
+
+  /** Choose a system's folder (native dialog when there is one, else the in-app browser); saved immediately. */
+  function chooseFolder(p) {
+    const holder = el("input", { type: "text", value: p.folder || "" });
+    holder.addEventListener("change", async () => {
+      state.drafts[p.name] = holder.value;
+      await commitFolder(p);
+      renderHome();
+    });
+    const title = `Choose the ${p.name} folder`;
+    if (state.status && state.status.dialog_available) nativeBrowse(null, holder, title);
+    else FolderBrowser.open(holder, title);
+  }
+
+  /** Live progress of the running job on the card of its system (the other cards stay as they are). */
+  function renderCardJob(job, msg, countText, pct) {
+    if (!job) return;
+    if (msg === undefined) {
+      const pr = job.progress || {};
+      msg = pr.message || "";
+      pct = pr.total > 0 ? Math.min(100, (100 * pr.done) / pr.total) : null;
+    }
+    document.querySelectorAll(".syscard").forEach((card) => {
+      const box = card.querySelector(".card-job");
+      const mine = job.status === "running" && !!job.platform && card.dataset.platform === job.platform;
+      card.classList.toggle("running", mine);
+      box.classList.toggle("hidden", !mine);
+      if (!mine) return;
+      box.querySelector(".cj-msg").textContent = `${JOB_LABEL[job.kind] || job.kind}: ${msg}${pct !== null && pct !== undefined ? ` (${pct.toFixed(0)}%)` : ""}`;
+      const bar = box.querySelector(".progress");
+      bar.classList.toggle("indeterminate", pct === null || pct === undefined);
+      box.querySelector(".progress-bar").style.width = pct === null || pct === undefined ? "0%" : `${pct}%`;
+    });
+  }
+
+  // ----------------------------------------------- system page header + folder field
+  function renderSystemHead() {
+    const p = currentPlatform();
+    if (!p) return;
+    $("sys-title").textContent = p.name;
+    $("sys-source").textContent = sourceLabel(p.source);
+    $("sys-source").className = `badge src-${p.source}`;
+    $("sys-sub").textContent = p.extensions && p.extensions.length ? p.extensions.join(" ") : "";
+    $("folder-example").textContent = `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`;
+    $("folder-input").placeholder = `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`;
+    $("folder-input").setAttribute("aria-label", `${p.name} folder`);
+    if (document.activeElement !== $("folder-input")) $("folder-input").value = folderOf(p);
+    paintFolder();
+    renderTabs();
+  }
+
+  /** Saved / Not saved chip, Clear and Scan state of the folder field. */
+  function paintFolder() {
+    const p = currentPlatform();
+    if (!p) return;
+    const value = $("folder-input").value.trim();
+    const saved = p.folder || "";
+    let kind, text, title = "";
+    if (state.folderBusy[p.name]) { kind = "saving"; text = "Saving..."; }
+    else if (state.folderErr[p.name]) { kind = "error"; text = "Not saved"; title = state.folderErr[p.name]; }
+    else if (value !== saved) { kind = "unsaved"; text = "Not saved"; title = "Saved when you leave the field, press Enter or Scan"; }
+    else if (value) { kind = "saved"; text = "Saved"; title = "This folder is remembered"; }
+    else { kind = "empty"; text = ""; }
+    const chip = $("folder-state");
+    chip.className = `folder-state ${kind}`;
+    chip.textContent = text;
+    chip.title = title;
+    chip.dataset.folderState = kind;
+    $("folder-clear-btn").disabled = !value && !saved;
+    $("folder-panel").classList.toggle("attn", !value && !saved);
+    $("folder-help").classList.toggle("hidden", false);
+    $("scan-btn").dataset.blocked = value ? "0" : "1";
+    Jobs.setRunning(Jobs.running);
+  }
+
+  function syncFolder() {
+    const p = currentPlatform();
+    if (!p) return;
+    const input = $("folder-input");
+    const value = input.value.trim();
+    if (value === (p.folder || "")) delete state.drafts[p.name]; else state.drafts[p.name] = input.value;
+    delete state.folderErr[p.name];
+    paintFolder();
   }
 
   /** Save the folder text of a system now (serialised per system; the newest text always wins).
@@ -612,16 +821,17 @@
       const path = folderOf(p).trim();
       if (path === (p.folder || "")) { delete state.drafts[p.name]; return true; }
       state.folderBusy[p.name] = true;
-      if (p.paintFolder) p.paintFolder();
+      if (p.name === state.platform) paintFolder();
       try {
         const res = await post("/api/folders", { platform: p.name, path });
         p.folder = (res.folders || {})[p.name] || null;
         const live = state.platforms.find((x) => x.name === p.name);   // the list may have been reloaded meanwhile
-        if (live && live !== p) { live.folder = p.folder; if (!(p.name in state.drafts) || folderOf(p).trim() === path) renderSystems(); }
+        if (live && live !== p) live.folder = p.folder;
         if (folderOf(p).trim() === path) delete state.drafts[p.name];
         delete state.folderErr[p.name];
         if (state.status) state.status.folders = res.folders || {};
         if (!quiet) toast(p.folder ? `Saved folder for ${p.name}` : `Forgot the folder for ${p.name}`, "ok");
+        renderHome();
         renderScanTarget();
         return true;
       } catch (err) {
@@ -630,7 +840,7 @@
         return false;
       } finally {
         delete state.folderBusy[p.name];
-        if (p.paintFolder) p.paintFolder();
+        if (p.name === state.platform) paintFolder();
       }
     };
     folderQueue[p.name] = (folderQueue[p.name] || Promise.resolve()).then(run, run);
@@ -639,6 +849,7 @@
 
   function renderPlatform() {
     const p = currentPlatform();
+    state.rendered = p ? p.name : null;
     $("platform-details-title").textContent = p ? `DAT files for ${p.name} (${sourceLabel(p.source)})` : "DAT files";
     const rows = p ? p.dats.map((d) => el("tr", {},
       el("td", { class: "wrap" }, el("div", { text: d.name }),
@@ -653,11 +864,15 @@
     notice.classList.toggle("hidden", !missing.length);
     const updating = !!(state.updates && state.updates.running);
     notice.replaceChildren(
-      el("b", { text: `${missing.length} of ${p ? p.dats.length : 0} DATs for ${p ? p.name : "this system"} are not installed yet. ` }),
-      updating ? "They are being downloaded now (see the update line above)."
-        : "They are downloaded automatically - just press Scan.");
+      el("b", { text: missing.length === (p ? p.dats.length : 0) ? `The DAT for ${p ? p.name : "this system"} is not installed yet. ` : `${missing.length} of ${p ? p.dats.length : 0} DATs for ${p ? p.name : "this system"} are not installed yet. ` }),
+      updating ? "It is being downloaded now (see the update line at the top)."
+        : "It is downloaded automatically - just press Scan, or use Check for updates at the top.");
+    const ds = p ? datStatus(p) : { kind: "missing", text: "" };
+    $("dat-status-line").replaceChildren(
+      el("span", { class: `dat-chip ${ds.kind}`, text: ds.text }),
+      p ? el("span", { class: "muted small", text: ` ${p.dats.length} DAT${p.dats.length === 1 ? "" : "s"} · ${sourceLabel(p.source)}` }) : null);
 
-    // Organise step: what goes where for this layout.
+    // Organise: what goes where for this layout.
     const gameFolder = isGameFolder(p);
     const flat = isFlat(p);
     $("organise-title").textContent = gameFolder ? "Organise (one folder per game)"
@@ -694,7 +909,6 @@
     $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !discPlaylists(p));
     $("lib-savedisk-wrap").classList.toggle("hidden", !hasM3u);
     $("library-layout").textContent = $("organise-layout").textContent;
-    $("library-title").textContent = "Build library";
     $("library-intro").replaceChildren(
       "One action tidies the whole folder: files are renamed and sorted, and unwanted, older and duplicate files are set aside in their own folders next to the games (",
       el("code", { text: `${EXCLUDED}/` }), ", ", el("code", { text: `${SUPERSEDED}/` }), ", ",
@@ -705,31 +919,73 @@
         : gameFolder ? " (the discs of a multi-disc game stay together; no playlists are written for this system - its emulator does not use them)." : ".",
       " Preview first; ", el("b", { text: "Undo last" }), hasM3u ? " reverts everything, playlists included." : " reverts everything.");
     loadLibraryProfile();
-    renderSteps();
+    renderSystemHead();
     renderScanTarget();
     updateActionState();
   }
 
-  /** Show only the steps the selected system uses and number them 1..n. */
-  function renderSteps() {
+  // ------------------------------------------------------------------ tabs
+  const toolsApply = (p) => !!p && (!!p.convertible || hasKickstart(p) || isGameFolder(p));
+
+  /** Show only the tools this system uses; hide the Tools tab when nothing applies. */
+  function renderTabs() {
     const p = currentPlatform();
-    const visible = {
-      "step-convert": !!(p && p.convertible),
-      "step-kickstart": hasKickstart(p),
-    };
-    let n = 0;
-    document.querySelectorAll("main > section.step").forEach((section) => {
-      const show = visible[section.id] !== false;
-      section.classList.toggle("hidden", !show);
-      const link = document.querySelector(`#stepnav a[href="#${section.id}"]`);
-      if (link) link.classList.toggle("hidden", !show);
-      if (!show) return;
-      n += 1;
-      const num = section.querySelector(".step-num");
-      if (num) num.textContent = String(n);
-      if (link) link.textContent = `${n} ${link.dataset.label}`;
-    });
-    if (visible["step-kickstart"] && !kickDirsLoaded) loadKickDirs();
+    const show = { "tool-convert": !!(p && p.convertible), "tool-verify": isGameFolder(p), "tool-kickstart": hasKickstart(p) };
+    for (const [id, on] of Object.entries(show)) $(id).classList.toggle("hidden", !on);
+    $("tabbtn-tools").classList.toggle("hidden", !toolsApply(p));
+    for (const tab of TABS) {
+      const on = tab === state.tab;
+      const btn = $(`tabbtn-${tab}`);
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+      btn.tabIndex = on ? 0 : -1;
+      $(`tab-${tab}`).classList.toggle("hidden", !on);
+    }
+  }
+
+  /** Open a tab of the system page (the route already says which). Heavy parts load only now. */
+  function showTab(tab) {
+    const p = currentPlatform();
+    if (tab === "tools" && !toolsApply(p)) tab = "overview";
+    state.tab = tab;
+    renderTabs();
+    if (tab === "overview" || tab === "library") loadTotals();
+    if (tab === "library") {
+      renderLibraryGate();
+      if (statsStale) refreshLibraryStats();
+    } else if (tab === "browse") {
+      renderBrowse();
+    } else if (tab === "tools") {
+      if (hasKickstart(p) && !kickDirsLoaded) loadKickDirs();
+      if (isGameFolder(p)) loadChdman();
+    }
+  }
+
+  /** Apply the address: home, or a system with its tab (and Browse filters). */
+  function applyRoute() {
+    state.route = Route.parse(location.hash);
+    const r = state.route;
+    const home = r.view === "home" || !state.platforms.length;
+    let p = home ? null : platformBySlug(r.slug);
+    if (!home && !p) { if (state.platforms.length) history.replaceState(null, "", "#/"); state.route = Route.parse("#/"); p = null; }
+    $("view-home").classList.toggle("hidden", !!p);
+    $("view-system").classList.toggle("hidden", !p);
+    if (!p) { document.title = "Simple ROM Organiser"; state.viewWas = "home"; renderHome(); window.scrollTo(0, 0); return; }
+    document.title = `${p.name} - Simple ROM Organiser`;
+    if (p.name !== state.platform) selectPlatform(p.name);
+    else if (state.rendered !== p.name || state.viewWas !== "system") { renderPlatform(); applyScan(); }
+    if (r.tab === "browse") applyBrowseParams(r.params);
+    state.viewWas = "system";
+    renderSystemHead();
+    showTab(r.tab);
+    window.scrollTo(0, 0);
+    if (r.tab !== state.tab) history.replaceState(null, "", Route.build(slugOf(p), state.tab));
+  }
+
+  /** Switch tabs from a tab button: through the address, so Back / Forward / reload behave. */
+  function openTab(tab) {
+    const p = currentPlatform();
+    if (p) goto(Route.build(slugOf(p), tab));
   }
 
   function selectPlatform(name) {
@@ -746,14 +1002,13 @@
     state.convertFilter = "";
     state.m3uFilter = "";
     state.kickFilter = "";
+    activeTab = "";
     kickDirsLoaded = false;                       // each system has its own Kickstart destination
     $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for disc-system playlists
     setKickDest(currentPlatform());
-    $("platform-select").value = name;
-    // A finished job box (e.g. the last scan) belongs to the previous system.
-    if (!Jobs.running) document.querySelectorAll(".job").forEach((b) => b.classList.add("hidden"));
-    $("scan-error").classList.add("hidden");
-    renderSystems();
+    $("folder-input").value = folderOf(currentPlatform());
+    $("scan-error").classList.toggle("hidden", !state.scanFailed[name]);
+    $("scan-error-text").textContent = state.scanFailed[name] || "";
     renderPlatform();
     applyScan();
   }
@@ -810,7 +1065,7 @@
   };
 
   async function nativeBrowse(btn, target, title) {
-    btn.disabled = true;
+    if (btn) btn.disabled = true;
     try {
       const res = await post("/api/fs/pick", { start: target.value.trim(), title });
       if (res.path) { target.value = res.path; target.dispatchEvent(new Event("input")); target.dispatchEvent(new Event("change")); }
@@ -818,19 +1073,13 @@
     } catch (err) {
       toast(err.message, "error");
     } finally {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
     }
   }
 
-  // ------------------------------------------------------------- 2. Scan
+  // ------------------------------------------------------------- scan + overview
   function renderScanTarget() {
-    const p = currentPlatform();
-    const folder = folderOf(p).trim();
-    $("scan-folder").textContent = folder || "No folder yet - choose it in step 1.";
-    $("scan-folder").title = folder;
-    $("scan-folder").classList.toggle("muted", !folder);
-    $("scan-btn").dataset.blocked = p && folder ? "0" : "1";
-    Jobs.setRunning(Jobs.running);
+    paintFolder();
   }
 
   function scanPlatform(name) {
@@ -848,14 +1097,16 @@
   }
 
   Jobs.handlers.scan = async (job) => {
-    if (job.status !== "done") return;
-    await loadPlatforms(); // the folder is remembered by the scan
+    if (job.status !== "done") { renderHome(); return; }
+    await loadPlatforms(); // the folder is remembered by the scan, and so is its summary (the cards)
     await refreshScan();
   };
 
   /** Pull the current scan from /api/status and re-render everything that depends on it. */
   async function refreshScan() {
     await loadStatus();
+    try { state.platforms = await get("/api/platforms"); } catch (_) { /* keep the old list */ }
+    renderHome();
     applyScan();
   }
 
@@ -865,17 +1116,29 @@
     state.lastScan = s.scan || null;
     state.scan = state.lastScan && state.lastScan.platform === state.platform ? state.lastScan : null;
     if (state.scan && state.resultDat && !state.scan.dat_names.includes(state.resultDat)) state.resultDat = "";
-    renderScan();
+    browseDirty = true;
+    Previews.onScan();                // a preview of the same system stays (marked out of date), others are dropped
+    renderScanOverview();
+    if (inSystem() && state.tab === "browse") renderBrowse();
     renderLibraryIntro();
+    renderLibraryGate();
     renderOrganiseIntro();
     renderConvertIntro();
     renderM3UIntro();
     renderKickIntro();
     updateActionState();
+    loadTotals();
   }
 
-  function card(value, label, cls = "") {
-    return el("div", { class: `card ${cls}` }, el("div", { class: "value", text: value }), el("div", { class: "label", text: label }));
+  /** A summary card; with ``link`` it opens the Browse tab on the matching list (deep link). */
+  function card(value, label, cls = "", link = null) {
+    const body = [el("div", { class: "value", text: value }), el("div", { class: "label", text: label })];
+    const p = currentPlatform();
+    if (link && p) {
+      return el("a", { class: `card card-link ${cls}`, href: Route.build(slugOf(p), "browse", link),
+        title: "Show these in the Browse tab" }, ...body);
+    }
+    return el("div", { class: `card ${cls}` }, ...body);
   }
 
   function progressBar(pct) {
@@ -884,22 +1147,62 @@
     return el("div", { class: "progress" }, bar);
   }
 
-  let activeTab = "";
+  /** Arrow keys / Home / End move between the tabs of a tablist (roving focus, activates on arrow). */
+  function tabKeys(list) {
+    list.addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      const tabs = Array.from(list.querySelectorAll('[role="tab"]')).filter((t) => !t.classList.contains("hidden"));
+      const i = tabs.indexOf(document.activeElement);
+      if (i < 0) return;
+      let j = e.key === "ArrowRight" ? (i + 1) % tabs.length : e.key === "ArrowLeft" ? (i - 1 + tabs.length) % tabs.length
+        : e.key === "Home" ? 0 : tabs.length - 1;
+      e.preventDefault();
+      tabs[j].focus();
+      tabs[j].click();
+      // the click re-renders the tabs of a result list: keep the focus on the same one
+      const again = Array.from(list.querySelectorAll('[role="tab"]')).filter((t) => !t.classList.contains("hidden"))[j];
+      if (again) again.focus();
+    });
+  }
+
+  let activeTab = "";          // the open list of the Browse tab: games | matched | missing | unmatched | ...
+  let browseDirty = true;      // the Browse tab must be (re)built before it is shown
   const DAT_FILTER_TABS = new Set(["matched", "missing", "games"]);
   const TAG_TABS = DAT_FILTER_TABS;
+  const CHECKSUM_TABS = new Set(["matched", "missing", "unmatched", "games"]);
   const byGame = (s) => s && s.count_by === "game";
 
-  function renderScan() {
+  /** have / missing / total / percent of a scan summary (games for No-Intro and Redump, ROMs otherwise). */
+  function summaryNumbers(s) {
+    const games = byGame(s);
+    const total = games ? first(s.games_total, s.dat_total) : s.dat_total;
+    const have = games ? first(s.games_have, s.have) : s.have;
+    const missing = games ? first(s.games_missing, s.missing) : s.missing;
+    return { games, total, have, missing, pct: total ? (100 * have) / total : 0 };
+  }
+
+  /** The Overview tab's results: summary cards (links into Browse) and the per-DAT cards. */
+  function renderScanOverview() {
     const scan = state.scan;
+    const p = currentPlatform();
+    renderTotals();
     $("scan-empty").classList.toggle("hidden", !!scan);
     $("scan-output").classList.toggle("hidden", !scan);
-    const last = state.lastScan;
-    $("scan-empty").textContent = last && !scan
-      ? `The last scan was of ${last.platform}. Press "Scan folder" to check ${state.platform}.`
-      : "Choose a folder for the system in step 1, then press Scan.";
-    if (!scan) { $("scan-info").textContent = ""; return; }
+    if (!scan) {
+      const rec = p && p.last_scan;
+      const folder = folderOf(p).trim();
+      $("scan-empty").replaceChildren(...(!folder
+        ? [el("b", { text: "No folder set yet." }), " Choose the folder of this system above - then press ", el("b", { text: "Scan folder" }), "."]
+        : rec ? [el("b", { text: "Last scan " }), scanTime(rec) + ": ",
+          `${fmt(rec.have)} of ${fmt(rec.total)} (${pctText(rec.pct || 0)}), ${fmt(rec.missing)} missing. `,
+          "The list is not kept when the app restarts - press ", el("b", { text: "Scan folder" }), " to browse the results and build the library."]
+        : [el("b", { text: "Not scanned yet." }), " Press ", el("b", { text: "Scan folder" }), " to match this folder against the DAT."]));
+      $("scan-info").textContent = "";
+      renderDcBar({});
+      return;
+    }
     const s = scan.summary;
-    const games = byGame(s);
+    const { games, total, have, missing, pct } = summaryNumbers(s);
     $("scan-info").textContent = `Results for ${scan.platform}  -  ${scan.root}`;
     const missingDats = scan.missing_dats || [];
     $("scan-missing-dats").classList.toggle("hidden", !missingDats.length);
@@ -907,32 +1210,29 @@
       ? `Not checked (DAT not downloaded): ${missingDats.join(", ")}` : "";
 
     renderDcBar(s);
-    const total = games ? first(s.games_total, s.dat_total) : s.dat_total;
-    const have = games ? first(s.games_have, s.have) : s.have;
-    const missing = games ? first(s.games_missing, s.missing) : s.missing;
-    const pct = total ? (100 * have) / total : 0;
     const via = s.matched_via || {};
     const normalised = (via.headerless || 0) + (via.byteswapped || 0);
+    const L = (view, extra = {}) => ({ view, ...extra });
     $("summary-cards").replaceChildren(
-      card(fmt(have), `${games ? "Games you have" : "Have"} (of ${fmt(total)})`, "ok"),
-      card(fmt(missing), games ? "Games missing" : "Missing", "bad"),
-      card(pctText(pct), "Complete", "info"),
-      card(fmt(s.matched_files), "Matched files", "ok"),
-      card(fmt(s.unmatched_files), "Unmatched files", s.unmatched_files ? "warn" : ""),
-      ...(s.correctly_placed !== undefined ? [card(fmt(s.correctly_placed), isFlat(currentPlatform()) ? "In place (named correctly)" : "In place (named + in DAT folder)", "ok")] : []),
-      card(fmt(s.duplicates), "Duplicates", s.duplicates ? "warn" : ""),
-      ...(normalised ? [card(fmt(normalised), "Matched with header / byte-swapped", "info")] : []),
+      card(fmt(have), `${games ? "Games you have" : "Have"} (of ${fmt(total)})`, "ok", games ? L("games", { have: "1" }) : L("matched")),
+      card(fmt(missing), games ? "Games missing" : "Missing", "bad", L("missing")),
+      card(pctText(pct), "Complete", "info", games ? L("games") : L("matched")),
+      card(fmt(s.matched_files), "Matched files", "ok", L("matched")),
+      card(fmt(s.unmatched_files), "Unmatched files", s.unmatched_files ? "warn" : "", L("unmatched")),
+      ...(s.correctly_placed !== undefined ? [card(fmt(s.correctly_placed), isFlat(currentPlatform()) ? "In place (named correctly)" : "In place (named + in DAT folder)", "ok", L("matched"))] : []),
+      card(fmt(s.duplicates), "Duplicates", s.duplicates ? "warn" : "", L("matched")),
+      ...(normalised ? [card(fmt(normalised), "Matched with header / byte-swapped", "info", L("matched"))] : []),
       ...(s.chd_files !== undefined ? [
-        card(fmt(s.verified), "CHDs verified (every track)", s.verified ? "ok" : ""),
-        card(fmt(s.identified), "CHDs identified (data tracks)", s.identified ? "info" : ""),
-        card(fmt(s.raw), "Raw sets (convertible to CHD)", s.raw ? "warn" : "")]
-        : s.convertible ? [card(fmt(s.convertible), "Convertible to No-Intro format", "info")] : []),
-      ...(s.unsupported ? [card(fmt(s.unsupported), "Unsupported archives", "warn")] : []),
-      ...(s.errors ? [card(fmt(s.errors), "Read errors", "bad")] : []),
+        card(fmt(s.verified), "CHDs verified (every track)", s.verified ? "ok" : "", L("matched")),
+        card(fmt(s.identified), "CHDs identified (data tracks)", s.identified ? "info" : "", L("matched")),
+        card(fmt(s.raw), "Raw sets (convertible to CHD)", s.raw ? "warn" : "", L("matched"))]
+        : s.convertible ? [card(fmt(s.convertible), "Convertible to No-Intro format", "info", L("matched"))] : []),
+      ...(s.unsupported ? [card(fmt(s.unsupported), "Unsupported archives", "warn", L("unsupported"))] : []),
+      ...(s.errors ? [card(fmt(s.errors), "Read errors", "bad", L("errors"))] : []),
       el("div", { class: "complete-bar" }, progressBar(pct)),
     );
 
-    // Per-DAT cards (only worth showing with several DATs): click one to filter the tables.
+    // Per-DAT cards (only worth showing with several DATs): open the Browse tab filtered to that DAT.
     const perDat = s.per_dat || {};
     const multi = scan.dat_names.length > 1;
     $("dat-cards-title").classList.toggle("hidden", !multi);
@@ -943,10 +1243,9 @@
       const dTotal = dGames ? first(d.games_total, d.dat_total) : d.dat_total;
       const dHave = dGames ? first(d.games_have, d.have) : d.have;
       const dpct = dTotal ? (100 * (dHave || 0)) / dTotal : 0;
-      const active = state.resultDat === name;
-      return el("button", {
-        class: `dat-card ${active ? "active" : ""}`, title: active ? "Show all DATs" : `Show only ${name}`,
-        on: { click: () => { state.resultDat = active ? "" : name; if (!DAT_FILTER_TABS.has(activeTab)) activeTab = "matched"; renderScan(); } },
+      return el("a", {
+        class: "dat-card", title: `Browse only ${name}`,
+        href: Route.build(slugOf(p), "browse", { view: dGames ? "games" : "matched", dat: name }),
       },
       el("div", { class: "dat-card-name", text: shortDat(name) }),
       el("div", { class: "dat-card-main" },
@@ -958,7 +1257,51 @@
         el("span", { text: `Files ${fmt(d.matched_files)}` }),
         d.correctly_placed !== undefined ? el("span", { text: `In place ${fmt(d.correctly_placed)}` }) : null));
     }));
+  }
 
+  /** "Scan first" explanation with a Scan button, shared by the Library and Browse tabs. */
+  function scanGate(box, what) {
+    const p = currentPlatform();
+    const folder = folderOf(p).trim();
+    const stale = p && p.last_scan;
+    box.replaceChildren(
+      el("p", {}, el("b", { text: "Scan first. " }),
+        folder ? `${what} needs the scan results of ${p ? p.name : "this system"}.${stale ? " The results are not kept when the app restarts." : ""}`
+          : `Choose the folder of ${p ? p.name : "this system"} on the Overview tab, then scan it.`),
+      folder
+        ? el("button", { class: "btn btn-primary", text: "Scan folder", "data-needs-idle": "", on: { click: startScan } })
+        : el("button", { class: "btn btn-primary", text: "Go to Overview", on: { click: () => openTab("overview") } }));
+    Jobs.setRunning(Jobs.running);
+  }
+
+  function renderLibraryGate() {
+    const has = !!state.scan;
+    $("lib-gate").classList.toggle("hidden", has);
+    $("lib-body").classList.toggle("hidden", !has);
+    if (!has) scanGate($("lib-gate"), "Building the library");
+  }
+
+  /** Apply the Browse parameters of the address (view / have / dat); a plain tab click keeps the old filters. */
+  function applyBrowseParams(params) {
+    if (!params || !params.view) return;
+    const have = params.have || "", dat = params.dat || "";
+    if (activeTab !== params.view || state.gamesHave !== have || state.resultDat !== dat) browseDirty = true;
+    activeTab = params.view;
+    state.gamesHave = have;
+    state.resultDat = dat;
+  }
+
+  /** The Browse tab: result lists with search, filters, paging and checksums. Built only when it is opened. */
+  function renderBrowse() {
+    const scan = state.scan;
+    $("browse-gate").classList.toggle("hidden", !!scan);
+    $("browse-body").classList.toggle("hidden", !scan);
+    if (!scan) { scanGate($("browse-gate"), "Browsing the results"); return; }
+    if (!browseDirty && $("result-tabs").childElementCount) return;
+    browseDirty = false;
+    const s = scan.summary;
+    const { games, total, have, missing } = summaryNumbers(s);
+    const multi = scan.dat_names.length > 1;
     const tabs = [];
     if (games) tabs.push(["games", "Games", total]);
     tabs.push(["matched", "Matched files", s.matched_files], ["missing", games ? "Missing games" : "Missing", missing],
@@ -966,17 +1309,21 @@
     if (s.unsupported) tabs.push(["unsupported", "Unsupported", s.unsupported]);
     if (s.errors) tabs.push(["errors", "Errors", s.errors]);
     if (!tabs.some((t) => t[0] === activeTab)) activeTab = tabs[0][0];
+    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSort = ""; }
+    if (!DAT_FILTER_TABS.has(activeTab)) state.resultDat = "";
     $("result-tabs").replaceChildren(...tabs.map(([key, label, count]) => el("button", {
       class: `tab ${key === activeTab ? "active" : ""}`, role: "tab", "aria-selected": key === activeTab ? "true" : "false",
-      on: { click: () => { activeTab = key; renderScan(); } },
+      tabindex: key === activeTab ? "0" : "-1",
+      on: { click: () => { activeTab = key; if (key !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSort = ""; } browseDirty = true; renderBrowse(); } },
     }, label, el("span", { class: "count", text: `(${fmt(count)})` }))));
+    syncBrowseHash();
 
     const container = el("div");
     const filters = [];
     if (DAT_FILTER_TABS.has(activeTab) && multi) {
       const select = el("select", {
         class: "input select", "aria-label": "Filter by DAT",
-        on: { change: (e) => { state.resultDat = e.target.value; renderScan(); } },
+        on: { change: (e) => { state.resultDat = e.target.value; browseDirty = true; renderBrowse(); } },
       },
       el("option", { value: "", text: "All DATs", selected: !state.resultDat }),
       ...scan.dat_names.map((n) => el("option", { value: n, text: shortDat(n), selected: n === state.resultDat })));
@@ -990,15 +1337,37 @@
       const drawHave = () => chipBox.replaceChildren(...[["", "All games", total], ["1", "Have", counts[1]], ["0", "Missing", counts[0]]].map(([key, label, n]) =>
         el("button", {
           class: `chip ${key === "1" ? "chip-have" : key === "0" ? "chip-missing" : ""} ${state.gamesHave === key ? "active" : ""}`,
-          text: `${label} (${fmt(n)})`, on: { click: () => { state.gamesHave = key; drawHave(); reload(); } },
+          text: `${label} (${fmt(n)})`, on: { click: () => { state.gamesHave = key; drawHave(); syncBrowseHash(); reload(); } },
         })));
       drawHave();
       filters.push(chipBox);
+      if (ratingsAvailable()) {
+        const rbox = el("div", { class: "chips", id: "rated-chips" });
+        const drawRated = () => rbox.replaceChildren(...[["", "Rated or not"], ["1", "Rated"], ["0", "Unrated"]].map(([key, label]) =>
+          el("button", { class: `chip ${state.gamesRated === key ? "active" : ""}`, "data-rated": key, text: label,
+            on: { click: () => { state.gamesRated = key; drawRated(); reload(); } } })));
+        drawRated();
+        filters.push(rbox);
+      }
     }
-    const tagBar = TAG_TABS.has(activeTab) ? el("div", { class: "tag-filters" }) : null;
+    const tagBar = TAG_TABS.has(activeTab)
+      ? el("details", { class: "tag-filters" }, el("summary", { text: "Filters" }), el("div", { class: "tag-filter-rows" })) : null;
     $("result-table").replaceChildren(...[...filters, tagBar, container].filter(Boolean));
     table = new PagedTable(container, resultTableOptions(activeTab, tagBar, reload));
     table.load();
+  }
+
+  /** The Browse > Games rating column / chips only exist for systems the ratings cover (the server marks them). */
+  function ratingsAvailable() {
+    const info = state.library[state.platform];
+    return !!(info && (info.available || {}).ratings);
+  }
+
+  /** "8.4 · 123 votes" or a dash. */
+  function ratingCell(i) {
+    if (i.rating === null || i.rating === undefined) return el("span", { class: "muted", text: "\u2014", title: "No rating found" });
+    return el("span", { class: "rating-cell", title: i.rating_match ? `LaunchBox match: ${i.rating_match}` : "" },
+      el("b", { text: Number(i.rating).toFixed(1) }), el("span", { class: "muted small", text: ` \u00B7 ${fmt(i.votes)} vote${i.votes === 1 ? "" : "s"}` }));
   }
 
   /** Name tag chips plus the Dreamcast level chip in ONE chip row (the tag row alone for other systems). */
@@ -1012,6 +1381,7 @@
   function renderDcBar(s) {
     const dc = s.chd_files !== undefined;
     $("dc-bar").classList.toggle("hidden", !dc);
+    $("verify-empty").classList.toggle("hidden", dc);
     if (!dc) return;
     $("dc-engine-line").textContent = s.engine === "chdman"
       ? `CHDs were read with chdman (${s.chdman}) - every track was checked, so they are verified.`
@@ -1095,8 +1465,161 @@
       }
       rows.push(el("div", { class: "tag-filter-row" }, el("span", { class: "tag-filter-label", text: label }), el("div", { class: "chips" }, chips)));
     }
-    box.replaceChildren(...rows);
+    box.querySelector(".tag-filter-rows").replaceChildren(...rows);
+    const active = TAG_FACETS.map(([key]) => [key, state.tagFilter[key]]).filter(([, v]) => v).map(([k, v]) => facetLabel(k, v));
+    box.querySelector("summary").textContent = active.length ? `Filters: ${active.join(", ")}` : "Filters: region, language, tags";
     box.classList.toggle("hidden", !rows.length);
+  }
+
+  // ------------------------------------------------ checksums (Browse tab)
+  // The server sends what the scan already knows (DAT hashes, the hashes of the local file that matched,
+  // per-track hashes of discs); "-" means "not known" - nothing is ever guessed or computed here.
+  const SOURCE_NAME = { nointro: "No-Intro", tosec: "TOSEC", redump: "Redump", whdload: "WHDLoad" };
+  const HASH_LABEL = { crc32: "CRC32", md5: "MD5", sha1: "SHA-1" };
+  const HASH_KEYS = ["crc32", "md5", "sha1"];
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      const area = el("textarea", { class: "copy-area", "aria-hidden": "true" });
+      area.value = text;
+      document.body.append(area);
+      area.select();
+      try { document.execCommand("copy"); } catch (__) { /* ignore */ }
+      area.remove();
+    }
+    toast("Copied", "ok", 1500);
+  }
+
+  /** One hash: monospace, click to copy; a check mark when it equals the other side, a cross when it differs. */
+  function hashCell(key, value, eq, whyUnknown, state_ = "") {
+    if (!value) {
+      return el("td", { class: "cs-hash" }, el("span", { class: "hash-none", text: "-", title: whyUnknown || "not known", "aria-label": `${HASH_LABEL[key]} not known` }));
+    }
+    const mark = eq === true ? el("span", { class: "hash-mark ok", text: "✓", title: "equal" })
+      : eq === false ? el("span", { class: "hash-mark bad", text: "≠", title: "differs" }) : null;
+    return el("td", { class: "cs-hash" }, el("button", {
+      class: `hash-btn ${eq === true ? "eq" : eq === false ? "ne" : ""}`, type: "button",
+      title: `${HASH_LABEL[key]}${state_ ? ` (${state_})` : ""} - click to copy`, "aria-label": `Copy ${HASH_LABEL[key]} ${value}`,
+      on: { click: () => copyText(value) },
+    }, mark, el("code", { text: value }), el("span", { class: "hash-copy", text: "⧉", "aria-hidden": "true" })));
+  }
+
+  const NO_MD5 = "MD5 is not computed while scanning";
+  /** Why a local hash is unknown: depends on the hash and on whether the file is inside an archive. */
+  function whyLocalUnknown(key, local) {
+    if (key === "md5") return NO_MD5;
+    if (local && local.archive) return "inside an archive only the CRC32 is stored - the other hashes are not known without extracting";
+    return "not known";
+  }
+
+  /** A row of the checksum table. ``hashes``: {crc32, md5, sha1}; ``equal``: same keys, true / false / null. */
+  function csRow(label, cls, nameNode, hashes, equal, why = () => "not known", state_ = "") {
+    return el("tr", { class: `cs-row ${cls}` },
+      el("th", { scope: "row", class: "cs-src", text: label }),
+      el("td", { class: "cs-name" }, nameNode),
+      ...HASH_KEYS.map((k) => hashCell(k, hashes && hashes[k], equal ? equal[k] : null, why(k), state_)));
+  }
+
+  function nameBlock(name, size, extra, dirOverride) {
+    const [dir0, base] = dirOverride !== undefined ? [dirOverride, String(name || "")] : splitPath(String(name || ""));
+    return el("div", {},
+      el("div", { class: "cs-file", text: base || "(unnamed)", title: name }),
+      dir0 ? el("div", { class: "sub mono-path", text: dir0 }) : null,
+      el("div", { class: "sub", text: size || size === 0 ? `${fmt(size)} bytes` : "size not known" }), extra || null);
+  }
+
+  /** DAT row(s) and local row(s) of a single-file payload (also used for every disk of a multi-disk set). */
+  function fileRows(payload, dat, locals, labels) {
+    const rows = [];
+    for (const d of dat || []) rows.push(csRow(labels.dat, "cs-dat", nameBlock(d.name, d.size), d, null, () => "this DAT does not list it"));
+    for (const l of locals || []) {
+      const chips = [];
+      if (l.archive) chips.push(el("span", { class: "tag", text: "inside an archive" }));
+      if (l.via && l.via !== "raw") chips.push(el("span", { class: "tag tag-via", text: l.via === "headerless" ? "header skipped" : l.via === "byteswapped" ? "byte-swapped" : l.via }));
+      const extra = chips.length ? el("div", { class: "tags" }, chips) : null;
+      const nm = l.member ? nameBlock(l.member, l.size, extra, `in ${l.file.split("::")[0]}`) : nameBlock(l.file, l.size, extra);
+      if (l.normalised) {
+        rows.push(csRow(`${labels.local} (as stored)`, "cs-local differs", nm, l.raw, null, (k) => whyLocalUnknown(k, l)));
+        rows.push(csRow(`${labels.local} (normalised)`, "cs-local", nameBlock(l.via_text || "normalised content", l.normalised.size, null, ""), l.normalised, l.equal, (k) => whyLocalUnknown(k, l), l.via));
+      } else {
+        rows.push(csRow(labels.local, "cs-local", nm, l.raw, l.equal || null, (k) => whyLocalUnknown(k, l)));
+      }
+    }
+    return rows;
+  }
+
+  function csTable(rows) {
+    const cols = el("colgroup", {}, el("col", { class: "c-src" }), el("col", { class: "c-file" }),
+      el("col", { class: "c-crc" }), el("col", { class: "c-md5" }), el("col", { class: "c-sha" }));
+    return el("div", { class: "table-wrap cs-wrap" }, el("table", { class: "cs-table" }, cols,
+      el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: "File" }), ...HASH_KEYS.map((k) => el("th", { text: HASH_LABEL[k] })))),
+      el("tbody", {}, rows)));
+  }
+
+  /** Per-track DAT vs local hashes of a disc (CHD or raw set). */
+  function discRows(payload, labels, matched) {
+    const rows = [];
+    for (const t of payload.tracks || []) {
+      const lbl = el("tr", { class: "cs-track" }, el("td", { colspan: "5" },
+        el("b", { text: `Track ${t.number}` }), ` ${t.type ? `· ${t.type} ` : ""}· ${fmt(t.size)} bytes`,
+        t.state === "length" ? el("span", { class: "tag tag-status", text: "length only" }) : null,
+        t.state === "header" ? el("span", { class: "tag", text: "from the CHD header" }) : null));
+      rows.push(lbl);
+      if (t.dat && t.dat.name) rows.push(csRow(labels.dat, "cs-dat", nameBlock(t.dat.name, t.dat.size), t.dat, null));
+      if (!matched || !t.local) continue;
+      if (t.state === "length") {
+        rows.push(el("tr", { class: "cs-row cs-local" }, el("th", { scope: "row", class: "cs-src", text: labels.local }),
+          el("td", { class: "cs-name" }, el("div", { class: "cs-file", text: "audio track: length matches" })),
+          el("td", { colspan: "3", class: "muted" }, "length only - not decoded yet (the Verify tool hashes every track)")));
+      } else {
+        rows.push(csRow(labels.local, "cs-local", el("div", { class: "cs-file", text: payload.kind === "disc_unmatched" ? "track hashes" : "decoded track" }),
+          t.local, t.equal, (k) => (k === "md5" && t.state === "header" ? "the CHD header holds only the SHA-1" : "not known"), t.state === "header" ? "from the CHD header, not decoded" : ""));
+      }
+    }
+    return rows;
+  }
+
+  /** The expanded checksum area of one Browse row. */
+  function checksumPanel(payload) {
+    const src = SOURCE_NAME[payload.source] || "DAT";
+    const labels = { dat: `DAT (${src})`, local: payload.kind === "unmatched" || payload.kind === "disc_unmatched" ? "Your file – no match" : "Your file" };
+    const box = el("div", { class: "cs" });
+    const notes = [];
+    if (payload.kind === "disc" || payload.kind === "disc_unmatched") {
+      box.append(csTable(discRows(payload, labels, payload.kind !== "missing" && !!(payload.local && payload.local.length))));
+      const f = (payload.local || [])[0];
+      if (f && f.chd_sha1) {
+        box.append(el("div", { class: "cs-note" }, `${f.kind === "raw" ? "Sheet" : "CHD"} ${f.file}: header SHA-1 `, el("code", { text: f.chd_sha1 })));
+      }
+      if (!(payload.local && payload.local.length)) box.append(el("div", { class: "cs-note muted", text: payload.kind === "disc_unmatched" ? "This disc matched nothing in the DAT; only the hashes read from it are shown." : "You do not have this disc - only the DAT checksums are shown." }));
+    } else {
+      const rows = fileRows(payload, payload.dat, payload.local, labels);
+      if (!rows.length) rows.push(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "No checksums available for this row." })));
+      box.append(csTable(rows));
+      if (payload.kind === "missing") notes.push("You do not have this one - only the DAT checksums are shown.");
+      if (payload.also_named) notes.push(`${payload.also_named} more DAT entr${payload.also_named === 1 ? "y has" : "ies have"} identical content.`);
+      if (payload.more_files) notes.push(`${payload.more_files} more matching file(s) not listed.`);
+      for (const l of payload.local || []) {
+        if (l.via_text) notes.push(`${l.file}: matched after normalising - ${l.via_text}. The file itself is unchanged, so its own hashes differ from the DAT by design; the normalised hashes equal the DAT.`);
+        if (l.archive) notes.push("Inside an archive only the CRC32 (and size) are stored, so MD5 and SHA-1 show \"-\" instead of a guess.");
+      }
+      if ((payload.local || []).some((l) => !l.archive)) notes.push(NO_MD5 + ", so MD5 shows \"-\" for your file.");
+      if (payload.disks) {
+        const d = payload.disks;
+        box.append(el("h4", { class: "cs-sub", text: `Disks of this set: ${d.name} (${d.total} disks${d.complete ? "" : ", incomplete"})` }));
+        const drows = [];
+        for (const disk of d.disks) {
+          drows.push(el("tr", { class: "cs-track" }, el("td", { colspan: "5" }, el("b", { text: `Disk ${disk.number}` }),
+            disk.missing ? el("span", { class: "tag tag-bad", text: "missing" }) : null, disk.this ? el("span", { class: "tag", text: "this row" }) : null)));
+          if (!disk.missing) drows.push(...fileRows(payload, [disk.dat], [disk.local], labels));
+        }
+        box.append(csTable(drows));
+      }
+    }
+    if (notes.length) box.append(el("ul", { class: "cs-notes" }, Array.from(new Set(notes)).map((n) => el("li", { text: n }))));
+    return box;
   }
 
   function fileCell(path) {
@@ -1106,14 +1629,21 @@
 
   function resultTableOptions(kind, tagBar, reload) {
     const dat = DAT_FILTER_TABS.has(kind) ? state.resultDat : "";
-    const fetchKind = async ({ offset, limit, q }) => {
+    const fetchKind = async ({ offset, limit, q, checksums }) => {
       const have = kind === "games" ? state.gamesHave : "";
+      const rated = kind === "games" && ratingsAvailable() ? state.gamesRated : "";
+      const sort = kind === "games" && ratingsAvailable() ? state.gamesSort : "";
       const tagParams = TAG_TABS.has(kind) ? state.tagFilter : {};
-      const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, ...tagParams })}`);
+      const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, rated, sort, checksums: checksums ? "1" : "", ...tagParams })}`);
       if (tagBar) renderTagBar(tagBar, data.facets, reload);
       return data;
     };
     const multi = state.scan && state.scan.dat_names.length > 1;
+    const detail = CHECKSUM_TABS.has(kind) ? { kind } : null;
+    return Object.assign({ detail }, resultColumns(kind, fetchKind, dat, multi));
+  }
+
+  function resultColumns(kind, fetchKind, dat, multi) {
     switch (kind) {
       case "games":
         return {
@@ -1127,6 +1657,9 @@
                 gameChips(i.tags, i.level),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
             },
+            ...(ratingsAvailable() ? [{
+              label: "Rating", sortKey: "rating", render: ratingCell,
+            }] : []),
             {
               label: "Your file(s)", cls: "wrap", render: (i) => (i.files && i.files.length
                 ? el("div", {}, ...i.files.slice(0, 3).map((f) => el("div", { class: "mono-path small", text: f })),
@@ -1198,6 +1731,332 @@
     }
   }
 
+  // ----------------------------------------------- previews: the Recalculate affordance
+  // Every "Preview ..." button follows one pattern: first press = calculate; afterwards the same button says
+  // "Recalculate preview" (with a refresh icon), shows when / how many, and the preview is marked OUT OF DATE
+  // (banner, dimmed, Recalculate highlighted, Build / Apply disabled) as soon as the rules, the options or the
+  // folder change. States: none | busy | ready | stale | error.
+  const REFRESH_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" focusable="false" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const clockText = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const sumCounts = (c) => Object.values(c || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+
+  const Previews = {
+    items: {},
+    HINT: "Recalculates with your current rules and folder contents",
+    // id -> button / apply button / output box / noun / how to count / how to drop it
+    CONFIG: {
+      lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => libTable, reset: () => resetLibraryPreview() },
+      organise: { btn: "plan-btn", apply: "apply-btn", output: "organise-output", noun: "files", count: (d) => (d.all !== undefined ? d.all : sumCounts(d.counts)), run: () => showOrganisePlan(), table: () => organiseTable, reset: () => resetOrganisePreview() },
+      convert: { btn: "convert-plan-btn", apply: "convert-apply-btn", output: "convert-output", noun: "files", count: (d) => sumCounts(d.counts), run: () => showConvertPlan(), table: () => convertTable, reset: () => resetConvertPreview() },
+      m3u: { btn: "m3u-plan-btn", apply: "m3u-apply-btn", output: "m3u-output", noun: "playlists", count: (d) => sumCounts(d.counts), run: () => showM3UPlan(), table: () => m3uTable, reset: () => resetM3UPreview() },
+      kick: { btn: "kick-plan-btn", apply: "kick-apply-btn", output: "kick-output", noun: "files", count: (d) => sumCounts(d.counts), run: () => showKickPlan(), table: () => kickTable, reset: () => resetKickPreview() },
+    },
+
+    /** Wire the buttons once: icon + label, a status line with the hint (aria-live) and the out-of-date banner. */
+    bindAll() {
+      for (const [id, cfg] of Object.entries(this.CONFIG)) {
+        const btn = $(cfg.btn);
+        const out = $(cfg.output);
+        const first = btn.textContent.trim();
+        const icon = el("span", { class: "pv-icon", "aria-hidden": "true" });
+        const label = el("span", { class: "pv-label", text: first });
+        btn.replaceChildren(icon, label);
+        btn.classList.add("pv-btn");
+        const status = el("span", { class: "pv-status", role: "status", "aria-live": "polite" });
+        const hint = el("span", { class: "pv-hint hidden", text: this.HINT });
+        const meta = el("div", { class: "pv-meta" }, status, hint);
+        btn.parentElement.append(meta);
+        const bannerText = el("span", { class: "pv-banner-text" });
+        const banner = el("div", { class: "pv-banner hidden", role: "status" }, bannerText,
+          el("button", { class: "btn btn-primary btn-small", type: "button", text: "Recalculate", "data-needs-idle": "",
+            on: { click: () => this.click(id) } }));
+        out.prepend(banner);
+        this.items[id] = { id, cfg, btn, icon, label, first, status, hint, banner, bannerText, out, apply: $(cfg.apply),
+          state: "none", at: null, count: null, platform: null, scanId: null, startScan: null, force: false, dirty: "", why: "", err: "" };
+        btn.addEventListener("click", () => this.click(id));
+      }
+    },
+
+    has(id) { const it = this.items[id]; return !!it && it.state !== "none"; },
+
+    /** The user pressed Preview / Recalculate (or the banner button): always asks the server for a fresh plan. */
+    click(id) {
+      const it = this.items[id];
+      if (!it) return;
+      if (it.state !== "none") it.force = true;
+      const table = it.cfg.table();
+      if (table) table.offset = 0;
+      it.cfg.run();
+    },
+
+    busy(id) {
+      const it = this.items[id];
+      if (!it) return;
+      it.state = "busy";
+      it.dirty = "";
+      it.err = "";
+      it.platform = state.platform;
+      it.startScan = state.scan ? state.scan.id : null;
+      this.paint(it);
+    },
+
+    /** Wrap a PagedTable fetch: asks for a fresh plan when Recalculate was pressed, reports ready / error. */
+    wrap(id, fn) {
+      return async (args) => {
+        const it = this.items[id];
+        const refresh = it.force;
+        it.force = false;
+        const fresh = it.state !== "ready";       // paging / filtering a ready preview is not a new calculation
+        try {
+          const data = await fn({ ...args, refresh: refresh || undefined });
+          this.ready(id, data, fresh || refresh);
+          return data;
+        } catch (err) {
+          this.fail(id, err);
+          throw err;
+        }
+      };
+    },
+
+    ready(id, data, fresh = true) {
+      const it = this.items[id];
+      if (!it) return;
+      if (fresh) {
+        it.at = new Date();
+        it.count = it.cfg.count(data || {});
+        it.platform = state.platform;
+        it.scanId = state.scan ? state.scan.id : null;
+        // something changed while it was being calculated: it is already out of date
+        const changed = it.dirty || (it.startScan !== null && it.startScan !== it.scanId ? "The folder was scanned again since this preview" : "");
+        it.state = changed ? "stale" : "ready";
+        it.why = changed;
+        it.dirty = "";
+      } else if (it.state === "stale" || it.state === "error" || it.state === "busy") {
+        it.state = it.dirty ? "stale" : "ready";
+      }
+      it.err = "";
+      this.paint(it);
+    },
+
+    fail(id, err) {
+      const it = this.items[id];
+      if (!it) return;
+      it.state = "error";
+      it.err = (err && err.message) || "failed";
+      it.pendingRatings = !!(err && err.code === "ratings_pending");   // runs again by itself when the data arrives
+      this.paint(it);
+    },
+
+    /** The ratings data finished installing: previews that were waiting for it run again. */
+    retryPending() {
+      for (const [id, it] of Object.entries(this.items)) {
+        if (it.state === "error" && it.pendingRatings) { it.pendingRatings = false; this.click(id); }
+      }
+    },
+
+    /** The preview no longer matches the rules / options / folder: keep it on screen, flagged. */
+    stale(id, why) {
+      const it = this.items[id];
+      if (!it) return;
+      if (it.state === "busy") { it.dirty = why; return; }
+      if (it.state !== "ready" && it.state !== "stale") return;
+      it.state = "stale";
+      it.why = why;
+      this.paint(it);
+    },
+
+    staleAll(why, ids = Object.keys(this.items)) { for (const id of ids) this.stale(id, why); },
+
+    clear(id) {
+      const it = this.items[id];
+      if (!it) return;
+      it.state = "none";
+      it.dirty = "";
+      it.at = null;
+      this.paint(it);
+    },
+
+    /** After every scan: a preview of the scanned system stays (out of date), any other goes. */
+    onScan() {
+      for (const [id, it] of Object.entries(this.items)) {
+        if (it.state === "none") continue;
+        if (!state.scan || it.platform !== state.platform) { it.cfg.reset(); this.clear(id); continue; }
+        const sid = state.scan.id;
+        if (it.state === "busy") { if (it.startScan !== sid) it.dirty = "The folder was scanned again since this preview"; continue; }
+        if (it.scanId !== sid) this.stale(id, "The folder was scanned again since this preview");
+      }
+    },
+
+    paint(it) {
+      const busy = it.state === "busy", stale = it.state === "stale", err = it.state === "error";
+      const has = it.state !== "none";
+      it.btn.dataset.busy = busy ? "1" : "0";
+      it.btn.classList.toggle("btn-primary", stale || err);
+      it.btn.classList.toggle("pv-attn", stale);
+      it.btn.classList.toggle("pv-busy", busy);
+      it.btn.setAttribute("aria-busy", busy ? "true" : "false");
+      it.icon.className = `pv-icon${busy ? " pv-spin" : ""}`;
+      it.icon.innerHTML = !busy && has ? REFRESH_SVG : "";
+      it.label.textContent = busy ? "Calculating..." : err ? "Try again" : has ? "Recalculate preview" : it.first;
+      it.btn.title = has && !busy ? this.HINT : "";
+      let text = "";
+      if (busy) text = "Calculating...";
+      else if (err) text = `Could not calculate: ${it.err}`;
+      else if (has && it.at) {
+        const n = it.count === null || it.count === undefined ? "" : ` · ${fmt(it.count)} ${it.count === 1 ? it.cfg.noun.replace(/s$/, "") : it.cfg.noun}`;
+        text = `${stale ? "Out of date - calculated" : "Calculated"} ${clockText(it.at)}${n}`;
+      }
+      it.status.textContent = text;
+      it.status.className = `pv-status ${it.state}`;
+      it.hint.classList.toggle("hidden", !has || busy);
+      it.banner.classList.toggle("hidden", !stale);
+      it.bannerText.textContent = stale ? `${it.why || "Rules changed since this preview"} — recalculate to see the current result.` : "";
+      // while an out-of-date preview is being recalculated (or that failed) it stays dimmed and Build / Apply stay disabled
+      const lock = stale || ((busy || err) && it.at !== null);
+      it.out.classList.toggle("pv-stale", lock);
+      it.out.setAttribute("aria-busy", busy ? "true" : "false");
+      if (it.apply) {
+        it.apply.dataset.stale = lock ? "1" : "0";
+        it.apply.title = lock ? "This preview is out of date - recalculate it first" : "";
+      }
+      Jobs.setRunning(Jobs.running);
+    },
+  };
+
+  // ------------------------------------------- Overview: library totals (Amendment 17)
+  // "With your library rules: have N of M games": M = games the rules keep for the WHOLE DAT, N = those the user has.
+  // The server computes it in the background (GET /api/library/totals); this block polls while it calculates.
+  const Totals = { seq: 0, timer: null, data: {}, shown: {} };
+  const scheduleTotals = debounce(() => loadTotals(), 600);
+
+  async function loadTotals() {
+    const p = currentPlatform();
+    if (!p || !inSystem()) return;
+    const name = p.name;
+    const seq = ++Totals.seq;
+    clearTimeout(Totals.timer);
+    let data;
+    try {
+      data = await get(`/api/library/totals?${qs({ platform: name })}`);
+    } catch (err) {
+      data = { available: true, error: err.message, calculating: false };
+    }
+    if (seq !== Totals.seq) return;
+    Totals.data[name] = data;
+    renderTotals();
+    renderRatingsStatus();
+    if (data.ratings_pending) Updates.load();          // the server asked for the data: show its progress
+    if (data.calculating || data.ratings_pending) Totals.timer = setTimeout(loadTotals, data.ratings_pending ? 1500 : 900);
+  }
+
+  function totalsLine(cls, text) { return el("div", { class: `totals-line ${cls}`, text }); }
+
+  /** Both blocks: all DAT entries (the scan) and the library rules' target. Re-rendered only when something changed. */
+  function renderTotals() {
+    renderTotalsInto("");          // Overview
+    renderTotalsInto("lib-");      // Library tab: the same two blocks, so the rules and the result sit together
+  }
+
+  function renderTotalsInto(prefix) {
+    const p = currentPlatform();
+    const box = $(`${prefix}totals-pair`);
+    if (!p) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    const data = Totals.data[p.name] || null;
+    const scan = state.scan;
+    const key = JSON.stringify([p.name, scan && scan.id, scan && scan.summary && scan.summary.have, p.last_scan && p.last_scan.at, data]);
+    if (key === Totals.shown[prefix]) return;
+    Totals.shown[prefix] = key;
+
+    // left: every DAT entry
+    const left = $(`${prefix}totals-all-body`);
+    if (scan) {
+      const { games, total, have, missing, pct } = summaryNumbers(scan.summary);
+      left.replaceChildren(
+        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(have) }),
+          el("span", { class: "muted", text: ` of ${fmt(total)} ${games ? "games" : "ROMs"} (${pctText(pct)})` })),
+        progressBar(pct),
+        totalsLine("", `Missing ${fmt(missing)}`),
+        totalsLine("muted", "Every entry of the DAT counts, whatever the rules say."));
+    } else {
+      const rec = p.last_scan;
+      left.replaceChildren(rec
+        ? el("div", {}, el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(rec.have) }),
+          el("span", { class: "muted", text: ` of ${fmt(rec.total)} (${pctText(rec.pct || 0)})` })),
+        totalsLine("muted", `Last scan ${scanTime(rec)}. Scan again to refresh the details.`))
+        : totalsLine("muted", "Not scanned yet. Scan the folder to see how much of the DAT you have."));
+    }
+
+    // right: with the library rules
+    const right = $(`${prefix}totals-lib-body`);
+    right.classList.remove("totals-stale");
+    const link = prefix
+      ? el("button", { class: "btn btn-small btn-ghost totals-rules", type: "button", text: "Edit the rules",
+        on: { click: () => { const box = $("library-rules-box"); box.open = true; box.scrollIntoView({ block: "start", behavior: "smooth" }); } } })
+      : el("button", { class: "btn btn-small btn-ghost totals-rules", type: "button", text: "Change the rules",
+        on: { click: () => openTab("library") } });
+    if (!data) {
+      right.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " calculating..."));
+      return;
+    }
+    if (data.available === false) {
+      right.replaceChildren(totalsLine("muted", "The DAT of this system is not installed yet - check for updates first."));
+      return;
+    }
+    if (data.ratings_pending) {
+      right.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }),
+        " waiting for the ratings data (see Ratings in the rules)..."), link);
+      return;
+    }
+    if (data.error) {
+      right.replaceChildren(totalsLine("error-text", `Could not calculate: ${data.error}`));
+      return;
+    }
+    const wait = data.calculating
+      ? el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), data.stale ? " recalculating..." : " calculating...") : null;
+    if (data.target_games === null || data.target_games === undefined) {
+      right.replaceChildren(wait || totalsLine("muted", "-"));
+      return;
+    }
+    const m = data.target_games;
+    const n = data.have_games;
+    const lines = [];
+    if (n !== null && n !== undefined) {
+      const pct = data.percent !== null && data.percent !== undefined ? data.percent : (m ? (100 * n) / m : 0);
+      lines.push(
+        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(n) }),
+          el("span", { class: "muted", text: ` of ${fmt(m)} games (${pctText(pct)})` })),
+        progressBar(pct),
+        totalsLine("", `Missing ${fmt(m - n)}`));
+      if (data.not_preferred) {
+        lines.push(totalsLine("hint hint-up", `${fmt(data.not_preferred)} of your ${fmt(n)} ${data.not_preferred === 1 ? "is" : "are"} not the preferred version (an upgrade is available)`));
+      }
+      if (data.owned_but_excluded) {
+        lines.push(totalsLine("hint hint-ex", `${fmt(data.owned_but_excluded)} ${data.owned_but_excluded === 1 ? "game you own is" : "games you own are"} excluded by your rules`));
+      }
+      if (data.owned_incomplete) {
+        lines.push(totalsLine("hint hint-inc", `${fmt(data.owned_incomplete)} multi-disk ${data.owned_incomplete === 1 ? "game you own is" : "games you own are"} incomplete`));
+      }
+    } else {
+      lines.push(
+        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(m) }),
+          el("span", { class: "muted", text: " games in the target library" })),
+        totalsLine("muted", "Scan to see how many you have"));
+    }
+    if (data.rating && data.rating.games) {
+      const rt = data.rating;
+      lines.push(totalsLine("muted small", `Rating filter: ${fmt(rt.excluded)} of ${fmt(rt.games)} games left out (${fmt(rt.unrated)} of them have no usable rating).`));
+    }
+    if (data.rank_scope === "owned") {
+      lines.push(totalsLine("muted small", "Top N counts only the games you own; the target lists every game that passes the other rules."));
+    }
+    if (data.target_incomplete) {
+      lines.push(totalsLine("muted small", `${fmt(data.target_incomplete)} more game${data.target_incomplete === 1 ? " is" : "s are"} only partly in the DAT and cannot be completed.`));
+    }
+    right.replaceChildren(...lines, ...(wait ? [wait] : []), link);
+    right.classList.toggle("totals-stale", !!data.stale);
+  }
+
   // ---------------------------------------------------- 3. Build library
   // The reserved folders: all direct children of the platform folder (the layout sketch lists them).
   const reserved = (hasM3u, convertible, protectedDirs = []) => [
@@ -1219,7 +2078,7 @@
   let libPlan = null;
 
   const libOptions = () => ({
-    move_unmatched: $("lib-move-unmatched").checked, labels: $("lib-labels").checked, savedisk: $("lib-savedisk").checked,
+    labels: $("lib-labels").checked, savedisk: $("lib-savedisk").checked,
   });
 
   async function loadLibraryProfile() {
@@ -1239,13 +2098,17 @@
   const GROUP_TITLE = { exclude: "Exclude", keep_flag: "Keep these dump types" };
   const catalogOf = (info) => info.catalog || [];
   const optionEntries = (info) => catalogOf(info).filter((e) => e.kind === "option" && e.id !== "languages" && e.id !== "region_priority"
-    && (info.available || {})[e.id] !== false);
+    && !e.group && (info.available || {})[e.id] !== false);
+  const ratingEntries = (info) => ((info.available || {}).ratings ? catalogOf(info).filter((e) => e.group === "ratings") : []);
+  /** A rating filter is set: one of the group's ``filter`` entries (minimum rating / top N) has a value. */
+  const ratingActive = (info) => !!info && ratingEntries(info).some((e) => e.filter && info.profile[e.field] !== null && info.profile[e.field] !== undefined);
 
   /** Human label of an exclusion reason code ("bad_dump", "flag_cr", "language") from the catalog. */
   function reasonLabel(code) {
     const info = state.library[state.platform];
     const entries = info ? catalogOf(info) : [];
     if (code === "language") return "Language";
+    if (info && info.reason_labels && info.reason_labels[code]) { const t = info.reason_labels[code]; return t.charAt(0).toUpperCase() + t.slice(1); }
     if (code.startsWith("flag_")) {
       const f = entries.find((e) => e.kind === "keep_flag" && e.id === code.slice(5));
       return f ? `${plainLabel(f)} off` : code;
@@ -1256,15 +2119,21 @@
 
   const langName = (info, code) => ((info.language_names || {})[code]) || code;
 
+  /** Remember a profile the server returned (for platform ``name``) and tell the rest of the UI. */
+  function adoptProfile(name, info) {
+    state.library[name] = info;
+    if (name !== state.platform) return;
+    const p = currentPlatform();
+    if (p) { p.library = info.profile; p.latest_only = !!p.library.latest_only; }
+    $("organise-latest-only").checked = !!(p && p.latest_only);
+    profileChanged();
+  }
+
   async function saveProfile(changes) {
     const name = state.platform;
     const before = state.library[name];
     try {
-      state.library[name] = await post("/api/library/profile", { platform: name, ...changes });
-      const p = currentPlatform();
-      if (p) { p.library = state.library[name].profile; p.latest_only = !!p.library.latest_only; }
-      $("organise-latest-only").checked = !!(p && p.latest_only);
-      profileChanged();
+      adoptProfile(name, await post("/api/library/profile", { platform: name, ...changes }));
     } catch (err) {
       toast(`Could not save the library rules: ${err.message}`, "error");
       state.library[name] = await get(`/api/library/profile?${qs({ platform: name })}`).catch(() => before);
@@ -1326,17 +2195,436 @@
       el("div", { class: "rule-count vanish-note", "data-vanish": "language" }));
   }
 
+  // --------------------------------------------------------------------------------------------------
+  // Reorderable list (used by the region priority). Mouse + touch drag through Pointer Events on a handle
+  // (touch-action: none on the handle only, so the rest of the row still scrolls the list), keyboard pick-up
+  // (Space/Enter, arrows, Space/Enter to drop, Escape to cancel), and Top / up / down buttons as a fallback.
+  // ``items`` is the FULL order; a filter only hides rows. ``onCommit(order, before)`` runs once per completed move.
+  function sortableList({ items, label, noun = "item", prioCount = 0, prioLabel = "Prioritised", restLabel = "Everything else", onCommit }) {
+    let order = [...items];
+    const rows = new Map();
+    let filter = "";
+    let grab = null;            // keyboard pick-up: { name, before }
+    let drag = null;            // pointer drag: { id, name, row, ghost, before, offY, x, y, raf }
+    let current = order[0] || "";   // the row that is in the tab order (roving tabindex)
+    let flip = false;
+
+    const live = el("div", { class: "sr-only", role: "status", "aria-live": "polite" });
+    const announce = (msg) => { flip = !flip; live.textContent = msg + (flip ? " " : ""); };
+    const list = el("ol", { class: "sortable-list", "aria-label": label });
+    const divider = el("li", { class: "sortable-divider", role: "presentation", "aria-hidden": "true" },
+      el("span", { text: `▲ ${prioLabel}` }), el("span", { text: `${restLabel} ▼` }));
+    const count = el("span", { class: "sortable-count muted small" });
+    const empty = el("li", { class: "sortable-empty muted hidden", role: "presentation", text: `No ${noun} matches.` });   // inside the list: no layout shift
+    const input = el("input", { type: "search", class: "input sortable-filter", placeholder: `Find a ${noun}…`, "aria-label": `Find a ${noun}`,
+      autocomplete: "off", spellcheck: "false" });
+    const hint = el("div", { class: "sub sortable-hint",
+      text: "Drag the ⋮⋮ handle, or focus a row and press Space, use the arrow keys, then Space to drop (Escape cancels). “Top” moves it to the first place." });
+    const root = el("div", { class: "sortable" },
+      el("div", { class: "sortable-bar" }, input, count), hint, list, live);
+
+    const visible = (name) => !rows.get(name).hidden;
+    const visibleNames = () => order.filter(visible);
+
+    function buildRow(name) {
+      const act = (how) => () => commit(name, how);
+      const btn = (cls, text, title, aria, how) => el("button", { type: "button", class: `btn btn-icon ${cls}`, text, title, "aria-label": aria,
+        on: { click: act(how) } });
+      const row = el("li", { class: "sortable-row", "data-name": name, tabindex: "-1" },
+        el("span", { class: "drag-handle", "data-drag-handle": "", "aria-hidden": "true", title: `Drag to reorder ${name}`, text: "⋮⋮" }),
+        el("span", { class: "region-n" }), el("span", { class: "region-name", text: name }),
+        btn("row-top", "Top", "Move to top", `Move ${name} to top`, "top"),
+        btn("row-up", "▲", "Prefer more", `Move ${name} up`, "up"),
+        btn("row-down", "▼", "Prefer less", `Move ${name} down`, "down"));
+      return row;
+    }
+
+    /** Decorations that depend on the order: numbers, priority highlight, divider, disabled buttons, tab stops. */
+    function refresh() {
+      const vis = visibleNames();
+      if (!visible(current) && vis.length) current = vis[0];
+      order.forEach((name, i) => {
+        const row = rows.get(name);
+        row.querySelector(".region-n").textContent = String(i + 1);
+        row.classList.toggle("prio", i < prioCount);
+        row.setAttribute("aria-label", `${name}, position ${i + 1} of ${order.length}`);
+        const vi = vis.indexOf(name);
+        const set = (cls, off) => { row.querySelector(cls).disabled = off; };
+        set(".row-top", i === 0);
+        set(".row-up", vi <= 0);
+        set(".row-down", vi < 0 || vi === vis.length - 1);
+        row.tabIndex = name === current ? 0 : -1;
+        for (const b of row.querySelectorAll("button")) b.tabIndex = name === current ? 0 : -1;
+      });
+      // the divider sits after the prioCount-th row (hidden while a filter is active: rows are not contiguous then)
+      const rowEls = order.map((n) => rows.get(n));
+      if (prioCount > 0 && prioCount < rowEls.length && !filter) {
+        rowEls[prioCount - 1].after(divider);
+        divider.hidden = false;
+      } else {
+        divider.hidden = true;
+      }
+      const shown = vis.length;
+      count.textContent = filter ? `${shown} of ${order.length} shown` : `${order.length} ${noun}s`;
+      empty.classList.toggle("hidden", shown > 0);
+    }
+
+    /** Put the DOM rows in ``next`` order (re-focusing whatever had focus) and refresh the decorations. */
+    function applyOrder(next) {
+      const active = document.activeElement;
+      order = [...next];
+      order.forEach((name, i) => {
+        const row = rows.get(name);
+        const want = list.querySelectorAll(":scope > .sortable-row")[i];
+        if (want !== row) list.insertBefore(row, want || null);
+      });
+      refresh();
+      if (active && active !== document.body && list.contains(active) && document.activeElement !== active) {
+        const row = active.closest(".sortable-row");
+        (active.disabled && row ? row : active).focus({ preventScroll: true });
+      }
+    }
+
+    /** ``name`` placed before ``beforeName`` (null: after the last visible row; hidden rows keep their places). */
+    function placed(name, beforeName) {
+      const out = order.filter((x) => x !== name);
+      if (beforeName) { out.splice(out.indexOf(beforeName), 0, name); return out; }
+      let last = -1;
+      out.forEach((x, i) => { if (visible(x)) last = i; });
+      out.splice(last + 1, 0, name);
+      return out;
+    }
+
+    function reveal(row) {
+      const lr = list.getBoundingClientRect(), r = row.getBoundingClientRect();
+      const top = lr.top + list.clientTop, bottom = top + list.clientHeight;      // inside the border
+      if (r.top < top) list.scrollTop -= top - r.top;
+      else if (r.bottom > bottom) list.scrollTop += r.bottom - bottom;
+    }
+
+    function flash(name) {
+      const row = rows.get(name);
+      row.classList.remove("flash");
+      void row.offsetWidth;
+      row.classList.add("flash");
+      setTimeout(() => row.classList.remove("flash"), 1400);
+    }
+
+    const sameOrder = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+    /** One finished move: the new order is already shown; tell the owner once. */
+    function finish(before, name, how) {
+      if (sameOrder(before, order)) return;
+      const pos = order.indexOf(name) + 1;
+      announce(`${name} ${how} position ${pos} of ${order.length}.`);
+      flash(name);
+      onCommit([...order], before);
+    }
+
+    /** The up / down / top buttons. */
+    function commit(name, how) {
+      const before = [...order];
+      const vis = visibleNames(), vi = vis.indexOf(name);
+      if (how === "top") applyOrder([name, ...order.filter((x) => x !== name)]);
+      else if (how === "up" && vi > 0) applyOrder(placed(name, vis[vi - 1]));
+      else if (how === "down" && vi >= 0 && vi < vis.length - 1) applyOrder(placed(name, vis[vi + 2] || null));
+      reveal(rows.get(name));
+      finish(before, name, how === "top" ? "moved to the top, now" : "moved to");
+    }
+
+    // ---- keyboard pick-up
+    function cancelGrab(restore = true) {
+      if (!grab) return;
+      const g = grab;
+      grab = null;
+      rows.get(g.name).classList.remove("grabbed");
+      if (restore) { applyOrder(g.before); announce(`Move cancelled. ${g.name} is back at position ${order.indexOf(g.name) + 1}.`); }
+    }
+    function dropGrab() {
+      const g = grab;
+      if (!g) return;
+      grab = null;
+      rows.get(g.name).classList.remove("grabbed");
+      if (sameOrder(g.before, order)) announce(`${g.name} dropped, unchanged.`);
+      else finish(g.before, g.name, "dropped at");
+    }
+    function stepGrab(name, kind) {
+      const vis = visibleNames(), vi = vis.indexOf(name);
+      let next = null;
+      if (kind === "up" && vi > 0) next = placed(name, vis[vi - 1]);
+      else if (kind === "down" && vi < vis.length - 1) next = placed(name, vis[vi + 2] || null);
+      else if (kind === "home" && vi > 0) next = placed(name, vis[0]);
+      else if (kind === "end" && vi < vis.length - 1) next = placed(name, null);
+      if (!next) return;
+      applyOrder(next);
+      const row = rows.get(name);
+      row.focus({ preventScroll: true });
+      reveal(row);
+      announce(`${name}, position ${order.indexOf(name) + 1} of ${order.length}.`);
+    }
+    function focusRow(name) {
+      if (!name) return;
+      current = name;
+      refresh();
+      const row = rows.get(name);
+      row.focus({ preventScroll: true });
+      reveal(row);
+    }
+    list.addEventListener("focusin", (e) => {
+      const row = e.target.closest && e.target.closest(".sortable-row");
+      if (row && row.dataset.name !== current && !drag) { current = row.dataset.name; refresh(); }
+    });
+    list.addEventListener("keydown", (e) => {
+      const row = e.target.closest && e.target.closest(".sortable-row");
+      if (!row || e.target !== row || drag || e.altKey || e.ctrlKey || e.metaKey) return;
+      const name = row.dataset.name;
+      const key = e.key;
+      const vis = visibleNames(), vi = vis.indexOf(name);
+      if (grab && grab.name === name) {
+        if (key === "ArrowUp" || key === "ArrowDown") stepGrab(name, key === "ArrowUp" ? "up" : "down");
+        else if (key === "Home" || key === "End") stepGrab(name, key.toLowerCase());
+        else if (key === " " || key === "Enter") dropGrab();
+        else if (key === "Escape") { cancelGrab(); e.stopPropagation(); }
+        else if (key === "Tab") { dropGrab(); return; }
+        else return;
+        e.preventDefault();
+        return;
+      }
+      if (key === " " || key === "Enter") {
+        grab = { name, before: [...order] };
+        row.classList.add("grabbed");
+        announce(`${name} picked up, position ${order.indexOf(name) + 1} of ${order.length}. Use the arrow keys to move, Space to drop, Escape to cancel.`);
+      } else if (key === "ArrowUp") focusRow(vis[Math.max(0, vi - 1)]);
+      else if (key === "ArrowDown") focusRow(vis[Math.min(vis.length - 1, vi + 1)]);
+      else if (key === "Home") focusRow(vis[0]);
+      else if (key === "End") focusRow(vis[vis.length - 1]);
+      else return;
+      e.preventDefault();
+    });
+    list.addEventListener("focusout", (e) => {
+      // focus moved elsewhere on the page: a held row is dropped where it is
+      if (grab && e.target === rows.get(grab.name) && e.relatedTarget && !list.contains(e.relatedTarget)) dropGrab();
+    });
+
+    // ---- pointer drag (mouse and touch)
+    function dropTarget(y) {
+      for (const name of visibleNames()) {
+        if (name === drag.name) continue;
+        const r = rows.get(name).getBoundingClientRect();
+        if (y < r.top + r.height / 2) return name;
+      }
+      return null;
+    }
+    function dragUpdate() {
+      if (!drag) return;
+      const lr = list.getBoundingClientRect();
+      const top = Math.min(Math.max(drag.y - drag.offY, lr.top - drag.h / 2), lr.bottom - drag.h / 2);
+      drag.ghost.style.top = `${top}px`;
+      const target = dropTarget(drag.y);
+      const next = placed(drag.name, target);
+      if (!sameOrder(next, order)) applyOrder(next);
+      // the ghost shows the position it would get if dropped now
+      const pos = order.indexOf(drag.name);
+      drag.ghost.querySelector(".region-n").textContent = String(pos + 1);
+      drag.ghost.classList.toggle("prio", pos < prioCount);
+    }
+    function dragTick() {
+      if (!drag) return;
+      const lr = list.getBoundingClientRect();
+      const zone = Math.min(64, lr.height / 4);
+      let dy = 0;
+      if (drag.y < lr.top + zone) dy = -Math.ceil(Math.min(1, (lr.top + zone - drag.y) / zone) * 18);
+      else if (drag.y > lr.bottom - zone) dy = Math.ceil(Math.min(1, (drag.y - (lr.bottom - zone)) / zone) * 18);
+      if (dy) {
+        const was = list.scrollTop;
+        list.scrollTop += dy;
+        if (list.scrollTop !== was) dragUpdate();
+      }
+      drag.raf = requestAnimationFrame(dragTick);
+    }
+    function dragEnd(commitIt) {
+      const d = drag;
+      if (!d) return;
+      drag = null;
+      cancelAnimationFrame(d.raf);
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerCancel, true);
+      window.removeEventListener("keydown", onDragKey, true);
+      try { list.releasePointerCapture(d.id); } catch (err) { /* already released */ }
+      d.ghost.remove();
+      d.row.classList.remove("dragging");
+      list.classList.remove("is-dragging");
+      if (commitIt) finish(d.before, d.name, "dropped at");
+      else { applyOrder(d.before); announce(`Move cancelled. ${d.name} is back at position ${order.indexOf(d.name) + 1}.`); }
+    }
+    function onPointerMove(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      e.preventDefault();
+      drag.x = e.clientX; drag.y = e.clientY;
+      dragUpdate();
+    }
+    function onPointerUp(e) { if (drag && e.pointerId === drag.id) dragEnd(true); }
+    function onPointerCancel(e) { if (drag && e.pointerId === drag.id) dragEnd(false); }
+    function onDragKey(e) { if (drag && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dragEnd(false); } }
+
+    list.addEventListener("pointerdown", (e) => {
+      const handle = e.target.closest && e.target.closest("[data-drag-handle]");
+      if (!handle || drag || (e.pointerType === "mouse" && e.button !== 0) || e.isPrimary === false) return;
+      const row = handle.closest(".sortable-row");
+      const name = row.dataset.name;
+      e.preventDefault();
+      cancelGrab(false);
+      const rect = row.getBoundingClientRect();
+      const ghost = row.cloneNode(true);
+      ghost.classList.add("drag-ghost");
+      for (const attr of ["tabindex", "data-name", "aria-label"]) ghost.removeAttribute(attr);
+      ghost.setAttribute("aria-hidden", "true");
+      ghost.style.cssText = `left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px`;
+      document.body.append(ghost);
+      row.classList.add("dragging");
+      list.classList.add("is-dragging");
+      try { list.setPointerCapture(e.pointerId); } catch (err) { /* the window listeners still see it */ }
+      drag = { id: e.pointerId, name, row, ghost, before: [...order], offY: e.clientY - rect.top, h: rect.height, x: e.clientX, y: e.clientY, raf: 0 };
+      window.addEventListener("pointermove", onPointerMove, true);
+      window.addEventListener("pointerup", onPointerUp, true);
+      window.addEventListener("pointercancel", onPointerCancel, true);
+      window.addEventListener("keydown", onDragKey, true);
+      announce(`Dragging ${name}.`);
+      drag.raf = requestAnimationFrame(dragTick);
+    });
+    list.addEventListener("contextmenu", (e) => { if (e.target.closest && e.target.closest("[data-drag-handle]")) e.preventDefault(); });
+
+    // ---- filter
+    function applyFilter() {
+      filter = input.value.trim().toLowerCase();
+      for (const name of order) {
+        const row = rows.get(name);
+        const hit = !filter || name.toLowerCase().includes(filter);
+        row.hidden = !hit;
+        row.classList.toggle("match", !!filter && hit);
+      }
+      refresh();
+      list.scrollTop = 0;
+    }
+    input.addEventListener("input", applyFilter);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); focusRow(visibleNames()[0]); }
+      else if (e.key === "Escape" && input.value) { input.value = ""; applyFilter(); e.stopPropagation(); }
+    });
+
+    function build() {
+      rows.clear();
+      list.replaceChildren(...order.map((n) => { const r = buildRow(n); rows.set(n, r); return r; }), divider, empty);
+      refresh();
+    }
+    build();
+
+    return {
+      root, list, input,
+      /** Replace the whole list (also the rollback after a failed save). */
+      setItems(next) {
+        cancelGrab(false);
+        if (drag) dragEnd(false);
+        if (sameOrder(next, order)) return;
+        if (sameOrder([...next].sort(), [...order].sort())) applyOrder(next);
+        else { order = [...next]; build(); applyFilter(); }
+      },
+      order: () => [...order],
+    };
+  }
+
+  // ---- Region priority (No-Intro / Redump systems): one debounced save per completed move, optimistic with rollback.
+  const regionSave = { timer: 0, pending: {}, confirmed: {}, busy: false, ui: null, uiPlatform: "" };
+
+  async function flushRegionSave() {
+    if (regionSave.busy) return;
+    const name = Object.keys(regionSave.pending)[0];
+    if (!name) return;
+    const order = regionSave.pending[name];
+    delete regionSave.pending[name];
+    regionSave.busy = true;
+    try {
+      const resp = await post("/api/library/profile", { platform: name, region_priority: order });
+      regionSave.confirmed[name] = [...(resp.regions || order)];
+      const newer = regionSave.pending[name];
+      if (newer) resp.regions = [...newer];           // a later move is already shown: keep it on screen
+      adoptProfile(name, resp);
+      if (name === state.platform) renderRulesSummary(resp);
+    } catch (err) {
+      toast(`Could not save the region priority: ${err.message}`, "error");
+      delete regionSave.pending[name];
+      const info = state.library[name];
+      const back = regionSave.confirmed[name];
+      if (info && back) {
+        info.regions = [...back];
+        if (name === state.platform && regionSave.ui && regionSave.uiPlatform === name) regionSave.ui.setItems(back);
+        if (name === state.platform) renderRulesSummary(info);
+      }
+    } finally {
+      regionSave.busy = false;
+      if (Object.keys(regionSave.pending).length) flushRegionSave();
+    }
+  }
+
+  function commitRegionOrder(name, order) {
+    const info = state.library[name];
+    if (!info) return;
+    if (!regionSave.confirmed[name]) regionSave.confirmed[name] = [...(info.regions || [])];
+    info.regions = [...order];                          // optimistic
+    regionSave.pending[name] = [...order];
+    renderRulesSummary(info);
+    clearTimeout(regionSave.timer);
+    regionSave.timer = setTimeout(flushRegionSave, 250);
+  }
+
   function regionSection(info) {
-    const prof = info.profile, list = info.regions || [];
-    return el("div", { class: "rules-group", id: "rules-regions" },
+    const name = state.platform;
+    if (!regionSave.pending[name] && !regionSave.busy) regionSave.confirmed[name] = [...(info.regions || [])];
+    const oldList = document.querySelector("#rules-regions .sortable-list");
+    const keepScroll = oldList ? oldList.scrollTop : 0;
+    const ui = sortableList({
+      items: info.regions || [], label: "Region priority, best region first", noun: "region", prioCount: 4,
+      prioLabel: "Prioritised (tried first)", restLabel: "Everything else (alphabetical unless you move it up)",
+      onCommit: (order) => commitRegionOrder(name, order),
+    });
+    regionSave.ui = ui;
+    regionSave.uiPlatform = name;
+    const section = el("div", { class: "rules-group", id: "rules-regions" },
       el("div", { class: "rules-head", text: "Region priority" }),
       el("div", { class: "sub note", text: (catalogOf(info).find((e) => e.id === "region_priority") || {}).description || "Best region first." }),
-      el("ol", { class: "region-list" }, list.map((r, i) => el("li", { class: i < 4 ? "prio" : "" },
-        el("span", { class: "region-n", text: String(i + 1) }), el("span", { class: "region-name", text: r }),
-        el("button", { class: "btn btn-icon", text: "▲", title: "Prefer more", "aria-label": `Move ${r} up`, disabled: i === 0,
-          on: { click: () => saveProfile({ region_priority: moved(list, i, -1) }) } }),
-        el("button", { class: "btn btn-icon", text: "▼", title: "Prefer less", "aria-label": `Move ${r} down`, disabled: i === list.length - 1,
-          on: { click: () => saveProfile({ region_priority: moved(list, i, 1) }) } })))));
+      ui.root);
+    requestAnimationFrame(() => { ui.list.scrollTop = keepScroll; });
+    return section;
+  }
+
+  /** The one-line summary of the rules panel and its "Default / Custom rules" note. */
+  function renderRulesSummary(info) {
+    const prof = info.profile, avail = info.available || {};
+    const cat = catalogOf(info);
+    const excl = cat.filter((e) => e.kind === "exclude");
+    const flags = cat.filter((e) => e.kind === "keep_flag");
+    const opts = optionEntries(info);
+    const on = excl.filter((r) => prof.exclude.includes(r.id)).length;
+    const bits = [];
+    if (excl.length) bits.push(`${on} of ${excl.length} exclusions`);
+    if (avail.languages) bits.push(prof.languages.length ? prof.languages.map((c) => langName(info, c)).join(", ") : "all languages");
+    if (info.ranking_short) bits.push(info.ranking_short);
+    else if (avail.region_priority && (info.regions || []).length) bits.push(`${info.regions.slice(0, 2).join(" > ")} first`);
+    if (flags.length && avail.keep_flags !== false) {
+      const off = flags.filter((f) => !prof.keep_flags.includes(f.id)).map((f) => plainLabel(f).toLowerCase());
+      if (off.length) bits.push(`no ${off.join(", ")}`);
+    }
+    for (const e of opts) if (prof[e.field]) bits.push(plainLabel(e).toLowerCase());
+    const rated = ratingActive(info);
+    for (const e of ratingEntries(info)) {
+      const v = prof[e.field];
+      if (!e.summary || v === null || v === undefined || v === false || (e.summary_when_filter && !rated)) continue;
+      bits.push(e.summary.replace("{v}", String(v)));
+    }
+    if (rated && prof.rank_scope === "owned" && prof.top_n) bits.push("ranked among your games");
+    $("library-rules-summary").textContent = bits.join(" \u00B7 ");
+    $("library-rules-note").textContent = JSON.stringify(prof) === JSON.stringify(info.defaults) ? "Default rules" : "Custom rules";
   }
 
   /** The Library rules panel, rendered from ``info.catalog``. */
@@ -1387,13 +2675,139 @@
     }
     if (avail.languages && cat.some((e) => e.id === "languages")) groups.push(languageSection(info));
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(regionSection(info));
+    if (ratingEntries(info).length) groups.push(ratingsSection(info));
     if (!groups.length) groups.push(el("div", { class: "muted", text: "No library rules apply to this system." }));
     $("library-rules").replaceChildren(...groups);
-    const on = excl.filter((r) => prof.exclude.includes(r.id)).length;
-    $("library-rules-summary").textContent = ` - ${on} of ${excl.length} exclusion rules on`
-      + (avail.languages ? `, languages: ${prof.languages.length ? prof.languages.join(", ") : "all"}` : "");
-    $("library-rules-note").textContent = JSON.stringify(prof) === JSON.stringify(info.defaults) ? "Default rules" : "Custom rules";
+    renderRulesSummary(info);
     updateRuleCounts();
+    renderRatingsStatus();
+  }
+
+  // ---- Ratings group (Amendment 18): rendered from the catalog entries with group "ratings"; no rule list here.
+  const ratingsOf = () => (state.updates && state.updates.ratings) || null;
+
+  function ratingsSection(info) {
+    const prof = info.profile;
+    const save = (e, raw) => {
+      const text = String(raw).trim();
+      let v = text === "" ? null : Number(text);
+      if (e.kind === "number" && v !== null && Number.isNaN(v)) { toast(`${e.label} needs a number`, "error"); renderLibraryRules(); return; }
+      if (v === null && e.default !== null && e.default !== undefined) v = e.default;
+      if (v === prof[e.field]) return;
+      saveProfile({ [e.field]: v });
+    };
+    const rows = ratingEntries(info).map((e) => {
+      if (e.kind === "option") {
+        return ruleRow(e, !!prof[e.field], (on) => saveProfile({ [e.field]: on }), null);
+      }
+      let control;
+      if (e.kind === "choice") {
+        control = el("select", { class: "input select", "data-field": e.field, "aria-label": e.label,
+          on: { change: (ev) => saveProfile({ [e.field]: ev.target.value }) } },
+        ...(e.choices || []).map((c) => el("option", { value: c.value, text: c.label, selected: prof[e.field] === c.value })));
+      } else {
+        const input = el("input", { type: "number", class: "input rating-input", "data-field": e.field, "aria-label": e.label,
+          min: String(e.min), max: String(e.max), step: String(e.step), inputmode: e.integer ? "numeric" : "decimal",
+          placeholder: e.default === null ? "off" : String(e.default) });
+        input.value = prof[e.field] === null || prof[e.field] === undefined ? "" : String(prof[e.field]);
+        input.addEventListener("change", () => save(e, input.value));
+        input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") input.blur(); });
+        if (e.filter) input.addEventListener("input", () => updateRatingsHint(info));
+        control = el("span", { class: "rating-field" }, input, e.unit ? el("span", { class: "muted small", text: ` ${e.unit}` }) : null);
+      }
+      return el("div", { class: "rating-row", title: e.description || e.label },
+        el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: e.label }), control),
+        el("span", { class: "sub", text: e.description || "" }));
+    });
+    return el("div", { class: "rules-group", id: "rules-ratings" },
+      el("div", { class: "rules-head", text: "Ratings" }),
+      el("div", { class: "sub note", id: "ratings-credit" }),
+      el("div", { class: "ratings-status", id: "ratings-status", role: "status", "aria-live": "polite" }),
+      el("div", { class: "rating-rows" }, rows),
+      el("div", { class: "sub", id: "ratings-hint" }),
+      el("div", { class: "notice notice-warn ratings-note", id: "ratings-note",
+        text: "Games with no rating are excluded while a rating filter is set (tick Keep unrated games to keep them)." }));
+  }
+
+  /** "≈ N of M target games rated ≥ x" from the totals' coverage histogram (no server round trip). */
+  function updateRatingsHint(info) {
+    const box = document.getElementById("ratings-hint");
+    if (!box) return;
+    const data = Totals.data[state.platform];
+    const cov = data && data.rating_coverage;
+    const hintEntry = ratingEntries(info).find((e) => e.hint === "coverage_ge");
+    const input = hintEntry ? document.querySelector(`#rules-ratings input[data-field="${hintEntry.field}"]`) : null;
+    const x = input && input.value !== "" ? Number(input.value) : null;
+    if (!cov || x === null || Number.isNaN(x) || x <= 0) { box.textContent = ""; return; }
+    const k = Math.min(20, Math.max(1, Math.ceil(x * 2)));
+    box.textContent = `\u2248 ${fmt(cov.ge[k - 1])} of ${fmt(cov.games)} target games are rated \u2265 ${x}`;
+  }
+
+  /** Credit line, coverage ("Ratings found for X of Y target games"), data date, download progress / button. */
+  function renderRatingsStatus() {
+    const info = state.library[state.platform];
+    const box = document.getElementById("ratings-status");
+    const r = ratingsOf();
+    const credit = document.getElementById("ratings-credit");
+    if (credit) {
+      credit.replaceChildren(r && r.credit_url
+        ? el("a", { href: r.credit_url, target: "_blank", rel: "noopener noreferrer", text: r.credit || "Ratings: LaunchBox Games Database community ratings" })
+        : document.createTextNode("Ratings: LaunchBox Games Database community ratings"));
+    }
+    renderRatingsBanner();
+    if (!box || !info) return;
+    const parts = [];
+    const data = Totals.data[state.platform];
+    const cov = data && data.rating_coverage;
+    const running = state.updates && state.updates.running && (state.updates.progress || {}).source === "ratings";
+    if (running) {
+      const pr = state.updates.progress, pct = pr.total > 0 ? ` (${Math.min(100, Math.round((100 * pr.done) / pr.total))}%)` : "";
+      parts.push(el("span", {}, el("span", { class: "spinner", "aria-hidden": "true" }), ` ${pr.message || "Downloading ratings"}${pct}`));
+    } else if (!r || !r.installed) {
+      parts.push(el("span", { class: "muted", text: "The ratings data is not installed yet. " }),
+        r && r.error ? el("span", { class: "error-text", text: `${r.error} ` }) : null);
+    } else if (cov) {
+      const pct = cov.games ? Math.round((100 * cov.rated) / cov.games) : 0;
+      parts.push(el("span", { text: `Ratings found for ${fmt(cov.rated)} of ${fmt(cov.games)} target games (${pct}%) \u00B7 LaunchBox data from ${r.installed}` }));
+    } else {
+      parts.push(el("span", { class: "muted", text: `LaunchBox data from ${r.installed}` }));
+    }
+    parts.push(el("button", { class: "btn btn-small", type: "button", id: "ratings-download",
+      text: r && r.installed ? "Update ratings" : "Download ratings", disabled: running || (state.updates && !state.updates.enabled) || null,
+      title: "Download the LaunchBox Games Database (about 108 MB) and build a small local index; the download is discarded afterwards",
+      on: { click: () => downloadRatings() } }));
+    box.replaceChildren(...parts.filter(Boolean));
+    updateRatingsHint(info);
+  }
+
+  async function downloadRatings() {
+    try {
+      const res = await post("/api/ratings/download", {});
+      if (!res.started) toast("An update is already running (or updates are switched off).", "info");
+      Updates.apply(res.updates);
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  /** Library tab: a rating filter is set but the data is missing / being fetched: say so, with progress. */
+  function renderRatingsBanner() {
+    const box = $("lib-ratings-banner");
+    if (!box) return;
+    const info = state.library[state.platform];
+    const r = ratingsOf();
+    const need = ratingActive(info) && (!r || !r.installed);
+    box.classList.toggle("hidden", !need);
+    if (!need) return;
+    const u = state.updates || {};
+    const pr = u.progress || {};
+    const live = u.running && pr.source === "ratings";
+    const pct = live && pr.total > 0 ? ` (${Math.min(100, Math.round((100 * pr.done) / pr.total))}%)` : "";
+    box.replaceChildren(...[
+      live ? el("span", { class: "spinner", "aria-hidden": "true" }) : null,
+      el("span", { text: live ? ` ${pr.message || "Downloading the ratings"}${pct}. Preview and Build wait for it.`
+        : r && r.error ? `The ratings data could not be installed: ${r.error}` : "The ratings data is not installed yet - Preview and Build wait for it." }),
+      !live ? el("button", { class: "btn btn-small", type: "button", text: "Download ratings", disabled: (!u.enabled) || null,
+        title: u.enabled ? "" : "Automatic downloads are switched off in this run", on: { click: () => downloadRatings() } }) : null,
+    ].filter(Boolean));
   }
 
   /** Fill the live numbers of the rules panel from the last plan (``libStats``). */
@@ -1416,8 +2830,11 @@
 
   /** Background refresh of the plan numbers (rules panel counts) after a scan or a rules change. */
   let statsSeq = 0;
+  let statsStale = true;       // the rule counts are fetched when the Library tab is open (not on every scan)
   const refreshLibraryStats = debounce(async () => {
     if (!state.scan) { state.libStats = null; updateRuleCounts(); return; }
+    if (!inSystem() || state.tab !== "library") { statsStale = true; return; }
+    statsStale = false;
     const seq = ++statsSeq;
     try {
       const data = await post("/api/library/plan", { ...libOptions(), limit: 1 });
@@ -1431,30 +2848,29 @@
 
   /** The profile changed: every cached preview is out of date. */
   function profileChanged() {
-    libTable = null;
-    vanishTable = null;
-    libPlan = null;
     state.libStats = null;
-    state.libWhy = "";
     updateRuleCounts();
     refreshLibraryStats();
-    $("lib-output").classList.add("hidden");
-    $("lib-empty").textContent = state.scan ? "Rules changed - press \"Preview library\" to see what would happen." : "Run a scan first.";
-    $("lib-empty").classList.remove("hidden");
-    organiseTable = null;
-    convertTable = null;
-    $("organise-output").classList.add("hidden");
-    $("convert-output").classList.add("hidden");
+    // The previews stay on screen but are marked out of date (Recalculate is the highlighted action, Build / Apply
+    // are disabled until it ran); the library totals on the Overview follow after a short pause.
+    Previews.staleAll("Rules changed since this preview", ["lib", "organise", "convert"]);
+    scheduleTotals();
     updateActionState();
   }
 
-  function renderLibraryIntro() {
+  /** No preview (yet, or it belongs to another system): the empty prompt. */
+  function resetLibraryPreview() {
     $("lib-empty").textContent = state.scan ? "Press \"Preview library\" to see what would happen." : "Run a scan first.";
     $("lib-empty").classList.remove("hidden");
     $("lib-output").classList.add("hidden");
     libTable = null;
     vanishTable = null;
     libPlan = null;
+    state.libWhy = "";
+  }
+
+  function renderLibraryIntro() {
+    if (!Previews.has("lib")) resetLibraryPreview();
     refreshUndo();
     refreshLibraryStats();
   }
@@ -1474,6 +2890,7 @@
       ...(r.borrowed_sets ? [card(fmt(r.borrowed_sets), `Sets completed with borrowed disks (${fmt(r.borrowed_disks || 0)} disk${r.borrowed_disks === 1 ? "" : "s"})`, "info")] : []),
       ...(r.conflict || pl.conflict ? [card(fmt((r.conflict || 0) + (pl.conflict || 0)), "Conflicts (skipped)", "bad")] : []),
       ...(vanish.titles ? [card(fmt(vanish.titles), "Games that vanish", "warn")] : []),
+      ...(plan.rating && plan.rating.games ? [card(fmt(plan.rating.excluded), `Left out by rating (of ${fmt(plan.rating.games)} games; ${fmt(plan.rating.unrated)} unrated)`, plan.rating.excluded ? "warn" : "")] : []),
     );
     state.libStats = { reasons: r, vanish, exclusions: plan.exclusions || {} };
     updateRuleCounts();
@@ -1484,7 +2901,7 @@
     whyBox.classList.toggle("hidden", !Object.keys(why).length);
     const infoNow = state.library[state.platform];
     const whyOrder = infoNow ? [...catalogOf(infoNow).filter((e) => e.kind === "exclude").map((e) => e.id),
-      ...catalogOf(infoNow).filter((e) => e.kind === "keep_flag").map((e) => `flag_${e.id}`), "language"] : [];
+      ...catalogOf(infoNow).filter((e) => e.kind === "keep_flag").map((e) => `flag_${e.id}`), "language", ...(infoNow.rating_codes || [])] : [];
     filterChips(whyBox, why, state.libWhy, whyOrder, (key) => { state.libWhy = key; if (key) state.libReason = "excluded"; libTable.offset = 0; libTable.load(); },
       reasonLabel, "All exclusions");
     renderVanishBox(plan);
@@ -1528,6 +2945,8 @@
       return `Only available as ${f ? plainLabel(f).toLowerCase() : reason.slice(5)} variants, but those are off`;
     }
     if (reason === "incomplete") return "Only incomplete multi-disk sets";
+    const inf = state.library[state.platform];
+    if (inf && (inf.rating_codes || []).includes(reason)) return `Left out by the rating filter: ${reasonLabel(reason)}`;
     return `Every version is excluded: ${reasonLabel(reason)}`;
   }
 
@@ -1538,7 +2957,7 @@
     if (!v.titles) return;
     $("lib-vanish-title").textContent = `Games that vanish (${fmt(v.titles)}) - no version is kept`;
     const reasons = v.by_reason || {};
-    filterChips($("lib-vanish-filters"), reasons, state.vanishReason, ["language", "flag_cr", "flag_h", "flag_t", "flag_a", "flag_f", "flag_tr"],
+    filterChips($("lib-vanish-filters"), reasons, state.vanishReason, ["rating_unrated", "rating_low", "rating_not_top", "language", "flag_cr", "flag_h", "flag_t", "flag_a", "flag_f", "flag_tr"],
       (key) => { state.vanishReason = key; renderVanishBox(plan); if (vanishTable) { vanishTable.offset = 0; vanishTable.load(); } },
       (k) => (k === "language" ? "No version in selected languages" : vanishText(k)), "All reasons");
     if (box.open && !vanishTable) showVanishTable();
@@ -1555,6 +2974,10 @@
           ...langs.map(([c, n]) => el("button", { class: "btn btn-small", text: `+ ${langName(info, c)} (${fmt(n)})`,
             title: `Tick ${langName(info, c)}: ${fmt(n)} of these titles come back`, on: { click: () => saveProfile({ languages: [...info.profile.languages, c] }) } })));
       }
+    }
+    if (info && (data.by_reason || {}).rating_unrated && !info.profile.keep_unrated) {
+      hints.push(el("button", { class: "btn btn-small", text: `Keep unrated games (${fmt(data.by_reason.rating_unrated)})`,
+        title: "Tick Keep unrated games: games with no usable rating stay", on: { click: () => saveProfile({ keep_unrated: true }) } }));
     }
     for (const flag of ["cr", "h", "t", "a", "f", "tr"]) {
       if (info && (data.by_reason || {})[`flag_${flag}`] && !info.profile.keep_flags.includes(flag)) {
@@ -1577,6 +3000,7 @@
       columns: [
         { label: "Title", cls: "wrap", render: (i) => el("div", {}, el("div", { text: i.title }), el("div", { class: "sub mono-path", text: i.name }))},
         { label: "Why it vanishes", cls: "wrap", render: (i) => el("div", {}, el("div", { text: vanishText(i.reason) }),
+          i.hint ? el("div", { class: "sub", text: `${i.detail ? i.detail + " - " : ""}${i.hint}` }) : null,
           el("div", { class: "tags" }, (i.codes || []).map((c) => el("span", { class: "tag tag-excl", text: reasonLabel(c) })),
             (i.languages || []).map((l) => el("span", { class: "tag tag-lang", text: l })))) },
         { label: "Variants", render: (i) => String(i.variants) },
@@ -1586,6 +3010,7 @@
   }
 
   async function showLibraryPlan() {
+    Previews.busy("lib");
     $("lib-empty").classList.add("hidden");
     $("lib-output").classList.remove("hidden");
     if (!libTable) {
@@ -1593,9 +3018,9 @@
       libTable = new PagedTable($("lib-table"), {
         placeholder: "Search file names, folders or playlists...",
         emptyText: "Nothing in this category.",
-        fetch: async ({ offset, limit, q }) => {
+        fetch: Previews.wrap("lib", async ({ offset, limit, q, refresh }) => {
           const data = await post("/api/library/plan", {
-            ...libOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q,
+            ...libOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q, refresh,
           });
           libPlan = data;
           renderLibraryCards(data);
@@ -1615,7 +3040,7 @@
           $("lib-apply-btn").dataset.blocked = data.empty ? "1" : "0";
           Jobs.setRunning(Jobs.running);
           return data;
-        },
+        }),
         columns: [
           { label: "Status", render: (i) => badge(i.status) },
           { label: "Reason", render: (i) => badge(REASON_BADGE[i.category] || "skip", REASON_LABEL[i.category] || i.category) },
@@ -1657,7 +3082,7 @@
         line(r.superseded, `superseded file(s) → ${SUPERSEDED}/`),
         line(r.incomplete, `file(s) of incomplete sets → ${INCOMPLETE}/`),
         line(r.duplicates, `duplicate(s) → ${DUPLICATES}/`),
-        line(r.unmatched, `unmatched file(s) → ${UNMATCHED}/`),
+        line(r.unmatched, `unmatched file(s) → ${UNMATCHED}/ (they match nothing in the DATs; subfolders are kept)`),
         line((plan.vanish || {}).titles, "title(s) have no kept version (see \"Games that vanish\")"),
         line(pl.write, "playlist(s) written"),
         line(pl.remove, "outdated playlist(s) made by this app removed")),
@@ -1671,7 +3096,7 @@
       body: `${warnings.join(" ")} Moving files out of other systems' folders would break them for your emulators.`,
       okText: "Yes, build in this folder", danger: true,
     }))) return;
-    Jobs.start("/api/library/apply", libOptions());
+    Jobs.start("/api/library/apply", { ...libOptions(), plan_id: plan.plan_id });   // the server refuses a plan of other rules
   }
 
   async function undoLibrary() {
@@ -1708,14 +3133,13 @@
     }
     const wasOpen = !$("lib-output").classList.contains("hidden");
     await refreshScan();
-    if (wasOpen && state.scan) { libTable = null; vanishTable = null; await showLibraryPlan(); }
+    if (wasOpen && state.scan) { vanishTable = null; if (libTable) libTable.offset = 0; await showLibraryPlan(); }
   };
 
   // --------------------------------------------------------- 3b. Organise (advanced)
   let organiseTable = null;
   let organisePlan = null; // last plan response (counts, by_dest, ...)
   const ACTIONABLE = ["move", "rename", "delete"];
-  const moveUnmatched = () => $("organise-move-unmatched").checked;
   const latestOnly = () => $("organise-latest-only").checked;
 
   function renderOrganiseWarnings(plan) {
@@ -1729,13 +3153,16 @@
   }
   const actionableCount = (counts) => ACTIONABLE.reduce((n, k) => n + (counts[k] || 0), 0);
 
-  function renderOrganiseIntro() {
-    const has = !!state.scan;
-    $("organise-empty").textContent = has ? "Press \"Preview changes\" to see what would move." : "Run a scan first.";
+  function resetOrganisePreview() {
+    $("organise-empty").textContent = state.scan ? "Press \"Preview changes\" to see what would move." : "Run a scan first.";
     $("organise-empty").classList.remove("hidden");
     $("organise-output").classList.add("hidden");
     organiseTable = null;
     organisePlan = null;
+  }
+
+  function renderOrganiseIntro() {
+    if (!Previews.has("organise")) resetOrganisePreview();
     refreshUndo();
   }
 
@@ -1767,16 +3194,17 @@
   }
 
   async function showOrganisePlan() {
+    Previews.busy("organise");
     $("organise-empty").classList.add("hidden");
     $("organise-output").classList.remove("hidden");
     if (!organiseTable) {
       organiseTable = new PagedTable($("organise-table"), {
         placeholder: "Search file names or folders...",
         emptyText: "Nothing in this category.",
-        fetch: async ({ offset, limit, q }) => {
+        fetch: Previews.wrap("organise", async ({ offset, limit, q, refresh }) => {
           const data = await post("/api/organise/plan", {
-            status: state.organiseFilter, dest: state.organiseDest, offset, limit, q, move_unmatched: moveUnmatched(),
-            latest_only: latestOnly(),
+            status: state.organiseFilter, dest: state.organiseDest, offset, limit, q,
+            latest_only: latestOnly(), refresh,
           });
           organisePlan = data;
           renderOrganiseCards(data);
@@ -1793,7 +3221,7 @@
           $("apply-btn").dataset.blocked = actionableCount(data.counts || {}) ? "0" : "1";
           Jobs.setRunning(Jobs.running);
           return data;
-        },
+        }),
         columns: [
           { label: "Status", render: (i) => badge(i.status) },
           {
@@ -1815,7 +3243,7 @@
   async function applyOrganise() {
     let plan;
     try {
-      plan = await post("/api/organise/plan", { limit: 1, move_unmatched: moveUnmatched(), latest_only: latestOnly() });
+      plan = await post("/api/organise/plan", { limit: 1, latest_only: latestOnly() });
     } catch (err) { toast(err.message, "error"); return; }
     const n = plan.actionable !== undefined ? plan.actionable : actionableCount(plan.counts || {});
     if (!n) { toast("Nothing to do - every file is already in its place.", "ok"); return; }
@@ -1840,7 +3268,7 @@
       body: `${warnings.join(" ")} Moving files out of other systems' folders would break them for your emulators.`,
       okText: "Yes, organise this folder", danger: true,
     }))) return;
-    Jobs.start("/api/organise/apply", { move_unmatched: moveUnmatched(), latest_only: latestOnly() });
+    Jobs.start("/api/organise/apply", { latest_only: latestOnly() });
   }
 
   let undoLogs = [];
@@ -1892,7 +3320,7 @@
     }
     const wasOpen = !$("organise-output").classList.contains("hidden");
     await refreshScan();
-    if (wasOpen && state.scan) await showOrganisePlan();
+    if (wasOpen && state.scan) { if (organiseTable) organiseTable.offset = 0; await showOrganisePlan(); }
   };
 
   // ----------------------------------------------------------- 4. Convert
@@ -1948,6 +3376,10 @@
     $("convert-title").textContent = dc ? "Convert raw Redump sets to CHD (optional, needs chdman)" : "Convert to No-Intro format (optional)";
     if (dc) $("convert-intro").textContent = CHD_INTRO;
     if (dc) loadChdman(); else $("chdman-box").classList.add("hidden");
+    if (!Previews.has("convert")) resetConvertPreview();
+  }
+
+  function resetConvertPreview() {
     $("convert-empty").textContent = state.scan ? "Press \"Preview conversions\" to see which files can be converted." : "Run a scan first.";
     $("convert-empty").classList.remove("hidden");
     $("convert-output").classList.add("hidden");
@@ -1963,14 +3395,15 @@
   }
 
   async function showConvertPlan() {
+    Previews.busy("convert");
     $("convert-empty").classList.add("hidden");
     $("convert-output").classList.remove("hidden");
     if (!convertTable) {
       convertTable = new PagedTable($("convert-table"), {
         placeholder: "Search file names...",
         emptyText: isGameFolder(currentPlatform()) ? "No raw Redump sets found in this folder." : "Nothing to convert - every matched file is already in No-Intro format.",
-        fetch: async ({ offset, limit, q }) => {
-          const data = await post("/api/convert/plan", { status: state.convertFilter, offset, limit, q, latest_only: latestOnly() });
+        fetch: Previews.wrap("convert", async ({ offset, limit, q, refresh }) => {
+          const data = await post("/api/convert/plan", { status: state.convertFilter, offset, limit, q, latest_only: latestOnly(), refresh });
           renderConvertCards(data);
           if (data.chdman) { chdmanInfo = { ...(chdmanInfo || {}), ...data.chdman }; renderChdman(); }
           filterChips($("convert-filters"), data.counts || {}, state.convertFilter, ["convert", "conflict", "skip"],
@@ -1978,7 +3411,7 @@
           $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert && !(data.chdman && !data.chdman.found) ? "0" : "1";
           Jobs.setRunning(Jobs.running);
           return data;
-        },
+        }),
         columns: [
           { label: "Status", render: (i) => badge(i.status) },
           {
@@ -2036,7 +3469,7 @@
     }
     const wasOpen = !$("convert-output").classList.contains("hidden");
     await refreshScan();
-    if (wasOpen && state.scan) await showConvertPlan();
+    if (wasOpen && state.scan) { if (convertTable) convertTable.offset = 0; await showConvertPlan(); }
   };
 
   // -------------------------------------------------------------- 5. M3U
@@ -2044,6 +3477,10 @@
   const m3uOptions = () => ({ savedisk: $("m3u-savedisk").checked, labels: $("m3u-labels").checked });
 
   function renderM3UIntro() {
+    if (!Previews.has("m3u")) resetM3UPreview();
+  }
+
+  function resetM3UPreview() {
     $("m3u-empty").textContent = state.scan ? "Press \"Preview playlists\" to find multi-disk sets." : "Run a scan first.";
     $("m3u-empty").classList.remove("hidden");
     $("m3u-output").classList.add("hidden");
@@ -2051,6 +3488,7 @@
   }
 
   async function showM3UPlan() {
+    Previews.busy("m3u");
     $("m3u-empty").classList.add("hidden");
     $("m3u-output").classList.remove("hidden");
     if (!m3uTable) {
@@ -2058,15 +3496,15 @@
         pageSize: 25,
         placeholder: "Search playlists...",
         emptyText: "No multi-disk sets found among the matched files.",
-        fetch: async ({ offset, limit, q }) => {
-          const data = await post("/api/m3u/plan", { ...m3uOptions(), status: state.m3uFilter, offset, limit, q });
+        fetch: Previews.wrap("m3u", async ({ offset, limit, q, refresh }) => {
+          const data = await post("/api/m3u/plan", { ...m3uOptions(), status: state.m3uFilter, offset, limit, q, refresh });
           const counts = data.counts || {};
           filterChips($("m3u-filters"), counts, state.m3uFilter, ["write", "stale", "ok", "incomplete", "conflict"],
             (key) => { state.m3uFilter = key; m3uTable.offset = 0; m3uTable.load(); });
           $("m3u-apply-btn").dataset.blocked = counts.write || counts.stale ? "0" : "1";
           Jobs.setRunning(Jobs.running);
           return data;
-        },
+        }),
         columns: [
           { label: "Status", render: (i) => badge(i.status) },
           {
@@ -2117,7 +3555,7 @@
         + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length ? "error" : "ok", 8000);
       showFailures("m3u-failures", "Could not write:", failed, (f) => `${f.path}: ${f.error}`);
     }
-    m3uTable = null;
+    if (m3uTable) m3uTable.offset = 0;
     if (state.scan) await showM3UPlan();
   };
 
@@ -2151,13 +3589,18 @@
       el("a", { href: "https://docs.libretro.com/library/puae/", target: "_blank", rel: "noopener noreferrer", text: "PUAE BIOS list" }),
       ") into RetroArch's system / BIOS folder under the file names PUAE expects. Files are copied, never moved, and existing files are never overwritten.",
     ]));
+    if (!Previews.has("kick")) resetKickPreview();
+    if (!kickDirsLoaded && hasKickstart(p)) loadKickDirs();
+  }
+
+  function resetKickPreview() {
+    const p = currentPlatform();
     $("kick-empty").textContent = kickReady(p) ? "Pick a destination, then press \"Preview\"."
-      : folderMode ? `Choose the ${p ? p.name : "system"} folder in step 1 first.` : "Run a scan first.";
+      : kickFolderMode(p) ? `Choose the ${p ? p.name : "system"} folder in step 1 first.` : "Run a scan first.";
     $("kick-empty").classList.remove("hidden");
     $("kick-output").classList.add("hidden");
     $("kick-source").textContent = "";
     kickTable = null;
-    if (!kickDirsLoaded && hasKickstart(p)) loadKickDirs();
   }
 
   async function loadKickDirs() {
@@ -2209,13 +3652,14 @@
   async function showKickPlan() {
     const dest = $("kick-dest").value.trim();
     if (!dest) { toast("Choose a destination folder first", "error"); return; }
+    Previews.busy("kick");
     $("kick-empty").classList.add("hidden");
     $("kick-output").classList.remove("hidden");
     const platform = state.platform;
     kickTable = new PagedTable($("kick-table"), {
       placeholder: "Search Kickstarts...",
       emptyText: "Nothing in this category.",
-      fetch: async ({ offset, limit, q }) => {
+      fetch: Previews.wrap("kick", async ({ offset, limit, q }) => {
         const data = await post("/api/kickstart/plan", { platform, dest, status: state.kickFilter, offset, limit, q });
         const counts = data.counts || {};
         filterChips($("kick-filters"), counts, state.kickFilter, ["copy", "ok", "conflict", "missing", "unmatched"],
@@ -2227,7 +3671,7 @@
           : "";
         Jobs.setRunning(Jobs.running);
         return data;
-      },
+      }),
       columns: [
         { label: "Status", render: (i) => badge(i.status) },
         {
@@ -2315,7 +3759,7 @@
     $("updates-retry").addEventListener("click", () => Updates.check());
     $("scan-retry").addEventListener("click", () => { $("scan-error").classList.add("hidden"); startScan(); });
     window.addEventListener("focus", () => { if (!Updates.wasRunning) Updates.load(); });
-    $("lib-plan-btn").addEventListener("click", showLibraryPlan);
+    Previews.bindAll();
     $("lib-vanish-box").addEventListener("toggle", () => { if ($("lib-vanish-box").open && !vanishTable && libPlan) showVanishTable(); });
     $("lib-apply-btn").addEventListener("click", applyLibrary);
     $("lib-undo-btn").addEventListener("click", undoLibrary);
@@ -2329,22 +3773,21 @@
         renderLibraryRules();
       } catch (err) { toast(err.message, "error"); }
     });
-    for (const id of ["lib-move-unmatched", "lib-labels", "lib-savedisk"]) {
-      $(id).addEventListener("change", () => { if (libTable) { libTable.offset = 0; libTable.load(); } });
+    for (const id of ["lib-labels", "lib-savedisk"]) {
+      $(id).addEventListener("change", () => Previews.stale("lib", "Options changed since this preview"));
     }
-    $("platform-select").addEventListener("change", (e) => selectPlatform(e.target.value));
     $("fb-up").addEventListener("click", () => FolderBrowser.parent && FolderBrowser.list(FolderBrowser.parent));
     $("fb-hidden").addEventListener("change", () => FolderBrowser.current && FolderBrowser.list(FolderBrowser.current));
     $("fb-choose").addEventListener("click", () => FolderBrowser.choose());
     $("scan-btn").addEventListener("click", startScan);
-    $("plan-btn").addEventListener("click", showOrganisePlan);
+    bindFolderField();
+    for (const tab of TABS) $(`tabbtn-${tab}`).addEventListener("click", () => openTab(tab));
+    tabKeys($("sys-tabs"));
+    tabKeys($("result-tabs"));
+    window.addEventListener("hashchange", applyRoute);
     $("apply-btn").addEventListener("click", applyOrganise);
     $("undo-btn").addEventListener("click", undoLast);
-    $("m3u-plan-btn").addEventListener("click", showM3UPlan);
     $("m3u-apply-btn").addEventListener("click", writeM3Us);
-    $("organise-move-unmatched").addEventListener("change", () => {
-      if (organiseTable) { organiseTable.offset = 0; organiseTable.load(); }
-    });
     $("organise-latest-only").addEventListener("change", async () => {
       const p = currentPlatform();
       const value = latestOnly();
@@ -2355,22 +3798,21 @@
         } catch (err) { toast(`Could not save "Latest version only": ${err.message}`, "error"); }
       }
       loadLibraryProfile();
-      libTable = null; vanishTable = null; libPlan = null; $("lib-output").classList.add("hidden"); $("lib-empty").classList.remove("hidden");
-      if (organiseTable) { organiseTable.offset = 0; organiseTable.load(); }
-      if (convertTable) { convertTable.offset = 0; convertTable.load(); }
+      Previews.staleAll("Rules changed since this preview", ["lib", "organise", "convert"]);
+      scheduleTotals();
     });
     $("dc-verify-btn").addEventListener("click", verifyFully);
     $("chdman-save").addEventListener("click", () => saveChdman({ path: $("chdman-path").value.trim() }));
     $("chdman-refresh").addEventListener("click", () => loadChdman(true));
     $("chdman-engine").addEventListener("change", (e) => saveChdman({ engine: e.target.value }));
-    $("convert-plan-btn").addEventListener("click", showConvertPlan);
     $("convert-apply-btn").addEventListener("click", applyConvert);
     $("convert-undo-btn").addEventListener("click", undoLast);
     for (const id of ["m3u-labels", "m3u-savedisk"]) {
-      $(id).addEventListener("change", () => { if (m3uTable) { m3uTable.offset = 0; m3uTable.load(); } });
+      $(id).addEventListener("change", () => Previews.stale("m3u", "Options changed since this preview"));
     }
     $("kick-dest").addEventListener("input", debounce(() => {
       kickTable = null;
+      Previews.clear("kick");
       $("kick-output").classList.add("hidden");
       $("kick-empty").classList.remove("hidden");
       try { renderKickDirs(JSON.parse($("kick-dirs").dataset.dirs || "[]")); } catch (_) { /* ignore */ }
@@ -2380,9 +3822,39 @@
     $("kick-dest").addEventListener("keydown", (e) => { if (e.key === "Enter" && kickReady(currentPlatform())) showKickPlan(); });
     $("kick-browse-btn").addEventListener("click", () => FolderBrowser.open($("kick-dest"), "Choose the RetroArch system / BIOS folder"));
     $("kick-native-browse-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("kick-dest"), "Choose the RetroArch system / BIOS folder"));
-    $("kick-plan-btn").addEventListener("click", showKickPlan);
     $("kick-apply-btn").addEventListener("click", applyKick);
     $("quit-btn").addEventListener("click", quit);
+  }
+
+  /** The single folder field of the Overview tab: edits are saved right away (no Save button to forget). */
+  function bindFolderField() {
+    const input = $("folder-input");
+    input.addEventListener("input", syncFolder);
+    // `change` = the field lost focus / Enter after an edit, and what Browse / Folders dispatch
+    input.addEventListener("change", async () => {
+      const p = currentPlatform();
+      if (!p) return;
+      syncFolder();
+      await commitFolder(p);
+      paintFolder();
+    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") startScan(); });
+    $("folder-clear-btn").addEventListener("click", async () => {
+      const p = currentPlatform();
+      if (!p) return;
+      input.value = "";
+      syncFolder();
+      await commitFolder(p);
+      paintFolder();
+    });
+    $("folder-browse-btn").addEventListener("click", () => {
+      const p = currentPlatform();
+      if (p) FolderBrowser.open(input, `Choose the ${p.name} folder`);
+    });
+    $("folder-native-btn").addEventListener("click", (e) => {
+      const p = currentPlatform();
+      if (p) nativeBrowse(e.currentTarget, input, `Choose the ${p.name} folder`);
+    });
   }
 
   async function init() {
@@ -2393,6 +3865,7 @@
     await loadPlatforms();
     setKickDest(currentPlatform());
     await refreshScan();
+    applyRoute();
     // Resume tracking a job that was started before a page reload.
     try {
       const job = await get("/api/job");

@@ -373,7 +373,7 @@ class OrganiseTests(unittest.TestCase):
         self.assertIn("not loaded", op.reason)
         self.assertEqual(ops["loose/junk.bin"].status, "move")  # elsewhere unmatched still moves
 
-    def test_unmatched_opt_out_and_frontend_files(self) -> None:
+    def test_unmatched_always_moves_but_frontend_files_stay(self) -> None:
         self.write("systeminfo.txt", b"es-de")
         self.write("gamelist.xml", b"<gameList/>")
         self.write("cfg/game.uae", b"cfg")
@@ -382,8 +382,9 @@ class OrganiseTests(unittest.TestCase):
         for k in ("systeminfo.txt", "gamelist.xml", "cfg/game.uae"):
             self.assertEqual(ops[k].status, "skip", k)
         self.assertEqual(ops["other/thing.bin"].status, "move")
-        ops2 = plan_renames(self.scan(), move_unmatched=False)
-        self.assertEqual({o.status for o in ops2}, {"skip"})
+        # stale callers cannot switch moving off any more: the parameter is gone
+        with self.assertRaises(TypeError):
+            plan_renames(self.scan(), move_unmatched=False)
 
     def test_symlink_left_alone(self) -> None:
         d = self.data()

@@ -32,7 +32,7 @@ Rules:
   root>``; files already under ``_unmatched/`` stay where they are. Exceptions
   (status ``skip``): files inside the folder of a DAT that is not loaded, known
   frontend/emulator files (``gamelist.xml``, ``rom.key``, ``*.uae`` ...), symbolic
-  links, and everything when ``move_unmatched=False``.
+  links.
 * A file whose hash matches several roms (TOSEC duplicates) keeps its name if it
   already equals one of them, else the closest name (``difflib``) wins; ties ->
   alphabetical first.
@@ -351,14 +351,13 @@ def _converted_op(src: Path, root: Path) -> RenameOp:
 class _Planner:
     """Per-plan settings for files that matched nothing."""
 
-    def __init__(self, root: Path, missing_dats: Iterable[str], move_unmatched: bool,
+    def __init__(self, root: Path, missing_dats: Iterable[str],
                  layout: str = LAYOUT_PER_DAT) -> None:
         self.root = root
         self.layout = layout
         # The "folder of a DAT that is not loaded" rule only makes sense with DAT folders.
         self.missing_folders = ({dat_folder_name(n).casefold(): n for n in missing_dats if n}
                                 if layout != LAYOUT_FLAT else {})
-        self.move_unmatched = move_unmatched
 
     def unmatched(self, src: Path, why: str) -> RenameOp:
         root = self.root
@@ -385,9 +384,6 @@ class _Planner:
             return RenameOp(src, src, "skip", "frontend media folder - left in place", "", "move", "", True)
         if _is_keep_file(src):
             return RenameOp(src, src, "skip", "frontend / emulator file - left in place", "", "move", "", True)
-        if not self.move_unmatched:
-            return RenameOp(src, src, "skip", f"{why} - left in place (moving unmatched files is off)",
-                            "", "move", "", True)
         return _finish_op(src, root / UNMATCHED_DIR / rel, [why], "", "", True)
 
 
@@ -595,14 +591,15 @@ class _Core:
         self.ops, self.selection, self.owners = ops, selection, owners
 
 
-def _plan_core(result: "ScanResult", missing_dats: Iterable[str], move_unmatched: bool, latest_only: bool,
-               layout: Optional[str], profile: Optional["library.LibraryProfile"], platform: Any) -> _Core:
+def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: bool,
+               layout: Optional[str], profile: Optional["library.LibraryProfile"], platform: Any,
+               ratings: Any = None) -> _Core:
     from . import scanner
 
     root = result.root
     if layout is None:
         layout = getattr(result, "layout", LAYOUT_PER_DAT) or LAYOUT_PER_DAT
-    planner = _Planner(root, missing_dats, move_unmatched, layout)
+    planner = _Planner(root, missing_dats, layout)
     units, others = _scan_units(result, layout, planner)
     ops: list[RenameOp] = [u.op for u in units] + others
     for op in ops:
@@ -643,7 +640,7 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], move_unmatched
             key = len(items)
             owners[key] = (u.op, u)
             items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
-        selection = library.select(items, profile, _platform_for(result, platform))
+        selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings)
         for key, (op, u) in owners.items():
             d = selection.decisions.get(key)
             if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
@@ -669,15 +666,14 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], move_unmatched
 
 
 def plan_renames(result: "ScanResult", missing_dats: Iterable[str] = (),
-                 move_unmatched: bool = True, latest_only: bool = False,
+                 latest_only: bool = False,
                  layout: Optional[str] = None, profile: Optional["library.LibraryProfile"] = None,
                  platform: Any = None) -> list[RenameOp]:
     """Build one op for every file found by the scan (matched, unmatched, unsupported, errors).
 
     ``missing_dats``: DAT names of the platform that were not loaded; unmatched
     files inside their folders are left alone (``skip``) instead of being swept
-    into ``_unmatched/`` (``per_dat`` layout only). ``move_unmatched=False`` leaves every
-    unmatched file in place. ``layout`` (``"per_dat"`` | ``"flat"``) defaults to ``result.layout``.
+    into ``_unmatched/`` (``per_dat`` layout only). Unmatched files are always moved. ``layout`` (``"per_dat"`` | ``"flat"``) defaults to ``result.layout``.
     Files under ``_converted_originals/`` are always left alone (``ok``; the legacy
     ``_unmatched/_converted_originals/`` moves there).
     Our own m3u playlists that reference moving files get a ``delete`` op.
@@ -690,7 +686,7 @@ def plan_renames(result: "ScanResult", missing_dats: Iterable[str] = (),
     longer qualifies moves back to its canonical place. ``platform`` (default: found from the
     scan's DAT names) tells the profile which DATs each rule covers.
     """
-    return _plan_core(result, missing_dats, move_unmatched, latest_only, layout, profile, platform).ops
+    return _plan_core(result, missing_dats, latest_only, layout, profile, platform).ops
 
 
 def _final_path(op: RenameOp) -> Path:
@@ -727,8 +723,8 @@ class LibraryPlan:
 
 
 def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
-                 move_unmatched: bool = True, layout: Optional[str] = None, savedisk: bool = False,
-                 labels: bool = True, platform: Any = None) -> LibraryPlan:
+                 layout: Optional[str] = None, savedisk: bool = False,
+                 labels: bool = True, platform: Any = None, ratings: Any = None) -> LibraryPlan:
     """The combined plan: tidy + duplicates + the profile's rules + playlists of the kept multi-disk sets.
 
     Playlists are planned from the disks' FINAL paths (next to disk 1). Our own playlists that go
@@ -737,7 +733,7 @@ def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missin
     """
     from . import library, m3u
 
-    core = _plan_core(result, missing_dats, move_unmatched, False, layout, profile, platform)
+    core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings)
     root = result.root
     ops = core.ops
     sel = core.selection if core.selection is not None else library.Selection()

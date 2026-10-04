@@ -1363,7 +1363,7 @@ def _reason_mapping(unit: DcUnit, root: Path, reason_dir: str, plan: _Plan) -> d
             return cand
 
 
-def plan_units(result: DcScanResult, profile: Any = None, move_unmatched: bool = True,
+def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None,
                ) -> tuple[list[DcOp], Any, dict[int, DcOp]]:
     """The game-level ops for tidy (``profile`` None) or Build library; returns ``(ops, selection, owners)``."""
     from . import library
@@ -1406,7 +1406,7 @@ def plan_units(result: DcScanResult, profile: Any = None, move_unmatched: bool =
             items.append(library.Item(key=i, dat=u.game.rep.dat, rom=u.game.rep, style=tags.STYLE_REDUMP,
                                       path=u.path, member=None, disc_total=totals.get(u.game.name, 0)))
             key_of[i] = u
-        sel = library.select(items, profile, result_platform(result))
+        sel = library.select(items, profile, result_platform(result), ratings=ratings)
     decisions = sel.decisions
     unit_key = {id(u): i for i, u in key_of.items()}
     for u in sorted(keepers, key=lambda x: os.fspath(x.top).casefold()):
@@ -1459,16 +1459,12 @@ def plan_units(result: DcScanResult, profile: Any = None, move_unmatched: bool =
                             n_files=len(u.files), kind="rename", unmatched=True,
                             reason="left in place - " + (u.reason or "needs chdman to be identified")))
             continue
-        if not move_unmatched:
-            ops.append(DcOp(src=u.top, dst=u.top, status="skip", reason="unmatched - left in place (Move unmatched is off)",
-                            rom_name=u.stem, unit_kind=u.kind, n_files=len(u.files), kind="rename", unmatched=True))
-            continue
         mapping = _reason_mapping(u, root, UNMATCHED_DIR, plan)
         op = _unit_op(u, root, mapping, folder=UNMATCHED_DIR, reason=u.reason or "no Redump match")
         ops.append(op)
         _claim(plan, op)
     for f in result.junk:
-        ops.append(_junk_op(f, root, plan, move_unmatched, result.system.label if result.system else "Dreamcast"))
+        ops.append(_junk_op(f, root, plan, result.system.label if result.system else "Dreamcast"))
     _resolve(ops, plan)
     return ops, sel, owners
 
@@ -1485,7 +1481,7 @@ def _claim(plan: _Plan, op: DcOp) -> None:
         plan.claimed[_fold(d)] = op
 
 
-def _junk_op(f: Path, root: Path, plan: _Plan, move_unmatched: bool, label: str = "Dreamcast") -> DcOp:
+def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast") -> DcOp:
     parts = _parts(f, root)
     name = f.name
     base = dict(src=f, dst=f, rom_name=name, unit_kind="file", n_files=1, kind="rename", unmatched=True)
@@ -1495,8 +1491,6 @@ def _junk_op(f: Path, root: Path, plan: _Plan, move_unmatched: bool, label: str 
     if (low in organiser.KEEP_NAMES or f.suffix.lower() in organiser.KEEP_SUFFIXES or low.endswith(".m3u")
             or (len(parts) > 1 and parts[0].casefold() in organiser.KEEP_DIRS) or f.is_symlink()):
         return DcOp(status="skip", reason="left in place (frontend / user file)", **base)
-    if not move_unmatched:
-        return DcOp(status="skip", reason="unmatched - left in place (Move unmatched is off)", **base)
     dst = organiser.reason_destination(f, root, UNMATCHED_DIR)
     n = 1
     while not plan.free(dst):
@@ -1549,17 +1543,17 @@ def result_platform(result: Any = None) -> Any:
     return platforms.get_platform(system.platform)
 
 
-def plan_tidy(result: DcScanResult, move_unmatched: bool = True) -> list[DcOp]:
+def plan_tidy(result: DcScanResult) -> list[DcOp]:
     """Organise only: rename folder + CHD + sidecars to the Redump name; no rules."""
-    ops, _sel, _owners = plan_units(result, None, move_unmatched)
+    ops, _sel, _owners = plan_units(result, None)
     return ops
 
 
-def plan_library(result: DcScanResult, profile: Any, move_unmatched: bool = True, savedisk: bool = False,
-                 labels: bool = False) -> Any:
+def plan_library(result: DcScanResult, profile: Any, savedisk: bool = False,
+                 labels: bool = False, ratings: Any = None) -> Any:
     """Build library: the profile's rules plus tidy plus playlists of the kept multi-disc games."""
     from . import m3u
-    ops, sel, owners = plan_units(result, profile, move_unmatched)
+    ops, sel, owners = plan_units(result, profile, ratings)
     root = Path(result.root)
     if result.system is not None and not result.system.playlists:
         # PlayStation 2: PCSX2 does not read .m3u files - no playlist is written and none is touched

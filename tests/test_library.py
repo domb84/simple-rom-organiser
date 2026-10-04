@@ -663,12 +663,14 @@ class CatalogTests(unittest.TestCase):
         cat = library.rule_catalog("tosec")
         self.assertEqual([e["id"] for e in cat if e["kind"] == "exclude"], list(tags.RULES))
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
-        opts = {e["id"]: e for e in cat if e["kind"] == "option"}
+        opts = {e["id"]: e for e in cat if e["kind"] == "option" and e.get("group") != "ratings"}
         self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])
         for e in cat:
+            if e.get("group") == "ratings":
+                continue
             self.assertEqual(set(e), {"id", "field", "label", "kind", "default", "tokens", "description", "applies_to"}
                              | ({"default_value"} if "default_value" in e else set()))
             self.assertIn("tosec", e["applies_to"])

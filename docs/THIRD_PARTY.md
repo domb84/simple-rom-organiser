@@ -57,3 +57,15 @@ least three years after the release that shipped the binaries.
 The AppImage also contains a relocatable CPython (python-build-standalone, `install_only_stripped`), under the
 Python Software Foundation licence and the licences of its own bundled libraries (OpenSSL, SQLite, zlib, xz /
 liblzma, ...); see the licence files inside `usr/python/lib/python3.*/` of the image.
+
+## Data used at run time (not shipped)
+
+* **LaunchBox Games Database - community ratings.** Only when a rating filter is enabled (or **Download ratings** is
+  pressed) the app downloads `https://gamesdb.launchbox-app.com/Metadata.zip` (the database's public daily export, about
+  108 MB), keeps the platform, title, alternate names, `CommunityRating`, `CommunityRatingCount`, `DatabaseID` and release
+  year of the games of the systems this app supports in a small local index (`ratings/ratings.sqlite`) and deletes the
+  zip. No images, descriptions or other fields are kept. The ratings are shown as **"Ratings: LaunchBox Games Database
+  community ratings"** (rules panel, linking to https://gamesdb.launchbox-app.com/). At the time of writing (2026-10-04) the
+  Games Database pages and the LaunchBox help / forum pages we could read state no licence or terms of use for this
+  download; this document does not interpret that or give legal advice - read the site yourself before redistributing
+  anything derived from it. The index is a local cache, never committed or redistributed by this project.

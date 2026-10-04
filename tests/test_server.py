@@ -449,7 +449,7 @@ class StaticAndSecurityTests(ServerTestCase):
         self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
         self.assertEqual(headers["Cache-Control"], "no-store")
-        for element_id in ("platform-select", "dat-cards", "organise-dest-filters", "kick-dest", "kick-apply-btn"):
+        for element_id in ("home-groups", "sys-tabs", "tab-browse", "dat-cards", "organise-dest-filters", "kick-dest", "kick-apply-btn"):
             self.assertIn(f'id="{element_id}"', html)
 
     def test_static_assets(self) -> None:
@@ -1052,20 +1052,21 @@ class ReviewFixTests(ServerTestCase):
             dirs = self.get(f"/api/fs/list?path={self.q(str(self.roms))}")["dirs"]
             self.assertIn(bad, [d["name"] for d in dirs])
 
-    def test_plan_passes_missing_dats_and_unmatched_option(self) -> None:
+    def test_plan_passes_missing_dats_and_ignores_move_unmatched(self) -> None:
         seen: list[dict[str, Any]] = []
         organiser = sys.modules["romorg.organiser"]
         old = organiser.plan_renames
 
-        def plan(result: Any, missing_dats: Any = (), move_unmatched: bool = True) -> list[RenameOp]:
-            seen.append({"missing": list(missing_dats), "move": move_unmatched})
+        def plan(result: Any, missing_dats: Any = ()) -> list[RenameOp]:
+            seen.append({"missing": list(missing_dats)})
             return old(result)
         organiser.plan_renames = plan
         self.scan()
         a = self.post("/api/organise/plan", {})
-        b = self.post("/api/organise/plan", {"move_unmatched": False})
-        self.assertEqual(seen, [{"missing": [KICKDISKS], "move": True}, {"missing": [KICKDISKS], "move": False}])
-        self.assertEqual((a["move_unmatched"], b["move_unmatched"]), (True, False))
+        b = self.post("/api/organise/plan", {"move_unmatched": False})   # stale client: accepted and ignored
+        self.assertEqual(seen, [{"missing": [KICKDISKS]}])               # the second plan is the cached first
+        self.assertNotIn("move_unmatched", a)
+        self.assertEqual(a["actionable"], b["actionable"])
         self.assertEqual(a["missing_dats"], [KICKDISKS])
         self.assertEqual(a["warnings"], [])
 
@@ -1324,11 +1325,11 @@ class NoIntroServerTests(ServerTestCase):
         organiser = sys.modules["romorg.organiser"]
         old_plan = organiser.plan_renames
 
-        def plan_renames(result: Any, missing_dats: Any = (), move_unmatched: bool = True,
+        def plan_renames(result: Any, missing_dats: Any = (),
                          latest_only: bool = False, layout: Any = None) -> list[Any]:
             if result is not test.snes_result:
                 return old_plan(result)
-            test.calls["plan_kw"].append({"latest_only": latest_only, "layout": layout, "move": move_unmatched})
+            test.calls["plan_kw"].append({"latest_only": latest_only, "layout": layout})
             ops = [NRenameOp(root / "mario.sfc", root / self.r_usa.name, "move", rom_name=self.r_usa.name),
                    NRenameOp(root / "sub" / "mario r1.smc", root / "Mario (USA) (Rev 1).smc", "move",
                              rom_name=self.r_usa1.name),
@@ -1516,7 +1517,7 @@ class NoIntroServerTests(ServerTestCase):
         plan = self.post("/api/organise/plan", {})
         self.assertFalse(plan["latest_only"])
         self.assertEqual(plan["layout"], "flat")
-        self.assertEqual(self.calls["plan_kw"][-1], {"latest_only": False, "layout": "flat", "move": True})
+        self.assertEqual(self.calls["plan_kw"][-1], {"latest_only": False, "layout": "flat"})
         self.assertEqual(plan["by_dest"], {"": 2, "_unmatched": 1})
         root_only = self.post("/api/organise/plan", {"dest": "."})  # "." = the console folder itself
         self.assertEqual([i["from"] for i in root_only["items"]],
@@ -1650,7 +1651,7 @@ class LibraryServerTests(ServerTestCase):
         self.calls.update({"plan_library": [], "library_apply": []})
         organiser = sys.modules["romorg.organiser"]
 
-        def plan_library(result: Any, profile: Any, missing_dats: Any = (), move_unmatched: bool = True,
+        def plan_library(result: Any, profile: Any, missing_dats: Any = (),
                          layout: Any = None, savedisk: bool = False, labels: bool = True,
                          platform: Any = None) -> LPlan:
             test.calls["plan_library"].append({"profile": profile, "savedisk": savedisk, "labels": labels,
@@ -1728,7 +1729,7 @@ class LibraryServerTests(ServerTestCase):
     def test_profile_info_has_catalog_and_new_fields(self) -> None:
         info = self.get("/api/library/profile?platform=Commodore%20Amiga")
         self.assertEqual(info["style"], "tosec")
-        kinds = {e["kind"] for e in info["catalog"]}
+        kinds = {e["kind"] for e in info["catalog"] if e.get("group") != "ratings"}
         self.assertEqual(kinds, {"exclude", "keep_flag", "option"})
         ids = [e["id"] for e in info["catalog"] if e["kind"] == "keep_flag"]
         self.assertEqual(ids, ["cr", "h", "t", "a", "f", "tr"])
@@ -1823,6 +1824,30 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual(res["profile"]["region_priority"], ["Japan", "Europe"])
         self.assertEqual(res["regions"][:3], ["Japan", "Europe", "Argentina"])
         self.assertFalse(res["profile"]["one_per_game"])
+
+    def test_region_priority_full_reorder_round_trips(self) -> None:
+        platforms = sys.modules["romorg.platforms"]
+        ni = types.SimpleNamespace(name="NI Test", dats=("NI",), m3u_dats=(), kickstart_dat=None, latest_dats=("NI",),
+                                   best_variant_dats=(), language_dats=("NI",), region_dats=("NI",), source="nointro")
+        platforms.PLATFORMS["NI Test"] = ni
+        full = self.get("/api/library/profile?platform=NI%20Test")["regions"]
+        self.assertGreater(len(full), 40)
+        moved = ["Taiwan"] + [r for r in full if r != "Taiwan"]            # what a drag of the last row to the top sends
+        res = self.post("/api/library/profile", {"platform": "NI Test", "region_priority": moved})
+        self.assertEqual(res["regions"], moved)
+        self.assertEqual(res["profile"]["region_priority"], moved)
+        saved = json.loads((self.data / "config.json").read_text())["library"]["NI Test"]
+        self.assertEqual(saved["region_priority"], moved)
+        self.assertEqual(self.get("/api/library/profile?platform=NI%20Test")["regions"], moved)   # after a reload
+        # duplicates collapse (first wins), a short list keeps the others after it alphabetically
+        res = self.post("/api/library/profile", {"platform": "NI Test", "region_priority": ["Japan", "USA", "Japan"]})
+        self.assertEqual(res["profile"]["region_priority"], ["Japan", "USA"])
+        self.assertEqual(res["regions"][:2], ["Japan", "USA"])
+        self.assertEqual(sorted(res["regions"]), sorted(full))              # nothing lost
+        # unknown regions are refused, the saved order is untouched
+        status, _, _ = self.request("POST", "/api/library/profile", {"platform": "NI Test", "region_priority": ["Japan", "Atlantis"]})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.get("/api/library/profile?platform=NI%20Test")["regions"][:2], ["Japan", "USA"])
 
     def _vanish_plan(self) -> None:
         self.scan()
@@ -2000,6 +2025,321 @@ class LibraryServerTests(ServerTestCase):
         self.assertIn("info.catalog", js)
         for hard_coded in ("Pre-release / beta", "demo-playable"):
             self.assertNotIn(hard_coded, js)
+
+
+SNES_DAT = "Nintendo - Super Nintendo Entertainment System"
+N64_DAT = "Nintendo - Nintendo 64"
+
+
+def _hashes(data: bytes) -> dict[str, Any]:
+    return {"size": len(data), "crc32": f"{zlib.crc32(data) & 0xffffffff:08x}",
+            "md5": hashlib.md5(data).hexdigest(), "sha1": hashlib.sha1(data).hexdigest()}
+
+
+class ChecksumServerTests(unittest.TestCase):
+    """Amendment 15: DAT vs local checksums per result row, last-scan records, routes data (real core modules)."""
+
+    def setUp(self) -> None:
+        import array
+        import zipfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="romorg-cs-test-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(self.tmp / "data"), "ROMORG_OFFLINE": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        rng = random.Random(7)
+        blob = lambda n: bytes(rng.getrandbits(8) for _ in range(n))  # noqa: E731
+        self.snes = self.tmp / "snes"
+        self.snes.mkdir()
+        self.plain, self.hdr, self.zipped = blob(2048), blob(2048), blob(1024)
+        (self.snes / "Plain (USA).sfc").write_bytes(self.plain)
+        (self.snes / "weird.smc").write_bytes(b"\0" * 512 + self.hdr)           # 512-byte copier header
+        with zipfile.ZipFile(self.snes / "pack.zip", "w") as z:
+            z.writestr("Zipped (USA).sfc", self.zipped)
+        self.stray = blob(300)
+        (self.snes / "stray.bin").write_bytes(self.stray)
+        self.n64 = self.tmp / "n64"
+        self.n64.mkdir()
+        z64 = b"\x80\x37\x12\x40" + blob(4092)
+        a = array.array("H")
+        a.frombytes(z64)
+        a.byteswap()
+        (self.n64 / "dump.v64").write_bytes(a.tobytes())
+        self.z64 = z64
+        missing = blob(1024)
+        self.missing = missing
+
+        def cmp_dat(name: str, games: list[tuple[str, bytes]]) -> None:
+            out = [f'clrmamepro (\n\tname "{name}"\n\tdescription "{name}"\n\tversion "2026.08.01"\n)\n']
+            for game, data in games:
+                h = _hashes(data)
+                out.append(f'game (\n\tname "{game}"\n\trom ( name "{game}.sfc" size {h["size"]} crc {h["crc32"].upper()} '
+                           f'md5 {h["md5"].upper()} sha1 {h["sha1"].upper()} )\n)\n')
+            folder = self.tmp / "data" / "nointro"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"{name}.dat").write_text("".join(out))
+
+        cmp_dat(SNES_DAT, [("Plain (USA)", self.plain), ("Headered (USA)", self.hdr), ("Zipped (USA)", self.zipped),
+                           ("Absent (USA)", missing)])
+        cmp_dat(N64_DAT, [("Swapped (USA)", z64)])
+        self.srv = server.make_server("127.0.0.1", 0, token="t", auto_update=False)
+        self.port = self.srv.port
+        threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def call(self, path: str, body: Any = None, expect: int = 200) -> Any:
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data,
+                                     headers={"Content-Type": "application/json", "X-Romorg-Token": "t"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                self.assertEqual(resp.status, expect)
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            self.assertEqual(err.code, expect, err.read())
+            return {}
+
+    def scan(self, platform: str, folder: Path) -> dict[str, Any]:
+        self.call("/api/scan", {"platform": platform, "path": str(folder)})
+        end = time.time() + 30
+        while time.time() < end:
+            job = self.call("/api/job")
+            if job["status"] != "running":
+                self.assertEqual(job["status"], "done", job)
+                return job
+            time.sleep(0.02)
+        self.fail("scan timeout")
+
+    def rows(self, kind: str, **extra: Any) -> dict[str, Any]:
+        query = "&".join(f"{k}={v}" for k, v in {"kind": kind, "limit": 100, "checksums": 1, **extra}.items())
+        return self.call(f"/api/scan/results?{query}")
+
+    def row(self, kind: str, needle: str) -> dict[str, Any]:
+        return next(i for i in self.rows(kind)["items"] if needle in json.dumps(i))
+
+    SNES_PLATFORM = "Super Nintendo Entertainment System"
+
+    def test_plain_match_local_equals_dat(self) -> None:  # case 1
+        self.scan(self.SNES_PLATFORM, self.snes)
+        cs = self.row("matched", "Plain (USA).sfc")["checksums"]
+        h = _hashes(self.plain)
+        self.assertEqual(cs["kind"], "file")
+        self.assertEqual(cs["source"], "nointro")
+        self.assertEqual((cs["dat"][0]["crc32"], cs["dat"][0]["md5"], cs["dat"][0]["sha1"]), (h["crc32"], h["md5"], h["sha1"]))
+        local = cs["local"][0]
+        self.assertEqual((local["raw"]["crc32"], local["raw"]["sha1"]), (h["crc32"], h["sha1"]))
+        self.assertIsNone(local["raw"]["md5"])                       # MD5 is not computed while scanning: never invented
+        self.assertEqual(local["equal"], {"crc32": True, "md5": None, "sha1": True})
+        self.assertEqual((local["via"], local["normalised"], local["archive"]), ("raw", None, False))
+
+    def test_copier_header_shows_both_hashes_and_why(self) -> None:  # case 2 (SNES)
+        self.scan(self.SNES_PLATFORM, self.snes)
+        cs = self.row("matched", "weird.smc")["checksums"]
+        local = cs["local"][0]
+        h = _hashes(self.hdr)
+        raw_all = _hashes(b"\0" * 512 + self.hdr)
+        self.assertEqual(local["via"], "headerless")
+        self.assertIn("512", local["via_text"])
+        self.assertEqual(local["raw"]["crc32"], raw_all["crc32"])    # the file's own hash differs from the DAT ...
+        self.assertNotEqual(local["raw"]["crc32"], cs["dat"][0]["crc32"])
+        self.assertEqual((local["normalised"]["crc32"], local["normalised"]["sha1"]), (h["crc32"], h["sha1"]))
+        self.assertEqual(local["normalised"]["size"], h["size"])
+        self.assertEqual(local["equal"]["crc32"], True)              # ... the normalised one equals it
+        self.assertEqual(local["equal"]["sha1"], True)
+
+    def test_byteswapped_n64(self) -> None:  # case 2 (N64)
+        self.scan("Nintendo 64", self.n64)
+        local = self.row("matched", "dump.v64")["checksums"]["local"][0]
+        self.assertEqual(local["via"], "byteswapped")
+        self.assertIn("byte order", local["via_text"])
+        self.assertNotEqual(local["raw"]["crc32"], local["normalised"]["crc32"])
+        self.assertEqual(local["normalised"]["crc32"], _hashes(self.z64)["crc32"])
+        self.assertTrue(local["equal"]["crc32"])
+
+    def test_zip_member_only_crc(self) -> None:  # case 3
+        self.scan(self.SNES_PLATFORM, self.snes)
+        cs = self.row("matched", "Zipped (USA)")["checksums"]
+        local = cs["local"][0]
+        self.assertTrue(local["archive"])
+        self.assertEqual(local["member"], "Zipped (USA).sfc")
+        self.assertEqual(local["raw"], {"crc32": _hashes(self.zipped)["crc32"], "md5": None, "sha1": None})
+        self.assertEqual(local["equal"], {"crc32": True, "md5": None, "sha1": None})
+
+    def test_missing_has_only_dat_checksums(self) -> None:  # case 6
+        self.scan(self.SNES_PLATFORM, self.snes)
+        for kind in ("missing", "games"):
+            row = self.row(kind, "Absent (USA)")
+            cs = row["checksums"]
+            self.assertEqual(cs["local"], [])
+            self.assertEqual(cs["dat"][0]["sha1"], _hashes(self.missing)["sha1"])
+            self.assertEqual(cs["kind"], "missing")
+
+    def test_games_row_has_dat_and_local(self) -> None:
+        self.scan(self.SNES_PLATFORM, self.snes)
+        cs = self.row("games", "Plain (USA)")["checksums"]
+        self.assertEqual(cs["kind"], "file")
+        self.assertEqual(cs["local"][0]["equal"]["sha1"], True)
+
+    def test_unmatched_local_checksums(self) -> None:  # case 7
+        self.scan(self.SNES_PLATFORM, self.snes)
+        cs = self.row("unmatched", "stray.bin")["checksums"]
+        self.assertEqual(cs["kind"], "unmatched")
+        self.assertEqual(cs["dat"], [])
+        self.assertEqual(cs["local"][0]["raw"]["crc32"], _hashes(self.stray)["crc32"])
+        self.assertEqual(cs["local"][0]["raw"]["sha1"], _hashes(self.stray)["sha1"])
+        self.assertEqual(cs["local"][0]["equal"], {"crc32": None, "md5": None, "sha1": None})
+
+    def test_checksums_only_on_request_and_per_row_endpoint(self) -> None:
+        self.scan(self.SNES_PLATFORM, self.snes)
+        plain = self.call("/api/scan/results?kind=matched")
+        self.assertTrue(all("checksums" not in i for i in plain["items"]))
+        item = plain["items"][0]
+        self.assertIn("id", item)
+        detail = self.call(f"/api/scan/checksums?kind=matched&id={item['id']}")
+        self.assertEqual(detail["kind"], "file")
+        with_cs = self.rows("matched")["items"]
+        self.assertEqual(with_cs[item["id"]]["checksums"], detail)
+        self.call("/api/scan/checksums?kind=matched&id=999", expect=404)
+        self.call("/api/scan/checksums?kind=errors&id=0", expect=400)
+        # asking for checksums never pollutes the cached rows
+        self.assertTrue(all("checksums" not in i for i in self.call("/api/scan/results?kind=matched")["items"]))
+
+    def test_multi_disk_amiga_set_lists_every_disk(self) -> None:  # case 5
+        games = "Commodore Amiga - Games - [ADF]"
+        rng = random.Random(3)
+        disks = {n: bytes(rng.getrandbits(8) for _ in range(512)) for n in (1, 3)}
+        lines = ['<?xml version="1.0"?>', "<datafile>",
+                 f"<header><name>{games}</name><description>{games}</description><version>2025-01-30</version></header>"]
+        for n in (1, 2, 3):
+            data = disks.get(n, bytes(512))
+            name = f"Set (1990)(Pub)(Disk {n} of 3)"
+            lines.append(f'<game name="{name}"><description>{name}</description><rom name="{name}.adf" size="512" '
+                         f'crc="{zlib.crc32(data):08x}" md5="{hashlib.md5(data).hexdigest()}" sha1="{hashlib.sha1(data).hexdigest()}"/></game>')
+        lines.append("</datafile>")
+        dats = self.tmp / "data" / "dats"
+        dats.mkdir(parents=True, exist_ok=True)
+        (dats / f"{games} (TOSEC-v2025-01-30_CM).dat").write_text("\n".join(lines))
+        root = self.tmp / "amiga"
+        root.mkdir()
+        for n, data in disks.items():
+            (root / f"Set (1990)(Pub)(Disk {n} of 3).adf").write_bytes(data)
+        self.scan("Commodore Amiga", root)
+        cs = self.row("matched", "Disk 1 of 3")["checksums"]
+        d = cs["disks"]
+        self.assertEqual((d["total"], d["complete"]), (3, False))
+        by = {x["number"]: x for x in d["disks"]}
+        self.assertEqual(sorted(by), [1, 2, 3])
+        self.assertTrue(by[2]["missing"])
+        self.assertTrue(by[1]["this"] and not by[3]["this"])
+        self.assertEqual(by[3]["local"]["equal"]["sha1"], True)
+        self.assertEqual(by[3]["dat"]["sha1"], hashlib.sha1(disks[3]).hexdigest())
+
+    def test_last_scan_record_is_persisted_per_system(self) -> None:
+        rows = {p["name"]: p for p in self.call("/api/platforms")}
+        self.assertIsNone(rows[self.SNES_PLATFORM]["last_scan"])
+        self.assertEqual(rows[self.SNES_PLATFORM]["slug"], "super-nintendo-entertainment-system")
+        self.scan(self.SNES_PLATFORM, self.snes)
+        rows = {p["name"]: p for p in self.call("/api/platforms")}
+        rec = rows[self.SNES_PLATFORM]["last_scan"]
+        self.assertEqual((rec["have"], rec["total"], rec["missing"], rec["count_by"]), (3, 4, 1, "game"))
+        self.assertEqual(rec["folder"], str(self.snes))
+        self.assertEqual(rec["pct"], 75.0)
+        self.assertRegex(rec["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$")
+        self.assertIsNone(rows["Nintendo 64"]["last_scan"])
+        saved = json.loads((self.tmp / "data" / "config.json").read_text())["scan_records"]
+        self.assertEqual(set(saved), {self.SNES_PLATFORM})
+        self.assertLess(len(json.dumps(saved)), 1000)                # a small record, never result data
+        # a new server on the same data dir still knows it (cards survive a restart)
+        srv2 = server.make_server("127.0.0.1", 0, token="t", auto_update=False)
+        try:
+            again = {p["name"]: p for p in srv2.app.platforms_list({}, None)}
+            self.assertEqual(again[self.SNES_PLATFORM]["last_scan"]["have"], 3)
+        finally:
+            srv2.server_close()
+
+    def test_job_carries_its_platform(self) -> None:
+        job = self.scan(self.SNES_PLATFORM, self.snes)
+        self.assertEqual(job["platform"], self.SNES_PLATFORM)
+
+    def test_scan_record_helper_and_slugs(self) -> None:
+        rec = server.scan_record({"count_by": "rom", "dat_total": 10, "have": 4, "missing": 6, "matched_files": 5,
+                                  "unmatched_files": 1, "duplicates": 1, "chd_files": 2, "identified": 1, "verified": 1,
+                                  "raw": 0}, "/x", ["D"], now=0)
+        self.assertEqual((rec["total"], rec["have"], rec["pct"], rec["identified"], rec["dats"]), (10, 4, 40.0, 1, ["D"]))
+        self.assertNotIn("chd_files", server.scan_record({"dat_total": 1}, "/x"))
+        self.assertEqual(server._slug("Commodore Amiga - WHDLoad"), "commodore-amiga-whdload")
+        slugs = [p["slug"] for p in self.call("/api/platforms")]
+        self.assertEqual(len(slugs), len(set(slugs)))
+        self.assertTrue(all(s and s == s.lower() and "/" not in s and " " not in s for s in slugs))
+
+
+class UiStructureTests(unittest.TestCase):
+    """The system-cards + per-system-tabs layout (Amendment 15): ids, routes and what must not be hard-coded."""
+
+    def test_html_has_home_tabs_and_global_header(self) -> None:
+        html = server.read_static("index.html").decode()
+        for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups",
+                           "view-system", "back-link", "sys-tabs", "tabbtn-overview", "tabbtn-library", "tabbtn-browse",
+                           "tabbtn-tools", "tab-overview", "tab-library", "tab-browse", "tab-tools", "folder-input",
+                           "scan-btn", "summary-cards", "library-rules-summary", "tool-convert", "tool-verify",
+                           "tool-kickstart", "browse-gate", "lib-gate", "result-table"):
+            self.assertIn(f'id="{element_id}"', html)
+        for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"'):
+            self.assertNotIn(gone, html)
+        self.assertEqual(html.count('role="tab"'), 4)
+        self.assertNotIn("http://", html.replace("http://www.w3.org", ""))      # no external resources
+        self.assertNotIn("https://", html)
+
+    def test_js_routes_and_lazy_browse(self) -> None:
+        js = server.read_static("app.js").decode()
+        for needle in ("#/system/", "const Route", "parse(hash)", 'addEventListener("hashchange"', "function applyRoute",
+                       "function renderBrowse", "browseDirty", "history.replaceState", "/api/scan/checksums", "checksums:",
+                       "function checksumPanel", "Show checksums", "ArrowRight", "function systemCard", "p.last_scan"):
+            self.assertIn(needle, js)
+        for system in ("Dreamcast", "PlayStation", "Nintendo 64", "WHDLoad\"", "Game Boy"):   # systems come from /api/platforms
+            self.assertNotIn(f'"{system}', js.replace('"WHDLoad"', ""))
+        self.assertNotIn("src=\"http", js)       # (a docs hyperlink is fine; no external script / image is loaded)
+        css = server.read_static("style.css").decode()
+        self.assertNotIn("url(http", css)
+        self.assertNotIn("@import", css)
+        self.assertIn(":focus-visible", css)
+
+
+class RegionSortableUiTests(unittest.TestCase):
+    """The drag-and-drop region priority list (Amendment 16): markup / script contract; behaviour is checked in a browser."""
+
+    def setUp(self) -> None:
+        self.js = server.read_static("app.js").decode()
+        self.css = server.read_static("style.css").decode()
+
+    def test_pointer_drag_keyboard_and_buttons_exist(self) -> None:
+        for needle in ("function sortableList", "data-drag-handle", '"pointerdown"', "pointermove", "pointerup", "pointercancel",
+                       "setPointerCapture", "requestAnimationFrame", "aria-live", 'role: "status"', "aria-label", '"Move to top"',
+                       "row-top", "row-up", "row-down", 'key === "Escape"', 'key === "ArrowUp"', 'key === "ArrowDown"',
+                       'type: "search"', "Find a ${noun}", "region_priority: order", "Could not save the region priority"):
+            self.assertIn(needle, self.js, needle)
+        self.assertNotIn("draggable", self.js)              # HTML5 drag and drop is unreliable on touch screens
+        self.assertNotIn("dragstart", self.js)
+
+    def test_css_touch_action_only_on_the_handle_and_targets(self) -> None:
+        self.assertRegex(self.css, r"\.drag-handle\s*\{[^}]*touch-action:\s*none")
+        self.assertEqual(self.css.count("touch-action: none"), 1)
+        self.assertRegex(self.css, r"\.sortable-list\s*\{[^}]*height:\s*min\(360px,\s*60vh\)")
+        self.assertRegex(self.css, r"\.drag-handle\s*\{[^}]*width:\s*44px")
+        self.assertIn(".sortable-row:focus-visible", self.css)
+        self.assertIn(".sr-only", self.css)
+        self.assertIn(".sortable-divider", self.css)
+
+    def test_no_hard_coded_region_list_and_no_move_unmatched_option(self) -> None:
+        for region in ("United Kingdom", "Argentina", "Scandinavia", "Hong Kong", "New Zealand"):
+            self.assertNotIn(region, self.js)
+        html = server.read_static("index.html").decode()
+        for gone in ("lib-move-unmatched", "organise-move-unmatched"):
+            self.assertNotIn(gone, html)
+            self.assertNotIn(gone, self.js)
+        self.assertNotIn("move_unmatched", self.js)
+        self.assertNotIn("Move unmatched", html)
 
 
 class MainTests(unittest.TestCase):

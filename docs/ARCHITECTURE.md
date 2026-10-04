@@ -1659,3 +1659,302 @@ on high-entropy audio; the whole-disc effect is what matters (Toy Commander 372 
 Pipes instead of shared memory; workers are `nice` +5; the scheduler never reads more than the chunks it needs (no whole-file buffering). **Not verified:** Flycast / PCSX2 loading CHDs made by
 this path, exFAT, a bundled chdman on non-SteamOS libraries (it needs libSDL2 / libz / libzstd / libstdc++ from the system; the fallback is reported), the 7z listing speed-up, the generated-gdi
 path on discs whose cue lacks markers (refused by design), real-file results for the old code on the whole Dreamcast folder (extrapolated from the 32-title sample).
+
+
+# AMENDMENT 15 - system cards + per-system tabs UI, last-scan records, checksum view (later wins)
+
+## UI structure (replaces the step layout; the top step bar and per-system step numbers are gone)
+* Global header (every view): title / home link, updates line + **Check for updates**, **Quit**, one **job bar** (`#job-bar`: the running job of ANY kind with its system name, progress, Cancel; a finished job hides itself after 8 s).
+* Hash routes, no server support needed (the server still only serves `/` and `/static/*`): `#/` = home; `#/system/<slug>/<tab>[?view=&have=&dat=]`, `<tab>` = `overview | library | browse | tools`. `slug` comes from `/api/platforms` (`slug`, `server._slug`: lower-case, runs of non-alphanumerics -> `-`); an unknown slug returns to `#/`, `tools` on a system without tools falls back to `overview`. Tab buttons change the hash (Back / Forward / reload work); changing the Browse list / filters uses `history.replaceState`.
+* Home: one card per system from `/api/platforms`, grouped by what the system IS (disc layout -> *Disc systems*, No-Intro -> *Cartridge consoles*, else *Computers*); primary button = Set folder (no folder) -> Scan (no record, or the record is of another folder) -> Build library (opens `#/system/<slug>/library`). Live progress of a running job is drawn on the card of `job.platform`.
+* System page: Overview (folder field, DAT status + collapsible DAT table, Scan, summary cards that link to Browse), Library (rules panel collapsed to a one-line summary built from `/api/library/profile`: exclusions on, languages, `ranking_short` or the top regions, keep-flags that are off, options on; Preview / Build / Undo; *Advanced* keeps Organise + M3U), Browse (built lazily: `renderBrowse` only runs when the tab is open; `browseDirty` marks a rebuild), Tools (`tool-convert` if `convertible`, `tool-verify` if game-folder layout, `tool-kickstart` if `has_kickstart`; Tools tab hidden if none). Scan-dependent tabs show *Scan first* + button without an in-memory scan. The rule counts (`/api/library/plan?limit=1`) are fetched only while the Library tab is open.
+* Touch targets >= 44 px, `:focus-visible` rings, tablists support arrow keys, the page never scrolls horizontally (wide checksum tables scroll inside their own box).
+
+## API additions
+* `GET /api/platforms` rows gain `slug` and `last_scan` (the record below or `null`).
+* Jobs (`/api/job`, `POST` answers) gain `platform` (the system the job works on).
+* `GET /api/library/profile` gains `ranking_short` (`"CD32 over AGA over OCS"` or `""`).
+* `config.json` key `scan_records`: `{platform: {at, folder, count_by, total, have, missing, pct, matched_files, unmatched_files, duplicates, errors, dats, [chd_files, identified, verified, raw]}}`, written by `App._record_scan` after EVERY completed scan (also the re-scans after organise / library / convert / verify) through `paths.update_config` (same lock as every other writer); `server.scan_record()` builds it; never lists or per-file data.
+* `GET /api/scan/results` rows of `matched | missing | unmatched | games` carry `id` (index in the unfiltered list); with `checksums=1` each row of the PAGE also carries `checksums` (built per page from the scan in memory - cached rows are not touched, so pages stay fast). `GET /api/scan/checksums?kind=&id=` returns the same payload for one row (400 for other kinds, 404 for an unknown id).
+
+## Checksum payload (`App._checksums`; hashes are lower-case hex, `null` = not known, nothing is computed or guessed)
+```
+{"kind": "file" | "disc" | "missing" | "unmatched" | "disc_unmatched" | "none",
+ "source": "tosec|nointro|whdload|redump", "dat_name": "...",
+ "dat":   [{"name","size","crc32","md5","sha1"}, ...],            // the DAT roms (a set's alternates; the primary rom of a match)
+ "local": [{"file","member","archive","size",
+            "raw": {"crc32","md5","sha1"},                         // what the scan knows of the file as stored (md5 is always null: scans hash CRC32 + SHA-1; an archive member has CRC32 only)
+            "via": "raw|headerless|byteswapped", "via_text": "...",
+            "normalised": null | {"crc32","md5","sha1","size"},    // the hashes of the normalised content that matched (alt matches)
+            "equal": {"crc32","md5","sha1"}}],                     // true/false when both sides know the hash, else null; computed on `normalised` when present
+ "also_named": n, "more_files": n,
+ "disks": {"name","total","complete","disks":[{"number","missing", "dat", "local", "this"}]}}   // multi-disk sets (m3u.group_disk_sets); missing disks have no hashes
+disc kinds: {"kind":"disc","game","level","disc_kind",
+ "tracks":[{"number","type","size","dat":{name,size,crc32,md5,sha1},"local":{crc32,md5,sha1}|null,
+            "state":"hashed|length|header|none","equal":{...}}],      // length = audio identified by length only; header = a DVD CHD's header SHA-1 (not decoded); none = nobody has the game
+ "local":[{"file","size","chd_sha1","kind"}]}
+```
+Sources: the `Match` / `Entry` objects of the scan (`ScanState.sources`, `match_index`, `disk_sets` are built lazily), the DAT `sets()` and, for discs, `DcScanResult.index` / `units`.
+
+## Verified
+Headless Brave (DevTools protocol) at 1280x800 and 900x800 against a temp data dir with copies of the real DATs and synthetic ROMs (see the final report of the change); tests: `ChecksumServerTests`, `UiStructureTests` (tests/test_server.py), the per-track disc test in tests/test_dc_server.py.
+
+
+# AMENDMENT 16 - unmatched files always move; drag-and-drop region priority (later wins)
+
+## A. "Move unmatched files into `_unmatched/`" is gone
+* The option is removed everywhere: the Build library checkbox (`lib-move-unmatched`), the Advanced organise checkbox
+  (`organise-move-unmatched`), their handlers / request payloads, the `move_unmatched` parameter of `organiser.plan_renames`,
+  `organiser.plan_library`, `organiser._plan_core`, `organiser._Planner`, `discsys.plan_units|plan_tidy|plan_library` and the
+  `False` branches (the "left in place (moving unmatched files is off)" skip rows). Behaviour is the former default (True).
+  This supersedes every mention of `move_unmatched` / "Move unmatched" in the amendments above.
+* Server: `POST /api/organise/plan|apply`, `POST /api/library/plan|apply|vanished` and `GET /api/scan/results?kind=rename` still
+  ACCEPT a `move_unmatched` field from a stale client and ignore it (no 400). The plan caches are keyed by `latest_only`
+  (`ScanState.rename_plans`) and `(savedisk, labels)` (`library_plans`); the plan response no longer carries `move_unmatched`.
+* The protections that make always-moving safe are unchanged: the over-broad folder guard (`/`, home, drive roots, the app data
+  dir), frontend media / save dirs and keep-files left alone, symlinks, hidden files and user M3Us untouched, reserved folders,
+  folders of DATs that are not installed, preview first (an "Unmatched -> `_unmatched/`" card and, in the confirmation, "N unmatched
+  file(s) -> `_unmatched/`"), the extra warnings dialog and the undo log.
+* Behaviour change in one corner: a stray file squatting on a game's target name is now moved to `_unmatched/` first, so the game can
+  take its place in the same apply (before, with the option off, that case was a `conflict`). Nothing is overwritten (test
+  `test_never_overwrites_an_existing_target`).
+
+## B. Region priority list = reusable `sortableList` component (static/app.js)
+* Pointer Events, no HTML5 drag-and-drop: a `.drag-handle` (44 px wide, `touch-action: none` on the handle ONLY, so a swipe on the rest
+  of the row still scrolls the list) starts the drag on `pointerdown`; `pointermove|up|cancel` are listened to on `window`
+  (+ `setPointerCapture` on the list, because the row that holds the handle is re-inserted in the DOM while it moves). A fixed-position
+  ghost follows the pointer, the real row stays in the list as the dashed placeholder (= the drop indicator) and moves live; the ghost
+  shows the position it would get. `requestAnimationFrame` auto-scroll (up to 18 px / frame) when the pointer is within 64 px of the
+  list's top / bottom edge. Escape or `pointercancel` restores the order.
+* Keyboard: roving tab stop on the rows (arrows move focus; Home / End), Space / Enter picks up, Up / Down / Home / End move,
+  Space / Enter / Tab drop, Escape cancels; an `aria-live` region (`role=status`) announces pick-up, each position, drop, cancel.
+  Each row also has **Top** (new), up and down buttons (44 px).
+* The list is the FULL region order from the server (`profile_info.regions`, never a hard-coded list). The filter ("Find a region...")
+  only HIDES rows (matches highlighted; the divider is hidden while filtering); a drop puts the row before the next visible row (or after
+  the last visible one), hidden rows keep their relative order, so the saved list is always a permutation of all regions.
+* Fixed list height `min(360px, 60vh)` (no layout shift when filtering; the "no match" line lives inside the list). The first 4 rows keep
+  the highlight and a "Prioritised / Everything else" divider follows row 4.
+* Persistence: `commitRegionOrder` updates `info.regions` at once (optimistic), then ONE debounced (250 ms, coalescing rapid button
+  clicks) `POST /api/library/profile {platform, region_priority: [full list]}`; saves are serialised. On failure the list is rolled back
+  to the last confirmed order and a toast `Could not save the region priority: ...` is shown. The rules panel is NOT re-rendered after a
+  successful save (so scroll position and focus stay); the summary line is refreshed in place (`renderRulesSummary`).
+* The language "Preferred first" pills keep their ▲ / ▼ buttons (pills wrap on several lines; a handle was not cheap there).
+
+## Verified
+Headless Brave over DevTools (injected mouse AND touch input, which produce real `pointerType` mouse / touch events), 1280x800 and 900x800:
+bottom-to-top drag with auto-scroll, mid-drag Escape, keyboard pick-up / move / drop / cancel, Top button, filter-then-drag,
+failed-save rollback, one POST per drop, saved order after a server restart, touch swipe on a row scrolls the list. Not verified:
+real touchscreen hardware, a physical gamepad through Steam Input.
+
+
+
+# AMENDMENT 17 - library totals on the Overview, and the "Recalculate preview" affordance (later wins)
+
+## A. Library totals ("With your library rules: have N of M games")
+Code: `romorg/totals.py` (new), `library.game_key`, `server.App.library_totals`, `static/*`.
+
+* **Meaning.** *M* (the TARGET) = the games the system's current `LibraryProfile` keeps when EVERY rom of the platform's DATs is present
+  (`library.select` over the whole DAT). *N* = the games of that target the user owns in at least one passing version = `library.select`
+  over the user's matched files (already in memory; no file is touched), counted per GAME. A multi-disk game needs a complete set
+  (`Decision.action == incomplete`, or a Redump `keep` with `Decision.missing`, is not "have"). Applies to every system (Amiga Games +
+  Workbench / Kickstart-Disks / Firmware, WHDLoad, the 4 No-Intro consoles, the 3 Redump disc systems).
+* **Game identity** = `library.game_key(item)` = `(dat, tags.game_key(tags))` - exactly how `select` groups variants: TOSEC / WHDLoad
+  `tags.identity_key` (title, country, publisher, edition and status tags; language, chipset, version, disk are NOT part of it), No-Intro /
+  Redump `tags.game_key` (title, status, product tags; regions, languages, versions and DISC NUMBERS are not part of it, so a 2-disc
+  Redump game is ONE game). A disk BORROWED from another edition (`Decision.codes` has `borrowed` and `set_id` is the borrowing set's id)
+  is no ownership of its own game and is skipped in both selections.
+* **Target items** (`totals.target_items`): one item per ROM (TOSEC), per set (No-Intro / WHDLoad: the first of its alternate roms), per
+  disc (Redump, `DcIndex.games`, `disc_total` from `disc_totals()`), `form == ""`. **User items** (`totals.user_items`): `organiser.matched_units`
+  de-duplicated by `(dat, rom name, form)` (copies of one rom have identical decisions), or one item per CHD game for the disc systems
+  (as `discsys.plan_units`).
+* **Numbers** (`totals.combine`): `have_games` = user games kept AND in the target; `not_preferred` = of those, games whose kept rom names do
+  not intersect the target's kept names for that game (one-per-game: "the version you would keep differs from the one the rules pick for the
+  full DAT"; with several kept versions per game: none of yours is among the target's); `owned_but_excluded` = owned games all of whose
+  variants are excluded (beta / bad dump / other language ...; their identity is usually not even in the target); `owned_incomplete` =
+  owned multi-disk games without a complete set; `owned_outside_target` = kept games that are no target game (changed DAT); `owned_games` =
+  distinct game keys of the user's files, so `have + owned_but_excluded + owned_incomplete + owned_outside_target == owned_games` and
+  `have <= target`. `target_incomplete` = games the DAT itself only has in part (cannot ever be complete: not in M); `by_dat` = `{dat: {target, have}}`.
+* **Background computation** (`totals.TotalsManager`): ONE daemon worker thread, never inside a request or a scan job. `request()` registers what is
+  wanted `(platform, profile signature, DAT signature, scan serial)` and returns at once. Keys: target = `(sha1(profile.to_dict()), sha1(DAT names +
+  paths + mtimes))`, user part = `(ScanState.serial, profile signature, DAT signature)`. Results are cached in memory per platform; the same key is
+  never computed twice (polling is free); a result whose key was superseded while it ran is dropped (`discarded`); a failure is cached and reported
+  (`error`), not retried in a loop. While new numbers are computed the previous ones stay in the answer with `stale: true`. The worker holds the
+  `dat_lock` only through `App._platform_dats`. `ScanState.serial` (new field, also `scan.id` in `GET /api/status`) changes with every scan / re-scan.
+* **Persistence**: after every target computation `config.json["library_totals"][platform] = {target_games, target_incomplete, by_dat, profile_signature,
+  dats_signature, computed_at}` (counts only, written through `paths.update_config`). When it matches the current rules + DATs and no scan is loaded,
+  the answer is instant and nothing is computed.
+* **Endpoint** `GET /api/library/totals?platform=` (default platform when omitted; 400 for an unknown one):
+  `{"platform","available","scanned","calculating","stale","error","computed_at","profile_signature","target_games","target_incomplete","have_games","missing_games",
+  "percent","not_preferred","owned_but_excluded","owned_incomplete","owned_outside_target","owned_games","by_dat"}`; `available: false` = no DAT of the system
+  is installed; `have_games` & co. are `null` until a scan of THAT platform is loaded and computed. Invalidation is by key (a rule change, a DAT update, a
+  new scan).
+* **Measured** (real DATs, default profiles, this machine): Amiga (all 4 DATs) M = 3,656 games in 5.0 s (Games [ADF] 3,591; Workbench 10; Kickstart-Disks 5; Firmware 50; DAT
+  load 0.8 s); WHDLoad 2,763 in 0.3 s; N64 402 / NES 2,650 / GBA 1,438 / SNES 1,110 (0.1-0.6 s); Dreamcast 381 games (399 kept discs), PlayStation 2,150
+  games (2,270 kept discs), PlayStation 2 3,167 games (3,188 kept discs) in 0.2 / 1.4 / 1.6 s. Amiga Games with borrowing OFF = 3,578 (the 2026-10-02
+  simulation); borrowing completes 13 more games. 31 Amiga games, 18 PlayStation and 10 PlayStation 2 games are only partly in their DAT (`target_incomplete`).
+
+## B. Previews: Recalculate, out of date, Apply blocked
+* Every Preview button (`lib-plan-btn`, `plan-btn`, `convert-plan-btn`, `m3u-plan-btn`, `kick-plan-btn`) is driven by `Previews` (app.js): states
+  `none | busy | ready | stale | error`. Label: first press = its own label; afterwards **Recalculate preview** + refresh icon, status line
+  `Calculated HH:MM · N files` (`role=status`, `aria-live=polite`) and the hint "Recalculates with your current rules and folder contents"; busy =
+  spinner + "Calculating..." (button disabled, `aria-busy`); error = "Try again" + the message.
+* **Stale** (the preview stays on screen): a banner (`.pv-banner`, with its own Recalculate button) "Rules changed since this preview" /
+  "Options changed ..." / "The folder was scanned again since this preview", dimmed output (`.pv-stale`), the Preview button highlighted
+  (`btn-primary`, ring), and the matching Apply button disabled (`data-stale="1"` is honoured by `Jobs.setRunning` next to `data-blocked` /
+  `data-busy`) - also while the recalculation runs or failed. Triggers: `profileChanged` and the "latest only" box (library, organise, convert), the
+  labels / save-disk boxes (library, M3U playlists), every scan (`applyScan` -> `Previews.onScan`: same system = stale, other system / no scan = dropped).
+  A reload of the table (paging / filters) returns the CURRENT plan and so makes it fresh again. Jobs that finish (build, undo, convert, playlists)
+  re-scan, mark the old preview stale and re-run it when it was open.
+* **Server**: `POST /api/library|organise|convert|m3u/plan` accept `refresh: true` (the Recalculate button) and drop the cached plans first.
+  `POST /api/library/plan` returns `plan_id` (`<scan serial>.<profile signature>.<savedisk><labels>`) and `files`; `POST /api/library/apply` accepts the
+  `plan_id` the client confirmed and answers 409 `stale_plan` when it no longer matches (the UI sends it; absent = old behaviour). Independently of that,
+  Apply ALWAYS runs on a plan built for the CURRENT saved profile: `_library_plan` compares the cached plan's `profile` with the saved one and rebuilds
+  on any difference (before: only profile saves through the API cleared the cache). The plan caches stay keyed by `(savedisk, labels)` and are dropped with
+  the `ScanState` on every re-scan.
+
+## Verified
+Headless Brave over DevTools at 1280x800 and 900x800 (temp `ROMORG_DATA_DIR` with copies of the real DATs, 62 synthetic ADFs patched into the DAT copy, one real
+Dreamcast CHD): totals unscanned -> scanned -> after a rule change (stale numbers + "recalculating..." -> new numbers), upgrade / excluded / incomplete lines, "Scan to see
+how many you have" (N64), Preview -> Calculating... -> Recalculate preview, stale banner + disabled Build after a rule / option / scan change, fresh plan after
+recalculating, the error state and Try again, a Build library run, no console errors. Not verified: real touch hardware, a gamepad, screen readers (the live regions
+are in place).
+
+
+# AMENDMENT 18 - game ratings and the rating filter of the library rules (LaunchBox Games Database; later wins)
+
+Code: `romorg/ratings.py` (new: download, streaming parser, sqlite index, matching), `library.py` (profile fields, `RatingContext`,
+`apply_ratings`, `target_cutoff`, `rating_coverage`, `rom_title`, catalog group, vanish hints), `totals.py`, `autoupdate.py`
+(`ratings` source), `paths.ratings_dir()`, `server.py`, `static/*`, `tests/test_ratings.py`. Python stdlib only.
+
+## A. Source and compliance
+`https://gamesdb.launchbox-app.com/Metadata.zip` (about 108 MB, rebuilt daily; `HEAD` gives `Last-Modified` / `ETag`; free, no key; `Metadata.xml` inside
+is about 512 MB, plus `Mame.xml`, `Files.xml`, `Platforms.xml` that are never read). `<Game>`: `Name`, `Platform`, `ReleaseYear` / `ReleaseDate`,
+`DatabaseID`, `CommunityRating` (0-5 float; absent or 0 = unrated), `CommunityRatingCount`, ...; `<GameAlternateName>`: `AlternateName`, `DatabaseID`,
+`Region` (no platform of its own: the game's DatabaseID links it; 70,970 of them on 2026-10-04). Platform strings used (`ratings.LB_PLATFORMS`):
+`Commodore Amiga` (TOSEC Amiga AND WHDLoad), `Nintendo Game Boy Advance`, `Nintendo 64`, `Nintendo Entertainment System`,
+`Super Nintendo Entertainment System`, `Sega Dreamcast`, `Sony Playstation`, `Sony Playstation 2`. A system without an entry has no Ratings group.
+**Terms**: none could be found - the Games Database pages and the LaunchBox help / forum pages that were read state no licence, terms of use or
+attribution requirement for the download (see `docs/THIRD_PARTY.md`: credit line "Ratings: LaunchBox Games Database community ratings", shown in the
+rules panel, README, THIRD_PARTY; no legal conclusion is drawn).
+
+## B. Profile fields (`library.LibraryProfile`, persisted per platform like the others; old profiles load with the defaults)
+| field | type / default | meaning |
+|---|---|---|
+| `min_rating` | `float` 0.1-10 or `None` (default None = off) | rated games below it are excluded (`0` / out of range = off; rounded to 0.1) |
+| `top_n` | `int` >= 1 or `None` (None = off) | keep the N best-rated games |
+| `min_votes` | `int` >= 1, default 5 | fewer votes = the game counts as UNRATED |
+| `keep_unrated` | `bool`, default False | with a filter set, games without a usable rating are kept IN ADDITION |
+| `rank_scope` | `"dat"` (default) \| `"owned"` | rank / top N against the whole filtered DAT target set, or only the games you own |
+`rating_active` = `min_rating` or `top_n` set. **With neither set nothing changes and no rating data is needed** (`select` never looks at ratings).
+
+## C. The rule (`library.select(items, profile, platform, ratings=None)` -> `_select_base` + `apply_ratings` + `_vanished`)
+* Applied AFTER every other rule (exclusions, language, keep-flags, one-best-variant / one-per-game, completeness, borrowing) at GAME level. A
+  game = `library.game_key` (as totals); all variants / disks / discs of one game share ONE rating (looked up by `library.rom_title`: the tags
+  title - year, publisher, regions, languages, versions, disk / disc numbers stripped); a disk borrowed from another edition belongs to the game of
+  the set it completes (a playlist is never split). Only DATs in `ratings.rated_dats(platform)` take part (Amiga: *Games - [ADF]* only; Workbench /
+  Kickstart-Disks / Firmware are not games and always stay).
+* rated = the title matches (section E) AND votes >= `min_votes`. `min_rating`: rated and `rating10 < min_rating` -> `rating_low` (inclusive threshold).
+  `top_n`: rank key `(-rating, -votes, title.casefold(), stable game key)`; the cutoff is the key of the N-th best complete rated game at or above
+  `min_rating`; a rated game after it -> `rating_not_top` (compared by `(-rating, -votes, title)` only, so every game with the title of the N-th game
+  stays or goes together: "top 300" may keep a few more). No usable rating -> `rating_unrated` unless `keep_unrated`.
+* `rank_scope == "dat"`: the cutoff comes from the whole DAT target (`library.target_cutoff(target_items, profile, platform, lookup)`: the games every
+  other rule keeps with every rom present) and is passed in `RatingContext.cutoff` (`INF_KEY` = fewer than N rated games, no cap), so adding files never
+  evicts others and totals read "have K of N". `"owned"`: the cutoff is computed from the games kept in THIS call.
+* Reason codes (`library.RATING_CODES`, part of `ALL_CODES`): `rating_low`, `rating_not_top`, `rating_unrated`; excluded files go to `_excluded/` like every
+  exclusion, `Decision.codes` = every code that applies, `Decision.detail` = `rated 6.2 (12 votes)` / `no usable rating`; `ChosenSet`s and kept
+  `IncompleteSet`s of excluded games vanish. `Selection.rating` = `{min_rating, top_n, min_votes, keep_unrated, rank_scope, games, rated, unrated, kept,
+  excluded, excluded_by: {code: games}}` (empty without a filter). `reason_counts` gains `excluded_rating_*` (ALL_CODES). `Vanished.detail` + `vanish_report`
+  items gain `hint` ("lower the minimum rating" / "raise Top N" / "tick Keep unrated games (or lower Minimum votes)") and `detail`; rating codes sort FIRST in
+  the vanish priority (they only ever hit variants that passed everything else).
+* `RatingsUnavailable` is raised (never a silent pass) when a filter is set and `ratings` is None (or `top_n` + scope "dat" without a cutoff).
+* **Idempotence** holds for both scopes (property tests: 150 random profiles x name sets, shuffled inputs, Amiga multi-disk): re-selecting the kept output
+  changes nothing. In scope "owned" the kept output of run 1 is a prefix of the ranking, so the N-th key is unchanged.
+* `plan_library(..., ratings=)`, `_plan_core`, `discsys.plan_library` / `plan_units(..., ratings=)` pass the context through.
+
+## D. The index (`ratings/ratings.sqlite` in `paths.ratings_dir()`, its own sibling of dats/ nointro/ whdload/ redump/; `manifest.json` beside it)
+`entry(plat, key, rating REAL stars, votes, dbid, name, year, alt)`, PRIMARY KEY `(plat, key)`; `meta(k, v)`. `key` = `ratings.norm_title`. One row per
+(platform, key): own name beats an alternate name, then MOST votes, then lowest DatabaseID (documented choice instead of a vote-weighted mean). Unrated games
+(rating absent / 0, no votes) are not stored. Manifest: `{schema 1, built_at, url, etag, last_modified, downloaded_at, games, entries, platforms{lb: rows},
+parse_seconds}`. Measured 2026-10-04: **22k rated games, 34,449 rows, 3.1 MB, parse 25 s (29 s with download), peak RSS 65 MB** (`iterparse` + `clear()` straight out of
+`zipfile.open`; the 108 MB zip is kept only as `Metadata.zip.part` while it is parsed and then deleted; the index is written to `ratings.sqlite.part`,
+validated - rows present, zip valid, `Metadata.xml` present - and `os.replace`d, so a failure leaves the old index). Scale shown: `rating10 = round(stars * 2, 1)`.
+`ratings.lookup(platform, title) -> (rating10, votes) | None` (cached; `Store.detail` adds `dbid, name, year, kind, score`).
+
+## E. Matching (`ratings.norm_title`, `Store._match`): conservative, deterministic, same platform only
+1. `exact`: NFKD without accents, `&` = and, a trailing `, The/A/An` of every `-` / `:` / `/` segment or a leading article dropped, apostrophes removed, other
+   punctuation = space (so `Legend of Zelda, The - A Link to the Past` = `The Legend of Zelda: A Link to the Past`), case-insensitive.
+2. `alt`: the same key from a `GameAlternateName` (only when no game is itself called that).
+3. `roman`: II..IX / XI / XII read as digits (`roman_key`), accepted only when exactly one LaunchBox game results.
+4. `fuzzy`: difflib ratio >= 0.92 among titles sharing a >= 4 letter word and a similar length; refused when the numbers differ (`number_signature`: digits AND
+   roman numerals, so `Street Fighter V` != `II`, `Mega Man VI` != `7`), when one title only ADDS whole words (`DX`, a subtitle, a hack tag), when the titles
+   differ only by a singular / plural, or when the runner-up (a different game) is within 0.04 (not unique). Missing a rating is preferred to a wrong one.
+
+## F. Download / update (`ratings.check_update`, `download_and_build`; `autoupdate.UpdateManager`)
+* Nothing is fetched unless `ratings_wanted()` (a rating filter in any platform's saved profile - the server sets `updates.ratings_wanted`) or the user presses
+  **Download ratings** (`UpdateManager.request_ratings`, no gate, queued behind a running update). Startup: `_do` ends with `_do_ratings`; an index younger than
+  7 days (`REFRESH_DAYS`) is not even asked about; otherwise one HEAD (`Last-Modified` / `ETag`); the 108 MB download only when newer. Missing index = download.
+* Status block `status()["ratings"]`: `{managed, wanted, status (absent|up_to_date|update_available|updating|error), installed (source date), built_at, games,
+  entries, size, parse_seconds, latest, checked_at, offline, error, credit, credit_url, age_days}`; progress uses `progress.source == "ratings"`
+  (messages "Downloading the LaunchBox ratings" / "Building the ratings index", bytes of `Metadata.xml`). Ratings errors never fail the DAT update
+  (`status["error"]` stays None); offline with an installed index is quiet (`offline: true`), without one `error` says so. `updates.json` gains
+  `ratings.checked_at`. `UpdateManager(ratings=, ratings_wanted=)`; `_has_cache(("ratings", ()))`.
+* If a filter needs data that is not installed: `GET /api/library/totals` answers `ratings_pending: true` (no number), `POST /api/library/plan|apply|vanished`
+  answer **409** `{"error", "code": "ratings_pending"}` (the server also requests the download; message says so, or that automatic downloads are off).
+  The UI shows a banner with progress, polls, and re-runs a waiting preview when the download ends (`Previews.retryPending`). Errors carry `code` now.
+
+## G. Totals (Amendment 17 additions)
+`compute_target(platform, dats, profile, lookup=None)`: with a filter the target is `_select_base` + `target_cutoff` + `apply_ratings` (so **M counts games after ALL
+rules incl. rating**, scope "dat"); `Target.cutoff`, `.rating`, `.coverage` (`{games, rated, ge: [n games rated >= 0.5 .. 10.0]}`, computed whenever ratings are
+installed, filter or not). Scope "owned": M = every game that passes the other rules and `min_rating` (top_n dropped, "rated" required via `min_rating = 0.1`), because
+the cap follows the user's files; `answer.rank_scope == "owned"` makes the UI say so. `compute_user_items(..., ratings=RatingContext(lookup, target.cutoff))`:
+rating-excluded owned games are `owned_but_excluded` (`have + excluded + incomplete + outside == owned_games` still holds, `have <= target`). Answer keys
+added: `rating`, `rating_coverage`, `ratings_pending`, `rank_scope`. `TotalsManager(load_dats, persist, rating_lookup)`; the DAT signature of a request includes the
+index identity (`built_at`), so a rebuilt index recalculates; persisted records gain `rating_coverage` only when known.
+
+## H. Endpoints / UI
+* `POST /api/library/profile` accepts `min_rating` (number 0-10 / null / ""; 0 = off), `top_n` (whole number >= 1 / null / ""), `min_votes` (whole number >= 1),
+  `keep_unrated` (JSON boolean), `rank_scope` (`dat` | `owned`); a wrong type or range = **400**, nothing is saved. `GET /api/library/profile` adds
+  `available.ratings`, `rating_codes`, `reason_labels` and catalog entries with `group: "ratings"` (kinds `number` {min, max, step, unit, integer, filter, summary,
+  hint}, `option`, `choice` {choices}); the JS renders them generically (no rule list in the script; test `UiContractTests`).
+* `GET /api/ratings` (status block + `supported`, `refresh_days`), `POST /api/ratings/download` (`{started, ratings, updates}`; `started: false` when updates are off or one
+  runs). `POST /api/library/plan` adds `rating` (the `Selection.rating` summary); `plan_id` carries the index identity while a filter is set.
+* `GET /api/scan/results?kind=games` rows gain `title`, `rating` (0-10), `votes`, `rating_match` (None = unrated / not installed) and accept `rated=1|0` and `sort=rating`
+  (best first, unrated last); computed once per scan + index.
+* Library tab, rules panel group **Ratings**: Minimum rating, Top N, Minimum votes (number fields, empty = off), Keep unrated games, Rank against (select); credit
+  link; status line "Ratings found for X of Y target games (Z%) · LaunchBox data from <date>" + **Download / Update ratings**; live hint "≈ N of M target games are
+  rated ≥ x" from `rating_coverage.ge`; the note "Games with no rating are excluded while a rating filter is set (tick Keep unrated games to keep them)". Rules
+  summary: `rated ≥ 7 · min 5 votes`, `top 300`, `keep unrated`, `ranked among your games`. Changing a field goes through the same `profileChanged` path (preview
+  stale, totals recalculate in the background). Preview: card "Left out by rating", chips per reason, vanish hints incl. a "Keep unrated games" quick fix.
+  Browse > Games: Rating column ("8.4 · 123 votes" / dash, sortable header) and Rated / Unrated chips (only for systems with ratings).
+
+## I. Measured on the real data (LaunchBox 2026-10-04, DATs of 2026-10-02..04; default profiles; min_votes 5)
+Coverage of the DAT titles (title strings of the rated DATs) and of the default-rules target set M (games; "rated" needs votes >= 5):
+| system | titles | rated | exact / alt / roman / fuzzy (all titles) | M | M rated | exact / alt / roman / fuzzy / none (M) |
+|---|---|---|---|---|---|---|
+| Commodore Amiga (Games ADF) | 4,042 | 76% | 65 / 10 / 0.2 / 1.3 % | 3,591 (+65 non-game disks) | 1,726 (48%) | 71 / 10 / 0.3 / 0.7 / 19 % |
+| Amiga - WHDLoad | 2,960 | 82% | 67 / 10 / 3.2 / 2.1 % | 2,763 | 1,590 (58%) | 73 / 9 / 3.4 / 1.5 / 13 % |
+| Nintendo 64 | 602 | 86% | 66 / 20 / 0 / 0 % | 402 | 336 (84%) | 77 / 7 / 0 / 0 / 15 % |
+| NES | 4,099 | 66% | 49 / 17 / 0.1 / 0.4 % | 2,650 | 1,667 (63%) | 59 / 12 / 0 / 0.3 / 28 % |
+| GBA | 2,331 | 86% | 60 / 26 / 0 / 0.9 % | 1,438 | 1,242 (86%) | 73 / 16 / 0.1 / 0.5 / 11 % |
+| Dreamcast | 959 | 82% | 60 / 21 / 0 / 1.3 % | 381 | 343 (90%) | 77 / 14 / 0 / 0 / 9 % |
+| PlayStation | 6,440 | 79% | 54 / 22 / 0 / 2.4 % | 2,168 | 1,938 (89%) | 78 / 15 / 0 / 0.2 / 7 % |
+| PlayStation 2 | 6,677 | 68% | 48 / 18 / 0 / 1.6 % | 3,177 | 2,623 (83%) | 75 / 13 / 0.1 / 0.4 / 12 % |
+| SNES | 2,423 | 95% | 70 / 24 / 0.1 / 0.2 % | 1,110 | 1,015 (91%) | 77 / 16 / 0.2 / 0 / 7 % |
+Targets under filters (min_votes 5): `min 7, unrated off` / `min 7 + keep unrated` / `top 300 (dat)` / `top 300 (owned scope: every rated game)`: Amiga 939 / 2,804 / 365 (300
+games + the 65 unrated-by-design system disks) / 1,791; WHDLoad 855 / 2,028 / 300 / 1,590; N64 163 / 229 / 300 / 336; NES 788 / 1,771 / 300 / 1,667; GBA 457 / 653 / 300 /
+1,242; Dreamcast 233 / 271 / 300 / 343; PlayStation 1,024 / 1,248 / 300 / 1,926; PlayStation 2 1,950 / 2,501 / 300 / 2,616; SNES 413 / 508 / 300 / 1,015. Precision (hand-read
+samples of 40 random matches per system and of the fuzzy-only matches): no clearly wrong exact match; alternate names are LaunchBox's own and right in nearly every
+sample (a few arguable: `Daytona USA 2001` -> `Daytona USA`, `Count Duckula` -> `Count Duckula in No Sax Please: We're Egyptian`); fuzzy matches are almost all spelling /
+spacing variants (`Wonderboy` / `Wonder Boy`, `Hugo - CannonCruise`); doubtful ones kept as matches: `Rainbow Warriors` -> `Rainbow Warrior`, `Vroom Multiplayer` -> `F1`,
+`Emerald Mines` -> `Emerald Mine`. The first fuzzy version produced real errors (`Street Fighter V` -> `II`, `Mega Man VI` -> `7`, `Sigma Star Saga DX` -> `Sigma Star Saga`) which
+the number / added-word / plural rules now refuse.
+
+## J. Verified
+Unit tests (`tests/test_ratings.py`, 75 tests, ~2 s): parser / index on a synthetic `Metadata.xml` (alt names, zero ratings, duplicate names, few votes, other platforms),
+matching, 7-day gate / offline / corrupt download / cancel, every rule (min rating, min votes, top N both scopes, ties, keep_unrated, multi-disk, variant / language
+interaction, vanish hints, defaults unchanged, idempotence), totals, updater orchestration, server validation, endpoints, Browse column, UI contract. Headless Brave at
+1280x800 (throwaway profile, a No-Intro N64 DAT copy with 70 synthetic ROMs): Ratings group, live hint, stale banner + totals recalculation after setting a rating, Preview with
+the rating cards / chips / vanish list with hints, top N + keep unrated, rank scope "owned" note, Browse rating column + chips + sort, the "ratings pending" banner (no data),
+and the REAL startup flow (filter saved, no index: the app downloaded the zip, showed "Building the ratings index (n%)", then calculated the totals by itself).
+Not verified in a browser: touch hardware, a gamepad, screen readers; the "Download ratings" button while updates are enabled was exercised through the real startup
+flow and unit tests only.

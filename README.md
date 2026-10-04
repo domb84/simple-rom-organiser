@@ -151,7 +151,8 @@ amiga/
   `_duplicates`). So you can simply drop new files anywhere in the folder and organise again.
 - Unmatched files keep their relative path under `_unmatched/`
   (`incoming/foo.adf` -> `_unmatched/incoming/foo.adf`). Files already in `_unmatched/` stay.
-  Untick **Move unmatched files into `_unmatched/`** to leave them where they are.
+  Unmatched files are always moved (there is no switch for it): the preview shows how many are going
+  to `_unmatched/`, the confirmation repeats the number, and *Undo last* puts them back.
 - Left in place even when unmatched: files in the folder of a DAT that is not installed
   (so a missing DAT never empties an organised folder), frontend / emulator files
   (`gamelist.xml`, `systeminfo.txt`, `metadata.txt`, `rom.key`, `*.uae`, save files) and
@@ -184,44 +185,95 @@ Tests: `python3 -m unittest discover -s tests -v`
 
 ## Using it
 
-1. **Systems & folders** - at the top, the **updates line** shows the installed DATs
-   (`TOSEC 2025-03-13 · No-Intro 2026.08.01 · checked 14:02`); a progress bar appears while
-   something is being updated. The small **Check for updates** button repeats the check on
-   demand (it becomes **Cancel update** while running). Offline you get a quiet note and the
-   installed DATs are used; with no DATs installed and no network a clear error with **Retry**
-   appears. Below, one row per system: its DAT source (TOSEC / No-Intro), the local DAT
-   version, and its folder. Type the path or use **Browse...** / **Folders...**: a folder is **saved
-   the moment you choose it** (or when you leave the field / press Enter / press **Scan**) and the
-   row says *Saved* or *Not saved* (with the reason when the folder was refused); **Clear**
-   forgets it. There is no Save button to forget. Scanning a system whose
-   DATs are not installed yet simply waits for the automatic update (its progress is shown in
-   the scan's progress line). After an update the page says *DATs updated - rescan*.
-2. **Scan** - shows overall cards (have / missing / % complete, matched, unmatched,
-   duplicates; for consoles counted in **games**) and, for the Amiga, one card per DAT.
-   Tabs: **Games** (consoles: every game of the DAT, green = have, red = missing, with
-   *Have* / *Missing* chips), **Matched files**, **Missing**, **Unmatched**. Rows show
-   region / language / status chips; **bad dumps show the exact flag from the DAT name**
-   (`Bad dump [b corrupt file]`), and other names a library rule would set aside show e.g.
-   `Modified [m baddump]` or `Pre-release (beta)`. The chip rows above the table filter by
-   region, language, video standard (PAL / NTSC), tag (`Beta`, `Proto`, `Unl`, `Bad dump`, ...)
-   and *Library rules*. Filters only change what is shown. **Duplicates** counts the extra
-   copies Build library would set aside.
-3. **Build library** - the **Library rules** panel (per system, remembered) and then
-   **Preview library**, **Build library**, **Undo last**. The preview shows cards by reason
-   (kept, renamed / moved, excluded, superseded, incomplete, duplicates, playlists to
-   write / remove, conflicts, games that vanish), reason and status filter chips, a count of
-   excluded files per reason (bad dump, language, cracks off, ...; click one to list just
-   those), a table with the reason and the exact flags, the list of incomplete sets with
-   their missing disk numbers and the **Games that vanish** list (titles none of whose
-   versions stay, searchable, with one-click fixes such as "+ German").
-   **Build library** asks for confirmation, moves the files, writes the playlists, saves one
-   undo log and re-scans; building again on a built library does nothing (empty preview).
-   *Advanced: tidy only / playlists only* keeps the plain Organise (rename and sort, with
-   duplicates handled but no library rules) and M3U steps.
-4. **Convert to No-Intro format** (SNES, N64) - optional, see below.
-5. **Kickstarts** (Amiga) - optional, see below.
+The app has a **global header** on every screen: the title (click it to go home), the **updates
+line** (`TOSEC 2025-03-13 · No-Intro 2026.08.01 · checked 14:02`) with **Check for updates**
+(it becomes **Cancel update** while running; offline you get a quiet note, with no DATs and no
+network a clear error with **Retry**), **Quit**, and - while something runs - the **job bar**
+(scan, verify, build, convert ... with **Cancel**). The address uses `#` routes, so the browser's
+Back / Forward buttons and a reload keep you where you were.
 
-Steps a system does not use are hidden.
+**Home (`#/`)** is a dashboard with one **card per system**, grouped into *Computers*, *Cartridge
+consoles* and *Disc systems* (the list comes from the app, nothing is hard-coded in the page). A
+card shows the system, its DAT (installed version, or *DAT missing / updating*), its folder (or
+*No folder set*), the last known result (have / missing / % complete, *identified* / *verified*
+for disc systems, the time of the last scan) or *Not scanned yet*, and ONE primary button that
+follows the state: **Set folder** -> **Scan** -> **Build library**. A running scan shows live
+progress on its card. The last scan summary of every system is a tiny record in `config.json`
+(counts, time, folder - never file lists), so the cards survive a restart; the full results
+(Browse, Library) exist only for the system scanned last and need a new scan after a restart.
+Click a card to open its system page.
+
+**A system page (`#/system/<slug>/<tab>`)** has a *< Systems* link and four tabs (arrow keys
+move between them):
+
+* **Overview** - the folder field with **Browse... / Folders... / Clear** (a folder is **saved the
+  moment you choose it**, when you leave the field or press Enter / Scan; the chip says *Saved* or
+  *Not saved* with the reason), the DAT status (the per-DAT table is in a collapsible *DAT files*),
+  the **Scan folder** button, two **totals blocks** side by side - *All DAT entries* (every ROM /
+  game of the DAT) and *With your library rules* (see below) - and the summary cards (have / missing / % complete, matched,
+  unmatched, duplicates, header / byte-swapped, CHDs verified / identified ...; consoles are
+  counted in **games**; one card per DAT for the Amiga). **Click a summary card** to open Browse on
+  the matching list. First run: no folder -> the folder box is highlighted; no DAT -> a clear
+  note (it is downloaded automatically on the first scan).
+* **Library** - the **Library rules** panel collapsed to ONE line
+  (`4 of 4 exclusions · English · Europe > USA first · latest versions only`) with an **Edit**
+  control; open it for the catalog-driven rules, languages, keep-flags and region priority. Then
+  **Preview library**, **Build library**, **Undo last**, the preview cards, the incomplete-sets
+  and *Games that vanish* lists, and under *Advanced: organise only / playlists only* the plain
+  Organise and M3U steps. Without a scan the tab says *Scan first* with a button.
+  **Every Preview button stays useful.** After the first press it reads **Recalculate preview**
+  (refresh icon), with *Calculated 14:32 · 1,234 files* and *Recalculates with your current rules and
+  folder contents* under it, and a spinner while it works (an error shows *Try again*). As soon as you
+  change a rule, language, region, keep-flag or option - or a scan / build / undo / convert changes the
+  folder - the preview on screen is marked **out of date**: a banner (*Rules changed since this
+  preview - Recalculate*), dimmed cards, **Recalculate** becomes the highlighted button and
+  **Build library / Apply / Convert ...** are disabled until you recalculated. Build library also sends the
+  identity of the plan you looked at and the app refuses (409) a plan that no longer matches the saved
+  rules. The Advanced organise / playlist previews and the Convert and Kickstart previews behave the same.
+* **Browse** - the heavy part, built only when you open it: tabs **Games** (consoles: green = have,
+  red = missing), **Matched files**, **Missing**, **Unmatched**, search, a collapsible *Filters*
+  box (region, language, video, tag, library rules), paging, and the checksums (below).
+  Bad dumps show the exact DAT flag (`Bad dump [b corrupt file]`).
+* **Tools** - only what applies to the system: **Convert** (SNES, N64 No-Intro format; disc systems
+  raw Redump sets to CHD incl. the chdman status), **Verify CHDs** (disc systems) and
+  **Kickstarts** (Amiga, WHDLoad). A system with no tool has no Tools tab.
+
+### Library totals (Overview)
+
+*With your library rules: have N of M games.* **M** is what your rules would keep if you owned
+**every** ROM of the system's DAT (the same exclusions, keep-flags, languages, latest-only, best variant,
+one-per-game / region priority, borrowed editions and complete-sets-only that Build library uses);
+**N** is how many of those games you own in at least one version that passes the rules (a multi-disk game
+needs a complete set). The unit is a **game** as the library defines it, never a file. Under it:
+*K of your N are not the preferred version (an upgrade is available)*, *P games you own are excluded by your
+rules* (you only have a beta / bad dump / other-language version) and *multi-disk games you own are
+incomplete*, so the numbers reconcile with *All DAT entries*. Without a scan only the target size M is shown
+(*Scan to see how many you have*). M is computed in the background (a few seconds for the Amiga Games DAT,
+under two seconds for the others; *calculating...* with a spinner meanwhile), cached per rules + DAT
+version, recomputed when a rule or the DAT changes, and the small result is kept in `config.json`
+(`library_totals`: counts only) so M shows at once after a restart. `GET /api/library/totals?platform=`
+returns it (docs/ARCHITECTURE.md, Amendment 17).
+
+### Checksums in Browse
+
+Every row of Games / Matched / Missing / Unmatched has a **Show / Hide** button in its
+*Checksums* column, and the toolbar has **Show checksums** which opens it for every visible row.
+It lists **DAT (No-Intro / TOSEC / Redump / WHDLoad)** rows and **Your file** rows in monospace
+(CRC32, MD5, SHA-1); a hash is a button - click it to copy. A green check means both sides are
+equal. Nothing is re-hashed: the values are what the scan already knows, and `-` means *not
+known* (hover for why) - the app never invents a hash:
+
+* normal match: DAT and your file, with checks;
+* SNES copier header / NES iNES header / N64 byte-swapped: **Your file (as stored)** (its own
+  hashes, different from the DAT by design) and **Your file (normalised)** (what was compared,
+  equal to the DAT) plus the reason;
+* inside a zip / 7z: only the CRC32 (and size) is stored for the member, MD5 / SHA-1 show `-`;
+* MD5 of your own loose files is not computed while scanning (`-`);
+* discs (Dreamcast, PlayStation, PlayStation 2): a block per track (number, type, size) with the
+  Redump hashes and the decoded hashes of your CHD / raw set; an audio track that was only
+  identified by length says *length only* until **Verify fully** hashed it;
+* multi-disk Amiga sets: the disks of the set, each with DAT and local hashes, missing disks marked;
+* missing games: DAT checksums only; unmatched files: *Your file - no match* with their own hashes.
 
 ## How matching works
 
@@ -341,10 +393,18 @@ number as soon as it is off, and the preview lists the titles.
 **Consoles (No-Intro): region priority and one version per game.** *One version per game*
 (on by default) keeps exactly one release of each game (per header form): your preferred
 language, then the best region from your **Region priority** list (default Europe, USA, World,
-Japan, then every other region A-Z; reorder with the up / down buttons; a multi-region release
-ranks by its best region), then the newest revision, then the fewest extra tags. Different
+Japan, then every other region A-Z; a multi-region release ranks by its best region), then the newest revision, then the fewest extra tags. Different
 products stay separate (`(Unl)`, `(Aftermarket)`, `(Pirate)`, `(Beta)`). Switch it off to keep
 the latest version of every region instead. These two settings are hidden for Amiga.
+
+**Reordering the region list.** The list sits in a scroll box (about 360 px high) with a divider under
+the four *prioritised* regions. Drag a row by its **⋮⋮** handle with the mouse or a finger (the list
+scrolls by itself when you hold the row near its top or bottom edge; swiping anywhere else on a row
+still scrolls the list). With the keyboard or a controller: focus a row (arrow keys), **Space / Enter**
+picks it up, **Up / Down** (or Home / End) moves it, **Space / Enter** drops it, **Escape** cancels.
+Each row also has **Top** (move to the first place), **▲** and **▼** buttons, and the *Find a region...*
+box narrows the list to the matches (dragging while filtered keeps every hidden region where it was).
+Every finished move is saved once; if saving fails the list jumps back and a message says so.
 
 **Keep the only dump of a version** (off by default; Workbench, Kickstart-Disks and Firmware).
 A disk excluded only by `[m]`, `[o]` or `[u]` is kept anyway when it is the sole dump of its
@@ -388,6 +448,33 @@ playlist. The preview shows the *Sets completed with borrowed disks* count and a
 disk count. Switch the option off to get the old behaviour (such sets go to `_incomplete/`). On the real TOSEC
 Games DAT with every ROM present and the default English-only rules this completes 14 sets (41 files that
 would have been `_incomplete`); with no language filter 26 sets (102 files).
+
+**Ratings (optional filter).** The rules panel has a **Ratings** group for every system with a LaunchBox
+platform (Amiga, WHDLoad, GBA, N64, NES, SNES, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
+rating data is needed**. Set a **Minimum rating** (0-10, shown as LaunchBox stars x 2 with the vote count, e.g.
+`8.4 · 123 votes`), a **Top N games** limit, or both; **Minimum votes** (default 5: a game with fewer votes counts as
+*unrated*); **Keep unrated games** (off: while a rating filter is set, games with no usable rating are left out - tick it to keep
+them in addition to the rated games that pass); **Rank against** *the whole DAT* (default: the top N is taken from every game the
+other rules keep for the whole DAT, so adding files never pushes others out and the totals read "have K of N") or *only my games*
+(rank among the games you own; the totals then show every game that passes the other rules, and a note says so). The filter is
+applied **last**, per **game** (all versions, disks and discs of a game share one rating): games it removes go to `_excluded/` with
+the reasons *Rated below the minimum*, *Not among the top rated games* or *No usable rating*; the preview shows them as cards and
+chips, the **Games that vanish** list says why (with hints such as "lower the minimum rating" or "tick Keep unrated games"), and the
+Overview / Library totals count the target AFTER the rating filter (rating-excluded files you own count under "excluded by your
+rules"). Games with the same title as the N-th game stay or go together, so "top 300" can keep a few more than 300. The rules summary
+line shows e.g. `rated ≥ 7 · min 5 votes`. In **Browse → Games** a **Rating** column (click the header to sort best first) and
+**Rated / Unrated** chips are shown whenever the ratings data is installed.
+
+The data is the **LaunchBox Games Database** community ratings (`https://gamesdb.launchbox-app.com/Metadata.zip`, about 108 MB,
+rebuilt daily, free, no key). It is fetched **only when a rating filter is enabled** in some system's rules (or when you press
+**Download ratings**), and then kept fresh at startup only when the local copy is older than 7 days *and* the server's file is newer.
+The zip is stream-parsed (no 512 MB temporary file, about 65 MB of memory, about 30 s) into a small local index
+`ratings/ratings.sqlite` (about 3 MB) and then deleted; offline, the installed index keeps working. Until the data is installed, Preview
+and Build wait for it with a clear message and progress (they never apply a filter with missing data). A DAT title is matched to the
+LaunchBox title of the same platform conservatively: normalised title (case, punctuation, `&` = and, articles, subtitle separators),
+LaunchBox's alternate names, II..IX read as digits (only when unique), then a high-threshold *unique* fuzzy match (same numbers, no
+added words); when in doubt there is **no** rating rather than a wrong one. Several LaunchBox games with the same title: the one with
+the most votes. Ratings: LaunchBox Games Database community ratings (see `docs/THIRD_PARTY.md`).
 
 **Undo.** One undo log covers the moves and the playlists: **Undo last** moves the files
 back, removes the playlists the build created (only if unchanged) and restores the outdated
@@ -718,7 +805,7 @@ The UI is sized for the Deck's 1280x800 screen with large touch targets. The nat
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro
 DATs and their `manifest.json` - kept separate, so updating the TOSEC pack never touches
 them), `cache/` (downloaded pack zip, hash cache), `updates.json` (when the DATs were last
-checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
+checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `ratings/` (the LaunchBox ratings index, only when a rating filter is used), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
 are written into your platform folder.
 
 ## Adding a platform
@@ -754,6 +841,11 @@ DATs are fetched from
   the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
   (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the
   old DAT atomically; it is stored in its own `redump/` folder. Offline, the installed DAT keeps working.
+- **LaunchBox ratings** (only with a rating filter): `https://gamesdb.launchbox-app.com/Metadata.zip`; one HEAD request
+  (`Last-Modified` / `ETag`) at most per start, and only when the installed index is older than 7 days; the zip is
+  downloaded only when newer, stream-parsed into `ratings/ratings.sqlite`, validated and swapped in atomically, then
+  deleted. **Credit: "Ratings: LaunchBox Games Database community ratings"** (shown in the rules panel and in
+  `docs/THIRD_PARTY.md`).
 - **Updates and scans.** The update runs on its own background thread and never blocks the UI.
   It never interrupts a running scan: a scan works on the DATs it loaded at its start, and if
   new DATs are installed afterwards the page says *DATs updated - rescan*.
