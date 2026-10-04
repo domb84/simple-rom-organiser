@@ -50,7 +50,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
-from . import chdpool, chdtool, folders, organiser, scanner, tags, tempspace
+from . import chdsched, chdtool, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -532,6 +532,83 @@ def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
     return out
 
 
+GD_HD_START = 45000          # first LBA of the high-density area of a GD-ROM (every GDI puts track 3 here)
+_RAW_SECTOR = 2352
+
+
+def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
+    """A ``.gdi`` for a Redump GD-ROM ``.cue`` (``(text, "")``), or ``(None, why not)``.
+
+    Redump's Dreamcast cue sheets carry ``REM SINGLE-DENSITY AREA`` / ``REM HIGH-DENSITY AREA`` before the first
+    track of each area; the standard GDI is then fully determined: track 1 at LBA 0, every following track of the
+    single-density area right after the previous one (the audio track's 150-sector pregap is part of its file), the
+    first high-density track at LBA 45000, the next ones back to back. The numbers were validated against the real
+    ``.gdi`` files of Redump sets (see the tests / ``tools/bench_chd.py --check-gdi``) and by a round trip through
+    ``chdman createcd`` (identical CHD header SHA-1). Without those markers the layout is unknown: no guess."""
+    try:
+        text = Path(cue).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return None, f"cannot read {Path(cue).name}: {exc}"
+    base = Path(cue).parent
+    area = ""
+    seen_areas: list[str] = []
+    entries: list[dict[str, Any]] = []
+    pending: Optional[str] = None
+    for ln in text.splitlines():
+        st = ln.strip()
+        up = st.upper()
+        if up.startswith("REM"):
+            if "SINGLE-DENSITY AREA" in up:
+                area = "sd"
+                seen_areas.append(area)
+            elif "HIGH-DENSITY AREA" in up:
+                area = "hd"
+                seen_areas.append(area)
+        elif up.startswith("FILE "):
+            try:
+                pending = shlex.split(st)[1]
+            except (ValueError, IndexError):
+                return None, "unreadable FILE line in the .cue"
+        elif up.startswith("TRACK "):
+            parts = st.split()
+            try:
+                num = int(parts[1])
+            except (ValueError, IndexError):
+                return None, "unreadable TRACK line in the .cue"
+            if pending is None:
+                return None, "the .cue has several tracks in one file (cannot be split into a GDI)"
+            entries.append({"num": num, "file": pending, "audio": parts[2].upper() == "AUDIO" if len(parts) > 2 else False,
+                            "area": area})
+            pending = None
+    if not entries:
+        return None, "the .cue lists no tracks"
+    if not seen_areas or seen_areas[0] != "sd" or any(e["area"] == "" for e in entries):
+        return None, "the .cue has no REM SINGLE-DENSITY / HIGH-DENSITY AREA markers (a GD-ROM needs a .gdi)"
+    if [e["num"] for e in entries] != list(range(1, len(entries) + 1)):
+        return None, "the .cue's track numbers are not 1..n"
+    if any(entries[i]["area"] == "hd" and entries[i + 1]["area"] == "sd" for i in range(len(entries) - 1)):
+        return None, "the .cue lists a single-density track after the high-density area"
+    lba = 0
+    hd = False
+    lines = [str(len(entries))]
+    for e in entries:
+        f = base / e["file"]
+        try:
+            size = f.stat().st_size
+        except OSError:
+            return None, f"track file missing: {e['file']}"
+        if size == 0 or size % _RAW_SECTOR:
+            return None, f"{e['file']} is not a whole number of 2352-byte sectors"
+        if e["area"] == "hd" and not hd:
+            hd = True
+            if lba > GD_HD_START:
+                return None, "the single-density tracks are longer than the single-density area"
+            lba = GD_HD_START
+        lines.append(f'{e["num"]} {lba} {0 if e["audio"] else 4} {_RAW_SECTOR} "{e["file"]}" 0')
+        lba += size // _RAW_SECTOR
+    return "\n".join(lines) + "\n", ""
+
+
 # --------------------------------------------------------------------------- identification
 
 def _track_meta(info: chdlib.Chd) -> list[dict]:
@@ -559,6 +636,35 @@ def _merge_cached(meta: list[dict], cached: Optional[dict]) -> None:
             m.pop("claimed", None)
 
 
+class _Meter:
+    """Busy wall-clock time and bytes of one engine (overlapping calls count once: it is a throughput, not a sum)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active = 0
+        self.since = 0.0
+        self.busy = 0.0
+        self.bytes = 0
+
+    def begin(self) -> None:
+        with self.lock:
+            if self.active == 0:
+                self.since = time.monotonic()
+            self.active += 1
+
+    def end(self, nbytes: int = 0) -> None:
+        with self.lock:
+            self.bytes += nbytes
+            self.active = max(0, self.active - 1)
+            if self.active == 0:
+                self.busy += time.monotonic() - self.since
+
+    def snapshot(self) -> tuple[int, float]:
+        with self.lock:
+            busy = self.busy + ((time.monotonic() - self.since) if self.active else 0.0)
+            return self.bytes, busy
+
+
 class _Progress:
     """Bytes-based progress shared by a scan / verify job (reported in MiB)."""
 
@@ -571,6 +677,8 @@ class _Progress:
         self.files_done = 0
         self.started = time.monotonic()
         self._lock = threading.Lock()
+        self.meters = {"python": _Meter(), "chdman": _Meter()}
+        self.engine_label = ""          # "built-in reader, 8 processes, native FLAC" shown next to the MB/s
 
     def file_done(self) -> None:
         with self._lock:
@@ -589,6 +697,8 @@ class _Progress:
             left = max(0, self.total - self.done)
             if self.done < self.total and rate > 0:
                 bits.append("about " + fmt_duration(left / rate) + " left")
+        if self.engine_label:
+            bits.append(self.engine_label)
         return ", ".join(bits)
 
     def check(self) -> None:
@@ -596,11 +706,13 @@ class _Progress:
             raise scanner.ScanCancelled()
 
     def add(self, n: int) -> None:
-        self.done += n
-        now = time.monotonic()
-        if now - self._last > 0.25:
+        with self._lock:
+            self.done += n
+            now = time.monotonic()
+            if now - self._last <= 0.25:
+                return
             self._last = now
-            self.emit()
+        self.emit()
 
     def emit(self, label: Optional[str] = None) -> None:
         if label is not None:
@@ -613,39 +725,71 @@ class _Progress:
     def cancelled(self) -> bool:
         return self.cancel is not None and bool(self.cancel.is_set() if hasattr(self.cancel, "is_set") else self.cancel())
 
+    def engine_stats(self, sched: Optional["chdsched.Scheduler"] = None) -> dict[str, Any]:
+        """Which engine ran and how fast (for the Dreamcast / PlayStation bar)."""
+        py_b, py_s = self.meters["python"].snapshot()
+        cm_b, cm_s = self.meters["chdman"].snapshot()
+        workers = sched.workers if (sched is not None and sched.pooled) else 1
+        info = {"python_bytes": py_b, "python_seconds": round(py_s, 2), "chdman_bytes": cm_b,
+                "chdman_seconds": round(cm_s, 2), "workers": workers, "native_flac": flacnative.available()}
+        info["python_mb_s"] = round(py_b / py_s / _MIB, 1) if py_s > 0.2 and py_b else 0.0
+        info["chdman_mb_s"] = round(cm_b / cm_s / _MIB, 1) if cm_s > 0.2 and cm_b else 0.0
+        info["engine"] = ("mixed" if py_b and cm_b else "chdman" if cm_b else "python" if py_b else "none")
+        info["text"] = engine_text(info)
+        return info
+
+
+def engine_text(info: dict[str, Any]) -> str:
+    """``"Built-in reader (8 processes, native FLAC): 1.1 GB in 8 s, 151 MB/s"``."""
+    parts = []
+    if info.get("python_bytes"):
+        how = f"{info.get('workers', 1)} process{'es' if info.get('workers', 1) != 1 else ''}"
+        how += ", native FLAC" if info.get("native_flac") else ", Python FLAC (slow)"
+        rate = f", {info['python_mb_s']:.0f} MB/s" if info.get("python_mb_s") else ""
+        parts.append(f"Built-in reader ({how}): {info['python_bytes'] / _MIB:.0f} MB in "
+                     f"{fmt_duration(info.get('python_seconds', 0))}{rate}")
+    if info.get("chdman_bytes"):
+        rate = f", {info['chdman_mb_s']:.0f} MB/s" if info.get("chdman_mb_s") else ""
+        parts.append(f"chdman: {info['chdman_bytes'] / _MIB:.0f} MB in {fmt_duration(info.get('chdman_seconds', 0))}{rate}")
+    return "; ".join(parts)
+
 
 def hash_tracks_python(info: chdlib.Chd, wanted: Iterable[int], prog: Optional[_Progress] = None,
-                       pool: Optional[chdpool.HashPool] = None) -> dict[int, dict]:
-    """crc32 / md5 / sha1 of the tracks with these 0-based indexes, decoded by the pure-Python reader.
+                      pool: Optional[chdsched.Scheduler] = None) -> dict[int, dict]:
+    """crc32 / md5 / sha1 of the tracks with these 0-based indexes, decoded by the built-in reader.
 
-    With a ``pool`` the tracks are hashed by worker processes (in parallel); if the pool fails the rest is
-    done in-process."""
+    With a scheduler (:mod:`romorg.chdsched`) the chunks of all the tracks are decoded by worker processes in
+    parallel and hashed in order; without one (or when the pool fails) every track is hashed in this process."""
     wanted = list(wanted)
     out: dict[int, dict] = {}
     cancel = prog.cancelled if prog else None
-    if pool is not None and not pool.broken:
-        def one(i: int) -> tuple[int, Optional[dict]]:
+    meter = prog.meters["python"] if prog else None
+    if meter:
+        meter.begin()
+    done_bytes = 0
+    try:
+        if pool is not None and pool.pooled:
             try:
-                return i, pool.hash_track(info.path, i, progress=(prog.add if prog else None), cancel=cancel)
-            except chdpool.Cancelled:
+                got = pool.hash_tracks(info, wanted, progress=(prog.add if prog else None), cancel=cancel)
+                for i, h in got.items():
+                    out[i] = {"crc32": h["crc32"], "md5": h["md5"], "sha1": h["sha1"]}
+                    done_bytes += h["size"]
+            except chdsched.Cancelled:
                 raise scanner.ScanCancelled() from None
-            except chdpool.PoolError:
-                return i, None
-        order = sorted(wanted, key=lambda i: -info.tracks[i].size)       # the big ones first
-        if len(order) > 1:
-            with ThreadPoolExecutor(max_workers=min(len(order), pool.workers)) as ex:
-                results = list(ex.map(one, order))
-        else:
-            results = [one(i) for i in order]
-        for i, h in results:
-            if h is not None:
-                out[i] = {"crc32": h["crc32"], "md5": h["md5"], "sha1": h["sha1"]}
-    for i in wanted:
-        if i in out:
-            continue
-        tr = info.tracks[i]
-        h = chdlib.hash_track(info, tr, progress=(prog.add if prog else None), cancel=cancel)
-        out[i] = {"crc32": h.crc32, "md5": h.md5, "sha1": h.sha1}
+            except chdsched.PoolError:
+                pass                               # the in-process path below does the rest
+        for i in wanted:
+            if i in out:
+                continue
+            tr = info.tracks[i]
+            h = chdlib.hash_track(info, tr, progress=(prog.add if prog else None), cancel=cancel)
+            out[i] = {"crc32": h.crc32, "md5": h.md5, "sha1": h.sha1}
+            done_bytes += h.size
+    except InterruptedError:
+        raise scanner.ScanCancelled() from None
+    finally:
+        if meter:
+            meter.end(done_bytes)
     return out
 
 
@@ -656,6 +800,9 @@ def hash_all_chdman(path: Path, info: chdlib.Chd, chdman: chdtool.Chdman, root: 
     need = sum(t.size for t in info.tracks)
     work = chdtool.acquire_workdir(chdman, need, [root])
     where = " (in RAM)" if work.where == "ram" else " (on disk)"
+    meter = prog.meters["chdman"] if prog else None
+    if meter:
+        meter.begin()
     try:
         if prog:
             prog.emit(f"{Path(path).name}: {work.message}")
@@ -675,12 +822,16 @@ def hash_all_chdman(path: Path, info: chdlib.Chd, chdman: chdtool.Chdman, root: 
                                                 progress=(prog.add if prog else None),
                                                 cancel=(prog.cancel if prog else None))
             out[i] = {"crc32": crc, "md5": md5, "sha1": sha1, "size": et.size}
+        if meter:
+            meter.bytes += need
         return out
     except chdtool.ChdmanError as exc:
         if exc.cancelled:
             raise scanner.ScanCancelled() from exc
         raise
     finally:
+        if meter:
+            meter.end(0)
         chdtool.remove_workdir(work)
 
 
@@ -730,8 +881,12 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
 
 
 def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chdman: Optional[chdtool.Chdman],
-                  engine: str, prog: Optional[_Progress], pool: Optional[chdpool.HashPool] = None) -> None:
-    """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first)."""
+                  engine: str, prog: Optional[_Progress], pool: Optional[chdsched.Scheduler] = None) -> None:
+    """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first).
+
+    Engine policy: ``auto`` / ``python`` decode with the built-in reader (parallel scheduler + native FLAC);
+    chdman is only used when the reader says it cannot decode the file (``needs_chdman``: e.g. a zstd CHD made by a
+    newer chdman) unless ``engine`` is ``python``; ``chdman`` forces chdman first."""
     path = unit.path
     system = index.system
     try:
@@ -758,29 +913,44 @@ def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chd
             # chdman createdvd: the header's raw SHA-1 IS the ISO's SHA-1 - identified without decoding anything
             meta[0]["sha1"], meta[0]["claimed"] = info.raw_sha1, True
         unit.tracks = meta
-        use_chdman = chdman is not None and engine in ("auto", "chdman")
+        use_chdman = chdman is not None and engine == "chdman"
+        fallback_ok = chdman is not None and engine != "python"
         via = ["python"]
 
-        def hasher(idx: list[int]) -> None:
+        def with_chdman() -> bool:
+            """Every track through ``chdman extract`` (scratch space); False when that is not possible."""
             nonlocal use_chdman
+            try:
+                got = hash_all_chdman(path, info, chdman, root, prog)
+            except chdtool.ChdmanError as exc:
+                use_chdman = False          # no space / chdman problem: the built-in reader does it
+                tempspace.note_python(str(exc))
+                if prog:
+                    prog.emit(f"{path.name}: chdman not used ({str(exc).splitlines()[0]}) - built-in reader")
+                return False
+            for i, h in got.items():
+                meta[i].update(crc32=h["crc32"], md5=h["md5"], sha1=h["sha1"])
+                meta[i].pop("claimed", None)
+            via[0] = "chdman"
+            return True
+
+        def hasher(idx: list[int]) -> None:
             unit.decoded = True
             if prog:
                 prog.check()
                 prog.emit(f"Reading {path.name}")
-            if use_chdman and not all(_is_hashed(meta[i]) for i in range(len(meta))):
-                try:
-                    got = hash_all_chdman(path, info, chdman, root, prog)
-                    for i, h in got.items():
-                        meta[i].update(crc32=h["crc32"], md5=h["md5"], sha1=h["sha1"])
-                        meta[i].pop("claimed", None)
-                    via[0] = "chdman"
+            if use_chdman and not all(_is_hashed(meta[i]) for i in range(len(meta))) and with_chdman():
+                return
+            try:
+                got = hash_tracks_python(info, [i for i in idx if not _is_hashed(meta[i])], prog, pool)
+            except chdlib.ChdUnsupported as exc:
+                if not (getattr(exc, "needs_chdman", False) and fallback_ok):
+                    raise
+                if prog:
+                    prog.emit(f"{path.name}: {exc} - using chdman")
+                if with_chdman():
                     return
-                except chdtool.ChdmanError as exc:
-                    use_chdman = False      # no space / chdman problem: the Python reader does it
-                    tempspace.note_python(str(exc))
-                    if prog:
-                        prog.emit(f"{path.name}: chdman not used ({str(exc).splitlines()[0]}) - built-in reader")
-            got = hash_tracks_python(info, [i for i in idx if not _is_hashed(meta[i])], prog, pool)
+                raise
             for i, h in got.items():
                 meta[i].update(h)
                 meta[i].pop("claimed", None)
@@ -852,19 +1022,13 @@ def identify_raw(unit: DcUnit, index: DcIndex, hasher_cache: scanner.HashCache,
 
 
 def _hash_file_progress(path: Path, prog: Optional[_Progress]) -> tuple[str, str]:
-    crc = 0
-    sha = hashlib.sha1()
-    with open(path, "rb") as f:
-        while True:
-            block = f.read(scanner.CHUNK_SIZE)
-            if not block:
-                break
-            crc = zlib.crc32(block, crc)
-            sha.update(block)
-            if prog:
-                prog.check()
-                prog.add(len(block))
-    return f"{crc & 0xFFFFFFFF:08x}", sha.hexdigest()
+    """crc32 + sha1 of a raw-set file (prefetching reader, the digests in parallel threads: :mod:`romorg.multihash`)."""
+    try:
+        crc, _md5, sha1, _n = multihash.hash_file(path, md5=False, progress=(prog.add if prog else None),
+                                                   cancel=(prog.cancelled if prog else None))
+    except multihash.Cancelled:
+        raise scanner.ScanCancelled() from None
+    return crc, sha1
 
 
 # --------------------------------------------------------------------------- scan result
@@ -883,7 +1047,8 @@ class DcScanResult(scanner.ScanResult):
     index: Optional[DcIndex] = field(default=None, repr=False, compare=False)
     junk: list[Path] = field(default_factory=list)
     originals: list[DcUnit] = field(default_factory=list)      # raw sets kept by Convert (_converted_originals/)
-    engine: str = "python"
+    engine: str = "python"          # the engine that decoded: python (built-in reader) | chdman | mixed
+    engine_info: dict = field(default_factory=dict)     # MB/s, processes, native FLAC (_Progress.engine_stats)
     chdman_label: str = ""
     swept: list[str] = field(default_factory=list)
     temp: dict = field(default_factory=dict)          # where the chdman decodes went (tempspace.report())
@@ -937,7 +1102,8 @@ class DcScanResult(scanner.ScanResult):
             # Dreamcast specifics
             "chd_files": len(chd_m) + sum(1 for e in self.unmatched if getattr(e, "kind", "") == "chd"),
             "identified": n_ident, "verified": n_ver, "raw": len(raw_m),
-            "engine": self.engine, "chdman": self.chdman_label,
+            "engine": self.engine, "chdman": self.chdman_label, "engine_info": self.engine_info,
+            "engine_text": self.engine_info.get("text", "") if self.engine_info else "",
             "system": system.key, "needs_chdman": sum(1 for e in self.unmatched
                                                        if getattr(e, "needs_chdman", False)),
             "temp": self.temp, "temp_text": self.temp.get("text", "") if self.temp else "",
@@ -963,8 +1129,9 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
     units, rest = discover_units(root, files, system)
     cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None)
     fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None)
-    use_chdman = chdman is not None and engine != "python"
+    use_chdman = chdman is not None and engine == "chdman"        # forced; "auto" = built-in reader first
 
+    sched = chdsched.make_scheduler(workers)
     try:
         # progress total: what has to be decoded / hashed (cached CHDs cost nothing)
         total = 0
@@ -995,24 +1162,27 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
         prog = _Progress(progress, max(total, 1), cancel)
         prog.files_total = files_todo
         prog.emit("Scanning...")
-        pool = chdpool.make_pool(workers) if (workers > 1 and not use_chdman) else None
+        pool = None if use_chdman else sched
+        stats_info: dict[str, Any] = {}
         try:
             chd_units = [u for u in units if u.kind == "chd"]
-            if pool is not None and chd_units:
+            if pool is not None and pool.pooled and len(chd_units) > 1:
                 def work(u: DcUnit) -> None:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, None, engine, prog, pool)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool)
                     if u.decoded:
                         prog.file_done()
-                with ThreadPoolExecutor(max_workers=min(workers, len(chd_units))) as ex:
+                # several CHDs at once: their chunks share the worker processes (the early-reject strategy of one
+                # CHD is sequential, the others fill the gaps)
+                with ThreadPoolExecutor(max_workers=min(max(2, pool.workers), len(chd_units))) as ex:
                     for fut in [ex.submit(work, u) for u in chd_units]:
                         fut.result()
             else:
                 for u in chd_units:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, chdman if use_chdman else None, engine, prog, pool)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool)
                     if u.decoded:
                         prog.file_done()
             for u in units:
@@ -1024,8 +1194,8 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                     if prog.done > before:
                         prog.file_done()
         finally:
-            if pool is not None:
-                pool.close()
+            stats_info = prog.engine_stats(sched)
+            sched.close()
 
     finally:
         fcache.close()
@@ -1061,7 +1231,9 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
         root=root, dat_names=[dat.name], matched=matched, unmatched=unmatched, unsupported=[],
         errors=list(problems), missing=missing, dat_total=total_games, dat_totals={dat.name: total_games},
         layout="game_folder", dats=dat_list, units=units, index=index, junk=list(rest), originals=originals,
-        engine="chdman" if use_chdman else "python", chdman_label=chdman.label if chdman else "", swept=swept,
+        engine=(stats_info.get("engine") if stats_info.get("engine") not in (None, "none")
+                else ("chdman" if use_chdman else "python")),
+        engine_info=stats_info, chdman_label=chdman.label if chdman else "", swept=swept,
         temp=tempspace.report(), system=system)
 
 
@@ -1446,67 +1618,102 @@ def verify_units(result: DcScanResult, chdman: Optional[chdtool.Chdman] = None, 
                  workers: int = 1) -> dict[str, Any]:
     """Upgrade ``identified`` CHDs to ``verified``: decode EVERY track (audio too) and compare with Redump.
 
-    Uses chdman ``extractcd`` when available (faster, FLAC) else the pure-Python reader. Results go into the
-    hash cache; the caller re-scans. Returns ``{"verified", "failed": [{file, error}], "already", "checked"}``.
+    The built-in reader decodes (parallel scheduler, native FLAC); chdman ``extractcd`` only when the reader cannot
+    (``needs_chdman``) or when ``engine`` is ``chdman``. Results go into the hash cache; the caller re-scans.
+    Returns ``{"verified", "failed": [{file, error}], "already", "checked", "engine_info"}``.
     """
     root = Path(result.root)
     cache = ChdCache(cache_path or scanner.default_cache_path())
     todo = [m for m in result.matched if m.kind == "chd" and m.level != LEVEL_VERIFIED]
     already = sum(1 for m in result.matched if m.kind == "chd" and m.level == LEVEL_VERIFIED)
-    use_chdman = chdman is not None and engine != "python"
-    total = sum(m.unit.total_bytes() * (2 if use_chdman else 1) for m in todo) or 1
+    force_chdman = chdman is not None and engine == "chdman"
+    fallback_ok = chdman is not None and engine != "python"
+    total = sum(m.unit.total_bytes() * (2 if force_chdman else 1) for m in todo) or 1
     prog = _Progress(progress, total, cancel)
     prog.files_total = len(todo)
     verified, failed = 0, []
     tempspace.sweep_stale()
     tempspace.reset_report()
-    pool = chdpool.make_pool(workers) if (workers > 1 and not use_chdman) else None
-    try:
-        for m in todo:
-            prog.check()
-            u: DcUnit = m.unit
-            prog.emit(f"Verifying {u.path.name}")
-            prog.files_done = todo.index(m)
-            try:
-                info = chdlib.Chd(u.path, load_map=False)
-            except (OSError, chdlib.ChdError) as exc:
+    sched = chdsched.make_scheduler(workers)
+    pool = None if force_chdman else sched
+    lock = threading.Lock()
+    finished = [0]
+
+    def one(m: Any) -> None:
+        nonlocal verified
+        prog.check()
+        u: DcUnit = m.unit
+        prog.emit(f"Verifying {u.path.name}")
+        try:
+            info = chdlib.Chd(u.path, load_map=False)
+        except (OSError, chdlib.ChdError) as exc:
+            with lock:
                 failed.append({"file": _rel(u.path, root), "error": str(exc)})
-                continue
+            return
+        try:
+            meta = _track_meta(info)
+            _merge_cached(meta, cache.get(str(u.path), u.size, u.mtime_ns, info.sha1))
+            via = "python"
+            wanted = [i for i, x in enumerate(meta) if not x["sha1"]]
+
+            def by_chdman() -> dict[int, dict]:
+                return hash_all_chdman(u.path, info, chdman, root, prog)
+
             try:
-                meta = _track_meta(info)
-                _merge_cached(meta, cache.get(str(u.path), u.size, u.mtime_ns, info.sha1))
-                via = "python"
-                try:
-                    if use_chdman:
-                        got = hash_all_chdman(u.path, info, chdman, root, prog)
+                if force_chdman:
+                    got = by_chdman()
+                    via = "chdman"
+                else:
+                    try:
+                        got = hash_tracks_python(info, wanted, prog, pool)
+                    except chdlib.ChdUnsupported as exc:
+                        if not (getattr(exc, "needs_chdman", False) and fallback_ok):
+                            raise
+                        prog.emit(f"{u.path.name}: {exc} - using chdman")
+                        got = by_chdman()
                         via = "chdman"
-                    else:
-                        got = hash_tracks_python(info, [i for i, x in enumerate(meta) if not x["sha1"]], prog, pool)
-                except chdtool.ChdmanError as exc:
-                    tempspace.note_python(str(exc))
-                    prog.emit(f"{u.path.name}: chdman not used ({str(exc).splitlines()[0]}) - built-in reader")
-                    got = hash_tracks_python(info, [i for i, x in enumerate(meta) if not x["sha1"]], prog, pool)
-                for i, h in got.items():
-                    meta[i].update(crc32=h["crc32"], md5=h["md5"], sha1=h["sha1"])
-                bad = [str(meta[i]["number"]) for i in range(len(meta)) if not _rom_ok(u.game.tracks[i], meta[i])]
-                cache.put(str(u.path), u.size, u.mtime_ns, info.sha1, disc_kind(info),
-                          [{k: x[k] for k in ("number", "type", "size", "crc32", "md5", "sha1")} for x in meta],
-                          LEVEL_VERIFIED, via)
+            except chdtool.ChdmanError as exc:
+                if exc.cancelled:
+                    raise scanner.ScanCancelled() from exc
+                tempspace.note_python(str(exc))
+                prog.emit(f"{u.path.name}: chdman not used ({str(exc).splitlines()[0]}) - built-in reader")
+                got = hash_tracks_python(info, wanted, prog, pool)
+                via = "python"
+            for i, h in got.items():
+                meta[i].update(crc32=h["crc32"], md5=h["md5"], sha1=h["sha1"])
+            bad = [str(meta[i]["number"]) for i in range(len(meta)) if not _rom_ok(u.game.tracks[i], meta[i])]
+            cache.put(str(u.path), u.size, u.mtime_ns, info.sha1, disc_kind(info),
+                      [{k: x[k] for k in ("number", "type", "size", "crc32", "md5", "sha1")} for x in meta],
+                      LEVEL_VERIFIED, via)
+            with lock:
                 if bad:
                     failed.append({"file": _rel(u.path, root),
                                    "error": f"track {', '.join(bad)} does not match Redump ({u.game.name})"})
                 else:
                     verified += 1
-            except chdlib.ChdError as exc:
+        except chdlib.ChdError as exc:
+            with lock:
                 failed.append({"file": _rel(u.path, root), "error": f"cannot decode: {exc}"})
-            finally:
-                info.close()
+        finally:
+            info.close()
+            with lock:
+                finished[0] += 1
+                prog.files_done = finished[0]
+
+    try:
+        if sched.pooled and len(todo) > 1:
+            with ThreadPoolExecutor(max_workers=min(max(2, sched.workers), len(todo))) as ex:
+                for fut in [ex.submit(one, m) for m in todo]:
+                    fut.result()
+        else:
+            for m in todo:
+                one(m)
     finally:
-        if pool is not None:
-            pool.close()
+        info_stats = prog.engine_stats(sched)
+        sched.close()
         cache.close()
     return {"verified": verified, "failed": failed, "already": already, "checked": len(todo),
-            "temp": tempspace.report()}
+            "temp": tempspace.report(), "engine_info": info_stats, "engine_text": info_stats.get("text", "")}
 
 
 # --------------------------------------------------------------------------- Convert raw sets to CHD
@@ -1525,6 +1732,8 @@ class DcConvertOp:
     moves: list = field(default_factory=list)   # [(src, dst)] raw files -> originals
     raw_bytes: int = 0
     mode: str = "createcd"          # chdman command: createcd (cue / gdi sheets) | createdvd (a single .iso)
+    gdi_text: Optional[str] = None  # a GD-ROM set that has only a .cue: the .gdi generated from it (None = use ``src``)
+    note: str = ""
 
 
 def iso_convert_mode(system: DiscSystem, config: Optional[dict] = None) -> str:
@@ -1561,7 +1770,18 @@ def plan_convert(result: DcScanResult, chdman_found: bool, config: Optional[dict
         op = DcConvertOp(u.path, None, dst, orig, "convert", rom_name=g.name, unit=u, moves=moves,
                          raw_bytes=sum(f.stat().st_size for f in u.files if f.exists()),
                          mode=(iso_convert_mode(system, config) or "createcd") if is_iso else "createcd")
-        if not chdman_found:
+        gd_cue = system.gd and u.path.suffix.lower() == ".cue"
+        if gd_cue:
+            # a GD-ROM needs a .gdi (chdman createcd of a .cue would write a CD CHD, type CHT2): generate the GDI from
+            # the Redump layout markers of the .cue, or refuse
+            text, why = gdi_from_cue(u.path)
+            if text is None:
+                op.status, op.reason = "skip", f"needs a .gdi: {why}"
+            else:
+                op.gdi_text, op.note = text, "the .gdi was generated from the .cue (Redump single / high-density layout)"
+        if op.status != "convert":
+            pass
+        elif not chdman_found:
             op.status, op.reason = "skip", "chdman not found - install MAME (Flatpak) or put chdman on PATH"
         elif g.name in have_chd:
             op.status, op.reason = "skip", "a CHD of this game already exists"
@@ -1577,10 +1797,92 @@ def plan_convert(result: DcScanResult, chdman_found: bool, config: Optional[dict
     return ops
 
 
+def assert_new_chd(info: chdlib.Chd, system: DiscSystem, mode: str) -> None:
+    """The CHD chdman just wrote must be the KIND of disc the system has (checked before it is accepted: the track
+    hashes alone cannot tell a GD-ROM CHD (CHGD) from a CD CHD (CHT2) with the same tracks)."""
+    if mode == "createdvd":
+        if not info.is_dvd:
+            raise chdtool.ChdmanError("chdman createdvd did not write a DVD CHD")
+        return
+    if not info.is_cd:
+        raise chdtool.ChdmanError("chdman createcd did not write a CD / GD-ROM CHD")
+    if system.gd and not info.is_gd:
+        raise chdtool.ChdmanError("the new CHD is a CD image (CHT2) but a Dreamcast game needs a GD-ROM image (CHGD) - "
+                                  "the set needs a .gdi; nothing was changed")
+    if info.is_gd and not system.gd:
+        raise chdtool.ChdmanError("the new CHD is a GD-ROM image (CHGD) but this system has CD images - nothing was changed")
+
+
+def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[chdtool.Chdman], engine: str,
+                   sched: Optional[chdsched.Scheduler], progress: Optional[ProgressFn], label: str,
+                   cancel: Any) -> tuple[dict[int, dict], str]:
+    """Hash every track of the NEW CHD, independent of the tool that created it: the built-in reader decodes it
+    (parallel scheduler); chdman ``extract`` only when ``engine`` is ``chdman`` or the reader cannot decode the file.
+    Returns ``(hashes, text for the job message)``."""
+    prog = _Progress(None, max(1, sum(t.size for t in info.tracks)), cancel)
+    prog.engine_label = ""
+
+    def report(m: str) -> None:
+        if progress:
+            progress(0, 1, f"{label}: {m}")
+
+    def by_chdman(why: str) -> tuple[dict[int, dict], str]:
+        try:
+            return hash_all_chdman(path, info, chdman, root, None), f"verified with chdman extract ({why})"
+        except chdtool.NoTempSpace as exc:
+            tempspace.note_python(str(exc))
+            report(f"{exc} - verifying with the built-in reader")
+            return hash_tracks_python(info, range(len(info.tracks)), prog, sched), "verified with the built-in reader"
+
+    if chdman is not None and engine == "chdman":
+        report("verifying with chdman extract")
+        return by_chdman("engine chdman")
+    report("verifying the new CHD with the built-in reader (independent of chdman)")
+    if progress:
+        prog.report = lambda d, t, m: progress(d, t, f"{label}: {m}")
+        prog.label = "Verifying the new CHD"
+    try:
+        got = hash_tracks_python(info, range(len(info.tracks)), prog, sched)
+    except chdlib.ChdUnsupported as exc:
+        if not (getattr(exc, "needs_chdman", False) and chdman is not None and engine != "python"):
+            raise
+        report(f"{exc} - verifying with chdman extract instead")
+        return by_chdman("the built-in reader cannot decode this CHD")
+    stats = prog.engine_stats(sched)
+    return got, "verified independently with the built-in reader" + (f" ({stats['text']})" if stats.get("text") else "")
+
+
+def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tuple[Any, Path]:
+    """A scratch folder with the generated ``.gdi`` and symlinks to the set's track files (the library is only read)."""
+    files = sheet_track_files(op.src) or []
+    if not files or op.gdi_text is None:
+        raise chdtool.ChdmanError("the .cue cannot be turned into a .gdi")
+    work = chdtool.acquire_workdir(chdman, 0, [root])
+    try:
+        lines = op.gdi_text.splitlines()
+        out = [lines[0]]
+        for row, f in zip(lines[1:], files):
+            parts = shlex.split(row)
+            ext = "raw" if parts[2] == "0" else "bin"
+            link = f"track{int(parts[0]):02d}.{ext}"
+            os.symlink(os.path.abspath(f), work.path / link)
+            parts[4] = link
+            out.append(f'{parts[0]} {parts[1]} {parts[2]} {parts[3]} "{link}" {parts[5]}')
+        sheet = work.path / "disc.gdi"
+        sheet.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except BaseException:
+        chdtool.remove_workdir(work)
+        raise
+    return work, sheet
+
+
 def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcIndex, journal: Any,
-                 created: list[str], progress: Optional[ProgressFn], cancel: Any) -> None:
+                 created: list[str], progress: Optional[ProgressFn], cancel: Any,
+                 sched: Optional[chdsched.Scheduler] = None, engine: str = "auto",
+                 verify_notes: Optional[list[str]] = None) -> None:
     unit: DcUnit = op.unit
     game = unit.game
+    system = index.system
     for s, _d in op.moves:
         if not organiser._exists(s):
             raise FileNotFoundError(f"source missing: {s}")
@@ -1592,31 +1894,35 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
     new = op.dst.with_name(op.dst.name + PART_SUFFIX)
     placed = False
     moved: list[tuple[Path, Path]] = []
+    gdi_work = None
     try:
         organiser.make_dirs(op.dst.parent, created, journal)
         if new.is_file() and not new.is_symlink():
             new.unlink()                      # a leftover of a crashed run (our own distinctive name)
         label = op.rom_name
         make = chdtool.create_dvd if op.mode == "createdvd" else chdtool.create_cd
-        make(chdman, op.src, new,
+        source = op.src
+        if op.gdi_text is not None:
+            chdtool.check_access(chdman, Path(op.src).parent)
+            gdi_work, source = _link_gdi_dir(op, chdman, root)
+        make(chdman, source, new,
              progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
              cancel=cancel)
+        if gdi_work is not None:
+            chdtool.remove_workdir(gdi_work)
+            gdi_work = None
         # verify the new CHD against Redump before anything of the original is touched
         info = chdlib.Chd(new, load_map=False)
         try:
+            assert_new_chd(info, system, op.mode)
             if tuple(t.size for t in info.tracks) != game.sizes:
                 raise chdtool.ChdmanError("the new CHD has a different track layout than Redump")
-            if op.mode == "createdvd" and not info.is_dvd:
-                raise chdtool.ChdmanError("chdman createdvd did not write a DVD CHD")
             try:
-                got = hash_all_chdman(new, info, chdman, root, None)
-            except chdtool.NoTempSpace as exc:
-                # no RAM / disk scratch space: verify with the pure-Python reader (slower, no temp files)
-                tempspace.note_python(str(exc))
-                if progress:
-                    progress(0, 1, f"{label}: {exc} - verifying with the built-in reader")
-                prog = _Progress(None, 1, cancel)
-                got = hash_tracks_python(info, range(len(info.tracks)), prog)
+                got, how = verify_new_chd(new, info, root, chdman, engine, sched, progress, label, cancel)
+            except scanner.ScanCancelled:
+                raise chdtool.ChdmanError("cancelled", cancelled=True) from None
+            if verify_notes is not None:
+                verify_notes.append(how)
         finally:
             info.close()
         bad = [str(i + 1) for i, t in enumerate(game.tracks) if not _rom_ok(t, got.get(i, {}))]
@@ -1668,6 +1974,8 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
             raise
         raise
     finally:
+        if gdi_work is not None:
+            chdtool.remove_workdir(gdi_work)
         try:
             if new.is_file() and not new.is_symlink():
                 new.unlink()                   # failed / cancelled: no half-written CHD stays behind
@@ -1676,8 +1984,13 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
 
 
 def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Chdman, index: DcIndex,
-                      progress: Optional[ProgressFn] = None, cancel: Any = None) -> dict[str, Any]:
-    """Convert the ``convert`` ops with chdman: create -> verify against Redump -> place -> keep originals."""
+                      progress: Optional[ProgressFn] = None, cancel: Any = None, workers: int = 1,
+                      engine: str = "auto") -> dict[str, Any]:
+    """Convert the ``convert`` ops with chdman (multi-core): create -> verify against Redump -> place -> keep originals.
+
+    The new CHD is verified INDEPENDENTLY of chdman: the built-in reader decodes it (parallel scheduler, ``workers``
+    processes) and compares every track with Redump; chdman ``extract`` is only the fallback for a CHD the reader
+    cannot decode (or ``engine`` = ``chdman``). ``result["verify_text"]`` says which."""
     root = Path(root)
     todo = [o for o in ops if o.status == "convert"]
     journal = organiser.Journal(root)
@@ -1687,6 +2000,8 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Ch
     removed: list[str] = []
     cancelled = False
     error: Optional[str] = None
+    notes: list[str] = []
+    sched = chdsched.make_scheduler(workers)
     try:
         chdtool.sweep_stale(root)
         tempspace.sweep_stale()
@@ -1698,7 +2013,7 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Ch
             if progress:
                 progress(i, len(todo), op.rom_name)
             try:
-                _convert_one(op, root, chdman, index, journal, created, progress, cancel)
+                _convert_one(op, root, chdman, index, journal, created, progress, cancel, sched, engine, notes)
                 converted.append(op)
             except organiser.UndoLogError:
                 raise
@@ -1724,7 +2039,9 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Ch
     except organiser.UndoLogError as exc:
         error = str(exc)
     finally:
+        sched.close()
         log_path = journal.close()
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
             "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
-            "temp": tempspace.report()}
+            "temp": tempspace.report(), "verify_text": notes[-1] if notes else "",
+            "generated_gdi": sum(1 for o in converted if o.gdi_text is not None)}

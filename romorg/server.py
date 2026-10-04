@@ -1017,17 +1017,20 @@ class App:
             except Exception:  # noqa: BLE001 - detection must never break the page
                 traceback.print_exc()
                 found = None
+            notes = list(getattr(chdtool, "last_notes", lambda: [])())
             if found is not None:
                 info = found.to_dict()
                 info["hint"] = ""
             else:
-                info = {"found": False, "kind": "", "label": "", "hint": chdtool.INSTALL_HINT}
+                info = {"found": False, "kind": "", "label": "",
+                        "hint": (notes[0] + ". " if notes else "") + chdtool.INSTALL_HINT}
                 info["steps"] = [
                     "Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
                     "or install any chdman and put it on PATH",
                     f"or save the path of a chdman binary below (config key \"{chdtool.CONFIG_KEY}\", "
                     f"environment {chdtool.ENV_VAR})"]
             info["override"] = str(cfg.get(chdtool.CONFIG_KEY) or "")
+            info["notes"] = notes
             state = (time.monotonic(), found, info)
         with self._lock:
             self._chdman_cache = state
@@ -1184,7 +1187,7 @@ class App:
             result = _mod("discsys").scan(
                 root, dats, progress=job.report, cancel=job.cancel if cancellable else None,
                 chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
-                workers=_mod("chdpool").default_workers(cfg.get("chd_workers")),
+                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
                 protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
         else:
             result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=job.report,
@@ -1587,6 +1590,8 @@ class App:
         }
         if getattr(op, "mode", ""):          # disc systems: the chdman command (createcd | createdvd)
             row["mode"] = op.mode
+        if getattr(op, "note", ""):          # e.g. "the .gdi was generated from the .cue ..."
+            row["note"] = op.note
         return row
 
     @staticmethod
@@ -2210,9 +2215,12 @@ class App:
                 chdman = self._chdman()
                 if chdman is None:
                     raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
-                self._configure_temp()
-                res = dict(_mod("discsys").apply_conversions(ops, state.root, chdman, state.result.index,
-                                                              progress=job.report, cancel=job.cancel))
+                cfg = self._config()
+                self._configure_temp(cfg)
+                res = dict(_mod("discsys").apply_conversions(
+                    ops, state.root, chdman, state.result.index, progress=job.report, cancel=job.cancel,
+                    workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
+                    engine=str(cfg.get("chd_engine") or "auto")))
             else:
                 res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
                                  cancel=job.cancel))
@@ -2315,14 +2323,23 @@ class App:
 
     # ---- Sega Dreamcast: chdman + Verify fully
 
+    def _engine_facts(self, info: dict[str, Any]) -> None:
+        """How the built-in reader will run: native libFLAC or not, number of decode processes."""
+        try:
+            info["flac"] = _mod("flacnative").status()
+            info["workers"] = _mod("chdsched").default_workers(self._config().get("chd_workers"))
+        except Exception:  # noqa: BLE001 - informational only
+            pass
+
     def chdman_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """chdman detection result (``?refresh=1`` forces a new look)."""
         info = self._chdman_info(refresh=_bool_arg(query.get("refresh")))
         info["engine"] = str(self._config().get("chd_engine") or "auto")
+        self._engine_facts(info)
         return info
 
     def chdman_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """Remember (empty = forget) the path of a chdman binary and the engine (``auto`` | ``python``)."""
+        """Remember (empty = forget) the path of a chdman binary and the engine (``auto`` | ``python`` | ``chdman``)."""
         chdtool = _mod("chdtool")
         raw = body.get("path")
         values: dict[str, Any] = {}
@@ -2338,14 +2355,15 @@ class App:
             values[chdtool.CONFIG_KEY] = raw
         engine = body.get("engine")
         if engine is not None:
-            if engine not in ("auto", "python"):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "engine must be auto or python")
+            if engine not in ("auto", "python", "chdman"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "engine must be auto, python or chdman")
             values["chd_engine"] = engine
         if not values:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path and / or engine)")
         self._config_update(strict=True, **values)
         info = self._chdman_info(refresh=True)
         info["engine"] = str(self._config().get("chd_engine") or "auto")
+        self._engine_facts(info)
         if raw and not info.get("found"):
             info["warning"] = f"{raw} did not answer like chdman"
         return info
@@ -2362,7 +2380,7 @@ class App:
             res = dict(_mod("discsys").verify_units(
                 state.result, self._chdman(), progress=job.report, cancel=job.cancel,
                 engine=str(cfg.get("chd_engine") or "auto"),
-                workers=_mod("chdpool").default_workers(cfg.get("chd_workers"))))
+                workers=_mod("chdsched").default_workers(cfg.get("chd_workers"))))
             res["action"] = "verify"
             self._rescan_into(job, state, res)
             self._carry_temp(state, res)

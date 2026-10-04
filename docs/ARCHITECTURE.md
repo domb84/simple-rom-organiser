@@ -1582,3 +1582,80 @@ Pro BMX 2 (USA) 141 s, Tony Hawk's Pro Skater 4 -> *(USA) (v1.02)* 90 s; all `ve
 Budget re-releases and special editions are separate games (never merged); a trial disc inside a Games entry stays; `needs chdman` CHDs are skipped, not moved. **Not verified
 here:** the real chdman (createcd, createdvd, extractdvd: only a fake script), PCSX2 / DuckStation / RetroArch loading the CHDs or playlists, CHDs written by a real
 `chdman createdvd` (only the test writer's; the codecs there are lzma / zlib / none and the header SHA-1 claim follows the documented format), zstd decoding, exFAT.
+
+
+---
+
+# AMENDMENT 14 - the fastest SUPPORTED CHD engine (parallel scheduler, native FLAC, bundled chdman, GD-ROM safety)
+
+**Binding; additive (later wins over Amendments 6-13).** "Supported" = only what emulators and the shipped AppImage support: standard CHD codecs
+(LZMA / zlib / FLAC), never zstd / `cdzs` written by us; no compiler, no Rust, nothing installed system-wide. App code stays stdlib-only; shared
+libraries are only *loaded* (ctypes).
+
+## Modules
+* `chdsched.py` (replaces `chdpool.py`): ONE work queue over all tracks of all CHDs. A track is split by `chd.plan_chunks` into ~4 MB (extracted bytes)
+  ranges on hunk / ECC-group (16 hunks) boundaries; N `python -m romorg.chdworker` processes (default one per CPU thread, limited by `MemAvailable`
+  at ~80 MB per worker; config `chd_workers`, env `ROMORG_CHD_WORKERS`, 1 = sequential in-process = the old path) decode ranges
+  (`Chd.read_track_range`) and send the bytes back through their stdout pipe (1 MiB pipe buffer; measured cheaper and safer than shared memory:
+  no resource tracker, nothing left behind after a kill). Workers keep up to 4 opened CHDs with their parsed hunk maps (compact `array`s).
+  FIFO dispatch in global request order + per-track ordered hasher (`multihash`: crc32 + md5 + sha1, the digests of a chunk in parallel threads)
+  + back-pressure (`budget` <= 256 MB of chunks not yet hashed, at most 2 requests in flight per worker, chunk size shrinks to fit the budget).
+  `Scheduler.hash_tracks(info, indexes, progress, cancel)` is thread-safe: `discsys` identifies several CHDs at once (threads), their chunks share the
+  workers; the early-reject strategy of `match_chd` (candidates by size, data tracks smallest first, audio last) is unchanged and runs on top.
+  Failure model: a dead worker's chunks are retried (<= 2 tries) on a respawned worker (<= 3 respawns), otherwise `PoolError` and the caller
+  (`discsys.hash_tracks_python`) hashes the rest in-process; `Cancelled` on cancel; `close()` SIGKILLs the process groups and reaps them;
+  an unreadable file raises the reader's `ChdError` / `ChdUnsupported(needs_chdman)` without breaking the pool. Property tests: random chunk sizes
+  x layouts x codecs (CD raw / cooked / MODE2 / audio / DVD) == sequential `hash_track`.
+* `flacnative.py`: ctypes binding to libFLAC's stream decoder, fed like libchdr (synthesised `fLaC` + STREAMINFO, 44.1 kHz / 2 ch / 16 bit, frames of
+  the hunk, `process_single` until the hunk's samples, `get_decode_position` = start of the zlib subcode). Library order: `$ROMORG_LIBFLAC`, bundled
+  `tools/lib` (libogg preloaded RTLD_GLOBAL), system `libFLAC.so.*`; else the pure-Python `flacdec` (same results). Bit-identical to `flacdec` and to Redump;
+  unlike `flacdec` it checks the frame CRCs (damaged audio -> `ChdError`). One decoder per thread.
+* `multihash.py` (parallel digests, `hash_file` with a prefetching reader thread), `bundle.py` (where the AppImage keeps `tools/`, `licenses/`),
+  `selfcheck.py` (`--self-check`), `tools/bench_chd.py` (not in the test suite).
+* `chd.py`: map parsing 2.7x faster (`binascii.crc_hqx`, one 64-bit window per field; 6 GB image 3.6 -> 1.4 s), compact map arrays, cdfl through `flacnative`.
+
+## Engine policy (`chd_engine`: auto | python | chdman)
+`auto` = built-in reader + scheduler first; chdman only (a) to *create* CHDs (multi-core), (b) as the fallback when the reader raises `ChdUnsupported`
+with `needs_chdman` (extract through `tempspace` as before). `python` never uses chdman; `chdman` forces extraction first. `DcScanResult.engine` is the engine
+that really decoded (`python` | `chdman` | `mixed`), `engine_info` / `summary()["engine_info"|"engine_text"]` carry MB/s, processes, native FLAC; Verify fully and
+Convert return `engine_text` / `verify_text`; the UI bar shows "Last decode: Built-in reader (8 processes, native FLAC): 395 MB in 3 s, 124 MB/s".
+
+## Convert safety
+* After `createcd` / `createdvd` the CHD kind is asserted (`assert_new_chd`): a GD-ROM system must get CHGD, not CHT2 (the track hashes cannot tell them apart).
+* A GD system with only a `.cue` is converted only through a generated `.gdi` (`gdi_from_cue`): needs the Redump `REM SINGLE-DENSITY AREA` / `REM HIGH-DENSITY AREA`
+  markers; track 1 at LBA 0, SD tracks back to back, first HD track at 45000, then back to back, type 0 audio / 4 data, 2352 bytes. The `.gdi` and symlinks to the track
+  files are written to a scratch folder (the library is only read). Validated: 245 / 245 sidecar `.gdi` files of the real library equal the generated rows (sizes from the CHD),
+  and a real-chdman round trip on Jet Set Radio (extractcd -> Redump-named set + marker cue -> `createcd` from the real gdi and from the generated gdi): both
+  CHDs have the header SHA-1 `465686c8...` of the original. Otherwise the op is `skip` "needs a .gdi: ...".
+* The new CHD is verified independently of the creator: our reader through the scheduler (chdman extract only as fallback / forced engine).
+
+## Packaging
+`build_appimage.sh` downloads the pinned Arch packages (mame-tools 0.289-1, libutf8proc 2.11.3-1, flac 1.5.0-1, libogg 1.3.6-1; sha256 verified, fail on mismatch, cached in
+`packaging/.cache`), bundles `tools/chdman`, `tools/lib/{libutf8proc.so.3,libFLAC.so.14,libogg.so.0}`, `licenses/` (+ `docs/THIRD_PARTY.md`), runs `--self-check` (bundled
+libFLAC loads and decodes, scheduler runs, chdman starts) and `smoke_test.sh` repeats it inside the AppImage. `BUNDLE_TOOLS=0` skips it. `chdtool` detection: configured path -> bundled
+(`LD_LIBRARY_PATH` = bundled lib dir first) -> PATH -> Flatpak MAME -> folders; a bundled chdman that cannot start gives the note "bundled chdman could not start: missing libSDL2 ..." and the next one is used.
+
+## Loose files / archives (measured on the Deck, warm cache)
+* 2 GiB file crc32 + sha1: plain loop 606-850 MB/s -> prefetch thread + parallel digests 1600 MB/s (`scanner.hash_file`, `discsys` raw sets); with md5 as well 401 -> 625 MB/s.
+* 3000 files of ~120 KB: sequential 0.49 s -> 4-thread pool 0.32 s (`scanner.scan` hashes cache misses and lists 7z / rar archives ahead in a pool of 4, `ROMORG_SCAN_THREADS`;
+  results consumed in file order). zip: central-directory CRC, unchanged. 7z listings run in the same pool (not separately benchmarked: no 7z binary inside the sandbox).
+
+## Numbers (Steam Deck, 8 threads, real files, read-only; before = one process, pure-Python FLAC = the previous code path)
+| Disc | tracks bytes | before (1 core) | chdman extract+hash | 1 core + native FLAC | **scheduler, 8 procs** | peak RSS |
+|---|---|---|---|---|---|---|
+| Jet Set Radio (DC, data heavy) | 1134 MB | 38.0 s | 46.2 s | 35.5 s | **8.2 s (138 MB/s)** | 435 MB |
+| Toy Commander (DC, 390 MB FLAC) | 1148 MB | 371.9 s | 32.8 s | 26.2 s | **6.5 s (176 MB/s)** | 470 MB |
+| 4x4 Evo (DC, audio heavy) | 1134 MB | 210.4 s | 19.7 s | 18.9 s | **5.1 s (223 MB/s)** | 455 MB |
+| FIFA 98 (PSX) | 511 MB | 20.8 s | 26.0 s | 20.5 s | **4.6 s (112 MB/s)** | 420 MB |
+| Bully (PS2, 2.4 GB chd) | 4422 MB | 127.4 s | 170.4 s | 113.1 s | **23.6 s (187 MB/s)** | 834 MB |
+| God of War II (PS2, 6.6 GB chd) | 8138 MB | 185.3 s | n/a (extract > 8 GB scratch cap) | 188.1 s | **40.2 s (202 MB/s)** | 1003 MB |
+All hashes (size, crc32, md5, sha1 of every track) are identical between all strategies. Folders: PS2 (7 CHDs, 30 GB decoded) old 4 file-level processes 309 s -> 158-192 s;
+Dreamcast sample of 32 titles (15.5 GB of CHD, data tracks): old 625 s -> new 220 s, same matches and levels; the whole Dreamcast folder (now 423 CHDs) 47 min new (cold scan,
+no cache, 18.5 CPU-hours). Native FLAC: 80-83 MB/s of PCM per core on loud audio (libFLAC ~60 %, ctypes callbacks + interleave the rest; quiet audio is faster) - the 100 MB/s per-core target was NOT met
+on high-entropy audio; the whole-disc effect is what matters (Toy Commander 372 -> 26 s on one core). Parallel scaling is 3-3.5x on 4 cores / 8 threads: LZMA (36 %) and the ECC rebuild
+(47 %) are CPU / memory bound.
+
+## Judgement calls / not verified
+Pipes instead of shared memory; workers are `nice` +5; the scheduler never reads more than the chunks it needs (no whole-file buffering). **Not verified:** Flycast / PCSX2 loading CHDs made by
+this path, exFAT, a bundled chdman on non-SteamOS libraries (it needs libSDL2 / libz / libzstd / libstdc++ from the system; the fallback is reported), the 7z listing speed-up, the generated-gdi
+path on discs whose cue lacks markers (refused by design), real-file results for the old code on the whole Dreamcast folder (extrapolated from the 32-title sample).

@@ -18,6 +18,24 @@ LOG="$(mktemp)"
 SANDBOX="$(mktemp -d)"
 trap 'rm -f "$LOG"; rm -rf "$SANDBOX"' EXIT
 
+# CHD engine inside the image: bundled tools + licences present, the bundled chdman starts (usage text), libFLAC loads
+# from the bundle via ctypes and decodes a synthetic hunk, the scheduler runs a tiny job. ALLOW_NO_CHDMAN=1 tolerates a
+# host that lacks a system library chdman needs (libSDL2 ...).
+echo "--- CHD engine self-check (inside the AppImage)"
+SELF="$(env -i HOME="$HOME" PATH=/usr/bin:/bin ROMORG_DATA_DIR="$SANDBOX/data" XDG_STATE_HOME="$SANDBOX/state" ROMORG_OFFLINE=1 \
+  "$APPIMAGE" "${EXTRA[@]}" --self-check)" || { echo "$SELF" >&2; echo "self-check FAILED" >&2; exit 1; }
+echo "$SELF"
+grep -q '^OK    bundle at .*licenses/THIRD_PARTY.md' <<<"$SELF" || { echo "THIRD_PARTY.md / bundled tools missing from the AppImage" >&2; exit 1; }
+grep -q '^OK    libFLAC .*/tools/lib/' <<<"$SELF" || { echo "libFLAC was not loaded from the bundle" >&2; exit 1; }
+grep -q '^OK    the scheduler' <<<"$SELF" || { echo "scheduler check missing" >&2; exit 1; }
+if grep -q '^OK    the bundled chdman starts' <<<"$SELF"; then
+  CHDMAN_OK=1
+else
+  CHDMAN_OK=0
+  [[ "${ALLOW_NO_CHDMAN:-0}" == "1" ]] || { echo "the bundled chdman does not start (set ALLOW_NO_CHDMAN=1 to tolerate)" >&2; exit 1; }
+  echo "NOTE: the bundled chdman cannot start on this host (tolerated)"
+fi
+
 # Minimal environment proves we do not depend on host Python (or its modules).
 # ROMORG_OFFLINE=1: the startup DAT update must not download anything during a smoke test.
 env -i HOME="$HOME" PATH=/usr/bin:/bin ROMORG_DATA_DIR="$SANDBOX/data" XDG_STATE_HOME="$SANDBOX/state" ROMORG_OFFLINE=1 \
@@ -59,6 +77,12 @@ if [[ -n "$TOKEN" ]]; then
   grep -q '"style": "redump"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Sega%20Dreamcast")" \
     || { echo "Dreamcast rules missing" >&2; exit 1; }
   echo "GET /api/chdman, Dreamcast rules -> ok"
+  if [[ "$CHDMAN_OK" == "1" ]]; then
+    CH="$(curl -fsS "$URL/api/chdman")"
+    grep -q '"kind": "bundled"' <<<"$CH" || { echo "/api/chdman does not report the bundled chdman: $CH" >&2; exit 1; }
+    grep -q '"native": true' <<<"$CH" || { echo "/api/chdman does not report native FLAC: $CH" >&2; exit 1; }
+    echo "GET /api/chdman -> bundled chdman, native FLAC"
+  fi
 fi
 if [[ -n "$TOKEN" ]] && curl -fsS -X POST -H "X-Romorg-Token: $TOKEN" -H 'Content-Type: application/json' \
      -d '{}' "$URL/api/quit" >/dev/null; then

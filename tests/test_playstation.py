@@ -475,6 +475,33 @@ class ConvertTest(unittest.TestCase):
         (self.w.root / "raw" / "Alpha.iso").write_bytes(self.iso)
         (self.w.root / "raw" / "Alpha.md5").write_text("sum")
 
+    def test_auto_uses_chdman_only_for_a_chd_the_reader_cannot_decode(self) -> None:
+        p = self.w.root / "Odd" / "Odd.chd"
+        p.parent.mkdir()
+        T.build_chd(p, [{"type": "MODE1", "data": self.iso}], gd=False)
+        raw = bytearray(p.read_bytes())
+        raw[16:20] = b"cdzs"                          # a codec the built-in reader cannot decode (zstd)
+        p.write_bytes(bytes(raw))
+        (self.w.base / "log.txt").write_text("")
+        r = self.w.scan(chdman=self.chdman, engine="python")          # python: never chdman
+        self.assertEqual([m for m in r.matched if m.kind == "chd"], [])
+        self.assertTrue([e for e in r.unmatched if e.needs_chdman])
+        self.assertEqual((self.w.base / "log.txt").read_text(), "")
+        r = self.w.scan(chdman=self.chdman)                            # auto: the reader first, chdman as the fallback
+        self.assertEqual([(m.unit.game.name, m.level, m.unit.via) for m in r.matched if m.kind == "chd"],
+                         [("Alpha (USA)", "verified", "chdman")])
+        self.assertIn("extractcd", (self.w.base / "log.txt").read_text())
+        self.assertEqual(r.engine, "chdman")
+        self.assertIn("chdman:", r.engine_info["text"])
+
+    def test_auto_does_not_touch_chdman_for_a_decodable_chd(self) -> None:
+        self.w.cd_chd("Alpha (USA)", "Alpha (USA).chd")
+        (self.w.base / "log.txt").write_text("")
+        r = self.w.scan(chdman=self.chdman)
+        chd_m = [m for m in r.matched if m.kind == "chd"]
+        self.assertEqual((chd_m[0].level, chd_m[0].unit.via, r.engine), ("verified", "python", "python"))
+        self.assertEqual((self.w.base / "log.txt").read_text(), "")
+
     def run_convert(self, config=None):
         r = self.w.scan()
         ops = discsys.plan_convert(r, True, config)
@@ -486,7 +513,8 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual((ops[0].mode, res["converted"], res["failed"]), ("createdvd", 1, []))
         log = (self.w.base / "log.txt").read_text()
         self.assertIn("createdvd", log)
-        self.assertIn("extractdvd", log)                       # verified by decoding the new CHD
+        self.assertNotIn("extractdvd", log)                    # verified by OUR reader, independent of chdman
+        self.assertIn("independently", res["verify_text"])
         got = tree(self.w.root)
         self.assertIn("Alpha (USA)/Alpha (USA).chd", got)
         self.assertIn("_converted_originals/raw/Alpha.iso", got)

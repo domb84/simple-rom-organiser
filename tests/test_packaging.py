@@ -128,6 +128,24 @@ class SourceFileTests(unittest.TestCase):
         self.assertIn("/api/updates", text)
         self.assertIn("/api/library/profile", text)
 
+    def test_third_party_document_matches_the_pinned_packages(self) -> None:
+        doc = (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8")
+        script = (PKG / "build_appimage.sh").read_text(encoding="utf-8")
+        pins = re.findall(r'^PKG_\w+="([^|]+)\|([^|]+)\|([0-9a-f]{64})"', script, re.M)
+        self.assertEqual(len(pins), 4)
+        for file, directory, sha in pins:
+            self.assertIn(sha, doc, file)                       # the document lists the same checksums
+            self.assertIn(f"{directory}/{file}", doc)
+        for needle in ("chdman", "libFLAC", "libogg", "utf8proc", "BSD-3-Clause", "GPL-2.0", "MIT",
+                       "Corresponding source", "gitlab.archlinux.org", "github.com/mamedev/mame"):
+            self.assertIn(needle, doc)
+        # the build verifies and fails on a mismatch, and ships the document inside the image
+        self.assertIn("sha256sum -c", script)
+        self.assertIn("SHA-256 mismatch", script)
+        self.assertIn('licenses/THIRD_PARTY.md', script)
+        self.assertIn("--self-check", script)
+        self.assertIn("ALLOW_NO_CHDMAN", (PKG / "smoke_test.sh").read_text(encoding="utf-8"))
+
     def test_gitignore(self) -> None:
         lines = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
         for entry in ("dist/", "build/", "packaging/.cache/", "__pycache__/"):
@@ -163,6 +181,14 @@ class BuiltArtifactTests(unittest.TestCase):
         self.assertTrue((stdlib / "site-packages" / "romorg" / "__main__.py").is_file())
         for trimmed in ("tkinter", "idlelib", "test", "ensurepip", "site-packages/pip"):
             self.assertFalse((stdlib / trimmed).exists(), f"{trimmed} should be stripped")
+        if (APPDIR / "tools").is_dir():                       # a build with BUNDLE_TOOLS=1 (the default)
+            self.assertTrue(os.access(APPDIR / "tools" / "chdman", os.X_OK))
+            for lib in ("libFLAC.so.14", "libogg.so.0", "libutf8proc.so.3"):
+                self.assertTrue((APPDIR / "tools" / "lib" / lib).exists(), lib)
+            self.assertEqual((APPDIR / "licenses" / "THIRD_PARTY.md").read_text(encoding="utf-8"),
+                             (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8"))
+            for pkg in ("mame-tools", "libutf8proc", "flac", "libogg"):
+                self.assertTrue(any((APPDIR / "licenses" / pkg).iterdir()), f"licence text of {pkg}")
 
 
 if __name__ == "__main__":

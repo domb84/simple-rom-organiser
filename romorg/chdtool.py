@@ -4,9 +4,12 @@ chdman (from MAME) is the preferred way to read and write CHDs: it is much faste
 (:mod:`romorg.chd`), above all for FLAC audio. Nothing here is required: without chdman the app still scans
 and verifies CHDs with the pure-Python reader; only *Convert to CHD* needs it.
 
-Detection order (first hit wins): ``$ROMORG_CHDMAN`` / the ``chdman_path`` setting in config.json, ``chdman`` on
-``PATH``, the Flatpak ``org.mamedev.MAME`` (``flatpak run --command=chdman``), common tool folders
-(``~/.local/bin``, ``~/Emulation/tools``, EmuDeck / RetroDECK), ``/usr/bin`` and ``/usr/local/bin``.
+Detection order (first hit wins): ``$ROMORG_CHDMAN`` / the ``chdman_path`` setting in config.json, the chdman
+BUNDLED in the AppImage (``tools/chdman``, started with ``LD_LIBRARY_PATH`` pointing at the bundled ``tools/lib``
+ahead of the system's; see :mod:`romorg.bundle`), ``chdman`` on ``PATH``, the Flatpak ``org.mamedev.MAME``
+(``flatpak run --command=chdman``), common tool folders (``~/.local/bin``, ``~/Emulation/tools``, EmuDeck /
+RetroDECK), ``/usr/bin`` and ``/usr/local/bin``. A bundled chdman that cannot start (the system lacks e.g. libSDL2)
+is reported (:func:`detect_report`) and skipped; everything else keeps working.
 
 Scratch space (Amendment 12): an extracted disc is about its full raw size. It is decoded in RAM when that is safe,
 else in the app's own cache folder, never inside the ROM folder - see :mod:`romorg.tempspace` (:func:`acquire_workdir`).
@@ -33,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import tempspace
+from . import bundle, tempspace
 
 TEMP_PREFIX = ".romorg-chd-"
 ENV_VAR = "ROMORG_CHDMAN"
@@ -69,26 +72,74 @@ class NoTempSpace(ChdmanError):
 @dataclass
 class Chdman:
     argv: list[str]                 # command prefix, e.g. ["/usr/bin/chdman"] or ["flatpak", "run", "--command=chdman", "org.mamedev.MAME"]
-    kind: str                       # configured | path | flatpak | folder
+    kind: str                       # configured | bundled | path | flatpak | folder
     label: str                      # shown in the UI
     flatpak_app: str = ""
+    env: dict[str, str] = field(default_factory=dict)   # extra environment (the bundled chdman's LD_LIBRARY_PATH)
 
     def to_dict(self) -> dict[str, Any]:
         return {"found": True, "kind": self.kind, "label": self.label, "command": " ".join(self.argv),
-                "flatpak_app": self.flatpak_app}
+                "flatpak_app": self.flatpak_app, "bundled": self.kind == "bundled"}
+
+    def environ(self) -> Optional[dict[str, str]]:
+        """The environment to run it in (None = inherit)."""
+        if not self.env:
+            return None
+        e = dict(os.environ)
+        for k, v in self.env.items():
+            if k == "LD_LIBRARY_PATH" and e.get(k):
+                v = v + os.pathsep + e[k]
+            e[k] = v
+        return e
 
 
 # --------------------------------------------------------------------------- detection
 
-def _probe(argv: Sequence[str]) -> bool:
-    """True when ``argv`` runs and prints chdman's usage (its exit status for ``help`` is not 0)."""
+_MISSING_LIB = re.compile(r"error while loading shared libraries: ([^:\s]+)")
+
+
+def _probe_detail(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> tuple[bool, str]:
+    """``(runs and prints chdman's usage, why not)``; ``help``'s exit status is not 0."""
     try:
         proc = subprocess.run([*argv, "help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    text = proc.stdout.decode("utf-8", "replace").lower()
-    return "chdman" in text and ("createcd" in text or "extractcd" in text or "usage" in text)
+                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"cannot run: {exc}"
+    text = proc.stdout.decode("utf-8", "replace")
+    low = text.lower()
+    if "chdman" in low and ("createcd" in low or "extractcd" in low or "usage" in low):
+        return True, ""
+    m = _MISSING_LIB.search(text)
+    if m:
+        lib = m.group(1)
+        short = re.sub(r"\.so(\.\d+)*$", "", lib)
+        short = re.sub(r"-\d.*$", "", short)
+        return False, f"missing {short} ({lib})"
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    return False, (first[:120] or f"exit status {proc.returncode}")
+
+
+def _probe(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> bool:
+    """True when ``argv`` runs and prints chdman's usage."""
+    return _probe_detail(argv, env)[0]
+
+
+def bundled_chdman() -> Optional[Chdman]:
+    """The chdman shipped in the AppImage (``tools/chdman`` + ``tools/lib``), not probed; None outside an AppImage."""
+    tools = bundle.tools_dir()
+    if tools is None:
+        return None
+    exe = tools / "chdman"
+    try:
+        if not (exe.is_file() and os.access(exe, os.X_OK)):
+            return None
+    except OSError:
+        return None
+    env: dict[str, str] = {}
+    lib = bundle.lib_dir()
+    if lib is not None:
+        env["LD_LIBRARY_PATH"] = str(lib)
+    return Chdman(argv=[str(exe)], kind="bundled", label=f"{exe} (bundled)", env=env)
 
 
 def _candidates(config: Optional[dict], extra_dirs: Sequence[str] = ()) -> list[tuple[str, list[str], str, str]]:
@@ -119,10 +170,30 @@ def _candidates(config: Optional[dict], extra_dirs: Sequence[str] = ()) -> list[
     return out
 
 
-def detect(config: Optional[dict] = None, extra_dirs: Sequence[str] = ()) -> Optional[Chdman]:
-    """The first working chdman, or None."""
+_last_notes: list[str] = []
+
+
+def last_notes() -> list[str]:
+    """Notes of the most recent :func:`detect` (e.g. why the bundled chdman was skipped)."""
+    return list(_last_notes)
+
+
+def detect_report(config: Optional[dict] = None, extra_dirs: Sequence[str] = ()) -> tuple[Optional[Chdman], list[str]]:
+    """``(the first working chdman, notes)``; the notes explain candidates that were skipped (the bundled chdman that
+    could not start because the system lacks a library, ...)."""
+    global _last_notes
+    notes: list[str] = []
+    _last_notes = notes
     seen: set[tuple] = set()
-    for kind, argv, label, app in _candidates(config, extra_dirs):
+    cands = _candidates(config, extra_dirs)
+    configured = [c for c in cands if c[0] == "configured"]
+    rest = [c for c in cands if c[0] != "configured"]
+    ordered: list[tuple[str, list[str], str, str, Optional[Chdman]]] = [(k, a, l, app, None) for k, a, l, app in configured]
+    bundled = bundled_chdman()
+    if bundled is not None:
+        ordered.append(("bundled", bundled.argv, bundled.label, "", bundled))
+    ordered += [(k, a, l, app, None) for k, a, l, app in rest]
+    for kind, argv, label, app, pre in ordered:
         key = tuple(argv)
         if key in seen:
             continue
@@ -136,21 +207,34 @@ def detect(config: Optional[dict] = None, extra_dirs: Sequence[str] = ()) -> Opt
                 ok = False
             if not ok:
                 continue
-        if _probe(argv):
-            return Chdman(argv=argv, kind=kind, label=label, flatpak_app=app)
-    return None
+        found = pre or Chdman(argv=argv, kind=kind, label=label, flatpak_app=app)
+        ok, why = _probe_detail(argv, found.environ())
+        if ok:
+            return found, notes
+        if kind == "bundled":
+            notes.append(f"bundled chdman could not start: {why}; trying other chdman installations")
+    return None, notes
+
+
+def detect(config: Optional[dict] = None, extra_dirs: Sequence[str] = ()) -> Optional[Chdman]:
+    """The first working chdman, or None."""
+    return detect_report(config, extra_dirs)[0]
 
 
 def info(config: Optional[dict] = None) -> dict[str, Any]:
     """JSON for the UI: ``{"found", "label", "kind", ...}`` or ``{"found": False, "hint": ...}``."""
-    found = detect(config)
+    found, notes = detect_report(config)
     if found is None:
-        return {"found": False, "kind": "", "label": "", "hint": INSTALL_HINT,
-                "steps": ["Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
-                          "or install any chdman and put it on PATH",
-                          f"or set the chdman path in the app (config key \"{CONFIG_KEY}\" / environment {ENV_VAR})"]}
+        out = {"found": False, "kind": "", "label": "", "hint": INSTALL_HINT, "notes": notes,
+               "steps": ["Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
+                         "or install any chdman and put it on PATH",
+                         f"or set the chdman path in the app (config key \"{CONFIG_KEY}\" / environment {ENV_VAR})"]}
+        if notes:
+            out["hint"] = notes[0] + ". " + INSTALL_HINT
+        return out
     out = found.to_dict()
     out["hint"] = ""
+    out["notes"] = notes
     return out
 
 
@@ -293,7 +377,7 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None,
-                                start_new_session=True)
+                                start_new_session=True, env=chdman.environ())
     except OSError as exc:
         raise ChdmanError(f"cannot run chdman: {exc}") from exc
     chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()

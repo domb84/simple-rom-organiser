@@ -1015,9 +1015,13 @@
     if (!dc) return;
     $("dc-engine-line").textContent = s.engine === "chdman"
       ? `CHDs were read with chdman (${s.chdman}) - every track was checked, so they are verified.`
-      : "CHDs were read with the built-in reader (no chdman needed): data tracks are hashed, audio is checked by length "
-        + "until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "")
+      : (s.engine === "mixed" ? `CHDs were read with the built-in reader; chdman (${s.chdman}) decoded the ones the reader cannot. `
+        : "CHDs were read with the built-in reader (no chdman needed). ")
+        + "Data tracks are hashed, audio is checked by length until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "")
         + (s.needs_chdman ? ` ${fmt(s.needs_chdman)} CHD(s) use a compression the built-in reader cannot decode (zstd) - they are left in place; install chdman to identify them.` : "");
+    const speed = s.engine_text || state.dcSpeed || "";
+    $("dc-speed-line").textContent = speed ? `Last decode: ${speed}` : "";
+    $("dc-speed-line").classList.toggle("hidden", !speed);
     const tempText = s.temp_text || (s.temp && s.temp.text) || "";
     $("dc-temp-line").textContent = tempText;
     $("dc-temp-line").classList.toggle("hidden", !tempText);
@@ -1034,8 +1038,8 @@
       el("p", { text: `Decode every track - audio included - of ${fmt(s.identified)} CHD${s.identified === 1 ? "" : "s"} and compare it with Redump?` }),
       el("ul", {},
         el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
-        el("li", { text: "With chdman installed each disc is extracted to scratch space (about its full size) and deleted again: in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder. If neither has room the built-in reader is used." }),
-        el("li", { text: "Without chdman the built-in reader decodes data at roughly 30-45 MB/s per CD/DVD (a 8 GB PlayStation 2 DVD takes about 3-4 minutes; several files run side by side) and FLAC audio at about 1 MB/s (a disc with 400 MB of audio takes minutes). You can cancel at any time." })));
+        el("li", { text: "The built-in reader decodes with every CPU core at once (and the system\u2019s libFLAC for audio): typically 100-250 MB/s on a Steam Deck, so a 1 GB disc takes seconds and an 8 GB PlayStation 2 DVD well under a minute or two. Nothing is written to disk." }),
+        el("li", { text: "chdman is only used for a CHD the built-in reader cannot decode (for example zstd compression) or when you chose \"always chdman\": it extracts the disc to scratch space (in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder) and deletes it again. You can cancel at any time." })));
     if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
     Jobs.start("/api/dc/verify", {});
   }
@@ -1044,7 +1048,8 @@
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
       const failed = Array.isArray(r.failed) ? r.failed : [];
-      toast(`Verified ${fmt(r.verified || 0)} CHD(s)${failed.length ? `, ${fmt(failed.length)} do not match Redump` : ""}`, failed.length ? "error" : "ok", 8000);
+      if (r.engine_text) state.dcSpeed = r.engine_text;
+      toast(`Verified ${fmt(r.verified || 0)} CHD(s)${failed.length ? `, ${fmt(failed.length)} do not match Redump` : ""}${r.engine_text ? ` - ${r.engine_text}` : ""}`, failed.length ? "error" : "ok", 12000);
       showFailures("dc-failures", "Does not match Redump:", failed, (f) => `${f.file}: ${f.error}`,
         [r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
     }
@@ -1892,8 +1897,8 @@
 
   // ----------------------------------------------------------- 4. Convert
   let convertTable = null;
-  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "chdman createcd, then checked against Redump" };
-  const MODE_TEXT = { createcd: "chdman createcd, then checked against Redump", createdvd: "chdman createdvd, then checked against Redump" };
+  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "chdman createcd, then checked against Redump by the built-in reader" };
+  const MODE_TEXT = { createcd: "chdman createcd, then checked against Redump by the built-in reader", createdvd: "chdman createdvd, then checked against Redump by the built-in reader" };
 
   const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track, or a single .iso) into a CHD with chdman (createcd for CD images, createdvd for a PlayStation 2 .iso). "
     + "The new CHD is checked track by track against Redump BEFORE anything of your set is touched; only if every track matches is it placed in the "
@@ -1915,8 +1920,12 @@
     if (!dc || !chdmanInfo) return;
     const found = !!chdmanInfo.found;
     box.classList.toggle("missing", !found);
-    $("chdman-line").textContent = found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.kind === "flatpak" ? "" : ""}`
-      : "chdman not found - converting is disabled (scanning and verifying still work with the built-in reader).";
+    const notes = (chdmanInfo.notes || []).join(" ");
+    $("chdman-line").textContent = (found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.bundled ? " - shipped with the app" : ""}`
+      : "chdman not found - converting is disabled (scanning and verifying still work with the built-in reader).")
+      + (notes ? ` (${notes})` : "")
+      + (chdmanInfo.flac ? (chdmanInfo.flac.native ? " Audio decoding: native libFLAC." : " Audio decoding: built-in Python FLAC (slow) - libFLAC was not found.") : "")
+      + (chdmanInfo.workers ? ` Decode processes: ${chdmanInfo.workers}.` : "");
     const steps = $("chdman-steps");
     steps.classList.toggle("hidden", found);
     steps.replaceChildren(...(found ? [] : (chdmanInfo.steps || []).map((t) => el("li", { text: t }))));
@@ -1978,7 +1987,7 @@
               el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })),
               i.status === "convert" ? el("div", { class: "sub mono-path", text: `original kept as ${i.original_to}` }) : null),
           },
-          { label: "How", cls: "wrap", render: (i) => el("span", { class: "muted", text: MODE_TEXT[i.mode] || VIA_TEXT[i.via] || i.via || "-" }) },
+          { label: "How", cls: "wrap", render: (i) => el("span", { class: "muted", text: (MODE_TEXT[i.mode] || VIA_TEXT[i.via] || i.via || "-") + (i.note ? ` (${i.note})` : "") }) },
           { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
         ],
       });
@@ -2018,8 +2027,8 @@
       const r = job.result;
       const failed = Array.isArray(r.failed) ? r.failed : [];
       const converted = Array.isArray(r.converted) ? r.converted.length : r.converted || 0;
-      toast(`Converted ${fmt(converted)} file(s)${failed.length ? `, ${fmt(failed.length)} failed` : ""}${r.cancelled ? " (cancelled)" : ""}`,
-        failed.length || r.error ? "error" : "ok", 8000);
+      toast(`Converted ${fmt(converted)} file(s)${failed.length ? `, ${fmt(failed.length)} failed` : ""}${r.cancelled ? " (cancelled)" : ""}${r.verify_text ? ` - ${r.verify_text}` : ""}${r.generated_gdi ? `; ${fmt(r.generated_gdi)} .gdi generated from the .cue` : ""}`,
+        failed.length || r.error ? "error" : "ok", 12000);
       showFailures("convert-failures", "Could not convert:", failed,
         (f) => `${f.src}${f.dst ? ` → ${f.dst}` : ""}: ${f.error || "failed"}`,
         [r.error ? `Stopped: ${r.error}` : "",

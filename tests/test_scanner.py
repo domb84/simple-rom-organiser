@@ -336,8 +336,9 @@ class ScanTests(unittest.TestCase):
         ok = subprocess.CompletedProcess([], 0, stdout=f"Path = x.adf\nSize = {len(self.d_miss)}\n"
                                          f"CRC = {zlib.crc32(self.d_miss):08X}\n\n", stderr="")
         with mock.patch.object(scanner, "find_7z", return_value="/fake/7z"), \
-                mock.patch.object(scanner.subprocess, "run", side_effect=[fake, ok]):
-            res = scanner.scan(self.root, self.dat, cache_path=self.cache)
+                mock.patch.object(scanner.subprocess, "run",
+                                  side_effect=lambda argv, **kw: fake if argv[-1].endswith("game.7z") else ok):
+            res = scanner.scan(self.root, self.dat, cache_path=self.cache)      # listings run concurrently: key by file
         self.assertEqual(res.unsupported, [])
         errs = {p.name: msg for p, msg in res.errors}
         self.assertIn("Cannot open the file as archive", errs["game.7z"])

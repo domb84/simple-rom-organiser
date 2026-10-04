@@ -16,6 +16,8 @@
 #                           ~0.6 s, AppImage ~18 MB instead of ~15 MB); 0 = sources only
 #   REFRESH_TOOLS=1         re-download appimagetool and the runtime
 #   ROMORG_CACHE=dir        download cache (default packaging/.cache)
+#   BUNDLE_TOOLS=0          do not bundle chdman / libFLAC (a smaller AppImage that needs a system chdman;
+#                           the default 1 downloads the pinned Arch packages below and verifies their SHA-256)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +51,44 @@ download() {
   log "Downloading $1"
   curl -fsSL --retry 3 --connect-timeout 20 -o "$2.part" "$1"
   mv -f "$2.part" "$2"
+}
+
+# ---------------------------------------------------------------- pinned third-party packages (Arch Linux Archive)
+# name|archive path|sha256 - permanent URLs; see docs/THIRD_PARTY.md (licences, source). Needs `tar --zstd` or bsdtar.
+ARCH_BASE="https://archive.archlinux.org/packages"
+PKG_MAME_TOOLS="mame-tools-0.289-1-x86_64.pkg.tar.zst|m/mame-tools|89fef6aba733f25f2bf1866b462abb09b3f7bbbf95fd52165172e5ff588b084d"
+PKG_UTF8PROC="libutf8proc-2.11.3-1-x86_64.pkg.tar.zst|l/libutf8proc|97abf430b11ce9e53d2d3e1c98211b3e93b406214ae493619e9e607f9946662c"
+PKG_FLAC="flac-1.5.0-1-x86_64.pkg.tar.zst|f/flac|7c8dce6bde402b9d243fd240847722a57b94df1dbf53e0cabc9119219dd04735"
+PKG_OGG="libogg-1.3.6-1-x86_64.pkg.tar.zst|l/libogg|b6d4724c1ed16b4806fa596cd823a2930efeeddeb95f7d8a869644b665a9ba37"
+
+# fetch_pkg "file|dir|sha256": download into the cache, verify (delete + fail on a mismatch), print the cached path.
+fetch_pkg() {
+  local file dir sha path
+  IFS='|' read -r file dir sha <<<"$1"
+  path="$CACHE/$file"
+  if [[ ! -f "$path" ]]; then
+    download "$ARCH_BASE/$dir/$file" "$path"
+  else
+    log "Using cached $file"
+  fi
+  if ! echo "$sha  $path" | sha256sum -c --quiet - >&2; then
+    rm -f "$path"
+    die "SHA-256 mismatch for $file (deleted): the pinned package changed or the download is corrupt"
+  fi
+  printf '%s\n' "$path"
+}
+
+# unpack_pkg PKG DEST [members...]: extract (selected members of) a .pkg.tar.zst
+unpack_pkg() {
+  local pkg="$1" dest="$2"; shift 2
+  mkdir -p "$dest"
+  if tar --zstd -tf "$pkg" >/dev/null 2>&1; then
+    tar --zstd -xf "$pkg" -C "$dest" "$@"
+  elif command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "$pkg" -C "$dest" "$@"
+  else
+    die "need 'tar' with zstd support or 'bsdtar' to unpack $(basename "$pkg")"
+  fi
 }
 
 # ---------------------------------------------------------------- python-build-standalone
@@ -149,8 +189,42 @@ if [[ "$PRECOMPILE" == "1" ]]; then
   "$PY" -I -m compileall -q -j 0 --invalidation-mode unchecked-hash "$STDLIB" >/dev/null
 fi
 
+# ---------------------------------------------------------------- chdman + libFLAC (not in git)
+if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
+  log "Bundling chdman, libFLAC, libogg and libutf8proc (pinned Arch packages)"
+  PKGDIR="$BUILD/pkgs"
+  rm -rf "$PKGDIR"
+  mkdir -p "$APPDIR/tools/lib" "$APPDIR/licenses"
+  for spec in "$PKG_MAME_TOOLS" "$PKG_UTF8PROC" "$PKG_FLAC" "$PKG_OGG"; do
+    name="${spec%%-[0-9]*}"                       # mame-tools | libutf8proc | flac | libogg
+    pkg="$(fetch_pkg "$spec")"
+    case "$name" in
+      mame-tools) unpack_pkg "$pkg" "$PKGDIR/$name" usr/bin/chdman usr/share/licenses ;;
+      libutf8proc) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libutf8proc.so.3 usr/lib/libutf8proc.so.3.2.3 usr/share/licenses ;;
+      flac) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libFLAC.so.14 usr/lib/libFLAC.so.14.0.0 usr/share/licenses ;;
+      libogg) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libogg.so.0 usr/lib/libogg.so.0.8.6 usr/share/licenses ;;
+    esac
+    if [[ -d "$PKGDIR/$name/usr/share/licenses" ]]; then
+      mkdir -p "$APPDIR/licenses/$name"
+      cp -rL "$PKGDIR/$name"/usr/share/licenses/*/. "$APPDIR/licenses/$name/"
+    fi
+  done
+  install -m 755 "$PKGDIR/mame-tools/usr/bin/chdman" "$APPDIR/tools/chdman"
+  cp -a "$PKGDIR"/libutf8proc/usr/lib/libutf8proc.so.3* "$APPDIR/tools/lib/"
+  cp -a "$PKGDIR"/flac/usr/lib/libFLAC.so.14* "$APPDIR/tools/lib/"
+  cp -a "$PKGDIR"/libogg/usr/lib/libogg.so.0* "$APPDIR/tools/lib/"
+  install -m 644 "$ROOT/docs/THIRD_PARTY.md" "$APPDIR/licenses/THIRD_PARTY.md"
+  rm -rf "$PKGDIR"
+  [[ -x "$APPDIR/tools/chdman" && -e "$APPDIR/tools/lib/libFLAC.so.14" && -e "$APPDIR/tools/lib/libogg.so.0" \
+     && -e "$APPDIR/tools/lib/libutf8proc.so.3" ]] || die "bundled tools are incomplete"
+else
+  log "BUNDLE_TOOLS=0: not bundling chdman / libFLAC"
+  mkdir -p "$APPDIR/licenses"
+  install -m 644 "$ROOT/docs/THIRD_PARTY.md" "$APPDIR/licenses/THIRD_PARTY.md"
+fi
+
 # Sanity check: everything the app needs imports with the bundled interpreter alone.
-"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.whdload, romorg.redump, romorg.convert, romorg.chd, romorg.chdtool, romorg.tempspace, romorg.chdpool, romorg.discsys, romorg.dreamcast, romorg.playstation, lzma, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
+"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.whdload, romorg.redump, romorg.convert, romorg.chd, romorg.chdtool, romorg.tempspace, romorg.chdsched, romorg.chdworker, romorg.flacnative, romorg.bundle, romorg.multihash, romorg.discsys, romorg.dreamcast, romorg.playstation, lzma, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
   || die "bundled Python failed the import self-check"
 # CHD reader self-check: raw LZMA1 + raw deflate (cdlz / cdzl hunks) and the big-integer ECC rebuild must work in
 # the bundled interpreter (the lzma module is optional in some Python builds).
@@ -167,6 +241,20 @@ assert chd._unsupported_codec("zstd").needs_chdman
 from romorg import discsys
 assert discsys.system_for_dat("Sony - PlayStation 2").iso and not discsys.system_for_dat("Sony - PlayStation").iso' \
   || die "bundled Python cannot decode CHD hunks (lzma / zlib / ECC / MODE2 / DVD self-check failed)"
+
+# CHD engine self-check with the bundled interpreter AND the bundled libraries: libFLAC loads via ctypes from tools/lib and
+# decodes a synthetic hunk, the scheduler runs a tiny job, chdman starts (a WARN there means this build host lacks a system
+# library such as libSDL2, not a bundle defect: it is only fatal when REQUIRE_CHDMAN=1).
+if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
+  log "Running the CHD engine self-check"
+  selfcheck_out="$(ROMORG_BUNDLE_DIR="$APPDIR" APPDIR="$APPDIR" "$PY" -I -B -m romorg --self-check)" \
+    || { printf '%s\n' "$selfcheck_out" >&2; die "CHD engine self-check failed"; }
+  printf '%s\n' "$selfcheck_out" >&2
+  grep -q '^OK    libFLAC '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" || die "libFLAC was not loaded from the bundle"
+  if [[ "${REQUIRE_CHDMAN:-0}" == "1" ]] && ! grep -q '^OK    the bundled chdman starts' <<<"$selfcheck_out"; then
+    die "the bundled chdman does not start on this host (REQUIRE_CHDMAN=1)"
+  fi
+fi
 
 log "Writing AppRun, desktop entry, icons and metainfo"
 install -m 755 "$PKG/AppRun" "$APPDIR/AppRun"

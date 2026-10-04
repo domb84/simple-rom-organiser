@@ -28,6 +28,11 @@ if [ -z "${SSL_CERT_FILE:-}" ] && [ ! -e /etc/ssl/cert.pem ]; then
     done
 fi
 
+# --self-check prints to the caller (build script / smoke test), never to the log file.
+if [ "${1:-}" = "--self-check" ]; then
+    exec "$PY" -I -B -u -m romorg "$@"
+fi
+
 # With no terminal (launched from the app menu / Steam), send output to a log file.
 # ROMORG_LOG=1 forces logging even from a terminal.
 if [ ! -t 1 ] || [ "${ROMORG_LOG:-0}" = "1" ]; then

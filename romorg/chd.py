@@ -31,6 +31,8 @@ CD audio is stored big-endian inside hunks; the extraction swaps it back.
 
 from __future__ import annotations
 
+import binascii
+from array import array
 import hashlib
 import lzma
 import re
@@ -39,9 +41,9 @@ import zlib
 from dataclasses import dataclass, field
 from typing import BinaryIO, Callable, Dict, Iterator, List, Optional, Tuple
 
-from . import cdecc, flacdec
+from . import cdecc, flacnative
 
-__all__ = ["Chd", "ChdError", "ChdUnsupported", "Track", "TrackHash", "hash_track",
+__all__ = ["Chd", "ChdError", "ChdUnsupported", "Track", "TrackHash", "hash_track", "plan_chunks",
            "open_chd", "is_chd", "frames_to_bytes"]
 
 CD_FRAME = 2448
@@ -101,6 +103,11 @@ _CRC16 = _crc16_table()
 
 
 def crc16(data: bytes, crc: int = 0xFFFF) -> int:
+    """CRC-16/CCITT as the CHD map uses it (init 0xFFFF, no final xor) = ``binascii.crc_hqx`` (C speed)."""
+    return binascii.crc_hqx(data, crc)
+
+
+def crc16_reference(data: bytes, crc: int = 0xFFFF) -> int:
     t = _CRC16
     for b in data:
         crc = ((crc << 8) & 0xFFFF) ^ t[(crc >> 8) ^ b]
@@ -416,25 +423,40 @@ class Chd:
         cur = firstoffs
         lastself = 0
         lastparent = 0
+        pack = struct.Struct(">BBHHIH").pack
         rawmap = bytearray()
+        # the fixed-width fields are read with one 64-bit window each (length + crc <= 56 bits); the stream is padded
+        padded = data + b"\0" * 8
+        window = struct.Struct(">Q").unpack_from
+        pos = br.pos
+        fast_bits = lengthbits + 16
+        if fast_bits > 56 or selfbits > 48 or parentbits > 48:
+            raise ChdError("unsupported CHD map field widths")
+        fast_mask = (1 << fast_bits) - 1
+        total_bits = len(data) * 8
         for i in range(n):
             t = types[i]
             off = cur
             ln = 0
             crc = 0
-            if t <= 3:
-                ln = br.read(lengthbits)
+            if t <= 3 or t == _T_NONE:
+                if t <= 3:
+                    v = (window(padded, pos >> 3)[0] >> (64 - (pos & 7) - fast_bits)) & fast_mask
+                    pos += fast_bits
+                    ln = v >> 16
+                    crc = v & 0xFFFF
+                else:
+                    ln = self.hunk_bytes
+                    crc = (window(padded, pos >> 3)[0] >> (64 - (pos & 7) - 16)) & 0xFFFF
+                    pos += 16
                 cur += ln
-                crc = br.read(16)
-            elif t == _T_NONE:
-                ln = self.hunk_bytes
-                cur += ln
-                crc = br.read(16)
             elif t == _T_SELF:
-                off = br.read(selfbits)
+                off = (window(padded, pos >> 3)[0] >> (64 - (pos & 7) - selfbits)) & ((1 << selfbits) - 1)
+                pos += selfbits
                 lastself = off
             elif t == _T_PARENT:
-                off = br.read(parentbits)
+                off = (window(padded, pos >> 3)[0] >> (64 - (pos & 7) - parentbits)) & ((1 << parentbits) - 1)
+                pos += parentbits
                 lastparent = off
             elif t in (_T_SELF0, _T_SELF1):
                 if t == _T_SELF1:
@@ -449,10 +471,14 @@ class Chd:
             lens[i] = ln
             offs[i] = off
             crcs[i] = crc
-            rawmap += struct.pack(">BBHHIH", t, ln >> 16, ln & 0xFFFF, off >> 32, off & 0xFFFFFFFF, crc)
+            rawmap += pack(t, ln >> 16, ln & 0xFFFF, off >> 32, off & 0xFFFFFFFF, crc)
+        if pos > total_bits:
+            raise ChdError("compressed map is truncated")
         if crc16(bytes(rawmap)) != mapcrc:
             raise ChdError("CHD map CRC mismatch (file damaged?)")
-        self._ctype, self._clen, self._coff, self._ccrc = types, lens, offs, crcs
+        # compact arrays: a 6 GB image has 520,000 hunks and every worker process keeps the map of the CHDs it works on
+        self._ctype, self._clen, self._coff, self._ccrc = (array("B", types), array("I", lens), array("Q", offs),
+                                                           array("H", crcs))
 
     # -- metadata
     def _read_metadata(self) -> None:
@@ -559,9 +585,12 @@ class Chd:
         nbytes = frames * CD_SECTOR
         pending: list = []
         if codec == "cdfl":
-            pcm, end = flacdec.decode_frames(comp, 0, frames * (CD_SECTOR // 4))
-            pcm.byteswap()                      # hunks hold CD audio big-endian
-            base = bytearray(pcm.tobytes())
+            # libFLAC through ctypes when it loads (100x faster), else the pure-Python decoder; hunks hold CD audio
+            # big-endian
+            try:
+                base, end = flacnative.decode_pcm(comp, 0, frames * (CD_SECTOR // 4), big_endian=True)
+            except flacnative.FlacError as exc:
+                raise ChdError(f"corrupt FLAC audio: {exc}") from exc
         else:
             ecc_bytes = (frames + 7) // 8
             clb = 2 if self.hunk_bytes < 65536 else 3
@@ -642,6 +671,19 @@ class Chd:
             yield data[off * CD_SECTOR:(off + take) * CD_SECTOR]
             f += take
 
+    def _extracted(self, track: Track, chunk: bytes) -> bytes:
+        """Whole sectors of ``chunk`` (raw 2352-byte sectors of one track) as ``chdman extractcd`` writes them."""
+        ssize, soff = track.sector_size, track.sector_offset
+        if track.is_audio:
+            b = bytearray(chunk)
+            b[0::2] = chunk[1::2]
+            b[1::2] = chunk[0::2]
+            return bytes(b)
+        if ssize == CD_SECTOR:
+            return chunk
+        n = len(chunk) // CD_SECTOR
+        return b"".join(chunk[i * CD_SECTOR + soff:i * CD_SECTOR + soff + ssize] for i in range(n))
+
     def iter_track(self, track: Track, cancel: Optional[Callable[[], bool]] = None,
                    skip_audio: bool = False) -> Iterator[bytes]:
         """The extracted bytes of a track, as ``chdman extractcd`` writes its bin / gdi file (a DVD CHD: the ISO,
@@ -649,21 +691,34 @@ class Chd:
         if self.is_dvd:
             yield from self._iter_dvd(cancel)
             return
-        ssize, soff = track.sector_size, track.sector_offset
-        audio = track.is_audio
         for chunk in self.iter_frames(track.start, track.data_frames):
             if cancel is not None and cancel():
                 raise InterruptedError("cancelled")
-            if audio:
-                b = bytearray(chunk)
-                b[0::2] = chunk[1::2]
-                b[1::2] = chunk[0::2]
-                yield bytes(b)
-            elif ssize == CD_SECTOR:
-                yield chunk
-            else:
-                n = len(chunk) // CD_SECTOR
-                yield b"".join(chunk[i * CD_SECTOR + soff:i * CD_SECTOR + soff + ssize] for i in range(n))
+            yield self._extracted(track, chunk)
+
+    def read_track_range(self, track: Track, first: int, count: int) -> bytes:
+        """``count`` frames of the extracted track bytes from frame ``first`` of the track (a DVD CHD: 2048-byte
+        units of the ISO) - what the parallel scheduler hands to a worker."""
+        if first < 0 or count < 0 or first + count > track.data_frames:
+            raise ChdError("track range out of bounds")
+        if self.is_dvd:
+            return self._read_dvd_units(first, count)
+        return b"".join(self._extracted(track, c) for c in self.iter_frames(track.start + first, count))
+
+    def _read_dvd_units(self, first: int, count: int) -> bytes:
+        start = first * DVD_SECTOR
+        end = min(self.logical_bytes, (first + count) * DVD_SECTOR)
+        hb = self.hunk_bytes
+        parts = []
+        for h in range(start // hb, (end + hb - 1) // hb):
+            data = self.read_hunk_raw(h, with_subcode=False)
+            lo = max(start - h * hb, 0)
+            hi = min(end - h * hb, len(data))
+            parts.append(data[lo:hi])
+        out = b"".join(parts)
+        if len(out) != end - start:
+            raise ChdError("the CHD holds less data than its header says")
+        return out
 
     def _iter_dvd(self, cancel: Optional[Callable[[], bool]] = None) -> Iterator[bytes]:
         remaining = self.logical_bytes
@@ -708,6 +763,31 @@ class Chd:
                 "hunks": self.hunk_count, "sha1": self.sha1, "raw_sha1": self.raw_sha1,
                 "kind": "gdrom" if self.is_gd else "cd" if self.is_cd else "dvd" if self.is_dvd else "data",
                 "tracks": [t.to_dict() for t in self.tracks]}
+
+
+def plan_chunks(chd: "Chd", track: Track, target_bytes: int) -> List[Tuple[int, int]]:
+    """Split a track into ``(first_frame, frames)`` ranges of about ``target_bytes`` of extracted data each.
+
+    The boundaries sit on hunk (and ECC-group) boundaries of the CHD so that no hunk is decoded twice except at a
+    track edge; ranges are in track frames (a DVD CHD: 2048-byte units)."""
+    total = track.data_frames
+    if total <= 0:
+        return []
+    fph = max(1, chd.frames_per_hunk if not chd.is_dvd else chd.hunk_bytes // DVD_SECTOR)
+    per_hunk = fph * max(1, track.sector_size)
+    hunks = max(1, target_bytes // per_hunk)
+    if hunks >= Chd.GROUP:
+        hunks -= hunks % Chd.GROUP
+    align = hunks * fph
+    base = 0 if chd.is_dvd else track.start
+    out: List[Tuple[int, int]] = []
+    pos = 0
+    while pos < total:
+        edge = ((base + pos) // align + 1) * align - base
+        n = min(edge, total) - pos
+        out.append((pos, n))
+        pos += n
+    return out
 
 
 def _strip_subcode(raw: bytes) -> bytes:

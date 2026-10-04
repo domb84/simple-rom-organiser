@@ -8,7 +8,7 @@ multi-disc games) and re-exports the engine's names, so ``dreamcast.scan(...)`` 
 from __future__ import annotations
 
 from . import chd as chdlib  # noqa: F401 - re-exported (tests patch ``dreamcast.chdlib``)
-from . import chdpool, chdtool, scanner, tempspace  # noqa: F401
+from . import chdsched, chdtool, scanner, tempspace  # noqa: F401
 from .discsys import *  # noqa: F401,F403
 from .discsys import DiscSystem, register
 

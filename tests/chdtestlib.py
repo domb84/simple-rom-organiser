@@ -190,6 +190,24 @@ def _subframe(b: _Bits, samples: Sequence[int], kind: str, bps: int = 16) -> Non
         _rice(b, res, k)
 
 
+def _flac_crc8(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def _flac_crc16(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x8005) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
 def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("fixed2", "fixed2"),
                stereo: str = "indep") -> bytes:
     """One FLAC frame (the codec of a CHD ``cdfl`` hunk is a run of these)."""
@@ -207,7 +225,7 @@ def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("f
     assert number < 128
     b.put(number, 8)             # UTF-8 coded frame number (< 128: one byte)
     b.put(n - 1, 16)
-    b.put(0, 8)                  # header CRC-8 (not checked by the reader)
+    b.put(_flac_crc8(b.tobytes()), 8)   # header CRC-8 (libFLAC checks it)
     if stereo == "indep":
         chans = [(left, 16), (right, 16)]
     elif stereo == "left_side":
@@ -221,7 +239,7 @@ def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("f
     for (samples, bps), kind in zip(chans, kinds):
         _subframe(b, samples, kind, bps)
     b.align()
-    b.put(0, 16)                 # frame CRC-16 (not checked)
+    b.put(_flac_crc16(b.tobytes()), 16)   # frame CRC-16 (libFLAC checks it)
     return b.tobytes()
 
 
@@ -527,8 +545,9 @@ class Disc:
     def write_chd(self, path, **kw) -> dict:
         return build_chd(path, self.tracks, **kw)
 
-    def write_raw(self, folder: Path, stem: Optional[str] = None, gdi_style: bool = True) -> Path:
-        """A raw Redump-style set: ``stem.gdi`` + ``stemNN.bin/.raw`` (or .cue + one bin per track)."""
+    def write_raw(self, folder: Path, stem: Optional[str] = None, gdi_style: bool = True, markers: bool = False) -> Path:
+        """A raw Redump-style set: ``stem.gdi`` + ``stemNN.bin/.raw`` (or .cue + one bin per track; ``markers``: the
+        ``REM SINGLE-DENSITY AREA`` / ``REM HIGH-DENSITY AREA`` lines of Redump's Dreamcast cues)."""
         folder.mkdir(parents=True, exist_ok=True)
         stem = stem or self.name
         files = []
@@ -548,6 +567,8 @@ class Disc:
         else:
             lines = []
             for i, f in enumerate(files, 1):
+                if markers and i in (1, 3):
+                    lines.append("REM SINGLE-DENSITY AREA" if i == 1 else "REM HIGH-DENSITY AREA")
                 lines += [f'FILE "{f.name}" BINARY', f"  TRACK {i:02d} {'AUDIO' if i == 2 else 'MODE1/2352'}",
                           "    INDEX 01 00:00:00"]
             sheet = folder / f"{stem}.cue"
@@ -626,7 +647,10 @@ case "$cmd" in
       i=$((i+1))
     done
     echo
-    cp "$FAKE_CHD" "$out" ;;
+    [ -n "$FAKE_GDI_COPY" ] && cp "$in" "$FAKE_GDI_COPY"
+    src="$FAKE_CHD"
+    case "$in" in *.cue) [ -n "$FAKE_CHD_CUE" ] && src="$FAKE_CHD_CUE" ;; esac
+    cp "$src" "$out" ;;
   extractcd)
     [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
     dir=$(dirname "$out")

@@ -135,6 +135,10 @@ class DcEndpointTests(DcServerCase):
         out = self.call("/api/chdman", {"path": str(self.fake), "engine": "python"})
         self.assertEqual((out["engine"], out["override"]), ("python", str(self.fake)))
         self.assertEqual(json.loads((self.data / "config.json").read_text())["chd_engine"], "python")
+        self.assertEqual(self.call("/api/chdman", {"engine": "chdman"})["engine"], "chdman")
+        self.assertEqual(self.call("/api/chdman", {"engine": "auto"})["engine"], "auto")
+        self.assertIn("native", out["flac"])                         # how audio is decoded: native libFLAC or not
+        self.assertGreaterEqual(out["workers"], 1)                   # decode processes
         out = self.call("/api/chdman", {"path": ""})
         self.assertEqual(out["override"], "")
 
@@ -246,6 +250,7 @@ class DcEndpointTests(DcServerCase):
 
     def test_scan_with_chdman_is_verified(self) -> None:
         self.use_fake_chdman()
+        self.call("/api/chdman", {"engine": "chdman"})
         self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
         s = self.scan()
         self.assertEqual((s["verified"], s["identified"], s["engine"]), (1, 0, "chdman"))
@@ -257,6 +262,7 @@ class DcEndpointTests(DcServerCase):
         ram = self.base / "fake-ram"
         ram.mkdir()
         self.use_fake_chdman()
+        self.call("/api/chdman", {"engine": "chdman"})
         self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
         before = sorted(str(p.relative_to(self.roms)) for p in self.roms.rglob("*"))
         for mem, where in ((16 * 1024 ** 3, "ram"), (1024 ** 3, "disk")):

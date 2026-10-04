@@ -1,57 +1,99 @@
-"""Worker process of :mod:`romorg.chdpool`: hashes CHD tracks on request (JSON lines over stdin / stdout).
+"""Worker process of :mod:`romorg.chdsched`: decodes ranges of CHD tracks on request.
 
-Request  : ``{"path": "...", "track": 3}``  (0-based track index)
-Replies  : ``{"p": n}`` progress (bytes since the last one), then ``{"ok": {"crc32", "md5", "sha1", "size"}}``
-           or ``{"error": "text"}``.
-Run with ``python -m romorg.chdworker``; never started by anything but the pool.
+Protocol (binary over stdin / stdout; ``python -m romorg.chdworker``, never started by anything but the scheduler)::
+
+    request  (one JSON line): {"id": 7, "path": "...", "sig": [size, mtime_ns], "track": 2, "first": 4096, "count": 1792}
+    reply    (JSON line + raw bytes): {"id": 7, "n": 4214784}\\n<n bytes of extracted track data>
+    or       {"id": 7, "err": {"kind": "unsupported" | "corrupt" | "other", "msg": "...", "needs_chdman": false}}
+
+``first`` / ``count`` are frames of the track (2048-byte units for a DVD CHD) and the reply is exactly what
+``chdman extractcd`` / ``extractdvd`` would write for them. The worker keeps its opened CHDs (and their parsed hunk
+maps) between requests, so a file's map is parsed once per worker, not once per chunk. It exits at EOF of stdin.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+from collections import OrderedDict
 
-PROGRESS_STEP = 8 << 20
-
-
-def _reply(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+MAX_OPEN = 4
+ENV_JITTER = "ROMORG_CHDWORKER_JITTER_MS"      # test hooks: random delay per request (out-of-order delivery) ...
+ENV_CRASH = "ROMORG_CHDWORKER_CRASH"            # ... and "always" / "once:<marker file>" = die like a segfault
 
 
-def serve(stdin=None) -> None:
+def _err(rid, kind: str, exc: BaseException) -> dict:
+    return {"id": rid, "err": {"kind": kind, "msg": f"{type(exc).__name__}: {exc}",
+                               "needs_chdman": bool(getattr(exc, "needs_chdman", False))}}
+
+
+def serve(stdin=None, stdout=None) -> None:
     from . import chd as chdlib
-    cache: dict = {}
-    for line in (stdin or sys.stdin):
+    inp = stdin or sys.stdin.buffer
+    out = stdout or sys.stdout.buffer
+    cache: "OrderedDict[str, tuple]" = OrderedDict()
+    jitter = float(os.environ.get(ENV_JITTER) or 0) / 1000.0
+    crash = os.environ.get(ENV_CRASH, "")
+
+    def reply(head: dict, payload: bytes = b"") -> None:
+        out.write(json.dumps(head, separators=(",", ":")).encode() + b"\n")
+        if payload:
+            out.write(payload)
+        out.flush()
+
+    for line in inp:
         line = line.strip()
         if not line:
             continue
+        rid = None
+        if crash == "always":
+            os._exit(139)
+        if crash.startswith("once:") and not os.path.exists(crash[5:]):
+            open(crash[5:], "w").close()
+            os._exit(139)
+        if jitter:
+            import random
+            import time
+            time.sleep(random.random() * jitter)
         try:
             req = json.loads(line)
+            rid = req.get("id")
             path = req["path"]
-            info = cache.get(path)
-            if info is None:
-                for old in cache.values():
+            sig = tuple(req.get("sig") or ())
+            hit = cache.get(path)
+            if hit is not None and hit[0] != sig:
+                hit[1].close()
+                del cache[path]
+                hit = None
+            if hit is None:
+                while len(cache) >= MAX_OPEN:
+                    _p, (_s, old) = cache.popitem(last=False)
                     old.close()
-                cache.clear()
-                info = cache[path] = chdlib.Chd(path)
-            pending = [0]
-
-            def progress(n: int) -> None:
-                pending[0] += n
-                if pending[0] >= PROGRESS_STEP:
-                    _reply({"p": pending[0]})
-                    pending[0] = 0
-
-            h = chdlib.hash_track(info, info.tracks[int(req["track"])], progress=progress)
-            if pending[0]:
-                _reply({"p": pending[0]})
-            _reply({"ok": {"crc32": h.crc32, "md5": h.md5, "sha1": h.sha1, "size": h.size}})
-        except Exception as exc:  # noqa: BLE001 - reported to the parent, which falls back to hashing itself
-            _reply({"error": f"{type(exc).__name__}: {exc}"})
+                hit = cache[path] = (sig, chdlib.Chd(path))
+            else:
+                cache.move_to_end(path)
+            info = hit[1]
+            data = info.read_track_range(info.tracks[int(req["track"])], int(req["first"]), int(req["count"]))
+            reply({"id": rid, "n": len(data)}, data)
+        except chdlib.ChdUnsupported as exc:
+            reply(_err(rid, "unsupported", exc))
+        except chdlib.ChdError as exc:
+            reply(_err(rid, "corrupt", exc))
+        except (BrokenPipeError, KeyboardInterrupt):
+            return
+        except Exception as exc:  # noqa: BLE001 - reported to the parent
+            try:
+                reply(_err(rid, "other", exc))
+            except OSError:
+                return
 
 
 def main() -> int:
+    try:
+        os.nice(5)          # the app's UI and the server stay responsive while every core decodes
+    except (OSError, AttributeError):
+        pass
     serve()
     return 0
 

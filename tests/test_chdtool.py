@@ -17,6 +17,25 @@ import chdtestlib as T  # noqa: E402
 from romorg import chd, chdtool  # noqa: E402
 
 
+BUNDLED_FAKE = r"""#!/bin/sh
+# a "bundled chdman": logs the library path it was started with
+echo "LD=$LD_LIBRARY_PATH" >> "$BUNDLE_LOG"
+case "$1" in
+  help|-help|--help)
+    echo "chdman - MAME Compressed Hunks of Data (CHD) manager 0.bundled"
+    echo "Usage: chdman <command> [options]"
+    echo "  createcd extractcd"
+    exit 1 ;;
+esac
+exit 0
+"""
+
+BROKEN_FAKE = r"""#!/bin/sh
+echo "$0: error while loading shared libraries: libSDL2-2.0.so.0: cannot open shared object file: No such file or directory" >&2
+exit 127
+"""
+
+
 class ChdtoolBase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -37,6 +56,75 @@ class ChdtoolBase(unittest.TestCase):
         self.roms = self.work / "roms"
         self.roms.mkdir()
         self.scratch = T.isolate_temp(self, self.work)
+
+
+class BundledChdmanTest(ChdtoolBase):
+    """The chdman shipped in the AppImage (tools/chdman + tools/lib, a fake layout here)."""
+
+    def bundle(self, script: str = BUNDLED_FAKE) -> Path:
+        root = self.work / "AppDir"
+        (root / "tools" / "lib").mkdir(parents=True)
+        exe = root / "tools" / "chdman"
+        exe.write_text(script)
+        exe.chmod(0o755)
+        (root / "tools" / "lib" / "libFLAC.so.14").write_bytes(b"")
+        p = mock.patch.dict(os.environ, {"ROMORG_BUNDLE_DIR": str(root), "BUNDLE_LOG": str(self.work / "bundle.log")})
+        p.start()
+        self.addCleanup(p.stop)
+        os.environ.pop(chdtool.ENV_VAR, None)
+        return root
+
+    def test_bundled_chdman_is_found_and_started_with_its_own_libraries_first(self) -> None:
+        root = self.bundle()
+        with mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": "/some/system/lib"}):
+            found = chdtool.detect({})
+            self.assertEqual((found.kind, found.argv), ("bundled", [str(root / "tools" / "chdman")]))
+            self.assertTrue(found.to_dict()["bundled"])
+            self.assertEqual(found.env["LD_LIBRARY_PATH"], str(root / "tools" / "lib"))
+            try:
+                chdtool.run(found, ["info"])
+            except chdtool.ChdmanError:
+                pass
+        lines = (self.work / "bundle.log").read_text().splitlines()
+        self.assertTrue(lines)
+        for ln in lines:                                    # the bundled directory is searched before the system's
+            self.assertEqual(ln, f"LD={root / 'tools' / 'lib'}:/some/system/lib")
+
+    def test_order_configured_then_bundled_then_path(self) -> None:
+        root = self.bundle()
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}):
+            self.assertEqual(chdtool.detect({}).kind, "bundled")                       # before PATH
+            found = chdtool.detect({chdtool.CONFIG_KEY: str(self.fake)})
+            self.assertEqual((found.kind, found.argv), ("configured", [str(self.fake)]))   # the override wins
+            self.assertEqual(chdtool.info({})["kind"], "bundled")
+            self.assertEqual(chdtool.info({})["notes"], [])
+
+    def test_a_bundled_chdman_that_cannot_start_is_reported_and_skipped(self) -> None:
+        self.bundle(BROKEN_FAKE)
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}):
+            found, notes = chdtool.detect_report({})
+        self.assertEqual(found.kind, "path")                                              # the system chdman takes over
+        self.assertEqual(len(notes), 1)
+        self.assertIn("bundled chdman could not start: missing libSDL2", notes[0])
+        self.assertEqual(chdtool.last_notes(), notes)
+
+    def test_nothing_else_available_gives_the_reason_in_the_hint(self) -> None:
+        self.bundle(BROKEN_FAKE)
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent", "HOME": str(self.work / "home")}), \
+                mock.patch("romorg.chdtool.Path.home", return_value=self.work / "home"), \
+                mock.patch("romorg.chdtool.shutil.which", return_value=None), \
+                mock.patch("romorg.chdtool._candidates", return_value=[]):
+            info = chdtool.info({})
+        self.assertFalse(info["found"])
+        self.assertIn("missing libSDL2", info["hint"])
+        self.assertIn("chdman was not found", info["hint"])
+
+    def test_not_an_appimage_means_no_bundle(self) -> None:
+        with mock.patch.dict(os.environ, {"ROMORG_BUNDLE_DIR": str(self.work / "nothing-here")}):
+            self.assertIsNone(chdtool.bundled_chdman())
+        root = self.bundle()
+        (root / "tools" / "chdman").chmod(0o644)                                         # not executable
+        self.assertIsNone(chdtool.bundled_chdman())
 
 
 class DetectTest(ChdtoolBase):

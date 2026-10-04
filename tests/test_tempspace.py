@@ -216,7 +216,7 @@ class DecodeTest(unittest.TestCase):
     def test_scan_decodes_in_ram_and_leaves_the_library_alone(self) -> None:
         before = tree(self.w.root)
         with self.watch():
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual(r.matched[0].level, "verified")
         self.assertEqual(self.seen[0][0], str(self.ram))
         self.assertEqual(self.seen[0][1], before)            # not even a hidden folder in the library during the decode
@@ -232,7 +232,7 @@ class DecodeTest(unittest.TestCase):
         self.mem = 1 * GB
         before = tree(self.w.root)
         with self.watch():
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual(r.matched[0].level, "verified")
         self.assertEqual(self.seen[0][0], str(self.disk))
         self.assertEqual(tree(self.w.root), before)
@@ -244,7 +244,7 @@ class DecodeTest(unittest.TestCase):
         self.mem = 1 * GB
         before = tree(self.w.root)
         with mock.patch.object(tempspace, "free_bytes", return_value=1000), self.watch():
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual((r.matched[0].level, r.matched[0].unit.via), ("identified", "python"))
         self.assertEqual(self.seen, [])                       # chdman never ran
         self.assertFalse((self.w.base / "log.txt").exists())
@@ -264,7 +264,7 @@ class DecodeTest(unittest.TestCase):
             stale.append(d)
         stranger = self.ram / "other-app-file"
         stranger.write_bytes(b"keep")
-        r = self.w.scan(chdman=self.chdman)
+        r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual([d.exists() for d in stale], [False, False])
         self.assertTrue(stranger.exists())
         self.assertEqual(len(r.swept), 2)
@@ -276,7 +276,7 @@ class DecodeTest(unittest.TestCase):
         before = tree(self.w.root)
         with mock.patch.dict(os.environ, {"FAKE_SLOW_EXTRACT": "1"}):
             with self.assertRaises(scanner.ScanCancelled):
-                self.w.scan(chdman=self.chdman, cancel=ev)
+                self.w.scan(chdman=self.chdman, engine="chdman", cancel=ev)
         self.assertLess(time.time() - t0, 10)
         self.assertEqual(list(self.ram.iterdir()), [])
         self.assertEqual(tree(self.w.root), before)
@@ -285,7 +285,7 @@ class DecodeTest(unittest.TestCase):
         r = self.w.scan(engine="python")
         before = tree(self.w.root)
         with self.watch():
-            res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache)
+            res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache, engine="chdman")
         self.assertEqual((res["verified"], res["failed"]), (1, []))
         self.assertEqual(res["temp"]["ram"], 1)
         self.assertEqual(self.seen[0][0], str(self.ram))
@@ -331,7 +331,7 @@ class ConvertTempTest(unittest.TestCase):
         self.assertEqual(seen[0].parent, dst.parent)
         self.assertEqual(sorted(os.listdir(dst.parent)), ["Epsilon (USA).chd"])        # .part renamed into place
         self.assertFalse([p for p in os.listdir(self.w.root) if p.startswith(".romorg") and "undo" not in p])
-        self.assertEqual(list(self.scratch.iterdir()), [])
+        self.assertEqual(list(self.scratch.iterdir()) if self.scratch.exists() else [], [])
 
     def test_conversion_verifies_with_the_python_reader_when_no_scratch_space_fits(self) -> None:
         r = self.w.scan()

@@ -1,7 +1,8 @@
 """Where large temporary files go (Amendment 12): RAM when it is safe, else the app's own cache, never the ROMs.
 
 ``chdman extractcd`` writes a disc at its full raw size (hundreds of MB). That scratch space is chosen by ONE
-policy, used by scans, *Verify fully* and the verification of a converted CHD:
+policy, used whenever chdman has to extract (Amendment 14: the built-in reader and its parallel scheduler decode
+first; chdman extracts only for a CHD the reader cannot decode, or when the engine is set to "always chdman"):
 
 1. **RAM** - a tmpfs (``/dev/shm``, ``$XDG_RUNTIME_DIR``, ``/tmp`` when it is tmpfs per ``/proc/mounts``) when its
    free space is >= the required size AND ``MemAvailable`` (``/proc/meminfo``) is >= required + a safety reserve
@@ -409,11 +410,12 @@ def report() -> dict[str, Any]:
     if not out:
         return {}
     bits = []
-    for k, label in (("ram", "in RAM"), ("disk", "on disk"), ("python", "with the built-in reader (no temp files)")):
+    for k, label in (("ram", "in RAM"), ("disk", "on disk"), ("python", "fell back to the built-in reader (no temp files)")):
         if out.get(k):
             bits.append(f"{out[k]} {label}")
     last = out.get("last", {})
-    text = "Temporary space: decoded " + ", ".join(bits)
+    # chdman only extracts when the built-in reader cannot decode a CHD (or "always chdman" is chosen)
+    text = "chdman scratch space: " + ", ".join(bits)
     if last.get("where") == "disk" and last.get("path"):
         text += f" ({last['path']})"
     if last.get("where") in ("ram", "disk", "python") and last.get("reason"):

@@ -84,6 +84,7 @@
           <button class="btn" id="dc-verify-btn" disabled
                   title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
         </div>
+        <div class="muted small hidden" id="dc-speed-line"></div>
         <div class="muted small hidden" id="dc-temp-line"></div>
         <div class="muted small" id="dc-levels-help">
           <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
@@ -226,8 +227,9 @@
         <div class="row">
           <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
           <select id="chdman-engine" class="input select">
-            <option value="auto">chdman when available (fast), else the built-in reader</option>
-            <option value="python">always the built-in reader (no temporary files)</option>
+            <option value="auto">the built-in reader (parallel, fast); chdman only for CHDs it cannot decode</option>
+            <option value="python">always the built-in reader (never chdman, no temporary files)</option>
+            <option value="chdman">always chdman (extracts every disc to temporary space)</option>
           </select>
         </div>
       </div>

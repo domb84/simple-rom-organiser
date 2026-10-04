@@ -439,37 +439,44 @@ into your game folder.
 
 | Level | What was compared | How |
 | --- | --- | --- |
-| **identified** | track sizes + crc32 / md5 / sha1 of every data track; audio by length | built-in reader (default without chdman) |
-| **verified** | every track, audio included | chdman `extractcd` while scanning, or **Verify fully** |
+| **identified** | track sizes + crc32 / md5 / sha1 of every data track; audio by length | built-in reader (default) |
+| **verified** | every track, audio included | **Verify fully** (built-in reader, parallel), or chdman when the reader cannot decode the CHD |
 | **raw (convertible)** | an unpacked Redump set, every track file hashed | files, no CHD involved |
 
-**Speed of the built-in reader** (Steam Deck, measured on the real files): the data tracks (`cdlz`/`cdzl`, with
-the CD error-correction bytes rebuilt) are decoded at about 40-95 MB/s (about 76 MB/s including hashing), so a
-1.2 GB disc is *identified* in about 35 s; the FLAC audio (`cdfl`) is decoded in pure Python at about 1.2 MB/s
-per core, which is why audio is only checked by length at first. **Verify fully** hashes the audio tracks in
-parallel worker processes (up to 4) and shows progress / Cancel; a disc with 400 MB of audio takes minutes.
-`chdman` is faster, especially for FLAC.
+**Engines and speed (Amendment 14).** The **built-in reader** decodes first (`auto` = the default): a parallel scheduler
+splits every track of every CHD into ~4 MB chunks, decodes them in one worker process per CPU thread (`chd_workers` in
+`config.json` or `ROMORG_CHD_WORKERS`; `1` = the old sequential in-process path, handy for debugging) and hashes them in
+order (crc32 + md5 + sha1 in parallel threads). Memory stays bounded (at most 256 MB of chunks in flight; fewer
+workers when the machine is short of RAM). FLAC audio (`cdfl`) is decoded by the system's / the bundled **libFLAC through
+ctypes** (about 80-100 MB/s per core instead of 1.2 MB/s in pure Python; the pure-Python decoder remains as the fallback,
+same results). The Dreamcast / PlayStation bar shows which engine ran and its MB/s. See the table in
+`docs/ARCHITECTURE.md` (Amendment 14) for measured times on a Steam Deck. **chdman** is used only (a) to *create* CHDs when
+you convert (multi-core), and (b) as the fallback for a CHD the built-in reader cannot decode (e.g. zstd made by a newer
+chdman), or always when you choose "always chdman" in the Convert step; the engine setting `chd_engine` is `auto`
+| `python` (never chdman) | `chdman`.
 
-**chdman (optional).** If found (`chdman` on `PATH`, the Flatpak `org.mamedev.MAME` - Discover -> MAME ships
-chdman -, `~/.local/bin`, `~/Emulation/tools`, a path you save in the Convert step, or `$ROMORG_CHDMAN`), the
-scan extracts each CHD to **scratch space - never your game folder** - hashes every track and deletes the
-scratch files: the result is *verified* straight away. One policy decides where (about the disc's real track
-bytes + 5 % + 64 MiB is needed): (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or `/tmp` when it is a tmpfs) when
-it has the room AND the machine has that much memory available PLUS a 2 GiB safety reserve (so it never pushes the
-Deck into swap; `ROMORG_TEMP_RESERVE_MB` or config `temp_ram_reserve_mb` changes the reserve); (2) otherwise the
-disk folder `<data dir>/cache/tmp` (`$ROMORG_TEMP_DIR` / config `temp_dir`; never inside a game folder) when it has
-the room; (3) otherwise the built-in reader is used (no temp files) and the job message says why. The progress line
-and a small line in the Dreamcast bar say where it decoded (*decoding in RAM* / *decoding on disk: path*). Every
-job uses its own marked folder; leftovers of a crashed run (marker + dead process) are swept at start-up and before each
-scan, and a cancel deletes them at once. If chdman fails the built-in reader takes over. A Flatpak chdman can
-only see folders the Flatpak is allowed to (RAM / cache locations it cannot see are skipped): if it cannot see your SD card the error shows the exact fix, e.g.
-`flatpak override --user --filesystem=/run/media/deck org.mamedev.MAME`. You can force the built-in reader in
-the Convert step ("always the built-in reader"). Without chdman the Convert step is disabled and says how to get it.
+**chdman.** The AppImage ships the MAME `chdman` (and libFLAC / libogg / libutf8proc) under `tools/`; they are NOT in
+git (the build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` for versions, licences as the packages
+declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). Detection order:
+`$ROMORG_CHDMAN` / the saved chdman path, the **bundled** chdman (started with its own library folder first), `chdman` on `PATH`,
+the Flatpak `org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... If the bundled chdman cannot start (the system lacks
+e.g. libSDL2) the app says so ("bundled chdman could not start: missing libSDL2") and uses the next one; everything else
+keeps working. `Simple_ROM_Organiser.AppImage --self-check` tests the bundle (chdman starts, libFLAC decodes, scheduler runs).
+When chdman does extract, the disc goes to **scratch space - never your game folder**: (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or
+`/tmp` when it is a tmpfs) when it has the room AND the machine has that much memory available PLUS a 2 GiB reserve
+(`ROMORG_TEMP_RESERVE_MB` / config `temp_ram_reserve_mb`); (2) otherwise `<data dir>/cache/tmp` (`$ROMORG_TEMP_DIR` /
+config `temp_dir`); (3) otherwise the built-in reader is used and the job message says why. Every job uses its own marked folder,
+swept after crashes; a cancel deletes it at once. A Flatpak chdman can only see folders the Flatpak is allowed to
+(`flatpak override --user --filesystem=/run/media/deck org.mamedev.MAME`).
 
 **Convert raw sets to CHD** (needs chdman). A folder with a `.gdi` (or a `.cue` with one file per track) and its
-track files that matches a Redump game is flagged *raw (convertible)*. *Convert* runs `chdman createcd` writing the new CHD
-as `<Redump name>.chd.romorg.part` next to its final place (that is the intended output, not scratch), **decodes it again in
-scratch space (RAM / cache, same policy as above; the built-in reader if neither fits) and compares every track with Redump**, and
+track files that matches a Redump game is flagged *raw (convertible)*. A Dreamcast set that has only a `.cue` is converted only when
+the cue carries Redump's `REM SINGLE-DENSITY AREA` / `REM HIGH-DENSITY AREA` markers: the app then generates the `.gdi` (track 1 at LBA 0,
+the following single-density tracks back to back, the first high-density track at LBA 45000) in scratch space with symlinks to your files; otherwise
+the set is marked *needs a .gdi* and not converted. *Convert* runs `chdman createcd` writing the new CHD
+as `<Redump name>.chd.romorg.part` next to its final place (that is the intended output, not scratch), **checks the kind of disc
+(a Dreamcast game must come out as a GD-ROM CHD `CHGD`, not a CD `CHT2`), decodes it again with the built-in reader - independent of chdman, the job
+message says so; chdman extract is only the fallback for a CHD the reader cannot decode - and compares every track with Redump**, and
 only if all tracks match renames it into `<Redump name>/<Redump name>.chd` and moves the raw files to
 `_converted_originals/<their path>` (nothing is deleted). Any failure, mismatch, missing space or Cancel leaves the raw files
 untouched and no `.part` / temp files behind. About the disc size must be free next to the games during a conversion. **Undo last**
@@ -511,12 +518,11 @@ lacks (Zstandard - newer chdman versions use it by default) are reported as *nee
 `_unmatched/`); with chdman installed they are read by chdman. PS2 DVD games have no audio tracks, so for them
 *identified* from a decode is already fully verified.
 
-**Big-file scan times (built-in reader, Steam Deck, one core per file).** The decode runs at about 25-60 MB/s of
-disc data (cdlz / cdzl hunks, depending on how compressible the data is): measured on the real files, a 4.6 GB
-ISO takes ~2 min, God of War II (8.5 GB dual-layer) ~3.2 min, the seven PS2 CHDs of the test library (38 GB of ISO data) about
-14 min on one core, a PlayStation disc 10-25 s. Several files are decoded in parallel (up to 4 worker processes).
-The scan shows *file i/n, MB/s and an ETA*, can be cancelled at any time, and every result is cached by (path, size,
-modification time, CHD header SHA-1): the first scan is slow, every rescan takes a fraction of a second.
+**Big-file scan times (built-in reader, Steam Deck, 8 decode processes).** Measured on the real files: God of War II (8.1 GB of ISO data)
+40 s (was 185 s on one core), Bully (4.4 GB) 24 s (was 127 s), the whole seven-file PS2 folder (30 GB decoded) 2.6-3.2 min at ~190 MB/s
+(was 5.2 min with the old four file-level processes), a PlayStation disc about 5 s. Every result is cached by (path, size, modification time,
+CHD header SHA-1): the first scan is the slow one, every rescan takes a fraction of a second. The scan shows *file i/n, MB/s and an ETA*
+and can be cancelled at any time.
 
 **Library rules** (Build library; same rules and defaults as the Dreamcast): region priority Europe > USA > World >
 Japan > others, English by default, ONE release per game, discs of a multi-disc game always stay together, newest

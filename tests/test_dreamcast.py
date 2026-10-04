@@ -623,13 +623,102 @@ class ConvertTest(unittest.TestCase):
         dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
         self.assertEqual(tree(self.w.root), before)
 
-    def test_cue_set_converts_too(self) -> None:
+    def test_cue_without_gdi_is_not_converted_for_a_gd_rom_system(self) -> None:
         import shutil
         shutil.rmtree(self.w.root / "raw dump")
-        self.disc.write_raw(self.w.root / "cue dump", "e", gdi_style=False)
+        self.disc.write_raw(self.w.root / "cue dump", "e", gdi_style=False)          # no REM ...-DENSITY AREA markers
+        before = tree(self.w.root)
+        r, ops = self.plan()
+        self.assertEqual([o.status for o in ops], ["skip"])
+        self.assertIn("needs a .gdi", ops[0].reason)
+        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+        self.assertEqual(res["converted"], 0)
+        self.assertEqual(tree(self.w.root), before)
+
+    def test_redump_cue_set_converts_through_a_generated_gdi(self) -> None:
+        import shutil
+        shutil.rmtree(self.w.root / "raw dump")
+        self.disc.write_raw(self.w.root / "cue dump", "e", gdi_style=False, markers=True)
+        copy = self.w.base / "gdi-copy.txt"
+        with mock.patch.dict(os.environ, {"FAKE_GDI_COPY": str(copy)}):
+            res = self.run_convert()
+        self.assertEqual((res["converted"], res["failed"], res["generated_gdi"]), (1, [], 1))
+        self.assertTrue((self.w.root / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
+        # the GDI chdman was given: track 1 at 0, track 2 right after, the high-density track at 45000
+        rows = [r.split() for r in copy.read_text().splitlines()[1:]]
+        n1, n2 = len(self.disc.t1) // 2352, len(self.disc.t2) // 2352
+        self.assertEqual([(r[0], r[1], r[2], r[3]) for r in rows],
+                         [("1", "0", "4", "2352"), ("2", str(n1), "0", "2352"), ("3", "45000", "4", "2352")])
+        self.assertEqual(n1 + n2 < 45000, True)
+        self.assertFalse([p for p in (self.w.root).rglob("*") if p.is_symlink()])        # scratch links are gone
+
+    def test_a_cd_type_chd_for_a_gd_system_is_refused(self) -> None:
+        """chdman createcd of a .cue writes CHT2: same tracks, same hashes, but not a GD-ROM image."""
+        import shutil
+        shutil.rmtree(self.w.root / "raw dump")
+        self.disc.write_raw(self.w.root / "cue dump", "e", gdi_style=False, markers=True)
+        cd = self.w.base / "cd-type.chd"
+        self.disc.write_chd(cd, gd=False)
+        before = tree(self.w.root)
+        with mock.patch.dict(os.environ, {"FAKE_CHD": str(cd)}):
+            res = self.run_convert()
+        self.assertEqual(res["converted"], 0)
+        self.assertIn("CHT2", res["failed"][0]["error"])
+        self.assertIn("GD-ROM", res["failed"][0]["error"])
+        self.assertEqual(tree(self.w.root), before)
+
+    def test_verification_is_independent_of_chdman(self) -> None:
         res = self.run_convert()
         self.assertEqual(res["converted"], 1)
-        self.assertTrue((self.w.root / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
+        self.assertNotIn("extractcd", (self.w.base / "log.txt").read_text())
+        self.assertIn("independently", res["verify_text"])
+
+    def test_chdman_engine_verifies_with_chdman_extract(self) -> None:
+        r, ops = self.plan()
+        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, engine="chdman")
+        self.assertEqual(res["converted"], 1)
+        self.assertIn("extractcd", (self.w.base / "log.txt").read_text())
+        self.assertIn("chdman extract", res["verify_text"])
+
+
+class GdiFromCueTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def cue(self, text: str, sizes) -> Path:
+        for old in self.dir.glob("t*.bin"):
+            old.unlink()
+        for i, n in enumerate(sizes, 1):
+            (self.dir / f"t{i}.bin").write_bytes(b"\0" * (2352 * n))
+        p = self.dir / "x.cue"
+        p.write_text(text)
+        return p
+
+    SD_HD = ('REM SINGLE-DENSITY AREA\nFILE "t1.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+             'FILE "t2.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n'
+             'REM HIGH-DENSITY AREA\nFILE "t3.bin" BINARY\n  TRACK 03 MODE1/2352\n    INDEX 01 00:00:00\n'
+             'FILE "t4.bin" BINARY\n  TRACK 04 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n')
+
+    def test_standard_layout(self) -> None:
+        text, why = dreamcast.gdi_from_cue(self.cue(self.SD_HD, (606, 44394, 1000, 200)))
+        self.assertEqual(why, "")
+        self.assertEqual(text.splitlines(), ["4", '1 0 4 2352 "t1.bin" 0', '2 606 0 2352 "t2.bin" 0',
+                                             '3 45000 4 2352 "t3.bin" 0', '4 46000 0 2352 "t4.bin" 0'])
+
+    def test_refusals(self) -> None:
+        self.assertIn("markers", dreamcast.gdi_from_cue(self.cue(self.SD_HD.replace("REM ", "; "), (1, 1, 1, 1)))[1])
+        self.assertIn("missing", dreamcast.gdi_from_cue(self.cue(self.SD_HD, (1, 1, 1)))[1])
+        self.assertIn("whole number", dreamcast.gdi_from_cue(self._odd())[1])
+        text = 'REM SINGLE-DENSITY AREA\nFILE "t1.bin" BINARY\n  TRACK 01 MODE1/2352\n  TRACK 02 AUDIO\n'
+        self.assertIn("several tracks", dreamcast.gdi_from_cue(self.cue(text, (1,)))[1])
+        self.assertIn("longer", dreamcast.gdi_from_cue(self.cue(self.SD_HD, (30000, 20000, 1, 1)))[1])
+
+    def _odd(self) -> Path:
+        p = self.cue(self.SD_HD, (1, 1, 1, 1))
+        (self.dir / "t1.bin").write_bytes(b"\0" * 100)
+        return p
 
 
 class ChdmanEngineTest(unittest.TestCase):
@@ -651,7 +740,7 @@ class ChdmanEngineTest(unittest.TestCase):
         self.w.chd("Beta (Europe)", "Beta/Beta (Europe).chd")
 
     def test_scan_with_chdman_is_verified_and_cached(self) -> None:
-        r = self.w.scan(chdman=self.chdman)
+        r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual((r.summary()["verified"], r.summary()["identified"], r.engine), (1, 0, "chdman"))
         self.assertEqual(r.matched[0].unit.via, "chdman")
         self.assertTrue(all(t["sha1"] for t in r.matched[0].unit.tracks))
@@ -659,14 +748,14 @@ class ChdmanEngineTest(unittest.TestCase):
         log = (self.w.base / "log.txt").read_text()
         self.assertIn("extractcd", log)
         (self.w.base / "log.txt").unlink()
-        r2 = self.w.scan(chdman=self.chdman)             # cached: chdman is not run again
+        r2 = self.w.scan(chdman=self.chdman, engine="chdman")             # cached: chdman is not run again
         self.assertEqual(r2.summary()["verified"], 1)
         self.assertFalse((self.w.base / "log.txt").exists())
 
     def test_chdman_that_writes_other_tracks_is_not_trusted(self) -> None:
         other = T.prepare_fake_raw(self.w.base / "other_raw", T.Disc("zz", 55, frames=(9, 5, 10)))
         with mock.patch.dict(os.environ, {"FAKE_RAW": str(other)}):
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual((r.matched[0].level, r.matched[0].unit.via), ("identified", "python"))
 
     def test_python_engine_ignores_chdman(self) -> None:
@@ -676,20 +765,20 @@ class ChdmanEngineTest(unittest.TestCase):
 
     def test_chdman_failure_falls_back_to_the_python_reader(self) -> None:
         with mock.patch.dict(os.environ, {"FAKE_FAIL": "extractcd"}):
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual(r.matched[0].level, "identified")
         self.assertEqual(r.matched[0].unit.via, "python")
 
     def test_no_space_falls_back_to_the_python_reader(self) -> None:
         with mock.patch("romorg.tempspace.free_bytes", return_value=1000):
-            r = self.w.scan(chdman=self.chdman)
+            r = self.w.scan(chdman=self.chdman, engine="chdman")
         self.assertEqual(r.matched[0].level, "identified")
         self.assertEqual(r.temp["python"], 1)
         self.assertIn("not enough temporary space", r.temp["last"]["reason"])
 
     def test_verify_uses_chdman_when_present(self) -> None:
         r = self.w.scan(engine="python")
-        res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache)
+        res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache, engine="chdman")
         self.assertEqual((res["verified"], res["failed"]), (1, []))
         self.assertIn("extractcd", (self.w.base / "log.txt").read_text())
         self.assertEqual(self.w.scan(engine="python").summary()["verified"], 1)
