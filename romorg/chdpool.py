@@ -11,6 +11,7 @@ POSIX only (it waits on pipes with ``select``); elsewhere :func:`make_pool` retu
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -19,13 +20,17 @@ import signal
 import subprocess
 import sys
 import threading
+import zlib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from . import winproc
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 ENV_WORKERS = "ROMORG_CHD_WORKERS"
-MAX_AUTO = 4
+MAX_AUTO = 8
+SEGMENT_BYTES = 5 << 20          # one decode request to a worker (hash_track_split)
 
 
 class PoolError(Exception):
@@ -37,13 +42,13 @@ class Cancelled(Exception):
 
 
 def default_workers(configured: Any = 0) -> int:
-    """0 / None = auto (up to 4 and never more than the CPUs); 1 = no pool."""
+    """0 / None = auto (up to 8, leaving one CPU free); 1 = no pool."""
     try:
         n = int(os.environ.get(ENV_WORKERS) or configured or 0)
     except (TypeError, ValueError):
         n = 0
     if n <= 0:
-        n = min(MAX_AUTO, os.cpu_count() or 1)
+        n = min(MAX_AUTO, max(1, (os.cpu_count() or 1) - 1))
     return max(1, min(n, 16))
 
 
@@ -89,6 +94,8 @@ class _Worker:
 
     def kill(self) -> None:
         self.dead = True
+        if winproc.IS_WINDOWS:
+            winproc.kill_tree(self.proc)
         try:
             os.killpg(self.proc.pid, signal.SIGKILL)
         except (OSError, AttributeError):
@@ -135,6 +142,44 @@ class _Worker:
         except ValueError as exc:
             raise PoolError("garbled worker reply") from exc
 
+    def _more(self, cancel: Optional[Callable[[], bool]]) -> bytes:
+        """The next bytes of the worker's output (waits; raises on cancel / a dead worker)."""
+        fd = None if self._chunks is not None else self.proc.stdout.fileno()
+        while True:
+            if cancel is not None and cancel():
+                raise Cancelled()
+            if self._chunks is not None:
+                try:
+                    chunk = self._chunks.get(timeout=0.2)
+                except queue.Empty:
+                    if self.proc.poll() is not None and self._chunks.empty():
+                        raise PoolError("a worker exited unexpectedly")
+                    continue
+            else:
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if not ready:
+                    if self.proc.poll() is not None:
+                        raise PoolError("a worker exited unexpectedly")
+                    continue
+                chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                raise PoolError("a worker closed its pipe")
+            return chunk
+
+    def read_exact(self, n: int, cancel: Optional[Callable[[], bool]]) -> bytes:
+        """Exactly ``n`` raw bytes that follow a ``{"d": n}`` line."""
+        parts = [self.buf[:n]]
+        have = len(parts[0])
+        self.buf = self.buf[n:]
+        while have < n:
+            chunk = self._more(cancel)
+            if have + len(chunk) > n:
+                self.buf = chunk[n - have:]
+                chunk = chunk[:n - have]
+            parts.append(chunk)
+            have += len(chunk)
+        return b"".join(parts)
+
 
 class HashPool:
     """``hash_track(path, index)`` is thread-safe; at most ``workers`` run at the same time."""
@@ -179,6 +224,81 @@ class HashPool:
             if w.dead or w.proc.poll() is not None:
                 continue
             return w
+
+    def _drop(self, w: _Worker) -> None:
+        w.kill()
+        with self._lock:
+            self._started -= 1
+            if w in self._all:
+                self._all.remove(w)
+
+    def read_segment(self, path: str, index: int, first: int, count: int,
+                     cancel: Optional[Callable[[], bool]] = None) -> bytes:
+        """The extracted bytes of ``count`` frames of a track from frame ``first``, decoded by one worker."""
+        w = self._take(cancel)
+        try:
+            try:
+                req = {"path": str(path), "track": index, "first": first, "count": count, "raw": True}
+                w.proc.stdin.write((json.dumps(req) + "\n").encode())
+                w.proc.stdin.flush()
+            except (OSError, ValueError) as exc:
+                raise PoolError(f"cannot talk to a worker: {exc}") from exc
+            parts = []
+            while True:
+                msg = w.readline(cancel)
+                if "d" in msg:
+                    parts.append(w.read_exact(int(msg["d"]), cancel))
+                    continue
+                if "ok" in msg:
+                    self._idle.put(w)
+                    return b"".join(parts)
+                raise PoolError(str(msg.get("error") or "worker failed"))
+        except (Cancelled, PoolError):
+            self._drop(w)
+            raise
+
+    def hash_track_split(self, path: str, index: int, frames: int, frame_bytes: int,
+                         progress: Optional[Callable[[int], None]] = None,
+                         cancel: Optional[Callable[[], bool]] = None) -> dict:
+        """crc32 / md5 / sha1 of one track: the workers decode it in segments (in parallel, so even a single big
+        track uses every worker) and this thread hashes the bytes in order."""
+        seg = max(1, SEGMENT_BYTES // max(1, frame_bytes))
+        crc = 0
+        md5 = hashlib.md5()
+        sha1 = hashlib.sha1()
+        size = 0
+        failed = [False]
+
+        def stop() -> bool:
+            return failed[0] or (cancel is not None and cancel())
+
+        window: "deque" = deque()
+        ex = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="romorg-seg")
+        try:
+            starts = iter(range(0, frames, seg))
+            while True:
+                while len(window) < self.workers + 2:
+                    s = next(starts, None)
+                    if s is None:
+                        break
+                    window.append(ex.submit(self.read_segment, path, index, s, min(seg, frames - s), stop))
+                if not window:
+                    break
+                data = window.popleft().result()
+                crc = zlib.crc32(data, crc)
+                md5.update(data)
+                sha1.update(data)
+                size += len(data)
+                if progress:
+                    progress(len(data))
+        except BaseException:
+            failed[0] = True
+            if cancel is not None and cancel():
+                raise Cancelled() from None
+            raise
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
+        return {"crc32": "%08x" % (crc & 0xFFFFFFFF), "md5": md5.hexdigest(), "sha1": sha1.hexdigest(), "size": size}
 
     def hash_track(self, path: str, index: int, progress: Optional[Callable[[int], None]] = None,
                    cancel: Optional[Callable[[], bool]] = None) -> dict:

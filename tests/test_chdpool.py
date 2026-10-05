@@ -36,6 +36,25 @@ class PoolTest(unittest.TestCase):
                 got = self.pool.hash_track(self.path, i)
                 self.assertEqual((got["crc32"], got["md5"], got["sha1"], got["size"]), (h.crc32, h.md5, h.sha1, h.size))
 
+    def test_split_hashing_matches_in_process(self) -> None:
+        with mock.patch.object(chdpool, "SEGMENT_BYTES", 2352 * 3):      # several segments per track
+            with chd.Chd(self.path) as c:
+                for i, t in enumerate(c.tracks):
+                    h = chd.hash_track(c, t)
+                    seen: list = []
+                    got = self.pool.hash_track_split(self.path, i, c.track_frames(t), 2352, progress=seen.append)
+                    self.assertEqual((got["crc32"], got["md5"], got["sha1"], got["size"]),
+                                     (h.crc32, h.md5, h.sha1, h.size))
+                    self.assertEqual(sum(seen), h.size)
+
+    def test_track_ranges_concatenate_to_the_track(self) -> None:
+        with chd.Chd(self.path) as c:
+            for t in c.tracks:
+                whole = b"".join(c.iter_track(t))
+                n = c.track_frames(t)
+                parts = b"".join(b"".join(c.iter_track(t, first=s, count=5)) for s in range(0, n, 5))
+                self.assertEqual(parts, whole)
+
     def test_parallel_requests_from_threads(self) -> None:
         with ThreadPoolExecutor(4) as ex:
             res = list(ex.map(lambda i: self.pool.hash_track(self.path, i)["sha1"], [0, 1, 2] * 4))
@@ -91,7 +110,7 @@ class PoolTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(chdpool.ENV_WORKERS, None)
             self.assertEqual(chdpool.default_workers(1), 1)
-            self.assertEqual(chdpool.default_workers(0), min(4, os.cpu_count() or 1))
+            self.assertEqual(chdpool.default_workers(0), min(chdpool.MAX_AUTO, max(1, (os.cpu_count() or 1) - 1)))
             self.assertEqual(chdpool.default_workers(99), 16)
         self.assertIsNone(chdpool.make_pool(1))
 
@@ -121,6 +140,31 @@ class ScanWithPoolTest(unittest.TestCase):
         r = w.scan(cache_path=w.base / "other.sqlite")
         with self.assertRaises(scanner.ScanCancelled):
             dreamcast.verify_units(r, cache_path=w.base / "other.sqlite", workers=3, cancel=lambda: True)
+
+
+class EnginePolicyTests(unittest.TestCase):
+    """discsys.prefer_chdman: the quicker of chdman and the built-in reader, per disc."""
+
+    @staticmethod
+    def info(data_mb: int, audio_mb: int, supported: bool = True):
+        import types
+        tracks = [types.SimpleNamespace(size=data_mb << 20, is_audio=False)]
+        if audio_mb:
+            tracks.append(types.SimpleNamespace(size=audio_mb << 20, is_audio=True))
+        return types.SimpleNamespace(reader_supports=supported, tracks=tracks)
+
+    def test_policy(self) -> None:
+        from romorg import discsys
+        self.assertFalse(discsys.prefer_chdman(self.info(650, 0), workers=8))      # data CD: parallel reader
+        self.assertFalse(discsys.prefer_chdman(self.info(1500, 0), workers=8))     # DVD: parallel reader
+        self.assertTrue(discsys.prefer_chdman(self.info(50, 500), workers=8))      # audio-heavy CD: chdman
+        self.assertTrue(discsys.prefer_chdman(self.info(10, 0, supported=False)))  # a codec only chdman has
+        self.assertFalse(discsys.prefer_chdman(self.info(0, 0), workers=1))        # nothing to decode
+
+    def test_reader_codecs(self) -> None:
+        from romorg import chd
+        self.assertIn("cdfl", chd.READER_CODECS)
+        self.assertNotIn("zstd", chd.READER_CODECS)
 
 
 if __name__ == "__main__":

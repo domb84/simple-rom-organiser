@@ -3,6 +3,9 @@
 Request  : ``{"path": "...", "track": 3}``  (0-based track index)
 Replies  : ``{"p": n}`` progress (bytes since the last one), then ``{"ok": {"crc32", "md5", "sha1", "size"}}``
            or ``{"error": "text"}``.
+Decode request (the parent hashes; several workers then share one track):
+           ``{"path": "...", "track": 3, "first": 0, "count": 2048, "raw": true}``
+Replies  : ``{"d": n}`` followed by exactly ``n`` raw bytes, repeated, then ``{"ok": {"size": total}}``.
 Run with ``python -m romorg.chdworker``; never started by anything but the pool.
 """
 
@@ -21,6 +24,7 @@ def _reply(obj: dict) -> None:
 
 def serve(stdin=None) -> None:
     from . import chd as chdlib
+    chdlib.DECODE_THREADS = 1       # the pool runs one process per core already
     cache: dict = {}
     for line in (stdin or sys.stdin):
         line = line.strip()
@@ -35,6 +39,18 @@ def serve(stdin=None) -> None:
                     old.close()
                 cache.clear()
                 info = cache[path] = chdlib.Chd(path)
+            if req.get("raw"):
+                total = 0
+                out = sys.stdout.buffer
+                for chunk in info.iter_track(info.tracks[int(req["track"])], first=int(req.get("first", 0)),
+                                             count=req.get("count")):
+                    sys.stdout.write('{"d": %d}' % len(chunk) + chr(10))
+                    sys.stdout.flush()
+                    out.write(chunk)
+                    out.flush()
+                    total += len(chunk)
+                _reply({"ok": {"size": total}})
+                continue
             pending = [0]
 
             def progress(n: int) -> None:

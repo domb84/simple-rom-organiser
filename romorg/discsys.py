@@ -626,14 +626,18 @@ def hash_tracks_python(info: chdlib.Chd, wanted: Iterable[int], prog: Optional[_
     if pool is not None and not pool.broken:
         def one(i: int) -> tuple[int, Optional[dict]]:
             try:
-                return i, pool.hash_track(info.path, i, progress=(prog.add if prog else None), cancel=cancel)
+                tr = info.tracks[i]
+                return i, pool.hash_track_split(info.path, i, info.track_frames(tr),
+                                                max(1, tr.size // max(1, info.track_frames(tr))),
+                                                progress=(prog.add if prog else None), cancel=cancel)
             except chdpool.Cancelled:
                 raise scanner.ScanCancelled() from None
             except chdpool.PoolError:
                 return i, None
         order = sorted(wanted, key=lambda i: -info.tracks[i].size)       # the big ones first
         if len(order) > 1:
-            with ThreadPoolExecutor(max_workers=min(len(order), pool.workers)) as ex:
+            # each track already spreads over every worker: a few at a time keeps the small ones moving
+            with ThreadPoolExecutor(max_workers=min(len(order), 3)) as ex:
                 results = list(ex.map(one, order))
         else:
             results = [one(i) for i in order]
@@ -729,6 +733,30 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
     return alive, LEVEL_IDENTIFIED, ""
 
 
+# Measured on a 20-thread Windows PC (MB/s of decoded output): chdman extractcd/extractdvd is single-threaded
+# (~54 data, ~100 CD audio, ~63 DVD lzma) and writes the whole disc to scratch space, which is then read back
+# and hashed (~400); the worker pool decodes data / DVD hunks in parallel (~20 per worker up to ~150) but FLAC
+# audio in pure Python is slow (~4 per worker up to ~15).
+CHDMAN_DATA, CHDMAN_AUDIO, HASH_RATE = 54.0, 100.0, 400.0
+POOL_DATA_PER_WORKER, POOL_DATA_MAX = 20.0, 150.0
+POOL_AUDIO_PER_WORKER, POOL_AUDIO_MAX = 4.0, 15.0
+
+
+def prefer_chdman(info: chdlib.Chd, workers: int = 1) -> bool:
+    """For ``engine="auto"`` with chdman available: is chdman the quicker way to hash this disc?
+
+    Always when the built-in reader lacks a codec the CHD uses; otherwise the faster of the two estimates, so
+    data and DVD discs go to the parallel reader and audio-heavy CDs to chdman."""
+    if not info.reader_supports:
+        return True
+    audio = sum(t.size for t in info.tracks if t.is_audio)
+    data = sum(t.size for t in info.tracks) - audio
+    w = max(1, workers)
+    python = (data / max(45.0, min(POOL_DATA_MAX, POOL_DATA_PER_WORKER * w))
+              + audio / min(POOL_AUDIO_MAX, POOL_AUDIO_PER_WORKER * w))
+    return data / CHDMAN_DATA + audio / CHDMAN_AUDIO + (data + audio) / HASH_RATE < python
+
+
 def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chdman: Optional[chdtool.Chdman],
                   engine: str, prog: Optional[_Progress], pool: Optional[chdpool.HashPool] = None) -> None:
     """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first)."""
@@ -758,7 +786,8 @@ def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chd
             # chdman createdvd: the header's raw SHA-1 IS the ISO's SHA-1 - identified without decoding anything
             meta[0]["sha1"], meta[0]["claimed"] = info.raw_sha1, True
         unit.tracks = meta
-        use_chdman = chdman is not None and engine in ("auto", "chdman")
+        use_chdman = chdman is not None and (engine == "chdman" or (
+            engine == "auto" and prefer_chdman(info, pool.workers if pool is not None else 1)))
         via = ["python"]
 
         def hasher(idx: list[int]) -> None:
@@ -995,10 +1024,10 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
         prog = _Progress(progress, max(total, 1), cancel)
         prog.files_total = files_todo
         prog.emit("Scanning...")
-        pool = chdpool.make_pool(workers) if (workers > 1 and not use_chdman) else None
+        pool = chdpool.make_pool(workers) if workers > 1 else None
         try:
             chd_units = [u for u in units if u.kind == "chd"]
-            if pool is not None and chd_units:
+            if pool is not None and chd_units and not use_chdman:
                 def work(u: DcUnit) -> None:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
@@ -1460,7 +1489,7 @@ def verify_units(result: DcScanResult, chdman: Optional[chdtool.Chdman] = None, 
     verified, failed = 0, []
     tempspace.sweep_stale()
     tempspace.reset_report()
-    pool = chdpool.make_pool(workers) if (workers > 1 and not use_chdman) else None
+    pool = chdpool.make_pool(workers) if workers > 1 else None
     try:
         for m in todo:
             prog.check()
@@ -1477,7 +1506,7 @@ def verify_units(result: DcScanResult, chdman: Optional[chdtool.Chdman] = None, 
                 _merge_cached(meta, cache.get(str(u.path), u.size, u.mtime_ns, info.sha1))
                 via = "python"
                 try:
-                    if use_chdman:
+                    if use_chdman and (engine == "chdman" or prefer_chdman(info, pool.workers if pool else 1)):
                         got = hash_all_chdman(u.path, info, chdman, root, prog)
                         via = "chdman"
                     else:

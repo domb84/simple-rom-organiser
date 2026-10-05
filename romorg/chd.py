@@ -33,16 +33,24 @@ from __future__ import annotations
 
 import hashlib
 import lzma
+import os
+import threading
 import re
 import struct
 import zlib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import BinaryIO, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import BinaryIO, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from . import cdecc, flacdec
 
+READER_CODECS = frozenset({"cdlz", "cdzl", "cdfl", "zlib", "lzma"})  # what the built-in reader can decode
+
 __all__ = ["Chd", "ChdError", "ChdUnsupported", "Track", "TrackHash", "hash_track",
            "open_chd", "is_chd", "frames_to_bytes"]
+
+DECODE_THREADS = max(1, min(8, (os.cpu_count() or 2) - 1))   # hunk decode threads per open CHD (1 = off)
 
 CD_FRAME = 2448
 CD_SECTOR = 2352
@@ -305,6 +313,7 @@ class Chd:
         self._f = fileobj if fileobj is not None else open(path, "rb")
         self._own = fileobj is None
         self._cache: Dict[int, bytes] = {}
+        self._io_lock = threading.Lock()
         self._filters = None
         try:
             self._read_header()
@@ -520,9 +529,7 @@ class Chd:
         ctype = self._ctype[index]
         if ctype == _T_SELF:
             return self.read_hunk_raw(self._coff[index], with_subcode)
-        f = self._f
-        f.seek(self._coff[index])
-        comp = f.read(self._clen[index])
+        comp = self._read_at(self._coff[index], self._clen[index])
         if len(comp) < self._clen[index]:
             raise ChdError("file is truncated (hunk %d)" % index)
         if ctype == _T_NONE:
@@ -601,21 +608,20 @@ class Chd:
 
     GROUP = 16          # hunks decoded together so the ECC work is batched
 
-    def _hunk_sectors(self, index: int) -> bytes:
-        got = self._cache.get(index)
-        if got is not None:
-            return got
-        self._ensure_map()
-        self._cache = {}
-        last = min(self.hunk_count, index + self.GROUP)
+    def _read_at(self, offset: int, length: int) -> bytes:
+        with self._io_lock:                 # decode threads share the one file object
+            self._f.seek(offset)
+            return self._f.read(length)
+
+    def _decode_sectors(self, first: int, last: int) -> Dict[int, bytes]:
+        """Hunks ``first..last-1`` as bare 2352-byte sectors. Thread-safe (touches no shared state but the file)."""
         bases = []
         pending: list = []
-        for i in range(index, last):
+        for i in range(first, last):
             ctype = self._ctype[i]
             codec = self.compressors[ctype] if ctype <= 3 else ""
             if codec in ("cdlz", "cdzl", "cdfl") and self.is_cd:
-                self._f.seek(self._coff[i])
-                comp = self._f.read(self._clen[i])
+                comp = self._read_at(self._coff[i], self._clen[i])
                 if len(comp) < self._clen[i]:
                     raise ChdError("file is truncated (hunk %d)" % i)
                 base, pend, _end = self._cd_base(codec, comp)
@@ -624,8 +630,39 @@ class Chd:
             else:
                 bases.append((i, self.read_hunk_raw(i, with_subcode=False)))
         cdecc.generate(pending)
-        self._cache = {i: bytes(b) for i, b in bases}
+        return {i: bytes(b) for i, b in bases}
+
+    def _hunk_sectors(self, index: int) -> bytes:
+        got = self._cache.get(index)
+        if got is not None:
+            return got
+        self._ensure_map()
+        self._cache = self._decode_sectors(index, min(self.hunk_count, index + self.GROUP))
         return self._cache[index]
+
+    def _ahead(self, starts: Sequence[int], decode: Callable[[int], object]) -> Iterator[object]:
+        """``decode(start)`` for every start, in order, computed a few items ahead by :data:`DECODE_THREADS` threads
+        (zlib, lzma and hashlib release the GIL, so data hunks decode in parallel; FLAC audio does not gain)."""
+        threads = DECODE_THREADS
+        if threads <= 1 or len(starts) < 2:
+            for s in starts:
+                yield decode(s)
+            return
+        self._ensure_map()
+        if self._filters is None and self.is_cd:   # lazily built: do it before the threads start
+            self._filters = _lzma_filters(self.hunk_bytes // CD_FRAME * CD_SECTOR)
+        window: "deque" = deque()
+        it = iter(starts)
+        ex = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="romorg-chd")
+        try:
+            for s in it:
+                window.append(ex.submit(decode, s))
+                if len(window) >= threads * 2:
+                    yield window.popleft().result()
+            while window:
+                yield window.popleft().result()
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
     # -- tracks
     def iter_frames(self, first_frame: int, count: int) -> Iterator[bytes]:
@@ -633,25 +670,40 @@ class Chd:
         if not self.is_cd:
             raise ChdError("not a CD / GD-ROM CHD")
         fph = self.frames_per_hunk
-        f = first_frame
         end = first_frame + count
-        while f < end:
-            h, off = divmod(f, fph)
-            data = self._hunk_sectors(h)
-            take = min(end - f, fph - off)
-            yield data[off * CD_SECTOR:(off + take) * CD_SECTOR]
-            f += take
+        if count <= 0:
+            return
+        self._ensure_map()
+        h0, h1 = first_frame // fph, (end - 1) // fph + 1
+        group = self.GROUP
+
+        def decode(start: int) -> bytes:
+            got = self._decode_sectors(start, min(h1, start + group))
+            return b"".join([got[i] for i in range(start, min(h1, start + group))])
+
+        per = fph * CD_SECTOR
+        for start, data in zip(range(h0, h1, group), self._ahead(range(h0, h1, group), decode)):
+            lo = max(first_frame - start * fph, 0) * CD_SECTOR
+            hi = min(len(data), (end - start * fph) * CD_SECTOR)
+            for o in range(lo, hi, per * 4):            # hand out at most 4 hunks at a time (cancel / progress)
+                yield data[o:min(hi, o + per * 4)]
 
     def iter_track(self, track: Track, cancel: Optional[Callable[[], bool]] = None,
-                   skip_audio: bool = False) -> Iterator[bytes]:
+                   skip_audio: bool = False, first: int = 0, count: Optional[int] = None) -> Iterator[bytes]:
         """The extracted bytes of a track, as ``chdman extractcd`` writes its bin / gdi file (a DVD CHD: the ISO,
-        as ``chdman extractdvd`` writes it)."""
+        as ``chdman extractdvd`` writes it).
+
+        ``first`` / ``count`` select a run of the track's frames (2048-byte sectors for a DVD): the pieces of
+        consecutive runs concatenate to the whole track, which lets several processes decode one track."""
+        total = self.track_frames(track)
+        first = max(0, min(first, total))
+        count = total - first if count is None else max(0, min(count, total - first))
         if self.is_dvd:
-            yield from self._iter_dvd(cancel)
+            yield from self._iter_dvd(cancel, first, count)
             return
         ssize, soff = track.sector_size, track.sector_offset
         audio = track.is_audio
-        for chunk in self.iter_frames(track.start, track.data_frames):
+        for chunk in self.iter_frames(track.start + first, count):
             if cancel is not None and cancel():
                 raise InterruptedError("cancelled")
             if audio:
@@ -665,26 +717,34 @@ class Chd:
                 n = len(chunk) // CD_SECTOR
                 yield b"".join(chunk[i * CD_SECTOR + soff:i * CD_SECTOR + soff + ssize] for i in range(n))
 
-    def _iter_dvd(self, cancel: Optional[Callable[[], bool]] = None) -> Iterator[bytes]:
-        remaining = self.logical_bytes
+    def track_frames(self, track: Track) -> int:
+        """How many frames :meth:`iter_track` covers (2048-byte sectors for a DVD)."""
+        return self.logical_bytes // DVD_SECTOR if self.is_dvd else track.data_frames
+
+    def _iter_dvd(self, cancel: Optional[Callable[[], bool]] = None, first: int = 0,
+                  frames: Optional[int] = None) -> Iterator[bytes]:
+        lo = first * DVD_SECTOR
+        hi = self.logical_bytes if frames is None else min(self.logical_bytes, lo + frames * DVD_SECTOR)
+        if hi <= lo:
+            return
+        hb = self.hunk_bytes
         # decoded a few hunks at a time so small hunks (2-4 KiB) do not cost one Python iteration each
-        per = max(1, (1 << 20) // self.hunk_bytes)
-        i = 0
-        while remaining > 0 and i < self.hunk_count:
+        per = max(1, (1 << 20) // hb)
+        h0, h1 = lo // hb, min(self.hunk_count, (hi - 1) // hb + 1)
+        self._ensure_map()
+
+        def decode(start: int) -> bytes:
+            return b"".join([self.read_hunk_raw(i, with_subcode=False) for i in range(start, min(h1, start + per))])
+
+        done = lo
+        for start, data in zip(range(h0, h1, per), self._ahead(range(h0, h1, per), decode)):
             if cancel is not None and cancel():
                 raise InterruptedError("cancelled")
-            parts = []
-            for _ in range(per):
-                if i >= self.hunk_count:
-                    break
-                parts.append(self.read_hunk_raw(i, with_subcode=False))
-                i += 1
-            data = b"".join(parts)
-            if len(data) > remaining:
-                data = data[:remaining]
-            remaining -= len(data)
+            base = start * hb
+            data = data[max(lo - base, 0):hi - base]
+            done += len(data)
             yield data
-        if remaining:
+        if done != hi:
             raise ChdError("the CHD holds less data than its header says")
 
     def verify_raw_sha1(self, progress: Optional[Callable[[int, int], None]] = None,
@@ -701,6 +761,11 @@ class Chd:
             if progress:
                 progress(i + 1, self.hunk_count)
         return h.hexdigest() == self.raw_sha1
+
+    @property
+    def reader_supports(self) -> bool:
+        """True when every compression the CHD uses can be decoded by this reader (else it needs chdman)."""
+        return all(c in READER_CODECS for c in self.compressors if c)
 
     def describe(self) -> dict:
         return {"version": self.version, "compressors": [c for c in self.compressors if c],
