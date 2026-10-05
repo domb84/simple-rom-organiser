@@ -172,3 +172,16 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   `Simple ROM Organiser.vbs`. Nothing is unpacked at run time and it never trips antivirus.
 - Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
 - The folder dialog is a native Windows dialog opened through PowerShell.
+
+### Windows: chdman, 7-Zip and speed
+
+- **chdman** is optional but much faster than the built-in Python CHD reader (above all for FLAC audio tracks,
+  which the Python reader decodes at only 1-2 MB/s per process). The app looks for `chdman.exe` on `PATH`, next to
+  the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`, RetroArch, Scoop,
+  `C:\mame`). Or set `ROMORG_CHDMAN` / the `chdman_path` setting. It ships in the MAME download.
+  Drop `chdman.exe` beside `Simple_ROM_Organiser-*.exe` and it is picked up.
+- **7-Zip** (`7z.exe`, for `.7z` / `.rar`) is found on `PATH`, in `C:\Program Files\7-Zip` and next to the app.
+- Without chdman, CHD hashing uses a pool of worker processes (the frozen exe starts itself with `--chd-worker`),
+  so several tracks decode in parallel. Loose files are hashed by a small thread pool (`scanner.HASH_THREADS`).
+- External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
+- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
