@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import threading
 import zipfile
+from concurrent.futures import Future, ThreadPoolExecutor
 import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -37,6 +38,7 @@ if TYPE_CHECKING:  # avoid a hard runtime dependency; only duck-typed methods ar
     from .datfile import DatFile, Rom
 
 CHUNK_SIZE = 1024 * 1024
+HASH_THREADS = max(1, min(6, (os.cpu_count() or 2) - 1))  # loose-file hashing threads (1 = off)
 ZIP_EXTS = {".zip"}
 SEVENZIP_EXTS = {".7z", ".rar"}
 SKIP_SUFFIXES = {".m3u", ".part"}
@@ -1303,19 +1305,24 @@ def scan(
                     return hash_7z_member(path, member, exe, size, usable, sizes=odd_sizes)
             add_member(path, member, size, crc, st, compute)
 
-    def scan_loose(path: Path) -> None:
+    def hash_loose(path: Path) -> tuple[str, str, Optional[dict[str, tuple[str, str, int]]]]:
+        """The (crc, sha1, variants) of a loose file; runs in a worker thread (no shared state touched)."""
+        if strategies:  # one read: raw + the variants the size/magic allow
+            raw, alts_ = hash_file_variants(path, strategies, sizes=odd_sizes)
+            assert raw is not None
+            return raw[0], raw[1], alts_
+        crc_, sha1_ = hash_file(path)
+        return crc_, sha1_, None
+
+    def scan_loose(path: Path, ahead: "Optional[Future]" = None) -> None:
         st = path.stat()
         key = _cache_key(path)
         hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
         alts: Optional[dict[str, tuple[str, str, int]]] = None
         if hit is None:
-            if strategies:  # one read: raw + the variants the size/magic allow
-                raw, alts = hash_file_variants(path, strategies, sizes=odd_sizes)
-                assert raw is not None
-                crc, sha1 = raw
+            crc, sha1, alts = ahead.result() if ahead is not None else hash_loose(path)
+            if alts is not None:
                 store_alts(key, st.st_size, st.st_mtime_ns, "", alts)
-            else:
-                crc, sha1 = hash_file(path)
             if key is not None:
                 cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1)
         else:
@@ -1343,12 +1350,33 @@ def scan(
                 return
         unmatched.append(e)
 
+    # Loose files are hashed a few files ahead in worker threads (hashlib / zlib release the GIL), so a scan
+    # reads and hashes several files at once; matching, the cache and all results stay on this thread.
+    pool = ThreadPoolExecutor(max_workers=HASH_THREADS, thread_name_prefix="romorg-hash") if HASH_THREADS > 1 else None
+    ahead: dict[int, Future] = {}
+    submitted = 0
+
+    def prefetch(upto: int) -> None:
+        nonlocal submitted
+        while pool is not None and submitted < min(upto, total):
+            p = files[submitted]
+            if p.suffix.lower() not in ZIP_EXTS and p.suffix.lower() not in SEVENZIP_EXTS:
+                try:
+                    st_ = p.stat()
+                    k_ = _cache_key(p)
+                    if k_ is None or cache.get(k_, st_.st_size, st_.st_mtime_ns) is None:
+                        ahead[submitted] = pool.submit(hash_loose, p)
+                except OSError:
+                    pass
+            submitted += 1
+
     try:
         for i, path in enumerate(files):
             if _is_cancelled(cancel):
                 raise ScanCancelled()
             if progress is not None:
                 progress(i, total, path.name)
+            prefetch(i + 2 * HASH_THREADS)
             ext = path.suffix.lower()
             try:
                 if ext in ZIP_EXTS:
@@ -1359,13 +1387,15 @@ def scan(
                         continue
                     scan_7z(path, path.stat())
                 else:
-                    scan_loose(path)
+                    scan_loose(path, ahead.pop(i, None))
             except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
                     subprocess.SubprocessError, ValueError, EOFError) as exc:
                 errors.append((path, f"{type(exc).__name__}: {exc}"))
         if progress is not None:
             progress(total, total, "")
     finally:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
         cache.close()
 
     covered = _covered_names(matched)
