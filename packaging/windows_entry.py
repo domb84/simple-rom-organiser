@@ -15,6 +15,18 @@ if len(sys.argv) > 1 and sys.argv[1] == "--chd-worker":
 
     sys.exit(worker_main())
 
+if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+    # Build check: the build passes the names of all romorg modules (the server imports them by name, which
+    # PyInstaller cannot see); each must import from inside the exe. The exit status is the number that fail.
+    import importlib
+    bad = 0
+    for name in (sys.argv[2].split(",") if len(sys.argv) > 2 else []):
+        try:
+            importlib.import_module("romorg." + name)
+        except Exception:  # noqa: BLE001 - report any failure
+            bad += 1
+    sys.exit(bad)
+
 if sys.stdout is None or sys.stderr is None or os.environ.get("ROMORG_LOG") == "1":
     from romorg import paths
 

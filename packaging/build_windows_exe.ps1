@@ -23,6 +23,7 @@ $bw.Write($png); $bw.Flush(); [IO.File]::WriteAllBytes($ico, $ms.ToArray())
 python -m PyInstaller --noconfirm --clean --onefile --windowed `
     --name "Simple_ROM_Organiser-$version-win64" --icon $ico `
     --add-data "$root\romorg\static;romorg\static" `
+    --collect-submodules romorg `
     --distpath "$root\dist" --workpath "$work\work" --specpath "$work" `
     --paths $root `
     "$root\packaging\windows_entry.py"
@@ -30,6 +31,9 @@ if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
 # Smoke test the real exe.
 $exe = "$root\dist\Simple_ROM_Organiser-$version-win64.exe"
+$mods = (Get-ChildItem "$root\romorg\*.py" | Where-Object { $_.BaseName -ne "__init__" } | ForEach-Object { $_.BaseName }) -join ","
+$st = Start-Process $exe "--selftest $mods" -Wait -PassThru
+if ($st.ExitCode -ne 0) { throw "self-test failed: $($st.ExitCode) romorg module(s) are missing from the exe" }
 $data = "$work\smoke-data"
 $env:ROMORG_DATA_DIR = $data; $env:ROMORG_OFFLINE = "1"
 $port = Get-Random -Minimum 20000 -Maximum 50000
