@@ -1,14 +1,16 @@
 """chdman wrapper: detect it, ``extractcd`` / ``createcd`` / ``extractdvd`` / ``createdvd`` with progress + prompt cancel, temp-space rules.
 
-chdman (from MAME) is the preferred way to read and write CHDs: it is much faster than the pure-Python reader
-(:mod:`romorg.chd`), above all for FLAC audio. Nothing here is required: without chdman the app still scans
-and verifies CHDs with the pure-Python reader; only *Convert to CHD* needs it.
+chdman (from MAME) is optional on every platform: the app reads (:mod:`romorg.chd`, :mod:`romorg.chdsched`) and
+writes (:mod:`romorg.chdwrite`) CHDs itself, Convert to CHD included. An installed chdman is used when the user
+chooses it (the ``chd_engine`` / ``chd_writer`` settings), for a CHD in a format newer than the built-in reader knows,
+and for a disc layout the built-in writer refuses.
 
 Detection order (first hit wins): ``$ROMORG_CHDMAN`` / the ``chdman_path`` setting in config.json, the chdman
 BUNDLED in the AppImage (``tools/chdman``, started with ``LD_LIBRARY_PATH`` pointing at the bundled ``tools/lib``
 ahead of the system's; see :mod:`romorg.bundle`), ``chdman`` on ``PATH``, the Flatpak ``org.mamedev.MAME``
 (``flatpak run --command=chdman``), common tool folders (``~/.local/bin``, ``~/Emulation/tools``, EmuDeck /
-RetroDECK), ``/usr/bin`` and ``/usr/local/bin``. A bundled chdman that cannot start (the system lacks e.g. libSDL2)
+RetroDECK), ``/usr/bin`` and ``/usr/local/bin``; on Windows also ``chdman.exe`` next to the app (the exe's folder,
+the top folder of the .zip package) and in common MAME / tool folders (:func:`winproc.find_tool`). A bundled chdman that cannot start (the system lacks e.g. libSDL2)
 is reported (:func:`detect_report`) and skipped; everything else keeps working.
 
 Scratch space (Amendment 12): an extracted disc is about its full raw size. It is decoded in RAM when that is safe,
@@ -50,12 +52,33 @@ _PCT = re.compile(rb"(\d+(?:\.\d+)?)%")
 
 ProgressFn = Callable[[int, int, str], None]
 
-INSTALL_HINT = (
-    "chdman was not found. It ships with MAME: open Discover (the app store in Desktop Mode), search for "
-    "\"MAME\" (org.mamedev.MAME) and install it, or install any chdman and put it on PATH, or set its path "
-    "in the app (chdman path). The pure-Python reader still scans and verifies your CHDs; only converting "
-    "raw Redump sets (cue/bin, gdi, iso) to CHD needs chdman."
-)
+_NOT_NEEDED = "chdman is optional: the app reads, verifies and converts CHDs by itself."
+
+
+def install_hint(windows: Optional[bool] = None) -> str:
+    """Where to get chdman, for this platform (``windows`` overrides the detection; tests)."""
+    if winproc.IS_WINDOWS if windows is None else windows:
+        return ("chdman was not found. It ships with MAME: take chdman.exe from the MAME download at "
+                "https://www.mamedev.org/ and put it on PATH, next to the app (the .exe, or the top folder of the "
+                "unzipped package), or save its path in the app (chdman path). " + _NOT_NEEDED)
+    return ("chdman was not found. It ships with MAME: on a Steam Deck open Discover (the app store in Desktop Mode), "
+            "search for \"MAME\" (org.mamedev.MAME) and install it; elsewhere install MAME's chdman with your "
+            "package manager, or put any chdman on PATH, or set its path in the app (chdman path). " + _NOT_NEEDED)
+
+
+def install_steps(windows: Optional[bool] = None) -> list[str]:
+    """:func:`install_hint` as steps for the UI's list."""
+    last = f"or save the path of a chdman binary below (config key \"{CONFIG_KEY}\", environment {ENV_VAR})"
+    if winproc.IS_WINDOWS if windows is None else windows:
+        return ["Download MAME for Windows from https://www.mamedev.org/ - chdman.exe is in the download",
+                "Put chdman.exe on PATH, or next to the app (the .exe, or the top folder of the unzipped package)",
+                last]
+    return ["Steam Deck: open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
+            "or install MAME's chdman with your package manager, or put any chdman on PATH",
+            last]
+
+
+INSTALL_HINT = install_hint()
 
 
 class ChdmanError(Exception):
@@ -237,9 +260,7 @@ def info(config: Optional[dict] = None) -> dict[str, Any]:
     found, notes = detect_report(config)
     if found is None:
         out = {"found": False, "kind": "", "label": "", "hint": INSTALL_HINT, "notes": notes,
-               "steps": ["Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
-                         "or install any chdman and put it on PATH",
-                         f"or set the chdman path in the app (config key \"{CONFIG_KEY}\" / environment {ENV_VAR})"]}
+               "steps": install_steps()}
         if notes:
             out["hint"] = notes[0] + ". " + INSTALL_HINT
         return out
@@ -302,17 +323,8 @@ def check_access(chdman: Chdman, folder: Path) -> None:
 # --------------------------------------------------------------------------- temp dirs / space
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    """Whether the owner of a scratch folder still runs (:func:`winproc.pid_alive`: never a signal on Windows)."""
+    return winproc.pid_alive(pid)
 
 
 def acquire_workdir(chdman: Optional[Chdman], track_bytes: int, library: Sequence[Path] = ()) -> tempspace.Workdir:

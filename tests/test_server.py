@@ -927,6 +927,52 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(server._undo_log_count({"x": 1}))
 
 
+class DeadSocketTests(unittest.TestCase):
+    """A browser that closes the connection mid-response (WinError 10053 on Windows) only ends that connection."""
+
+    def _handler(self, error: Exception) -> tuple[Any, list]:
+        writes: list = []
+
+        class Dead:
+            def write(self, data: bytes) -> int:
+                writes.append(len(data))
+                raise error
+
+            def flush(self) -> None:
+                pass
+
+        h = server.Handler.__new__(server.Handler)
+        h.server = types.SimpleNamespace(verbose=False, app=types.SimpleNamespace(token="t"))
+        h.wfile, h.request_version, h.command = Dead(), "HTTP/1.1", "GET"
+        h.requestline, h.client_address, h.close_connection = "GET /api/dead HTTP/1.1", ("127.0.0.1", 1), False
+        return h, writes
+
+    def test_connection_errors_end_the_connection_quietly(self) -> None:
+        errors = (ConnectionAbortedError(10053, "An established connection was aborted"), BrokenPipeError(32, "pipe"),
+                  ConnectionResetError(104, "reset"))
+        for error in errors:
+            h, writes = self._handler(error)
+            with mock.patch.dict(server.ROUTES, {("GET", "/api/dead"): lambda app, q, b: {"ok": True}}), \
+                    mock.patch("traceback.print_exc") as tb:
+                h._api("GET", "/api/dead", {})
+            tb.assert_not_called()                          # no traceback in app.log
+            self.assertEqual(len(writes), 1, error)         # and no 500 tried on the dead socket
+            self.assertTrue(h.close_connection)
+
+    def test_a_handler_connection_error_is_still_a_500(self) -> None:
+        # a ConnectionError raised by the handler itself (e.g. a download) is an error to report, not a dead browser
+        h, _writes = self._handler(ConnectionAbortedError())
+        sent: list = []
+        h._send = lambda status, data, ctype: sent.append(status)       # type: ignore[method-assign]
+
+        def handler(app: Any, q: Any, b: Any) -> Any:
+            raise ConnectionResetError("the DAT server hung up")
+
+        with mock.patch.dict(server.ROUTES, {("GET", "/api/dead"): handler}), mock.patch("traceback.print_exc"):
+            h._api("GET", "/api/dead", {})
+        self.assertEqual(sent, [500])
+
+
 class RealModulesIntegrationTests(unittest.TestCase):
     """End-to-end over HTTP with the real core modules and synthetic DATs / files."""
 

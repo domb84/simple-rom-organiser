@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
+from . import winproc
+
 JOB_PREFIX = "romorg-job-"
 MARKER = ".romorg-temp-marker"
 MARKER_APP = "simple-rom-organiser"
@@ -278,17 +280,8 @@ class Workdir:
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    """Whether the owner of a scratch folder still runs (:func:`winproc.pid_alive`: never a signal on Windows)."""
+    return winproc.pid_alive(pid)
 
 
 def acquire(needed: int, avoid: Sequence[Path] = (), accept: Optional[Callable[[Path], str]] = None) -> Workdir:

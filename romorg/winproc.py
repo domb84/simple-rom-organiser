@@ -23,12 +23,33 @@ def popen_kwargs(new_session: bool = False) -> dict:
     return {"start_new_session": True} if new_session else {}
 
 
+def app_dirs() -> list[Path]:
+    """The folders a user means by "next to the app": the single-file exe's folder (frozen), the top folder of the
+    Windows .zip package (``<top>\\python\\python.exe`` + ``<top>\\app\\romorg``, see ``build_windows.ps1``), and the
+    folders of ``sys.executable`` and ``argv[0]``."""
+    out: list[Path] = []
+    if getattr(sys, "frozen", False):
+        out.append(Path(sys.executable).resolve().parent)
+    else:
+        here = Path(__file__).resolve().parent              # ...\app\romorg in the zip
+        top = here.parent.parent
+        if here.parent.name.lower() == "app" and (top / "python").is_dir():
+            out.append(top)
+    out.append(Path(sys.executable).parent)
+    if sys.argv and sys.argv[0]:
+        try:
+            out.append(Path(sys.argv[0]).resolve().parent)
+        except OSError:
+            pass
+    return out
+
+
 def program_dirs() -> list[Path]:
     """Folders worth checking for tools on Windows (empty elsewhere): next to the app, Program Files, Scoop, ..."""
     if not IS_WINDOWS:
         return []
     env = os.environ
-    out: list[Path] = [Path(sys.executable).parent, Path(sys.argv[0]).resolve().parent]
+    out: list[Path] = app_dirs()
     for var in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "APPDATA", "USERPROFILE", "SystemDrive"):
         root = env.get(var)
         if not root:
@@ -59,6 +80,60 @@ def find_tool(names: tuple[str, ...]) -> str | None:
                 except OSError:
                     pass
     return None
+
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+
+
+def _win_pid_alive(pid: int) -> bool:
+    """``OpenProcess`` + ``GetExitCodeProcess``: alive while the exit code is ``STILL_ACTIVE``. A process we may not
+    open (``ERROR_ACCESS_DENIED``: another user's, or a protected one) exists, so it counts as alive."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    k32.CloseHandle.restype = wintypes.BOOL
+    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True     # the process exists (we hold a handle); its state is just unreadable
+        return code.value == _STILL_ACTIVE
+    finally:
+        k32.CloseHandle(handle)
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with id ``pid`` is running. Never signals it.
+
+    POSIX: ``os.kill(pid, 0)`` (``EPERM`` = exists, someone else's). Windows: ``os.kill(pid, 0)`` would send
+    ``CTRL_C_EVENT`` to the console instead of probing, so the process is opened and its exit code read instead
+    (a process that exited but whose handle someone still holds reports its real exit code, so it counts as dead)."""
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        try:
+            return _win_pid_alive(pid)
+        except (OSError, AttributeError, ValueError):
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def kill_tree(proc: "subprocess.Popen") -> None:

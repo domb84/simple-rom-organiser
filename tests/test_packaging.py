@@ -253,6 +253,111 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(out.getvalue().count("FAIL "), 2)
         self.assertEqual(writer.call_args_list, [mock.call(False), mock.call(True)])
 
+    def test_mingw_runtime_notices_ship_with_libflac(self) -> None:
+        # libFLAC.dll (Xiph's MinGW build) links winpthreads and the MinGW-w64 runtime statically
+        notices = (PKG / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+        doc = (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8")
+        for name in ("WinpthreadsSha256", "MingwRuntimeSha256"):
+            sha = _ps1_value(self.flac_ps1, name)
+            self.assertRegex(sha, r"^[0-9a-f]{64}$")
+            self.assertIn(sha, doc, name)
+        self.assertIn("mingw-w64-libraries/winpthreads/COPYING", self.flac_ps1)
+        for text in (self.zip_ps1, self.exe_ps1):
+            self.assertIn("winpthreads-COPYING.txt", text)
+            self.assertIn("mingw-w64-runtime-COPYING.txt", text)
+        for needle in ("winpthreads-COPYING.txt", "mingw-w64-runtime-COPYING.txt", "GCC Runtime Library Exception"):
+            self.assertIn(needle, notices)
+            self.assertIn(needle, doc)
+
+    def test_exe_build_pins_pyinstaller_and_needs_the_python_licence(self) -> None:
+        match = re.search(r'\[string\]\$PyInstallerVersion = "(\d+\.\d+\.\d+)"', self.exe_ps1)
+        self.assertTrue(match, "PyInstaller is not pinned")
+        pinned = match.group(1)
+        self.assertIn('"pyinstaller==$PyInstallerVersion"', self.exe_ps1)
+        self.assertIn(f"PyInstaller {pinned}", (PKG / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8"))
+        self.assertNotIn("if (Test-Path $pyLicense) { Copy-Item", self.exe_ps1)   # missing licence: a hard error
+        self.assertRegex(self.exe_ps1, r'if \(-not \(Test-Path \$pyLicense\)\) \{ throw')
+
+    def test_check_flac_names_libsndfile(self) -> None:
+        from unittest import mock
+
+        from romorg import flacdec, flacnative, nativeflac, selfcheck
+        sndfile = {"native": True, "library": "libsndfile", "note": "libFLAC not found"}
+        ref = lambda data, n: flacdec.decode_frames(data, 0, n)[0]   # noqa: E731 - what libsndfile returns
+        with mock.patch.object(flacnative, "status", return_value=sndfile), \
+                mock.patch.object(nativeflac, "decode_frames", side_effect=ref):
+            ok, text = selfcheck.check_flac()
+        self.assertFalse(ok)                                          # a WARN outside packages, a FAIL inside
+        self.assertIn("libsndfile", text)
+        self.assertNotIn("pure-Python FLAC decoder is used", text)
+        with mock.patch.object(flacnative, "status", return_value={"native": False, "library": None, "note": "-"}):
+            self.assertIn("pure-Python", selfcheck.check_flac()[1])
+
+    def test_windows_package_check(self) -> None:
+        import tempfile
+        from array import array
+        from unittest import mock
+
+        from romorg import flacenc, flacnative, nativeflac, selfcheck, zstdnative
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            (app / "native").mkdir()
+            dll = app / "native" / "libFLAC.dll"
+            dll.write_bytes(b"MZ")
+            pcm = selfcheck._synthetic_pcm(588 * 4)
+            decoded = (array("h", pcm if sys.byteorder == "little" else b""), 0)
+            zstd = {"available": True, "native": True, "library": "compression.zstd", "note": ""}
+
+            def run(lib, zstd_status=zstd, sndfile=True):
+                with mock.patch.object(flacnative, "library_path", return_value=lib), \
+                        mock.patch.object(flacenc, "encode", return_value=b"frames"), \
+                        mock.patch.object(flacnative, "decode_frames", return_value=decoded), \
+                        mock.patch.object(zstdnative, "status", return_value=zstd_status), \
+                        mock.patch.object(nativeflac, "available", return_value=sndfile):
+                    return dict((text.split(" ")[1] if text.startswith("package") else text, status)
+                                for status, text in selfcheck.check_windows_package([app], True))
+
+            good = selfcheck.check_windows_package
+            self.assertTrue(callable(good))
+            res = run(str(dll))
+            self.assertEqual(sorted(res.values()), ["OK", "OK", "SKIP"])          # no libsndfile shipped: optional
+            res = run(r"C:\elsewhere\libFLAC.dll")                                # a libFLAC from outside the package
+            self.assertIn("FAIL", res.values())
+            (app / "native" / "libsndfile-1.dll").write_bytes(b"MZ")
+            res = run(str(dll), sndfile=False)                                     # shipped but does not load
+            self.assertEqual(list(res.values()).count("FAIL"), 1)
+            res = run(str(dll), zstd_status={"available": True, "native": False, "library": None, "note": "none"})
+            self.assertEqual(list(res.values()).count("FAIL"), 1)                  # a package must bring Zstandard
+            dll.unlink()
+            with mock.patch.object(flacnative, "library_path", return_value=None), \
+                    mock.patch.object(zstdnative, "status", return_value=zstd), \
+                    mock.patch.object(nativeflac, "available", return_value=True):
+                statuses = [s for s, _ in selfcheck.check_windows_package([app], False)]
+                self.assertEqual(statuses[0], "WARN")                              # built with -NoFlac
+                statuses = [s for s, _ in selfcheck.check_windows_package([app], True)]
+                self.assertEqual(statuses[0], "FAIL")
+
+    def test_package_check_replaces_the_appimage_skip(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+
+        from romorg import bundle, selfcheck
+        self.assertEqual(selfcheck.windows_package_dirs(), [])                     # a source tree is no package
+        with mock.patch.object(bundle, "bundle_root", return_value=None), \
+                mock.patch.object(selfcheck, "windows_package_dirs", return_value=[ROOT]), \
+                mock.patch.object(selfcheck, "check_windows_package", return_value=[("FAIL", "no libFLAC")]) as pkg, \
+                mock.patch.object(selfcheck, "check_chdman", return_value=("SKIP", "-")), \
+                mock.patch.object(selfcheck, "check_zstd", return_value=("OK", "zstd")), \
+                mock.patch.object(selfcheck, "check_flac", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_scheduler", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_writer", return_value=(True, "ok")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(selfcheck.main(["--require-native"]), 1)
+        pkg.assert_called_once_with([ROOT], True)
+        self.assertNotIn("not running from", out.getvalue())
+        self.assertIn("FAIL  no libFLAC", out.getvalue())
+
 
 class BuiltArtifactTests(unittest.TestCase):
     def test_windows_zip(self) -> None:
