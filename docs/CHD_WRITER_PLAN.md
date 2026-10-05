@@ -29,6 +29,10 @@ Bit-identical output to chdman is **not** a goal (it would need chdman's exact L
 | 2 | `createraw`, `createhd`, `copy` (recompress), `-op` parent output, `-c` codec choice incl. `none`, `-hs` hunk size, `addmeta` / `delmeta` | The rest of what chdman writes for discs and disks. Needs `huff` and `flac` data encoders. |
 | 3 | `createld` (AVI in, `avhu` encoder), the exotic CD inputs chdman accepts (`.toc`, `.nrg`, `.cdi`) | Parity in the literal sense; the app has no use for it. **Ask the user before starting this tier.** |
 
+**Decided by the user (2026-10-05): tier 1 is the whole job.** The aim is to remove the dependency, not to
+re-implement chdman. Tiers 2 and 3 are listed for completeness only; do not start them unless asked. The one piece
+of tier 2 that is in scope is the optional Zstandard preset (`cdzs` for CDs, `zstd` for DVDs), see section 6.
+
 chdman only writes version 5, so old versions are out of scope for writing.
 
 ## 3. What is already proven (measured 2026-10-05, Steam Deck, chdman 0.289)
@@ -121,6 +125,17 @@ passes does `chd_writer` default to the built-in writer.**
 texts ("needs chdman" disappears from Convert); self-check writes and re-reads a tiny CHD; packaging docs; Windows
 entry point for the worker.
 
+**Phase 5b - stop bundling chdman.** Once the gate has passed: the AppImage and the Windows zip no longer ship
+chdman (`packaging/build_appimage.sh`, `romorg/bundle.py`, the third-party notices, the self-check's bundle lines).
+An installed chdman (PATH, the MAME Flatpak, the folders `chdtool` already searches) is still detected and stays
+selectable: `chd_engine = "chdman"` for reading, `chd_writer = "chdman"` for writing.
+
+**Phase 5c - the Zstandard preset.** A "fast (Zstandard)" choice in the Convert step, off by default, with the
+compatibility note of section 6 next to it. Needs libzstd for compressing (present on SteamOS; hide the choice
+where no library loads).
+
+*Not planned (kept for reference):*
+
 **Phase 6 - tier 2.** `createraw`, `createhd` (`GDDD` metadata, CHS guess like chdman), `copy`, parents, codec and
 hunk-size options, `zstd` / `cdzs` through libzstd, `huff` and `flac` data encoders, `addmeta` / `delmeta`. Each
 checked against the matching chdman command.
@@ -141,9 +156,13 @@ every core. The gains have to come from doing less:
    measured for size: the budget is 0.5 %.
 3. **Early "stored" decision** for hunks that do not compress (encrypted / already compressed data).
 4. **Cheap ECC check**: batch it (`cdecc` already works on many sectors at once).
-5. **Optional fast preset** (not the default): `cdzs` at a moderate libzstd level. chdman's own `cdzs` run was
-   *slower* than its default (35 s vs 17 s) because it uses a very high level. Many emulators read `cdzs` only in
-   recent versions, so this must be the user's choice.
+5. **Optional fast preset** (not the default; the user wants it offered): `cdzs` / `zstd` at a moderate libzstd
+   level. chdman's own `cdzs` run was *slower* than its default (35 s vs 17 s) because it uses a very high level.
+   Zstandard CHDs exist since MAME 0.262 (February 2024) and chdman itself does not use them by default "to ensure
+   maximum compatibility". Readers need a libchdr from 2024 or later: current DuckStation, PCSX2, Flycast and
+   redream have it; older builds and some libretro cores do not (SwanStation had an open request for it). The UI
+   text must say: "smaller wait, also loads faster in the emulator, but needs an emulator from 2024 or later -
+   check yours before converting a whole collection". Verify the emulator list again when writing that text.
 
 Honest expectation: a modest win at equal size (the hypothesis is 1.2x to 1.5x on typical discs, more on discs with
 many repeats), a large win with the fast preset. If phase 4 shows no win at equal size, say so and let the user
@@ -184,8 +203,9 @@ choose between "same speed, no dependency" and stopping.
 - Tests: `python3 -m unittest discover -s tests` (958 tests at the time of writing).
 - Start with phase 0 and phase 1; do not change the convert default before the phase 4 gate.
 
-## 9. Decisions for the user (none block phases 0 to 4)
+## 9. Decisions (answered by the user, 2026-10-05)
 
-1. Tier 3 (laserdisc, exotic inputs): wanted or not?
-2. After the gate: keep chdman as a fallback, or remove detection and bundling?
-3. Offer the fast `cdzs` preset in the UI?
+1. Tier 3, and tier 2 beyond the Zstandard preset: **not wanted.** Removing the dependency is the goal.
+2. chdman after the gate: **not packaged any more; still usable as an option when the user has MAME / chdman
+   installed.**
+3. Fast Zstandard preset: **yes, offer it** (not as the default).
