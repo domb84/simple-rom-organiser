@@ -231,6 +231,129 @@ class HuffmanTest(unittest.TestCase):
         with self.assertRaises(chdhuff.HuffError):
             chdhuff.huff_decode(b"\xff" * 40, 4096)
 
+    # Two of the 203,791 huff hunks of chdman 0.289's CHD of a PlayStation 2 DVD (Tony Hawk's Pro Skater 4) whose
+    # codes end on the very last bit of the data, the last one being x (the symbol _inflate_codes lengthens by one
+    # bit for zlib's end mark). hunk -> (CRC-16 chdman stored in the map, SHA-1 of the 4096 decoded bytes)
+    REAL_HUNKS = {295735: (0x8F62, "5c09d7aa88c129127cd4867860ccbd6aefa77736"),
+                  537826: (0xE5E0, "fba9e7a45784a48ef2301433211e72e789f32da5")}
+
+    def decoders(self):
+        """``huff_decode`` through zlib, and through the plain loop alone."""
+        def loop(comp: bytes, size: int) -> bytes:
+            with mock.patch.object(chdhuff, "_inflate_codes", return_value=None):
+                return chdhuff.huff_decode(comp, size)
+        return (("zlib", chdhuff.huff_decode), ("loop", loop))
+
+    def takes_zlib(self, comp: bytes, size: int) -> bool:
+        br = chdhuff.BitReader(comp)
+        lengths = chdhuff._tree_lengths(br)
+        return chdhuff._inflate_codes(lengths, comp, br.pos, size) is not None
+
+    def test_real_hunks_whose_codes_end_on_the_last_bit(self) -> None:
+        for hunk, (crc, digest) in self.REAL_HUNKS.items():
+            comp = (FIX / f"thps4_dvd_hunk{hunk}.huff").read_bytes()
+            self.assertTrue(self.takes_zlib(comp, 4096))
+            for name, decode in self.decoders():
+                with self.subTest(hunk=hunk, path=name):
+                    out = decode(comp, 4096)
+                    self.assertEqual(chd.crc16(out), crc)
+                    self.assertEqual(sha1(out), digest)
+                    with self.assertRaises(chdhuff.HuffError):
+                        decode(comp[:-1], 4096)
+
+    def ending(self, last_is_x: bool, rem: int, last_bit: str = "", zlib_aligned=None) -> tuple:
+        """``(data, bits)`` of a hunk whose bit count is ``rem`` modulo 8, whose last code is (or is not) x and
+        whose last bit is ``last_bit`` (any when empty). ``zlib_aligned`` True / False: the last deflate stream
+        ``_inflate_codes`` hands zlib (header + the codes behind the last x but one) ends (does not end) on a whole
+        byte, i.e. zlib gets no (some) padding bits behind the last code - the old bug only showed without them.
+        The last two bytes are varied, and the data (by seed)."""
+        hbits = len(chdhuff._DEFLATE_HEAD) + 4 * 256 + 8          # the deflate header _inflate_codes puts first
+        for seed in range(31, 400):
+            rnd = random.Random(seed)
+            base = bytearray(rnd.choices(range(256), weights=[1000 / (i + 1) ** 1.3 for i in range(256)], k=4096))
+            lengths = T.huff_lengths([base.count(i) for i in range(256)])
+            treebits = len(T.huff_bits(b"", lengths))
+            codes = T.mame_codes(lengths)
+            lmax = max(lengths)
+            x = min(s for s in range(256) if lengths[s] == lmax)
+            base[-2] = next(s for s in range(256) if lengths[s] and s != x)
+            prev = base.rfind(bytes([x]), 0, len(base) - 2)             # zlib restarts behind each x
+            start = treebits + sum(lengths[b] for b in base[:prev + 1])
+            head = treebits + sum(lengths[b] for b in base[:-2])
+            for last in [x] if last_is_x else [s for s in range(256) if 0 < lengths[s] < lmax]:
+                if last_bit and codes[last][-1] != last_bit:
+                    continue
+                for sym in (s for s in range(256) if lengths[s] and s != x):
+                    total = head + lengths[sym] + lengths[last]
+                    if total % 8 != rem:
+                        continue
+                    if zlib_aligned is not None and ((hbits + total - start) % 8 == 0) != zlib_aligned:
+                        continue
+                    base[-2], base[-1] = sym, last
+                    bits = T.huff_bits(bytes(base), lengths)
+                    self.assertEqual(len(bits), total)
+                    return bytes(base), bits
+        raise AssertionError("no such hunk")
+
+    def test_codes_ending_exactly_on_the_last_bit(self) -> None:
+        for last_is_x, aligned in ((True, True), (True, False), (False, True), (False, False)):
+            data, bits = self.ending(last_is_x, 0, zlib_aligned=aligned)
+            comp = T._bits_to_bytes(bits)
+            self.assertEqual(len(comp) * 8, len(bits))
+            self.assertTrue(self.takes_zlib(comp, len(data)))
+            for name, decode in self.decoders():
+                with self.subTest(last_is_x=last_is_x, aligned=aligned, path=name):
+                    self.assertEqual(decode(comp, len(data)), data)
+                    self.assertEqual(decode(comp + b"\0", len(data)), data)     # unused trailing bytes are fine
+                    with self.assertRaises(chdhuff.HuffError):
+                        decode(comp[:-1], len(data))
+
+    def test_codes_one_bit_past_the_end_are_an_error(self) -> None:
+        # MAME reads zeros past the end, so the missing bit (a 0 here) decodes to the right symbol, but
+        # bitstream_in::overflow() then says the codes took more bits than the data has: still corrupt
+        for last_is_x in (True, False):
+            data, bits = self.ending(last_is_x, 1, last_bit="0")
+            whole = T._bits_to_bytes(bits)
+            short = T._bits_to_bytes(bits[:-1])
+            self.assertEqual(len(short) * 8, len(bits) - 1)
+            for name, decode in self.decoders():
+                with self.subTest(last_is_x=last_is_x, path=name):
+                    self.assertEqual(decode(whole, len(data)), data)
+                    with self.assertRaises(chdhuff.HuffError):
+                        decode(short, len(data))
+
+    def test_zlib_and_the_loop_agree_on_every_cut(self) -> None:
+        """Whatever the end of the data: the same bytes, or an error from both."""
+        def run(decode, comp, size):
+            try:
+                return decode(comp, size)
+            except chdhuff.HuffError:
+                return None
+        rnd = random.Random(8)
+        hunks = [(FIX / f"thps4_dvd_hunk{h}.huff").read_bytes() for h in self.REAL_HUNKS]
+        for _ in range(6):
+            data = bytes(rnd.choices(range(256), weights=[1000 / (i + 1) ** rnd.uniform(0.8, 2) for i in range(256)],
+                                     k=4096))
+            hunks.append(T.huff_compress(data))
+        (_, fast), (_, loop) = self.decoders()
+        for comp in hunks:
+            for n in range(len(comp) - 4, len(comp) + 2):
+                cut = comp[:n] + bytes(max(0, n - len(comp)))
+                with self.subTest(size=len(comp), n=n):
+                    self.assertEqual(run(fast, cut, 4096), run(loop, cut, 4096))
+
+    def test_bit_reader_overflows_only_past_the_last_bit(self) -> None:
+        br = chdhuff.BitReader(b"\xa5\x0f")
+        self.assertEqual(br.read(16), 0xA50F)
+        self.assertFalse(br.overflow)
+        self.assertEqual(br.read(5), 0)                     # zeros past the end, like MAME
+        self.assertTrue(br.overflow)
+        br = chdhuff.BitReader(b"\xa5\x0f\x33", 1, 2)       # a slice: only its own byte counts
+        self.assertEqual(br.read(8), 0x0F)
+        self.assertFalse(br.overflow)
+        self.assertEqual(br.read(1), 0)
+        self.assertTrue(br.overflow)
+
     def test_huff_and_flac_hunks_in_a_dvd_chd(self) -> None:
         iso = T.make_iso(24, 6) + T.make_audio_track(4, 3)[:8192]
         with tempfile.TemporaryDirectory() as tmp:
@@ -472,6 +595,20 @@ class ZstdDecoderTest(unittest.TestCase):
 
     def test_selfcheck_frame(self) -> None:
         self.assertEqual(zstddec.decompress(bytes.fromhex("28b52ffd2005290000") + b"romor"), b"romor")
+
+
+class ZstdStreamEndTest(unittest.TestCase):
+    """Where the pure-Python Zstandard decoder's backward bit streams may end (no library needed)."""
+
+    def test_literal_stream_must_end_exactly_on_its_first_bit(self) -> None:
+        table = zstddec._huf_table([1])             # two symbols of one bit each
+        # 0b00000101: the top set bit marks the end, the two bits below it are the codes (read downwards)
+        out = bytearray()
+        zstddec._huf_stream(table, b"\x05", 2, out)
+        self.assertEqual(len(out), 2)
+        for count in (1, 3, 4, 9):                  # bits left over, one code before the start, several
+            with self.subTest(count=count), self.assertRaises(zstddec.ZstdDecodeError):
+                zstddec._huf_stream(table, b"\x05", count, bytearray())
 
 
 if __name__ == "__main__":

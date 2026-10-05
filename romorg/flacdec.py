@@ -217,17 +217,9 @@ def _subframe(bits: str, pos: int, blocksize: int, bps: int):
     return samples, pos
 
 
-def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2):
-    """Decode FLAC frames from ``data[start:]`` until ``samples_per_channel`` samples.
-
-    Returns ``(pcm, end)``: ``pcm`` is an ``array('h')`` of interleaved signed
-    16-bit samples (native byte order) and ``end`` the offset just after the last
-    consumed frame.  Only 16-bit streams are supported (CD audio).
-    """
-    data = bytes(data)
-    n = len(data)
-    nbits = (n - start) * 8
-    bits = bin(int.from_bytes(data[start:], "big") | (1 << nbits))[3:]
+def _frames(bits: str, nbits: int, samples_per_channel: int, channels: int):
+    """The frames of ``decode_frames``: ``(left, right, bit position after the last frame, samples)``. A field
+    cut off by the end of ``bits`` raises ``ValueError`` / ``IndexError`` or leaves the position past ``nbits``."""
     left_all: list = []
     right_all: list = []
     pos = 0
@@ -298,6 +290,26 @@ def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2)
         left_all += left
         right_all += right
         total += blocksize
+    return left_all, right_all, pos, total
+
+
+def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2):
+    """Decode FLAC frames from ``data[start:]`` until ``samples_per_channel`` samples.
+
+    Returns ``(pcm, end)``: ``pcm`` is an ``array('h')`` of interleaved signed
+    16-bit samples (native byte order) and ``end`` the offset just after the last
+    consumed frame.  Only 16-bit streams are supported (CD audio).
+    """
+    data = bytes(data)
+    n = len(data)
+    nbits = (n - start) * 8
+    bits = bin(int.from_bytes(data[start:], "big") | (1 << nbits))[3:]
+    try:
+        left_all, right_all, pos, total = _frames(bits, nbits, samples_per_channel, channels)
+    except (ValueError, IndexError) as exc:           # a field cut off by the end of the data
+        raise FlacError("truncated FLAC data") from exc
+    if pos > nbits:                                   # the last frame (its CRC-16 at least) runs past the data
+        raise FlacError("truncated FLAC data")
     if total != samples_per_channel:
         raise FlacError("FLAC frames overshoot the hunk")
     try:

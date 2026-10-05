@@ -114,6 +114,27 @@ class NativeEqualsPythonTest(unittest.TestCase):
         self.assertLess(native * 10, py)                                       # in practice ~100x
 
 
+class TruncatedFramesTest(unittest.TestCase):
+    """Frames that end exactly at the end of the data decode; one byte less (the frame CRC-16 cut) is an error, in
+    the pure-Python decoder as in libFLAC."""
+
+    def test_the_last_frame_must_end_inside_the_data(self) -> None:
+        data = pcm(800)
+        const = struct.pack("<hh", 5, -9) * 800
+        for kinds in (("fixed2", "fixed2"), ("verbatim", "fixed1"), ("constant", "constant")):
+            src = const if kinds[0] == "constant" else data
+            stream = T.flac_stream(src, block=400, kinds=kinds)
+            decoders = [flacdec.decode_frames] + ([flacnative.decode_frames] if NATIVE else [])
+            for decode in decoders:
+                with self.subTest(kinds=kinds, decoder=decode.__module__):
+                    got, end = decode(stream, 0, 800)
+                    self.assertEqual(got.tobytes(), src)
+                    self.assertEqual(end, len(stream))
+                    for cut in (1, 2, 3, 7, len(stream) // 2 + 3, len(stream) - 5):
+                        with self.assertRaises(flacnative.FlacError):
+                            decode(stream[:-cut], 0, 800)
+
+
 class DiscoveryTest(unittest.TestCase):
     def tearDown(self) -> None:
         flacnative.reload()

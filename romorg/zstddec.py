@@ -221,11 +221,14 @@ def _huf_stream(table: tuple, data: bytes, count: int, out: bytearray) -> None:
     value = int.from_bytes(data, "little") << max_bits        # zero bits below the start for the last look-ups
     pos = len(data) * 8 - (9 - data[-1].bit_length())
     mask = (1 << max_bits) - 1
-    for _ in range(count):
-        w = (value >> pos) & mask
-        out.append(syms[w])
-        pos -= lens[w]
-    if pos != 0:
+    try:
+        for _ in range(count):
+            w = (value >> pos) & mask
+            out.append(syms[w])
+            pos -= lens[w]
+    except ValueError:                  # a negative shift: codes before the start of the stream (damaged data)
+        raise ZstdDecodeError("bad literal stream") from None
+    if pos != 0:                        # libzstd: the stream must be used up exactly (BIT_endOfDStream)
         raise ZstdDecodeError("bad literal stream")
 
 
