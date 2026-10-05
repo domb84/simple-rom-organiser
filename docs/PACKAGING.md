@@ -185,3 +185,17 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   so several tracks decode in parallel. Loose files are hashed by a small thread pool (`scanner.HASH_THREADS`).
 - External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
 - Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
+- **Which engine hashes a CHD** (measured on a 20-thread PC, MB/s of disc data): `chdman` extracts one disc at a
+  time (~54 data, ~63 DVD, ~100 CD audio) into scratch space and the result is hashed again, while the built-in
+  reader decodes data / DVD hunks in parallel across the worker pool (~155 / ~170) but FLAC audio slowly (~15).
+  With `chdman` present the app therefore chooses per disc (`discsys.prefer_chdman`): the built-in reader for data
+  and DVD CHDs, `chdman` for audio-heavy CDs and for codecs the reader lacks (zstd, huff, ...). `engine = "chdman"`
+  or `"python"` forces one. Verifying a freshly converted CHD follows the same rule. Creating a CHD is always
+  `chdman createcd/createdvd` with its own (multi-threaded) defaults.
+- **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so
+  listing one costs ~0.1 ms instead of an ~86 ms `7z.exe` launch, and no 7-Zip is needed for them. BCJ / PPMd /
+  BZip2 / encrypted archives and `.rar` still use `7z.exe`; big members are also extracted by `7z.exe` when it is
+  installed (it decodes ~2x faster than Python). Zip members are matched from the CRC in the zip directory, so
+  nothing is decompressed for a scan.
+- The exe build runs `--selftest` with the name of every `romorg` module: the server imports modules by name, which
+  PyInstaller cannot see, so `--collect-submodules romorg` is required and checked.

@@ -1637,15 +1637,22 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
                 raise chdtool.ChdmanError("the new CHD has a different track layout than Redump")
             if op.mode == "createdvd" and not info.is_dvd:
                 raise chdtool.ChdmanError("chdman createdvd did not write a DVD CHD")
+            workers = chdpool.default_workers(0)
+            pool = chdpool.make_pool(workers)
             try:
-                got = hash_all_chdman(new, info, chdman, root, None)
+                if prefer_chdman(info, workers):
+                    got = hash_all_chdman(new, info, chdman, root, None)
+                else:      # data / DVD: the parallel built-in reader beats extract-then-hash
+                    got = hash_tracks_python(info, range(len(info.tracks)), _Progress(None, 1, cancel), pool)
             except chdtool.NoTempSpace as exc:
                 # no RAM / disk scratch space: verify with the pure-Python reader (slower, no temp files)
                 tempspace.note_python(str(exc))
                 if progress:
                     progress(0, 1, f"{label}: {exc} - verifying with the built-in reader")
-                prog = _Progress(None, 1, cancel)
-                got = hash_tracks_python(info, range(len(info.tracks)), prog)
+                got = hash_tracks_python(info, range(len(info.tracks)), _Progress(None, 1, cancel), pool)
+            finally:
+                if pool is not None:
+                    pool.close()
         finally:
             info.close()
         bad = [str(i + 1) for i, t in enumerate(game.tracks) if not _rom_ok(t, got.get(i, {}))]
