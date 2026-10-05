@@ -152,3 +152,23 @@ Stopping the game in Steam ends the server.
 
 Checks on `dist/*.AppImage` (ELF + `AI\x02` magic) and `build/appimage/AppDir` (bundled Python present,
 stdlib trimmed, `romorg/static` included) are skipped until `packaging/build_appimage.sh` has been run.
+
+## Windows
+
+Two builds, both 64-bit and needing no install or admin rights:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1   # dist\Simple_ROM_Organiser-<version>-win64.exe
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dist\Simple_ROM_Organiser-<version>-win64.zip
+```
+
+- **Single `.exe` (main download, about 9 MB):** built with PyInstaller `--onefile --windowed` from
+  `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
+  (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
+  startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
+  The build needs Python 3.11+ with `pip`; it installs PyInstaller if missing, then starts the finished exe
+  and checks that the UI answers.
+- **Zip (fallback):** the official embeddable CPython plus the `romorg` sources, started by
+  `Simple ROM Organiser.vbs`. Nothing is unpacked at run time and it never trips antivirus.
+- Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
+- The folder dialog is a native Windows dialog opened through PowerShell.

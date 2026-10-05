@@ -536,6 +536,8 @@ def _in_game_mode() -> bool:
 
 def _dialog_command() -> str | None:
     """Name of an available native folder dialog tool (Linux desktop only)."""
+    if sys.platform.startswith("win"):
+        return "powershell" if shutil.which("powershell") else None
     if not sys.platform.startswith("linux"):
         return None
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) or _in_game_mode():
@@ -1838,13 +1840,25 @@ class App:
         start_dir = Path(start).expanduser() if start else Path.home()
         if not start_dir.is_dir():
             start_dir = start_dir.parent if start_dir.parent.is_dir() else Path.home()
-        if tool == "kdialog":
+        env = None
+        if tool == "powershell":
+            script = ("Add-Type -AssemblyName System.Windows.Forms;"
+                      "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+                      "$d.Description = $env:ROMORG_DLG_TITLE; $d.SelectedPath = $env:ROMORG_DLG_START;"
+                      "$o = New-Object System.Windows.Forms.Form; $o.TopMost = $true;"
+                      "if ($d.ShowDialog($o) -eq 'OK') { [Console]::OutputEncoding = [Text.Encoding]::UTF8;"
+                      " Write-Output $d.SelectedPath } else { exit 1 }")
+            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script]
+            env = dict(os.environ, ROMORG_DLG_TITLE=title, ROMORG_DLG_START=str(start_dir))
+        elif tool == "kdialog":
             cmd = ["kdialog", "--title", title, "--getexistingdirectory", str(start_dir)]
         else:
             cmd = ["zenity", "--file-selection", "--directory", f"--title={title}",
                    f"--filename={start_dir}{os.sep}"]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=DIALOG_TIMEOUT)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=False,
+                                  timeout=DIALOG_TIMEOUT, env=env,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired:  # dialog hidden / never answered: give up
             return {"cancelled": True, "timeout": True}
         except OSError as exc:
