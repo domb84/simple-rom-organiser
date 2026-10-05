@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import array
 import hashlib
+import lzma
 import os
 import shutil
 import sqlite3
+import struct
 import subprocess
 import threading
 import zipfile
@@ -31,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Container, Iterable, Optional, Sequence, Union
 
-from . import winproc
+from . import sevenzip, winproc
 from .datfile import archive_stem, unit_key
 
 if TYPE_CHECKING:  # avoid a hard runtime dependency; only duck-typed methods are used
@@ -977,13 +979,38 @@ class _CountingReader:
         return data
 
 
-def hash_7z_member(path: Path, member: str, exe: str, size: int, strategies: Sequence[str],
+PURE_7Z_MEMBER_LIMIT = 8 << 20  # below this a member is decoded in Python: starting 7z.exe costs more than that
+
+
+def _hash_7z_member_pure(path: Path, member: str, size: int, strategies: Sequence[str],
+                         sizes: Optional[Container[int]]) -> dict[str, tuple[str, str, int]]:
+    reader = sevenzip.MemberReader(sevenzip.Archive(path), member)
+    try:
+        _, alt = hash_stream(reader, size, strategies, raw=False, sizes=sizes)  # type: ignore[arg-type]
+    finally:
+        reader.close()
+    for v, (_, _, n) in alt.items():
+        if n != _variant_size(v, size):
+            raise RuntimeError(f"{member} in {path.name} is {n + VARIANTS[v][2]} bytes (expected {size})")
+    return alt
+
+
+def hash_7z_member(path: Path, member: str, exe: Optional[str], size: int, strategies: Sequence[str],
                    timeout: float = SEVENZIP_TIMEOUT, sizes: Optional[Container[int]] = None,
                    ) -> dict[str, tuple[str, str, int]]:
     """Alternate hashes of one 7z/rar member, streamed via ``7z e -so`` (nothing on disk).
 
-    When the first bytes rule out every variant (e.g. a ``.v64``-named member that is
-    really big-endian), 7z is stopped right away instead of decompressing the rest."""
+    Small members of an LZMA/LZMA2 ``.7z`` (and any such member when there is no ``7z``) are decoded in
+    Python (:mod:`romorg.sevenzip`). When the first bytes rule out every variant (e.g. a ``.v64``-named
+    member that is really big-endian), 7z is stopped right away instead of decompressing the rest."""
+    if path.suffix.lower() == ".7z" and (exe is None or size <= PURE_7Z_MEMBER_LIMIT):
+        try:
+            return _hash_7z_member_pure(path, member, size, strategies, sizes)
+        except (sevenzip.Unsupported, ValueError, struct.error, lzma.LZMAError, EOFError) as exc:
+            if exe is None:  # unusual or damaged, and nothing else to try
+                raise RuntimeError(f"cannot read this 7z archive without 7-Zip ({exc})") from None
+    if exe is None:
+        raise RuntimeError("7-Zip is needed to read this archive")
     proc = subprocess.Popen(
         [exe, "e", "-so", "-p", "--", str(path), member],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1294,8 +1321,18 @@ def scan(
                 add_member(path, info.filename, size, crc, st, compute)
 
     def scan_7z(path: Path, st: os.stat_result) -> None:
-        assert exe is not None
-        for member, size, crc in list_7z(path, exe):
+        listing = None
+        if path.suffix.lower() == ".7z":  # our own header reader: no 7z process, and no 7-Zip needed at all
+            try:
+                listing = sevenzip.Archive(path).listing()
+            except (sevenzip.Unsupported, ValueError, struct.error, lzma.LZMAError, EOFError):
+                listing = None  # unusual or damaged archive: let 7-Zip decide / report it
+        if listing is None:
+            if exe is None:
+                unsupported.append(path)  # .rar, or a .7z our reader cannot handle, and no 7-Zip
+                return
+            listing = list_7z(path, exe)
+        for member, size, crc in listing:
             mext = Path(member).suffix.lower()
             usable = [s_ for s_ in strategies if _may_apply(s_, size, mext, odd_sizes)]
             compute = None
@@ -1382,9 +1419,6 @@ def scan(
                 if ext in ZIP_EXTS:
                     scan_zip(path, path.stat())
                 elif ext in SEVENZIP_EXTS:
-                    if exe is None:
-                        unsupported.append(path)
-                        continue
                     scan_7z(path, path.stat())
                 else:
                     scan_loose(path, ahead.pop(i, None))
