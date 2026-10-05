@@ -59,3 +59,18 @@ def find_tool(names: tuple[str, ...]) -> str | None:
                 except OSError:
                     pass
     return None
+
+
+def kill_tree(proc: "subprocess.Popen") -> None:
+    """Kill ``proc`` and everything it started (a .cmd/.bat wrapper's child included). Windows has no process groups
+    to signal, so ``taskkill /T`` walks the tree; elsewhere the caller uses ``os.killpg``."""
+    if IS_WINDOWS:
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10,
+                           creationflags=NO_WINDOW)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass

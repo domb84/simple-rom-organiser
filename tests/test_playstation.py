@@ -28,12 +28,12 @@ def tree(root: Path) -> dict:
     out = {}
     for dp, dns, fns in os.walk(root):
         for d in dns:
-            out[str((Path(dp) / d).relative_to(root))] = "DIR"
+            out[(Path(dp) / d).relative_to(root).as_posix()] = "DIR"
         for f in fns:
             if f.startswith(".romorg-undo-"):
                 continue
             p = Path(dp) / f
-            out[str(p.relative_to(root))] = hashlib.sha1(p.read_bytes()).hexdigest()
+            out[p.relative_to(root).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
     return out
 
 

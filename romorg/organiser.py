@@ -332,7 +332,8 @@ def _is_keep_file(path: Path) -> bool:
 
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
                unmatched: bool) -> RenameOp:
-    at_target = src == dst or (src.name == dst.name and _same_file(src, dst))
+    # str(): on Windows Path equality ignores case, which would hide a case-only rename
+    at_target = str(src) == str(dst) or (src.name == dst.name and _same_file(src, dst))
     status = "ok" if at_target else "move"
     kind = "rename" if _fold(src.parent) == _fold(dst.parent) else "move"
     if at_target:
@@ -1163,7 +1164,14 @@ def _resolve_logged(raw: Any, root: Path, old_root: Optional[str]) -> Optional[P
     if not isinstance(raw, str) or not raw:
         return None
     p = Path(raw)
-    if p.is_absolute():
+    if not p.is_absolute() and old_root and raw[:1] in ("/", "\\"):
+        # an absolute path written on another OS (a Linux log opened on Windows): rebase it textually
+        a, b = raw.replace("\\", "/"), old_root.replace("\\", "/").rstrip("/")
+        if a != b and not a.startswith(b + "/"):
+            return None
+        parts = PurePosixPath(a[len(b):]).parts
+        parts = parts[1:] if parts[:1] == ("/",) else parts
+    elif p.is_absolute():
         rel = None
         for base in ([Path(old_root)] if old_root else []) + [root]:
             rel = _rel_to(p, base)

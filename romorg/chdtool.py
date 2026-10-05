@@ -368,6 +368,9 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
 
 
 def _terminate(proc: "subprocess.Popen[bytes]") -> None:
+    if winproc.IS_WINDOWS:
+        winproc.kill_tree(proc)
+        return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except (OSError, AttributeError):

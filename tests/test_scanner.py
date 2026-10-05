@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +19,9 @@ from unittest import mock
 
 from romorg import scanner
 from romorg.datfile import DatFile, Rom
+
+sys.path.insert(0, os.path.dirname(__file__))
+from chdtestlib import install_script, make_symlink  # noqa: E402
 
 
 def _rand(n: int, seed: int) -> bytes:
@@ -439,7 +443,7 @@ class MultiDatTests(unittest.TestCase):
         self.assertIn(self.root / "a.adf.romorg-tmp-1234abcd", [p for p, _ in res.errors])
 
     def test_dangling_symlink_reported(self) -> None:
-        (self.root / "gone.adf").symlink_to("../nowhere/gone.adf")
+        make_symlink(self.root / "gone.adf", "../nowhere/gone.adf")
         res = self._scan([self.games])
         self.assertEqual([(p.name, "dangling" in m) for p, m in res.errors], [("gone.adf", True)])
 
@@ -742,7 +746,7 @@ class NoIntroScanTests(unittest.TestCase):
         # stale rows: rewrite the file with other content -> rehashed, no longer matches
         p = r / "alpha.smc"
         p.write_bytes(_rand(512 + 1024, 77))
-        os.utime(p, ns=(1, 1))
+        os.utime(p, ns=(10**9, 10**9))
         third = self._scan(r, self.snes, ("snes_header",))
         self.assertNotIn("alpha.smc", {m.entry.rel for m in third.matched})
         import sqlite3
@@ -750,7 +754,7 @@ class NoIntroScanTests(unittest.TestCase):
         rows = conn.execute("SELECT size, mtime_ns, member, variant FROM alt_hashes WHERE path=?",
                             (str(p),)).fetchall()
         conn.close()
-        self.assertEqual(rows, [(512 + 1024, 1, "", "snes_header")])
+        self.assertEqual(rows, [(512 + 1024, 10**9, "", "snes_header")])
 
     def test_n64_byte_orders(self) -> None:
         r = self._dir("n64")
@@ -823,15 +827,13 @@ class NoIntroScanTests(unittest.TestCase):
         listing = (f"Path = alpha.smc\nSize = {len(member_data)}\nPacked Size = 1\nAttributes = A\n"
                    f"CRC = {zlib.crc32(member_data) & 0xFFFFFFFF:08X}\n\n"
                    f"Path = notes.txt\nSize = 3\nAttributes = A\nCRC = 00000001\n\n")
-        fake = self.base / "fake7z"
-        fake.write_text(
-            f"#!{sys.executable}\nimport sys\n"
+        fake = install_script(self.base / "fake7z",
+            "import sys\n"
             f"if sys.argv[1] == 'l':\n    sys.stdout.write({listing!r})\n"
             f"elif sys.argv[1] == 'e':\n"
             f"    assert sys.argv[-1] == 'alpha.smc', sys.argv\n"
             f"    sys.stdout.buffer.write(open({str(blob)!r}, 'rb').read())\n"
             f"else:\n    sys.exit(2)\n")
-        fake.chmod(0o755)
         (r / "alpha.7z").write_bytes(b"7z\xbc\xaf\x27\x1c")
         res = self._scan(r, self.snes, ("snes_header",), exe=str(fake))
         self.assertEqual([(m.entry.rel, m.matched_via) for m in res.matched],
@@ -839,7 +841,7 @@ class NoIntroScanTests(unittest.TestCase):
         self.assertEqual([e.rel for e in res.unmatched], ["alpha.7z::notes.txt"])
         self.assertEqual(res.errors, [])
         # extraction failures are reported, the member stays unmatched
-        fake.write_text(f"#!{sys.executable}\nimport sys\n"
+        fake = install_script(self.base / "fake7z", "import sys\n"
                         f"if sys.argv[1] == 'l':\n    sys.stdout.write({listing!r})\n"
                         f"else:\n    sys.stderr.write('ERROR: Data Error\\n'); sys.exit(2)\n")
         res = self._scan(r, self.snes, ("snes_header",), use_cache=False, exe=str(fake))
@@ -874,10 +876,9 @@ class NoIntroScanTests(unittest.TestCase):
         import sys
         fake = self.base / "slow7z"
         # writes 2 MiB of big-endian N64 data, then would keep going for a long time
-        fake.write_text(f"#!{sys.executable}\nimport sys, time\n"
+        fake = install_script(fake, "import sys, time\n"
                         f"sys.stdout.buffer.write({scanner.N64_Z64_MAGIC!r} + bytes(2 * 1024 * 1024 - 4))\n"
                         f"sys.stdout.buffer.flush()\ntime.sleep(30)\n")
-        fake.chmod(0o755)
         t0 = time.monotonic()
         alt = scanner.hash_7z_member(self.base / "x.7z", "x.v64", str(fake), 64 * 1024 * 1024,
                                      ["n64_byteorder"])

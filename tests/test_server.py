@@ -30,7 +30,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from chdtestlib import find_bash  # noqa: E402
 from romorg import server  # noqa: E402
 # Import the real library module before any test swaps fakes into sys.modules (it is not faked here:
 # it only holds the profile data classes), so the server always finds it.
@@ -1033,6 +1035,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
 
 
 class ReviewFixTests(ServerTestCase):
+    @unittest.skipUnless(os.name == "posix", "undecodable (bytes) file names only exist on POSIX")
     def test_undecodable_filenames_serialise(self) -> None:
         bad = os.fsdecode(b"bad\xffname.adf")
         self.result.unmatched.append(Entry(self.roms / bad, None, 1, "00000000"))
@@ -1081,7 +1084,7 @@ class ReviewFixTests(ServerTestCase):
         self.assertIn("snes", warnings[1])
 
     def test_scan_refuses_too_broad_folders(self) -> None:
-        for path in ("/", str(Path.home())):
+        for path in (Path.home().anchor or "/", str(Path.home())):
             status, body, _ = self.request("POST", "/api/scan", {"path": path, "platform": "Commodore Amiga"})
             self.assertEqual(status, 400, (path, body))
             self.assertIn("platform folder", body["error"])
@@ -1109,6 +1112,8 @@ class ReviewFixTests(ServerTestCase):
                                   side_effect=subprocess.TimeoutExpired(["kdialog"], 300)) as run:
             self.assertEqual(self.post("/api/fs/pick", {}), {"cancelled": True, "timeout": True})
         self.assertEqual(run.call_args.kwargs["timeout"], server.DIALOG_TIMEOUT)
+        if os.name == "nt":  # the Windows dialog is always available; there is no Steam game mode
+            return
         with mock.patch.dict(os.environ, {"DISPLAY": ":0", "SteamGamepadUI": "1"}), \
                 mock.patch.object(server.shutil, "which", return_value="/usr/bin/kdialog"):
             self.assertIsNone(server._dialog_command())
@@ -2024,13 +2029,16 @@ class MainTests(unittest.TestCase):
             self.assertIsNone(server.running_instance())  # nothing answers any more
 
 
-@unittest.skipUnless(shutil.which("bash"), "bash required to run build_pyz.sh")
+BASH = find_bash()
+
+
+@unittest.skipUnless(BASH, "needs bash to run build_pyz.sh")
 class ZipappTests(unittest.TestCase):
     def test_pyz_serves_index(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="romorg-pyz-test-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         pyz = tmp / "app.pyz"
-        subprocess.run(["bash", str(ROOT / "packaging" / "build_pyz.sh"), str(pyz)], check=True,
+        subprocess.run([BASH, (ROOT / "packaging" / "build_pyz.sh").as_posix(), pyz.as_posix()], check=True,
                        capture_output=True, timeout=60)
         self.assertTrue(pyz.is_file())
         port = free_port()

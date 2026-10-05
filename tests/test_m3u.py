@@ -72,7 +72,10 @@ class GroupAndWriteTests(unittest.TestCase):
         for n in names:
             p = self.root / sub / n
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(os.urandom(64))
+            try:
+                p.write_bytes(os.urandom(64))
+            except OSError:  # '|' is not a legal Windows file name; the planner only reads the name
+                pass
             r = _rom(n)
             out.append(Match(Entry(p, None, r.size, r.crc, None), [r]))
         return out
@@ -452,7 +455,10 @@ class SlotWiseTests(GroupAndWriteTests):
     def test_plan_playlists_archive_member_and_bad_names(self) -> None:
         root = self.root
         (root / "z.zip").write_bytes(b"x")
-        (root / "p|1.adf").write_bytes(b"x")
+        try:
+            (root / "p|1.adf").write_bytes(b"x")
+        except OSError:  # not a legal Windows file name
+            pass
         ops = plan_playlists([PlaylistSpec("Z", "Games", 2, [
             PlaylistDisk(1, root / "z.zip", "a.adf", ""), PlaylistDisk(2, root / "z.zip", "b.adf", "")])],
             root, member_counts={str(root / "z.zip"): 2})
