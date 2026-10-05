@@ -3,7 +3,7 @@
 # Bundles the official CPython "embeddable" zip (no installer, no admin rights needed) with the romorg
 # package and a launcher. Unzip anywhere and double-click Simple ROM Organiser.vbs.
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-PyVersion 3.13.15]
-param([string]$PyVersion = "3.13.15", [switch]$BundleSndfile)   # -BundleSndfile: libsndfile (LGPL), native FLAC decoding
+param([string]$PyVersion = "3.13.15", [switch]$NoSndfile)   # -NoSndfile: leave out libsndfile (LGPL, native FLAC decoding)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
@@ -24,9 +24,16 @@ $stdlib = (Get-Content $pth.FullName | Where-Object { $_ -like "python*.zip" } |
 Set-Content $pth.FullName -Encoding ascii @($stdlib, ".", "..\app", "import site")
 
 Copy-Item -Recurse "$root\romorg" "$stage\app\romorg"
-if ($BundleSndfile) {
+New-Item -ItemType Directory -Force "$stage\licenses" | Out-Null
+Copy-Item "$PSScriptRoot\THIRD_PARTY_NOTICES.txt" "$stage\THIRD_PARTY_NOTICES.txt"
+Copy-Item "$stage\python\LICENSE.txt" "$stage\licenses\python-LICENSE.txt"
+if (-not $NoSndfile) {
+    # LGPL: shipped as a separate, replaceable DLL (loaded with ctypes), with its licence text and source pointers
+    $dll = & "$PSScriptRoot\fetch_sndfile.ps1"
     New-Item -ItemType Directory -Force "$stage\app\native" | Out-Null
-    Copy-Item (& "$PSScriptRoot\fetch_sndfile.ps1") "$stage\app\native\libsndfile-1.dll"
+    Copy-Item $dll "$stage\app\native\libsndfile-1.dll"
+    Copy-Item (Join-Path (Split-Path $dll) "COPYING") "$stage\licenses\libsndfile-COPYING.txt"
+    Copy-Item (Join-Path (Split-Path $dll) "license_notes.md") "$stage\licenses\libsndfile-license_notes.md"
 }
 Get-ChildItem "$stage\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 & "$stage\python\python.exe" -m compileall -q --invalidation-mode unchecked-hash "$stage\app\romorg"
@@ -55,6 +62,8 @@ Double-click "Simple ROM Organiser.vbs". It starts a local server and opens your
 Quit with the Quit button in the top bar (closing the tab does not stop it).
 Data (DATs, settings) and app.log live in %LOCALAPPDATA%\simple-rom-organiser.
 Use "Simple ROM Organiser (console).cmd" to see log output or pass options.
+native\ (inside app\) holds libsndfile, a replaceable LGPL library that makes CD audio checks much faster;
+see THIRD_PARTY_NOTICES.txt and the licenses folder. chdman and 7-Zip are not included (see the notices).
 No installation or admin rights needed; delete the folder to remove the app.
 "@ | Set-Content "$stage\README.txt" -Encoding ascii
 
@@ -77,6 +86,14 @@ try {
     Remove-Item Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE
 }
 Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
+
+if (-not $NoSndfile) {   # the embedded Python must find and load the bundled libsndfile
+    $env:PYTHONDONTWRITEBYTECODE = "1"
+    $native = & "$stage\python\python.exe" -I -c "from romorg import nativeflac; print(nativeflac.available())"
+    Remove-Item Env:PYTHONDONTWRITEBYTECODE
+    if ($native -ne "True") { throw "self-test failed: the bundled libsndfile could not be loaded" }
+    Write-Host "native FLAC decoder loads from native\libsndfile-1.dll"
+}
 
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 $out = "$root\dist\Simple_ROM_Organiser-$version-win64.zip"

@@ -57,4 +57,13 @@ try {
     Remove-Item Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE
     Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
 }
+if ($BundleSndfile) {   # the LGPL text and source pointers travel with the exe
+    $lic = "$root\dist\licenses"
+    New-Item -ItemType Directory -Force $lic | Out-Null
+    $nat = Split-Path (& "$PSScriptRoot\fetch_sndfile.ps1")
+    Copy-Item "$nat\COPYING" "$lic\libsndfile-COPYING.txt"
+    Copy-Item "$nat\license_notes.md" "$lic\libsndfile-license_notes.md"
+    Copy-Item "$PSScriptRoot\THIRD_PARTY_NOTICES.txt" "$root\dist\THIRD_PARTY_NOTICES.txt"
+    Write-Host "libsndfile (LGPL) is inside the exe: ship dist\THIRD_PARTY_NOTICES.txt and dist\licenses with it"
+}
 Write-Host ("Built {0} ({1:N1} MB)" -f $exe, ((Get-Item $exe).Length / 1MB))

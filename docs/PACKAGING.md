@@ -198,9 +198,13 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   the engine policy keeps audio CDs in the built-in reader too. It is found via `ROMORG_SNDFILE`, next to the app (or
   in a `native` folder, or inside the onefile exe), or as the system's `libsndfile` (`libsndfile.so.1` on Linux);
   `ROMORG_NATIVE_FLAC=0` disables it. If it is missing, or a hunk is not decoded exactly, the Python decoder is used.
-  `build_windows_exe.ps1 -BundleSndfile` / `build_windows.ps1 -BundleSndfile` add the DLL (taken from the `soundfile`
-  wheel by `fetch_sndfile.ps1`). **libsndfile is LGPL-2.1+**: it is only loaded dynamically, but shipping it means
-  including its licence text and a pointer to its source (https://github.com/libsndfile/libsndfile).
+  **The Windows `.zip` package bundles it** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
+  `fetch_sndfile.ps1`; `build_windows.ps1 -NoSndfile` leaves it out) together with `THIRD_PARTY_NOTICES.txt` and
+  the licence texts in `licenses\`. **The single-file `.exe` does not by default** (`build_windows_exe.ps1
+  -BundleSndfile` adds it and writes the notices to `dist\`): libsndfile is LGPL-2.1+, loaded dynamically only, and
+  a user can replace the separate DLL in the zip, which is awkward when it is packed inside an exe.
+- **chdman and 7-Zip are never bundled** (GPL / LGPL programs run as separate processes; see
+  `packaging/THIRD_PARTY_NOTICES.txt` for the wording and where to get them).
 - **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so
   listing one costs ~0.1 ms instead of an ~86 ms `7z.exe` launch, and no 7-Zip is needed for them. BCJ / PPMd /
   BZip2 / encrypted archives and `.rar` still use `7z.exe`; big members are also extracted by `7z.exe` when it is
