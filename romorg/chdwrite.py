@@ -31,12 +31,16 @@ import io
 import json
 import lzma
 import os
+import re
 import struct
+import sys
 import threading
 import zlib
 from array import array
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from itertools import compress, repeat
+from operator import lshift as _shl, or_ as _or
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import cdecc, flacenc, zstdnative
@@ -427,70 +431,98 @@ def _canonical(lengths: Sequence[int]) -> dict:
     return out
 
 
+_RUN = re.compile(rb"(.)\1{3,}", re.S)                     # four or more entries of one kind
+_IS_CODEC = bytes(1 if b <= 3 else 0 for b in range(256))  # translate tables over entry types / kinds
+_HAS_FIELD = bytes(0 if b in (_T_SELF0, _T_SELF1) else 1 for b in range(256))
+_HAS_FIELD_NO_SELF = bytes(0 if b in (_T_SELF, _T_SELF0, _T_SELF1) else 1 for b in range(256))
+
+
+def _be_bytes(code: str, values: Sequence[int]) -> bytes:
+    """``values`` as big-endian items of the array type ``code``."""
+    arr = array(code, values)
+    if sys.byteorder == "little":
+        arr.byteswap()
+    return arr.tobytes()
+
+
 def _build_map(types: Sequence[int], lens: Sequence[int], offs: Sequence[int], crcs: Sequence[int],
                first_offset: int) -> bytes:
     """The compressed v5 map: a 16-byte header, the Huffman-coded entry types (runs folded), then the fields each
-    type needs. ``types`` holds 0..3 (a codec slot), NONE and SELF; ``offs`` of a SELF entry is the hunk it copies."""
+    type needs. ``types`` holds 0..3 (a codec slot), NONE and SELF; ``offs`` of a SELF entry is the hunk it copies.
+
+    A DVD has close to a million entries, so the per-entry work is done by C loops (``map``, ``translate``,
+    strided slices); Python code only visits the runs and the rare NONE / SELF entries."""
     n = len(types)
+    tb = bytes(types)
+    self_at = [m.start() for m in re.finditer(b"\x05", tb)]
+    none_at = [m.start() for m in re.finditer(b"\x04", tb)]
     # SELF entries that repeat the last copied hunk, or continue right after it, need no offset at all
-    kinds = []
+    kinds = bytearray(tb)
     last_self = -2
-    for i in range(n):
-        t = types[i]
-        if t == _T_SELF:
-            o = offs[i]
-            if o == last_self:
-                t = _T_SELF0
-            elif o == last_self + 1:
-                t = _T_SELF1
-            last_self = o
-        kinds.append(t)
-    symbols: List[int] = []
-    i = 0
-    while i < n:
-        t = kinds[i]
-        run = 1
-        while i + run < n and kinds[i + run] == t:
-            run += 1
+    for i in self_at:
+        o = offs[i]
+        if o == last_self:
+            kinds[i] = _T_SELF0
+        elif o == last_self + 1:
+            kinds[i] = _T_SELF1
+        last_self = o
+    # the symbols: a run of four or more of the same kind is folded (the kind, then RLE codes for the repeats);
+    # anything shorter is the kinds as they are
+    symbols = bytearray()
+    done = 0
+    for m in _RUN.finditer(kinds):
+        start, end = m.span()
+        symbols += kinds[done:start]
+        done = end
+        t = kinds[start]
         symbols.append(t)
-        rest = run - 1
+        rest = end - start - 1
         while rest >= 3:
             if rest >= 19:
                 k = min(rest - 19, 255)
-                symbols += (_T_RLE_LARGE, k >> 4, k & 15)
+                symbols += bytes((_T_RLE_LARGE, k >> 4, k & 15))
                 rest -= 19 + k
             else:
-                symbols += (_T_RLE_SMALL, rest - 3)
+                symbols += bytes((_T_RLE_SMALL, rest - 3))
                 rest = 0
-        symbols += [t] * rest
-        i += run
-    counts = [0] * 16
-    for s in symbols:
-        counts[s] += 1
+        symbols += bytes((t,)) * rest
+    symbols += kinds[done:]
+    counts = [symbols.count(s) for s in range(16)]
     lengths = _huffman_lengths(counts, 8)
     codes = _canonical(lengths)
     bits = ["".join("00010001" if ln == 1 else format(ln, "04b") for ln in lengths)]
-    bits.append("".join([codes[s] for s in symbols]))
-    lengthbits = max((lens[i] for i in range(n) if types[i] <= 3), default=0).bit_length()
-    selfbits = max((offs[i] for i in range(n) if types[i] == _T_SELF), default=0).bit_length()
-    lfmt = f"0{lengthbits + 16}b"
-    sfmt = f"0{selfbits}b"
-    fields = []
-    raw = bytearray()
-    pack = struct.Struct(">BBHHIH").pack
-    for i in range(n):
-        t, ln, off, crc = types[i], lens[i], offs[i], crcs[i]
-        k = kinds[i]
-        if t <= 3:
-            fields.append(format((ln << 16) | crc, lfmt))
-        elif t == _T_NONE:
-            fields.append(format(crc, "016b"))
-        elif k == _T_SELF and selfbits:
-            fields.append(format(off, sfmt))
-        if t == _T_SELF:
-            ln = crc = 0
-        raw += pack(t, ln >> 16, ln & 0xFFFF, off >> 32, off & 0xFFFFFFFF, crc)
-    bits.append("".join(fields))
+    bits.append("".join(map(codes.__getitem__, symbols)))
+    lengthbits = max(compress(lens, tb.translate(_IS_CODEC)), default=0).bit_length()
+    selfbits = max((offs[i] for i in self_at), default=0).bit_length()
+    # the field of each entry: codec slot = length and CRC, NONE = CRC, SELF = the hunk it copies (none for the
+    # folded SELF0 / SELF1, and none at all when every copy is of hunk 0)
+    vals = list(map(_or, map(_shl, lens, repeat(16)), crcs))
+    for i in none_at:
+        vals[i] = crcs[i]
+    for i in self_at:
+        vals[i] = offs[i]
+    fmts = [""] * 16
+    fmts[0:4] = [f"0{lengthbits + 16}b"] * 4
+    fmts[_T_NONE] = "016b"
+    fmts[_T_SELF] = f"0{selfbits}b"
+    mask = kinds.translate(_HAS_FIELD if selfbits else _HAS_FIELD_NO_SELF)
+    bits.append("".join(map(format, compress(vals, mask), compress(map(fmts.__getitem__, kinds), mask))))
+    # the uncompressed map (only its CRC is stored): 12 big-endian bytes per entry, ``>BBHHIH`` of (type,
+    # length >> 16, length & 0xFFFF, offset >> 32, offset & 0xFFFFFFFF, CRC); a SELF entry has no length or CRC
+    if self_at:
+        lens = array("I", lens)
+        crcs = array("H", crcs)
+        for i in self_at:
+            lens[i] = crcs[i] = 0
+    lb = _be_bytes("I", lens)           # 0, length >> 16, length & 0xFFFF
+    ob = _be_bytes("Q", offs)           # 0, 0, offset >> 32, offset & 0xFFFFFFFF
+    cb = _be_bytes("H", crcs)
+    raw = bytearray(12 * n)
+    raw[0::12] = tb
+    for at, src, k, step in ((1, lb, 1, 4), (2, lb, 2, 4), (3, lb, 3, 4), (4, ob, 2, 8), (5, ob, 3, 8),
+                             (6, ob, 4, 8), (7, ob, 5, 8), (8, ob, 6, 8), (9, ob, 7, 8), (10, cb, 0, 2),
+                             (11, cb, 1, 2)):
+        raw[at::12] = src[k::step]
     stream = "".join(bits)
     stream += "0" * (-len(stream) % 8)
     body = int(stream, 2).to_bytes(len(stream) // 8, "big") if stream else b""
