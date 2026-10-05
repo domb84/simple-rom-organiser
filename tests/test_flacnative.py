@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+import shutil
 import struct
 import sys
 import tempfile
@@ -123,10 +124,14 @@ class DiscoveryTest(unittest.TestCase):
         if not cands:
             self.skipTest("no absolute path of libFLAC to link to")
         real = cands[0].resolve()
-        with tempfile.TemporaryDirectory() as tmp:
+        # a loaded DLL cannot be deleted on Windows (ctypes never unloads it): the copy may stay behind
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             lib = Path(tmp) / "tools" / "lib"
             lib.mkdir(parents=True)
-            (lib / "libFLAC.so.14").symlink_to(real)
+            try:
+                (lib / "libFLAC.so.14").symlink_to(real)
+            except OSError:                     # Windows without the symlink privilege: a copy loads the same
+                shutil.copy2(real, lib / "libFLAC.so.14")
             with mock.patch.dict(os.environ, {bundle.ENV_BUNDLE: tmp}):
                 os.environ.pop(flacnative.ENV_LIB, None)
                 flacnative.reload()
