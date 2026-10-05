@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import tempspace
+from . import tempspace, winproc
 
 TEMP_PREFIX = ".romorg-chd-"
 ENV_VAR = "ROMORG_CHDMAN"
@@ -84,7 +84,7 @@ def _probe(argv: Sequence[str]) -> bool:
     """True when ``argv`` runs and prints chdman's usage (its exit status for ``help`` is not 0)."""
     try:
         proc = subprocess.run([*argv, "help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT)
+                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, **winproc.popen_kwargs())
     except (OSError, subprocess.SubprocessError):
         return False
     text = proc.stdout.decode("utf-8", "replace").lower()
@@ -102,6 +102,10 @@ def _candidates(config: Optional[dict], extra_dirs: Sequence[str] = ()) -> list[
     found = shutil.which("chdman")
     if found:
         out.append(("path", [found], found, ""))
+    elif winproc.IS_WINDOWS:
+        found = winproc.find_tool(("chdman",))
+        if found:
+            out.append(("folder", [found], found, ""))
     if shutil.which("flatpak"):
         for app in FLATPAK_APPS:
             out.append(("flatpak", ["flatpak", "run", "--command=chdman", app], f"{app} (Flatpak)", app))
@@ -293,7 +297,7 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None,
-                                start_new_session=True)
+                                **winproc.popen_kwargs(new_session=True))
     except OSError as exc:
         raise ChdmanError(f"cannot run chdman: {exc}") from exc
     chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()

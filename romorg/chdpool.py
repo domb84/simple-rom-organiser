@@ -19,6 +19,8 @@ import signal
 import subprocess
 import sys
 import threading
+
+from . import winproc
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -58,13 +60,32 @@ class _Worker:
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.pop("PYTHONSTARTUP", None)
         try:
-            self.proc = subprocess.Popen([sys.executable, "-B", "-u", "-m", "romorg.chdworker"], env=env,
+            if getattr(sys, "frozen", False):  # PyInstaller exe: sys.executable is the app itself, so it has a worker mode
+                cmd = [sys.executable, "--chd-worker"]
+            else:
+                cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
+            self.proc = subprocess.Popen(cmd, env=env,
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                         start_new_session=True)
+                                         **winproc.popen_kwargs(new_session=True))
         except OSError as exc:
             raise PoolError(f"cannot start a worker: {exc}") from exc
         self.buf = b""
         self.dead = False
+        self._chunks: "Optional[queue.Queue[bytes]]" = None
+        if winproc.IS_WINDOWS:  # select() only works on sockets there: a reader thread feeds a queue instead
+            self._chunks = queue.Queue()
+            threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        fd = self.proc.stdout.fileno()
+        try:
+            while True:
+                chunk = os.read(fd, 65536)
+                self._chunks.put(chunk)
+                if not chunk:
+                    return
+        except (OSError, ValueError):
+            self._chunks.put(b"")
 
     def kill(self) -> None:
         self.dead = True
@@ -87,16 +108,24 @@ class _Worker:
             pass
 
     def readline(self, cancel: Optional[Callable[[], bool]]) -> dict:
-        fd = self.proc.stdout.fileno()
+        fd = None if self._chunks is not None else self.proc.stdout.fileno()
         while b"\n" not in self.buf:
             if cancel is not None and cancel():
                 raise Cancelled()
-            ready, _, _ = select.select([fd], [], [], 0.2)
-            if not ready:
-                if self.proc.poll() is not None:
-                    raise PoolError("a worker exited unexpectedly")
-                continue
-            chunk = os.read(fd, 65536)
+            if self._chunks is not None:
+                try:
+                    chunk = self._chunks.get(timeout=0.2)
+                except queue.Empty:
+                    if self.proc.poll() is not None and self._chunks.empty():
+                        raise PoolError("a worker exited unexpectedly")
+                    continue
+            else:
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if not ready:
+                    if self.proc.poll() is not None:
+                        raise PoolError("a worker exited unexpectedly")
+                    continue
+                chunk = os.read(fd, 65536)
             if not chunk:
                 raise PoolError("a worker closed its pipe")
             self.buf += chunk
@@ -202,7 +231,7 @@ class HashPool:
 
 
 def make_pool(workers: int) -> Optional[HashPool]:
-    """A pool for ``workers`` > 1 on POSIX, else None (hash in-process)."""
-    if workers <= 1 or os.name != "posix":
+    """A pool for ``workers`` > 1, else None (hash in-process)."""
+    if workers <= 1:
         return None
     return HashPool(workers)

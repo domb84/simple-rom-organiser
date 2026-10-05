@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Container, Iterable, Optional, Sequence, Union
 
+from . import winproc
 from .datfile import archive_stem, unit_key
 
 if TYPE_CHECKING:  # avoid a hard runtime dependency; only duck-typed methods are used
@@ -896,12 +897,8 @@ def default_cache_path() -> Optional[Path]:
 
 
 def find_7z() -> Optional[str]:
-    """Locate a 7-Zip command line binary on PATH."""
-    for name in ("7z", "7zz", "7za"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    """Locate a 7-Zip command line binary on PATH (on Windows also in Program Files and next to the app)."""
+    return winproc.find_tool(("7z", "7zz", "7za"))
 
 
 def list_zip(path: Path) -> list[tuple[str, int, str]]:
@@ -955,6 +952,7 @@ def list_7z(path: Path, exe: str) -> list[tuple[str, int, str]]:
         encoding="utf-8",
         errors="replace",
         timeout=300,
+        creationflags=winproc.NO_WINDOW,
     )
     if proc.returncode != 0:
         lines = [ln.strip() for ln in (proc.stderr + "\n" + proc.stdout).splitlines() if ln.strip()]
@@ -987,6 +985,7 @@ def hash_7z_member(path: Path, member: str, exe: str, size: int, strategies: Seq
     proc = subprocess.Popen(
         [exe, "e", "-so", "-p", "--", str(path), member],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=winproc.NO_WINDOW,
     )
     timer = threading.Timer(timeout, proc.kill)
     timer.daemon = True

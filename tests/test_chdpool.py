@@ -19,7 +19,6 @@ import chdtestlib as T  # noqa: E402
 from romorg import chd, chdpool, dreamcast, scanner  # noqa: E402
 
 
-@unittest.skipUnless(os.name == "posix", "the pool is POSIX only")
 class PoolTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -68,7 +67,7 @@ class PoolTest(unittest.TestCase):
     def test_a_dying_worker_is_a_pool_error_and_hash_tracks_falls_back(self) -> None:
         self.pool.hash_track(self.path, 0)
         for w in self.pool._all:
-            os.kill(w.proc.pid, signal.SIGKILL)
+            w.proc.kill()
         time.sleep(0.2)
         with chd.Chd(self.path) as c:
             got = dreamcast.hash_tracks_python(c, [0, 1, 2], None, self.pool)
@@ -97,7 +96,6 @@ class PoolTest(unittest.TestCase):
         self.assertIsNone(chdpool.make_pool(1))
 
 
-@unittest.skipUnless(os.name == "posix", "the pool is POSIX only")
 class ScanWithPoolTest(unittest.TestCase):
     def test_parallel_scan_equals_sequential_scan(self) -> None:
         sys.path.insert(0, os.path.dirname(__file__))
