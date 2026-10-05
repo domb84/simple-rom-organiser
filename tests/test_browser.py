@@ -54,6 +54,17 @@ def setUpModule() -> None:
         if shutil.which(exe):
             cmd = [exe] + _flags(port_n, profile)
             break
+    if cmd is None and os.name == "nt":       # Windows: not on PATH, but in its usual place (Edge is Chromium too)
+        for var, rel in (("ProgramFiles", r"Google\Chrome\Application\chrome.exe"),
+                         ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
+                         ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"),
+                         ("ProgramFiles", r"BraveSoftware\Brave-Browser\Application\brave.exe"),
+                         ("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe"),
+                         ("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe")):
+            exe = os.path.join(os.environ.get(var, ""), rel)
+            if os.environ.get(var) and os.path.isfile(exe):
+                cmd = [exe] + _flags(port_n, profile)
+                break
     if cmd is None and shutil.which("flatpak-spawn"):
         probe = subprocess.run(["flatpak-spawn", "--host", "flatpak", "info", "com.brave.Browser"],
                                capture_output=True, timeout=30)

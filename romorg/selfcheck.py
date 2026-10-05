@@ -157,6 +157,8 @@ def check_scheduler() -> Tuple[bool, str]:
                 crc = {i: h["crc32"] for i, h in got.items()}
                 if crc[0] != "%08x" % (zlib.crc32(t1) & 0xFFFFFFFF):
                     return False, "wrong crc32 from the scheduler"
+                if not sched.pooled or not sched.stats["chunks"]:
+                    return False, "the scheduler did not use its worker processes"
                 workers = sched.workers
     return True, f"the scheduler hashed a tiny GD image with {workers} worker processes (identical to sequential)"
 
@@ -179,6 +181,8 @@ def check_writer() -> Tuple[bool, str]:
             checks = c.verify()
         if got != [hashlib.sha1(t1).hexdigest(), hashlib.sha1(pcm).hexdigest()] or not checks["overall"]:
             return False, "the writer's CHD does not read back as the tracks it was made from"
+        if info["engine"] != "processes":      # the writer quietly compresses in this process when workers fail
+            return False, "the writer's worker processes did not run (it compressed in-process instead)"
     extra = [] if flacenc.available() else ["no libFLAC: audio is stored without FLAC"]
     extra += [] if chdwrite.zstd_available() else ["no Zstandard library: the Zstandard preset is not offered"]
     return True, (f"the writer made a CHD ({info['engine']}, {'/'.join(info['codecs'])}) that reads back identically"

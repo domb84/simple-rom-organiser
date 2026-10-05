@@ -58,6 +58,11 @@ class ChdtoolBase(unittest.TestCase):
         self.scratch = T.isolate_temp(self, self.work)
 
 
+LINUX = sys.platform.startswith("linux")
+appimage_only = unittest.skipUnless(LINUX, "a bundled chdman exists only in the Linux AppImage (a shell-script fake "
+                                           "started with LD_LIBRARY_PATH); other platforms never use one")
+
+
 class BundledChdmanTest(ChdtoolBase):
     """The chdman shipped in the AppImage (tools/chdman + tools/lib, a fake layout here)."""
 
@@ -74,6 +79,7 @@ class BundledChdmanTest(ChdtoolBase):
         os.environ.pop(chdtool.ENV_VAR, None)
         return root
 
+    @appimage_only
     def test_bundled_chdman_is_found_and_started_with_its_own_libraries_first(self) -> None:
         root = self.bundle()
         with mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": "/some/system/lib"}):
@@ -90,6 +96,7 @@ class BundledChdmanTest(ChdtoolBase):
         for ln in lines:                                    # the bundled directory is searched before the system's
             self.assertEqual(ln, f"LD={root / 'tools' / 'lib'}:/some/system/lib")
 
+    @appimage_only
     def test_order_configured_then_bundled_then_path(self) -> None:
         root = self.bundle()
         with mock.patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}):
@@ -99,6 +106,7 @@ class BundledChdmanTest(ChdtoolBase):
             self.assertEqual(chdtool.info({})["kind"], "bundled")
             self.assertEqual(chdtool.info({})["notes"], [])
 
+    @appimage_only
     def test_a_bundled_chdman_that_cannot_start_is_reported_and_skipped(self) -> None:
         self.bundle(BROKEN_FAKE)
         with mock.patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}):
@@ -108,6 +116,7 @@ class BundledChdmanTest(ChdtoolBase):
         self.assertIn("bundled chdman could not start: missing libSDL2", notes[0])
         self.assertEqual(chdtool.last_notes(), notes)
 
+    @appimage_only
     def test_nothing_else_available_gives_the_reason_in_the_hint(self) -> None:
         self.bundle(BROKEN_FAKE)
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent", "HOME": str(self.work / "home")}), \
@@ -123,8 +132,17 @@ class BundledChdmanTest(ChdtoolBase):
         with mock.patch.dict(os.environ, {"ROMORG_BUNDLE_DIR": str(self.work / "nothing-here")}):
             self.assertIsNone(chdtool.bundled_chdman())
         root = self.bundle()
-        (root / "tools" / "chdman").chmod(0o644)                                         # not executable
+        if LINUX:
+            (root / "tools" / "chdman").chmod(0o644)                                     # not executable
+        self.assertIsNone(chdtool.bundled_chdman())                  # elsewhere: a bundle layout is never used
+
+    @unittest.skipIf(LINUX, "the Linux AppImage does use a bundled chdman")
+    def test_a_bundle_layout_is_ignored_outside_linux(self) -> None:
+        self.bundle()
         self.assertIsNone(chdtool.bundled_chdman())
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}):
+            found, notes = chdtool.detect_report({})
+        self.assertEqual((found.kind, notes), ("path", []))                 # the installed chdman, no "bundled" note
 
 
 class DetectTest(ChdtoolBase):

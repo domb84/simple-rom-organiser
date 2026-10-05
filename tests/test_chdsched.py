@@ -3,9 +3,12 @@ its hashes are identical to the sequential reader (property tests over random ch
 
 from __future__ import annotations
 
+import binascii
+import io
+import json
 import os
 import random
-import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,9 +20,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
-from romorg import chd, chdsched, discsys, dreamcast, scanner  # noqa: E402
-
-posix = unittest.skipUnless(os.name == "posix", "the worker pool is POSIX only")
+from romorg import chd, chdsched, discsys, dreamcast, scanner, winproc  # noqa: E402
 
 
 def reference(path: str) -> dict[int, dict]:
@@ -45,7 +46,6 @@ class Base(unittest.TestCase):
         self.disc.write_chd(self.path)
 
 
-@posix
 class EqualityTest(Base):
     def test_same_hashes_as_the_sequential_reader(self) -> None:
         self.assertEqual(scheduled(self.path), reference(self.path))
@@ -137,7 +137,6 @@ class EqualityTest(Base):
         self.assertEqual(sum(seen), 3 * sum(v["size"] for v in ref.values()))
 
 
-@posix
 class OrderingAndMemoryTest(Base):
     def test_out_of_order_arrival_is_hashed_in_order(self) -> None:
         with mock.patch.dict(os.environ, {"ROMORG_CHDWORKER_JITTER_MS": "40"}):
@@ -162,7 +161,6 @@ class OrderingAndMemoryTest(Base):
         self.assertLessEqual(s.chunk_bytes * 8 * chdsched.INFLIGHT, 64 << 20)
 
 
-@posix
 class CancelAndCrashTest(Base):
     def alive(self, s) -> list:
         return [w for w in list(s._workers) if w.proc.poll() is None]
@@ -191,7 +189,7 @@ class CancelAndCrashTest(Base):
             s.chunk_bytes = 4000
             first = s.hash_tracks(c, [0])
             for w in list(s._workers):
-                os.kill(w.proc.pid, signal.SIGKILL)
+                w.proc.kill()                                      # SIGKILL / TerminateProcess
             time.sleep(0.2)
             second = s.hash_tracks(c, [0, 1, 2])
         ref = reference(self.path)
@@ -225,7 +223,109 @@ class CancelAndCrashTest(Base):
         self.assertEqual(got[0]["sha1"], reference(self.path)[0]["sha1"])
 
 
-@posix
+class WorkerProcessTest(Base):
+    """What the pool needs from the platform (written for Windows, run everywhere): real worker processes, binary
+    pipes, no console window, no inherited file handles, and files the workers had open can be moved afterwards."""
+
+    def test_the_pool_really_runs_worker_processes(self) -> None:
+        with chd.Chd(self.path, load_map=False) as c, chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            got = s.hash_tracks(c, range(len(c.tracks)))
+            self.assertTrue(s.pooled)
+            self.assertGreater(s.stats["chunks"], 3)
+            self.assertTrue(s._workers)
+            self.assertTrue(all(w.proc.poll() is None for w in s._workers))
+        self.assertEqual(got, reference(self.path))
+
+    def test_workers_get_binary_unbuffered_pipes_and_no_console_window(self) -> None:
+        real = subprocess.Popen
+        seen = []
+
+        def spy(cmd, **kw):
+            seen.append((cmd, kw))
+            return real(cmd, **kw)
+        with mock.patch("romorg.chdsched.subprocess.Popen", side_effect=spy):
+            proc = chdsched.spawn_worker()
+        try:
+            cmd, kw = seen[0]
+            self.assertEqual((kw["bufsize"], kw.get("text"), kw.get("universal_newlines")), (0, None, None))
+            self.assertEqual((kw["stdin"], kw["stdout"]), (subprocess.PIPE, subprocess.PIPE))
+            if winproc.IS_WINDOWS:
+                self.assertTrue(kw["creationflags"] & subprocess.CREATE_NO_WINDOW)
+                self.assertNotEqual(kw.get("close_fds"), False)       # only the pipes are inherited
+            else:
+                self.assertTrue(kw["start_new_session"])
+            # a request whose bytes include CR LF and a lone LF must come back untranslated
+            payload = b"\r\n\n\x1a\x00" * 1000
+            head = {"id": 1, "op": "compress", "codecs": ["zlib", "", "", ""], "hunk_bytes": len(payload), "cd": False,
+                    "hints": ["data"], "n": len(payload)}
+            proc.stdin.write(json.dumps(head).encode() + b"\n" + payload)
+            rd = io.BufferedReader(proc.stdout)
+            reply = json.loads(rd.readline())
+            blob = rd.read(reply["n"])
+            self.assertEqual(len(blob), reply["n"])
+            self.assertEqual(reply["items"][0][2], binascii.crc_hqx(payload, 0xFFFF))
+        finally:
+            chdsched.kill_worker(proc)
+
+    def test_a_file_open_in_the_parent_is_not_inherited_by_the_workers(self) -> None:
+        held = self.dir / "held.bin"
+        f = open(held, "wb")
+        try:
+            procs = [chdsched.spawn_worker() for _ in range(2)]
+        finally:
+            f.close()
+        try:
+            os.replace(held, self.dir / "moved.bin")     # WinError 32 if a worker had inherited the handle
+            os.remove(self.dir / "moved.bin")
+        finally:
+            for proc in procs:
+                chdsched.kill_worker(proc)
+
+    def test_release_closes_the_file_in_every_worker(self) -> None:
+        moved = self.dir / "moved.chd"
+        ref = reference(self.path)
+        with chdsched.Scheduler(3, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                first = s.hash_tracks(c, range(len(c.tracks)))
+            self.assertTrue(s.pooled)
+            if winproc.IS_WINDOWS:                        # the workers keep it open for the next chunks ...
+                with self.assertRaises(PermissionError):
+                    os.replace(self.path, moved)
+            self.assertTrue(s.release(Path(self.path)))
+            os.replace(self.path, moved)                  # ... until it is released
+            with chd.Chd(moved, load_map=False) as c:     # the pool goes on working
+                self.assertEqual(s.hash_tracks(c, range(len(c.tracks))), first)
+            self.assertTrue(s.pooled)
+            self.assertTrue(s.release(moved))
+            os.remove(moved)
+        self.assertEqual(first, ref)
+
+    def test_killing_workers_needs_no_taskkill_unless_frozen(self) -> None:
+        with mock.patch("romorg.winproc.kill_tree") as tree:
+            live = chdsched.spawn_worker()
+            chdsched.kill_worker(live)                     # an interpreter's worker has no children
+            self.assertIsNotNone(live.poll())
+            done = chdsched.spawn_worker()
+            done.stdin.close()
+            done.wait(10)
+            frozen = chdsched.spawn_worker()
+            with mock.patch.object(sys, "frozen", True, create=True):
+                chdsched.kill_worker(done)                 # it has exited: nothing to kill
+                try:
+                    chdsched.kill_worker(frozen)
+                finally:
+                    frozen.kill()
+                    frozen.wait(10)
+        self.assertEqual(tree.call_count, 1 if winproc.IS_WINDOWS else 0)   # the one-file exe: its whole tree
+
+    def test_release_without_workers_or_after_close_returns_at_once(self) -> None:
+        self.assertTrue(chdsched.Scheduler(1).release(self.path))
+        s = chdsched.Scheduler(2)
+        self.assertTrue(s.release(self.path))             # no worker started yet
+        s.close()
+        self.assertTrue(s.release(self.path))
+
+
 class ErrorsTest(Base):
     def test_corrupt_and_unsupported_files_raise_the_readers_errors(self) -> None:
         bad = Path(self.dir / "bad.chd")
@@ -243,13 +343,16 @@ class ErrorsTest(Base):
                 s.hash_tracks(c, [0])
             self.assertTrue(cm.exception.needs_chdman)
             self.assertTrue(s.pooled)                              # a bad FILE does not break the pool
-            self.assertEqual(len(s.hash_tracks(chd.Chd(self.path, load_map=False), [0])), 1)
+            with chd.Chd(self.path, load_map=False) as good:
+                self.assertEqual(len(s.hash_tracks(good, [0])), 1)
 
     def test_worker_count_rules(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != chdsched.ENV_WORKERS}
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch("romorg.chdsched.mem_available", return_value=64 << 30):
-                self.assertEqual(chdsched.default_workers(0), min(chdsched.MAX_WORKERS, os.cpu_count() or 1))
+                cpus = os.cpu_count() or 1
+                auto = min(chdsched.WINDOWS_MAX_AUTO, max(1, cpus - 1)) if winproc.IS_WINDOWS else cpus
+                self.assertEqual(chdsched.default_workers(0), min(chdsched.MAX_WORKERS, auto))
                 self.assertEqual(chdsched.default_workers(3), 3)           # the config key
                 self.assertEqual(chdsched.default_workers(1), 1)
                 self.assertEqual(chdsched.default_workers(999), chdsched.MAX_WORKERS)
@@ -263,7 +366,6 @@ class ErrorsTest(Base):
             self.assertFalse(chdsched.make_scheduler(1).pooled)
 
 
-@posix
 class ScanWithSchedulerTest(unittest.TestCase):
     def test_parallel_scan_equals_sequential_scan(self) -> None:
         from test_dreamcast import World

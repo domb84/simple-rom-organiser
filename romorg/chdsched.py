@@ -157,6 +157,13 @@ class _Chunk:
     tries: int = 0
 
 
+@dataclass(eq=False)
+class _Release:
+    """A request to one worker: close the CHD it keeps open under ``path`` (see :meth:`Scheduler.release`)."""
+    path: str
+    done: threading.Event = field(default_factory=threading.Event)
+
+
 def spawn_worker() -> "subprocess.Popen":
     """Start one ``romorg.chdworker`` process (binary pipes on stdin / stdout); :class:`PoolError` when it cannot."""
     env = dict(os.environ)
@@ -183,17 +190,34 @@ def spawn_worker() -> "subprocess.Popen":
     return proc
 
 
-def kill_worker(proc: "subprocess.Popen") -> None:
+def _terminate(proc: "subprocess.Popen") -> None:
+    """Kill a worker that is still running (one that has exited is left alone).
+
+    POSIX: its process group. Windows: the process itself (``TerminateProcess``); ``taskkill /T`` costs about
+    0.2 s per call, which a dozen workers per job turned into seconds, and a worker started from the interpreter has
+    no children. Only the frozen one-file exe needs the tree: its bootloader runs the app in a child process."""
+    if proc.poll() is not None:
+        return
     if winproc.IS_WINDOWS:
-        winproc.kill_tree(proc)
-    else:
+        if getattr(sys, "frozen", False):
+            winproc.kill_tree(proc)
+            return
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (OSError, AttributeError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            proc.kill()
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, AttributeError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def kill_worker(proc: "subprocess.Popen") -> None:
+    _terminate(proc)
     for f in (proc.stdin, proc.stdout):
         try:
             if f:
@@ -212,42 +236,52 @@ class _Worker:
         self.proc = spawn_worker()
         self.rd = io.BufferedReader(self.proc.stdout, buffer_size=1 << 16)
         self.dead = False
+        self.releases: Deque[_Release] = deque()      # guarded by the scheduler's lock
         self.thread = threading.Thread(target=self._loop, name=f"chd-worker-{wid}", daemon=True)
 
     # -- parent-side thread that feeds / drains one worker
     def _loop(self) -> None:
         sched = self.sched
-        outstanding: Deque[_Chunk] = deque()
+        outstanding: Deque[Any] = deque()             # _Chunk / _Release, in the order they were sent
         try:
             while True:
                 while len(outstanding) < INFLIGHT:
-                    chunk = sched._take(block=not outstanding)
-                    if chunk is None:
+                    item = sched._take(block=not outstanding, worker=self)
+                    if item is None:
                         break
-                    outstanding.append(chunk)         # before sending: a failed send must hand the chunk back
-                    self._send(chunk)
+                    outstanding.append(item)          # before sending: a failed send must hand the chunk back
+                    self._send(item)
                 if not outstanding:
                     if sched._closed:
                         return
                     continue
-                chunk = outstanding[0]
-                reply = self._read_reply(chunk)
+                item = outstanding[0]
+                reply = self._read_reply(item)
                 outstanding.popleft()
-                sched._deliver(chunk, reply)
+                if isinstance(item, _Release):
+                    item.done.set()
+                else:
+                    sched._deliver(item, reply)
         except BaseException as exc:  # noqa: BLE001 - crash / broken pipe: the scheduler decides what happens
+            for item in outstanding:
+                if isinstance(item, _Release):
+                    item.done.set()                   # a dead worker holds no file open
             if not sched._closed:
-                sched._worker_failed(self, list(outstanding), exc)
+                sched._worker_failed(self, [c for c in outstanding if isinstance(c, _Chunk)], exc)
 
-    def _send(self, chunk: _Chunk) -> None:
-        run = chunk.run
-        req = {"id": chunk.idx, "path": run.path, "sig": list(run.sig), "track": run.index,
-               "first": chunk.first, "count": chunk.count}
+    def _send(self, chunk: Any) -> None:
+        if isinstance(chunk, _Release):
+            req: dict = {"id": -1, "op": "release", "path": chunk.path}
+        else:
+            run = chunk.run
+            req = {"id": chunk.idx, "path": run.path, "sig": list(run.sig), "track": run.index,
+                   "first": chunk.first, "count": chunk.count}
         try:
             self.proc.stdin.write(json.dumps(req, separators=(",", ":")).encode() + b"\n")
         except (OSError, ValueError) as exc:
             raise PoolError(f"cannot talk to a worker: {exc}") from exc
 
-    def _read_reply(self, chunk: _Chunk) -> tuple:
+    def _read_reply(self, chunk: Any) -> tuple:
         line = self.rd.readline()
         if not line:
             raise PoolError("a worker closed its pipe")
@@ -271,16 +305,11 @@ class _Worker:
 
     def kill(self) -> None:
         self.dead = True
-        if winproc.IS_WINDOWS:
-            winproc.kill_tree(self.proc)
-        else:
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except (OSError, AttributeError):
-                try:
-                    self.proc.kill()
-                except OSError:
-                    pass
+        with self.sched._cv:
+            pending, self.releases = list(self.releases), deque()
+        for r in pending:
+            r.done.set()                              # the process goes away: nothing of it stays open
+        _terminate(self.proc)
         for f in (self.proc.stdin, self.rd):
             try:
                 if f:
@@ -380,6 +409,30 @@ class Scheduler:
         if first_error is not None:
             self._raise(first_error)
         return out
+
+    def release(self, path: Any, timeout: float = 60.0) -> bool:
+        """Make every worker close the CHD ``path`` it keeps open from earlier chunks; returns once they have.
+
+        A worker keeps its last CHDs open between chunks (their hunk maps are parsed once). On POSIX that never
+        matters, but Windows refuses to rename or delete a file another process has open (WinError 32), so a
+        caller that is about to move a file it hashed here - the new CHD of a conversion - releases it first.
+        Chunks already sent for the file are decoded first (a later request simply reopens it). False when a
+        worker did not answer within ``timeout`` seconds."""
+        if not self.pooled:
+            return True
+        key = os.fspath(path)
+        with self._cv:
+            if self._closed:
+                return True
+            pending = []
+            for w in self._workers:
+                if not w.dead:
+                    r = _Release(key)
+                    w.releases.append(r)
+                    pending.append(r)
+            self._cv.notify_all()
+        deadline = time.monotonic() + timeout
+        return all(r.done.wait(max(0.0, deadline - time.monotonic())) for r in pending)
 
     def close(self) -> None:
         """Kill and reap the workers (idempotent)."""
@@ -510,11 +563,14 @@ class Scheduler:
             return _Chunk(run, run.next_dispatch, first, count, size)
         return None
 
-    def _take(self, block: bool) -> Optional[_Chunk]:
+    def _take(self, block: bool, worker: Optional[_Worker] = None) -> Any:
+        """The next :class:`_Chunk` (or a :class:`_Release` addressed to ``worker``); None = nothing now."""
         with self._cv:
             while True:
                 if self._closed or self.broken:
                     return None
+                if worker is not None and worker.releases:
+                    return worker.releases.popleft()
                 c = self._peek_locked()
                 if c is not None and (self._reserved == 0 or self._reserved + c.size <= self.budget):
                     if self._retry and self._retry[0] is c:

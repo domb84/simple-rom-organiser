@@ -1848,8 +1848,45 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
     return got, "verified independently with the built-in reader" + (f" ({stats['text']})" if stats.get("text") else "")
 
 
+def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
+    """What the generated ``.gdi`` in ``work`` names for the track file ``src``, without copying it if at all possible.
+
+    chdman reads a GDI's track files as ``<folder of the .gdi> + <name>``, so the file must be reachable from
+    ``work`` under a plain name. In order of preference (the files can be gigabytes):
+
+    1. a symlink ``work/name`` (POSIX; Windows only with Developer Mode or as administrator - else WinError 1314);
+    2. a hard link ``work/name`` (same volume, NTFS; no privilege needed);
+    3. no file at all: a relative path from ``work`` to the original (same drive; chdman 0.289 joins it as is);
+    4. a copy, the last resort (another drive and no links), after checking the free space.
+
+    Returns the name to write into the ``.gdi``."""
+    src = Path(os.path.abspath(src))
+    dst = work / name
+    try:
+        os.symlink(src, dst)
+        return name
+    except (OSError, NotImplementedError):
+        pass
+    try:
+        os.link(src, dst)
+        return name
+    except OSError:
+        pass
+    try:
+        rel = os.path.relpath(src, work)
+    except ValueError:                                      # another drive (Windows): no relative path exists
+        rel = ""
+    if rel and '"' not in rel:
+        return rel
+    size = src.stat().st_size
+    chdtool.check_space(work, size)
+    shutil.copyfile(src, dst)
+    return name
+
+
 def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tuple[Any, Path]:
-    """A scratch folder with the generated ``.gdi`` and symlinks to the set's track files (the library is only read)."""
+    """A scratch folder with the generated ``.gdi`` that names the set's track files (links where possible, see
+    :func:`_gdi_track_ref`; the library is only read)."""
     files = sheet_track_files(op.src) or []
     if not files or op.gdi_text is None:
         raise chdtool.ChdmanError("the .cue cannot be turned into a .gdi")
@@ -1860,8 +1897,7 @@ def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tupl
         for row, f in zip(lines[1:], files):
             parts = shlex.split(row)
             ext = "raw" if parts[2] == "0" else "bin"
-            link = f"track{int(parts[0]):02d}.{ext}"
-            os.symlink(os.path.abspath(f), work.path / link)
+            link = _gdi_track_ref(f, work.path, f"track{int(parts[0]):02d}.{ext}")
             parts[4] = link
             out.append(f'{parts[0]} {parts[1]} {parts[2]} {parts[3]} "{link}" {parts[5]}')
         sheet = work.path / "disc.gdi"
@@ -1959,6 +1995,8 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 verify_notes.append(how)
         finally:
             info.close()
+            if sched is not None:
+                sched.release(new)      # the workers close it: Windows renames / deletes no file that is open
         bad = [str(i + 1) for i, t in enumerate(game.tracks) if not _rom_ok(t, got.get(i, {}))]
         if bad:
             raise chdtool.ChdmanError(f"verification failed: track {', '.join(bad)} of the new CHD does not "

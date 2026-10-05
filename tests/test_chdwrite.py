@@ -64,10 +64,17 @@ class SameAsChdmanTest(Inputs):
                 self.assertEqual((info["sha1"], info["size"]), (want["sha1"], target.stat().st_size))
 
     def test_size_is_close_to_chdmans(self) -> None:
-        # tiny inputs exaggerate every byte of difference; real discs are within 0.5 % (docs/ARCHITECTURE.md)
+        # tiny inputs exaggerate every byte of difference; real discs are within 0.5 % (docs/ARCHITECTURE.md).
+        # Audio is only as small as chdman's with libFLAC: without it the writer stores audio hunks with LZMA (valid,
+        # same SHA-1, larger), so the layouts with audio tracks need the encoder; the data-only one is always checked.
         for name in ("redump", "audio_only", "gd5", "m2336"):
-            target, _info = self.write(name)
-            self.assertLess(target.stat().st_size, REF[name]["size"] * 1.02, name)
+            with self.subTest(name):
+                src, mode = layouts.source(self.dir, name)
+                if any(t.audio for t in cdimage.open_image(src, mode).tracks) and not flacenc.available():
+                    self.skipTest("libFLAC is not installed here (set ROMORG_LIBFLAC): audio tracks are stored "
+                                  "with LZMA, larger than chdman's FLAC")
+                target, _info = self.write(name)
+                self.assertLess(target.stat().st_size, REF[name]["size"] * 1.02, name)
 
     def test_tracks_come_back_as_the_files(self) -> None:
         target, _ = self.write("redump")
@@ -107,6 +114,28 @@ class SameAsChdmanTest(Inputs):
             self.assertEqual((c.sha1, c.is_gd), (REF["gd"]["sha1"], True))
 
 
+class LongPathTest(unittest.TestCase):
+    def test_sets_deeper_than_260_characters(self) -> None:
+        """Windows' old MAX_PATH: sheets and track files in a folder whose path is over 260 characters long are
+        found and read (with the LongPathsEnabled setting; without it the folder cannot even be made)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            deep = Path(tmp)
+            while len(str(deep)) < 300:
+                deep = deep / ("a long folder name for a game set " + str(len(str(deep))))
+            try:
+                deep.mkdir(parents=True)
+                layouts.write_inputs(deep)
+            except OSError as exc:
+                self.skipTest(f"this system cannot make paths over 260 characters ({exc})")
+            for name in ("redump", "gd5", "iso_dvd"):
+                src, mode = layouts.source(deep, name)
+                self.assertGreater(len(str(src)), 260)
+                target = deep / f"{name}.chd"
+                chdwrite.write_chd(target, cdimage.open_image(src, mode), threads=2, processes=True)
+                with chd.Chd(target) as c:
+                    self.assertEqual(c.sha1, REF[name]["sha1"], name)
+
+
 class EngineTest(Inputs):
     def test_worker_processes_threads_and_one_thread_write_the_same_file(self) -> None:
         a, ia = self.write("gd5", threads=1)
@@ -128,8 +157,10 @@ class EngineTest(Inputs):
             proc.stdin.close()                  # the first request hits a closed pipe
             return proc
         with mock.patch.object(chdsched, "spawn_worker", side_effect=dying):
-            t, _info = self.write("redump", threads=2, processes=True)
+            t, info = self.write("redump", threads=2, processes=True)
         self.assertEqual(t.read_bytes(), ref.read_bytes())
+        self.assertEqual(info["engine"], "threads")              # a broken pool is reported, not only slow
+        self.assertGreater(info["fallbacks"], 0)
 
     def test_cancel_and_errors_leave_no_file(self) -> None:
         src, mode = layouts.source(self.dir, "gd")

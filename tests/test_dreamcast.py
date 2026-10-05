@@ -3,6 +3,7 @@ Verify fully, undo - on synthetic discs (see chdtestlib)."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import sys
@@ -692,6 +693,32 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(n1 + n2 < 45000, True)
         self.assertFalse([p for p in (self.w.root).rglob("*") if p.is_symlink()])        # scratch links are gone
 
+    def test_generated_gdi_works_without_symlinks(self) -> None:
+        """Unprivileged Windows cannot symlink (WinError 1314): the generated GDI then names hard links or the
+        original files, and chdman still finds every track's bytes next to the GDI."""
+        import errno
+        import shlex
+        import shutil
+        shutil.rmtree(self.w.root / "raw dump")
+        self.disc.write_raw(self.w.root / "cue dump", "e", gdi_style=False, markers=True)
+        from romorg import discsys
+        want = [t.read_bytes() for t in discsys.sheet_track_files(self.w.root / "cue dump" / "e.cue")]
+        real_create = chdtool.create_cd
+        seen = []
+
+        def create_cd(chdman, source, new, **kw):
+            rows = [shlex.split(r, posix=False) for r in Path(source).read_text().splitlines()[1:]]
+            names = [r[4].strip('"') for r in rows]
+            seen.append([(Path(source).parent / n).read_bytes() for n in names])
+            return real_create(chdman, source, new, **kw)
+        no_symlink = OSError(errno.EPERM, "A required privilege is not held by the client")
+        with mock.patch("romorg.discsys.os.symlink", side_effect=no_symlink), \
+                mock.patch("romorg.chdtool.create_cd", side_effect=create_cd):
+            res = self.run_convert()
+        self.assertEqual((res["converted"], res["failed"], res["generated_gdi"]), (1, [], 1))
+        self.assertEqual(seen, [want])
+        self.assertFalse(list(self.scratch.rglob("romorg-job-*")))                 # the scratch folder is gone
+
     def test_a_cd_type_chd_for_a_gd_system_is_refused(self) -> None:
         """chdman createcd of a .cue writes CHT2: same tracks, same hashes, but not a GD-ROM image."""
         import shutil
@@ -839,3 +866,63 @@ class IndexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GdiTrackRefTest(unittest.TestCase):
+    """How a generated GDI in a scratch folder names a track file of the library (discsys._gdi_track_ref)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        (self.base / "library" / "My Game").mkdir(parents=True)
+        self.src = self.base / "library" / "My Game" / "track 01.bin"
+        self.src.write_bytes(os.urandom(2352 * 4))
+        self.work = self.base / "scratch"
+        self.work.mkdir()
+
+    def ref(self, *fail: str) -> str:
+        import errno
+        from romorg import discsys
+        patches = {"symlink": mock.patch("romorg.discsys.os.symlink", side_effect=OSError(errno.EPERM, "no")),
+                   "link": mock.patch("romorg.discsys.os.link", side_effect=OSError(errno.EXDEV, "no")),
+                   "relpath": mock.patch("romorg.discsys.os.path.relpath", side_effect=ValueError("other drive"))}
+        with contextlib.ExitStack() as stack:
+            for name in fail:
+                stack.enter_context(patches[name])
+            return discsys._gdi_track_ref(self.src, self.work, "track01.bin")
+
+    def assertSameBytes(self, name: str) -> None:
+        self.assertEqual((self.work / name).read_bytes(), self.src.read_bytes())
+
+    def test_symlink_first(self) -> None:
+        try:
+            os.symlink(self.src, self.base / "probe")
+        except OSError:
+            self.skipTest("this account cannot create symlinks (Windows without Developer Mode)")
+        self.assertEqual(self.ref(), "track01.bin")
+        self.assertTrue((self.work / "track01.bin").is_symlink())
+        self.assertSameBytes("track01.bin")
+
+    def test_hard_link_when_symlinks_are_refused(self) -> None:
+        self.assertEqual(self.ref("symlink"), "track01.bin")
+        link = self.work / "track01.bin"
+        self.assertFalse(link.is_symlink())
+        self.assertTrue(os.path.samefile(link, self.src))                         # no copy: the same file
+        self.assertSameBytes("track01.bin")
+
+    def test_relative_path_when_no_link_can_be_made(self) -> None:
+        name = self.ref("symlink", "link")
+        self.assertEqual(os.listdir(self.work), [])                               # nothing was created
+        self.assertTrue(os.path.samefile(os.path.join(self.work, name), self.src))  # chdman: <gdi folder> + name
+
+    def test_copy_only_as_the_last_resort_and_only_with_space(self) -> None:
+        self.assertEqual(self.ref("symlink", "link", "relpath"), "track01.bin")
+        link = self.work / "track01.bin"
+        self.assertFalse(os.path.samefile(link, self.src))
+        self.assertSameBytes("track01.bin")
+        link.unlink()
+        with mock.patch("romorg.chdtool.shutil.disk_usage", return_value=mock.Mock(free=1000)):
+            with self.assertRaises(chdtool.ChdmanError):
+                self.ref("symlink", "link", "relpath")
+        self.assertFalse(link.exists())

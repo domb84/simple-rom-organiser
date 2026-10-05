@@ -397,7 +397,7 @@ def find_parent(path, parent_sha1: str = "", parent_md5: str = "") -> Optional[s
 # --------------------------------------------------------------------------- decode threads
 _pool_lock = threading.Lock()
 _pool: Optional[ThreadPoolExecutor] = None
-_pool_size = 0
+POOL_THREADS = 32               # the most decode threads any reader may ask for (see default_threads)
 
 
 def default_threads() -> int:
@@ -409,14 +409,14 @@ def default_threads() -> int:
 
 
 def _executor(n: int) -> ThreadPoolExecutor:
-    global _pool, _pool_size
+    """The decode pool every reader shares. Created once, never replaced: a reader on another thread may be
+    submitting to it right now (replacing it for a reader that wants more threads made that reader fail with
+    "cannot schedule new futures after shutdown"). Its threads start only when there is work for them, and a reader
+    hands it at most ``n`` tasks at a time (see :func:`_slices`), so ``n`` still bounds each reader's share."""
+    global _pool
     with _pool_lock:
-        if _pool is None or _pool_size < n:
-            old = _pool
-            _pool = ThreadPoolExecutor(max_workers=n, thread_name_prefix="chd-decode")
-            _pool_size = n
-            if old is not None:
-                old.shutdown(wait=False)
+        if _pool is None:
+            _pool = ThreadPoolExecutor(max_workers=POOL_THREADS, thread_name_prefix="chd-decode")
         return _pool
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import io
 import json
 import lzma
 import os
@@ -290,6 +291,16 @@ def compress_many(comp: "_Compressor", data: bytes, hints: Sequence[str]) -> Tup
     return items, b"".join(out)
 
 
+def _write_all(f, data) -> None:
+    """Write all of ``data`` to the unbuffered pipe ``f`` (one ``write`` may take only part of it)."""
+    view = memoryview(data)
+    while view:
+        n = f.write(view)
+        if n is None or n <= 0:
+            raise OSError("cannot write to a worker")
+        view = view[n:]
+
+
 class _Pool:
     """Runs :func:`compress_many` on slices of hunks, in order: in worker processes when there are several and they
     start, else on threads of this process. A worker that dies has its slice redone here."""
@@ -307,6 +318,7 @@ class _Pool:
             if self.workers > 1 else None
 
     def _worker(self):
+        """``(process, buffered reader of its stdout)`` of this thread's worker, None = compress here."""
         st = self.local.__dict__
         if "proc" not in st:
             st["proc"] = None
@@ -317,28 +329,33 @@ class _Pool:
                 except chdsched.PoolError:
                     self.processes = False
                 else:
+                    # the pipe is unbuffered (bufsize=0): readline() on it would read one byte per system call.
+                    # The buffered reader replaces proc.stdout, so closing the worker closes it.
+                    proc.stdout = io.BufferedReader(proc.stdout, buffer_size=1 << 16)
                     with self.lock:
                         self.procs.append(proc)
-                    st["proc"] = proc
+                    st["proc"] = (proc, proc.stdout)
         return st["proc"]
 
     def _one(self, job: Tuple[bytes, Sequence[str]]) -> Tuple[list, bytes]:
         data, hints = job
-        proc = self._worker()
-        if proc is not None:
+        worker = self._worker()
+        if worker is not None:
+            proc, rd = worker
             try:
                 head = dict(self.key, id=0, op="compress", hints=list(hints), n=len(data))
-                proc.stdin.write(json.dumps(head, separators=(",", ":")).encode() + b"\n")
-                proc.stdin.write(data)
-                line = proc.stdout.readline() if hasattr(proc.stdout, "readline") else b""
-                reply = json.loads(line)
+                _write_all(proc.stdin, json.dumps(head, separators=(",", ":")).encode() + b"\n")
+                _write_all(proc.stdin, data)
+                reply = json.loads(rd.readline())
                 n = int(reply["n"])
-                buf = bytearray()
-                while len(buf) < n:
-                    part = proc.stdout.read(n - len(buf))
-                    if not part:
+                buf = bytearray(n)
+                view = memoryview(buf)
+                got = 0
+                while got < n:
+                    k = rd.readinto(view[got:])
+                    if not k:
                         raise OSError("worker closed its pipe")
-                    buf += part
+                    got += k
                 items = reply["items"]
                 if len(items) == len(hints) and sum(i[1] for i in items) == n:
                     return items, bytes(buf)
@@ -360,13 +377,17 @@ class _Pool:
             self.pool.shutdown(wait=True, cancel_futures=True)
         if self.procs:
             from . import chdsched
-            for proc in self.procs:
+            for proc in self.procs:             # end of input: every worker exits by itself, all at once ...
                 try:
                     proc.stdin.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            for proc in self.procs:
+                try:
                     proc.wait(timeout=2)
                 except Exception:  # noqa: BLE001
                     pass
-                chdsched.kill_worker(proc)
+                chdsched.kill_worker(proc)      # ... only one that did not is killed
             self.procs = []
 
 
@@ -527,6 +548,7 @@ def write_chd(out_path, image, preset: str = "default", codecs: Optional[Sequenc
     ok = False
     out_path = os.fspath(out_path)
     pool = _Pool(comp, threads, processes)
+    reader = iter(image.batches(batch))     # closed below: its open track file must not outlive a failed write
     f = open(out_path, "xb")
     try:
         meta = _metadata_blob(metadata, HEADER)
@@ -572,7 +594,7 @@ def write_chd(out_path, image, preset: str = "default", codecs: Optional[Sequenc
             if progress:
                 progress(min(logical, written * hb), logical)
 
-        for data, hints in image.batches(batch):
+        for data, hints in reader:
             if cancel is not None and cancel():
                 raise Cancelled("cancelled")
             count = len(hints)
@@ -627,6 +649,7 @@ def write_chd(out_path, image, preset: str = "default", codecs: Optional[Sequenc
         ok = True
     finally:
         f.close()
+        getattr(reader, "close", lambda: None)()
         pool.close()
         if not ok:
             try:
@@ -635,4 +658,7 @@ def write_chd(out_path, image, preset: str = "default", codecs: Optional[Sequenc
                 pass
     return {"sha1": sha1.hex(), "raw_sha1": raw.hex(), "size": size, "hunks": hunk_count, "stored": stored,
             "codecs": [n for n in names if n], "workers": threads,
-            "engine": "processes" if pool.processes and threads > 1 else "threads"}
+            # "processes" only when every slice was compressed by a worker: a worker that failed (its slices were
+            # redone here) shows up as "threads", so a broken pool is visible, not just slow
+            "engine": "processes" if pool.processes and threads > 1 and not pool.fallbacks else "threads",
+            "fallbacks": pool.fallbacks}

@@ -105,6 +105,30 @@ class RealChdmanFilesTest(unittest.TestCase):
                     got = c.verify()
                     self.assertEqual((got["raw"], got["overall"]), (True, True))
 
+    def test_decode_threads_of_several_readers_at_once_never_hang(self) -> None:
+        """Readers on several threads at once, each with its own number of decode threads (the shared decode pool
+        must neither deadlock nor be replaced under a reader that is using it)."""
+        import threading
+        errors: list = []
+        results: dict = {}
+
+        def read(k: int, threads: int) -> None:
+            try:
+                with chd.Chd(FIX / "cd_default.chd") as c:
+                    c.threads = threads
+                    results[k] = [chd.hash_track(c, t).sha1 for t in c.tracks]
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+        workers = [threading.Thread(target=read, args=(k, (1, 2, 4, 8, 3, 6)[k % 6]), daemon=True)
+                   for k in range(12)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(timeout=120)
+        self.assertFalse([w for w in workers if w.is_alive()], "a reader hangs")
+        self.assertEqual(errors, [])
+        self.assertEqual(set(map(tuple, results.values())), {(SUMS["cd_data"], SUMS["cd_audio"])})
+
     def test_laserdisc(self) -> None:
         for name in ("ld_mono.chd", "ld_stereo.chd"):
             with chd.Chd(FIX / name) as c:

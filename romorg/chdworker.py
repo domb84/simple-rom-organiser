@@ -15,6 +15,11 @@ The CHD writer (:mod:`romorg.chdwrite`) uses the same processes to compress::
 ``first`` / ``count`` are frames of the track (2048-byte units for a DVD CHD) and the reply is exactly what
 ``chdman extractcd`` / ``extractdvd`` would write for them. The worker keeps its opened CHDs (and their parsed hunk
 maps) between requests, so a file's map is parsed once per worker, not once per chunk. It exits at EOF of stdin.
+
+Closing a file it keeps open (Windows cannot rename or delete a file another process has open)::
+
+    request  {"id": -1, "op": "release", "path": "..."}
+    reply    {"id": -1, "n": 0}
 """
 
 from __future__ import annotations
@@ -27,6 +32,11 @@ from collections import OrderedDict
 MAX_OPEN = 4
 ENV_JITTER = "ROMORG_CHDWORKER_JITTER_MS"      # test hooks: random delay per request (out-of-order delivery) ...
 ENV_CRASH = "ROMORG_CHDWORKER_CRASH"            # ... and "always" / "once:<marker file>" = die like a segfault
+
+
+def _same(path: str) -> str:
+    """``path`` in a form that compares equal for the same file (Windows: any case, either slash)."""
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _err(rid, kind: str, exc: BaseException) -> dict:
@@ -44,10 +54,19 @@ def serve(stdin=None, stdout=None) -> None:
     jitter = float(os.environ.get(ENV_JITTER) or 0) / 1000.0
     crash = os.environ.get(ENV_CRASH, "")
 
+    def write_all(data) -> None:
+        # with ``python -u`` sys.stdout.buffer is a raw FileIO: one write() may take only part of a big reply
+        view = memoryview(data)
+        while view:
+            n = out.write(view)
+            if n is None or n <= 0:
+                raise BrokenPipeError("the scheduler stopped reading")
+            view = view[n:]
+
     def reply(head: dict, payload: bytes = b"") -> None:
-        out.write(json.dumps(head, separators=(",", ":")).encode() + b"\n")
+        write_all(json.dumps(head, separators=(",", ":")).encode() + b"\n")
         if payload:
-            out.write(payload)
+            write_all(payload)
         out.flush()
 
     for line in inp:
@@ -78,6 +97,12 @@ def serve(stdin=None, stdout=None) -> None:
                     compressors[key] = chdwrite._Compressor(*key)
                 items, blob = chdwrite.compress_many(compressors[key], data, req["hints"])
                 reply({"id": rid, "n": len(blob), "items": items}, blob)
+                continue
+            if req.get("op") == "release":
+                want = _same(req["path"])
+                for key in [k for k in cache if _same(k) == want]:
+                    cache.pop(key)[1].close()
+                reply({"id": rid, "n": 0})
                 continue
             path = req["path"]
             sig = tuple(req.get("sig") or ())

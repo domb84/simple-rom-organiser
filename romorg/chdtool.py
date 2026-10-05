@@ -28,6 +28,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -125,7 +126,13 @@ def _probe(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> bool:
 
 
 def bundled_chdman() -> Optional[Chdman]:
-    """The chdman shipped in the AppImage (``tools/chdman`` + ``tools/lib``), not probed; None outside an AppImage."""
+    """The chdman shipped in the AppImage (``tools/chdman`` + ``tools/lib``), not probed; None outside an AppImage.
+
+    Linux only: the AppImage is the only package that ever carried a chdman (a Linux binary started with
+    ``LD_LIBRARY_PATH``). The Windows packages carry none, and a ``chdman.exe`` placed next to the app is found by
+    :func:`winproc.find_tool` as a ``folder`` chdman."""
+    if not sys.platform.startswith("linux"):
+        return None
     tools = bundle.tools_dir()
     if tools is None:
         return None
