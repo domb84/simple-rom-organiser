@@ -11,6 +11,10 @@ against the built AppImage. It checks (and prints one line each)
   gives the sequential hashes,
 
 and exits 1 when a required check fails. Outside an AppImage the bundle checks are skipped.
+
+``--require-native`` (the Windows builds, ``packaging/build_windows*.ps1``) makes what a shipped package must bring
+REQUIRED: libFLAC must load, Zstandard must come from a library (``compression.zstd`` / libzstd), and the writer must
+run in worker processes and store the audio track as FLAC (``cdfl``).
 """
 
 from __future__ import annotations
@@ -161,8 +165,10 @@ def check_scheduler() -> Tuple[bool, str]:
     return True, f"the scheduler hashed a tiny GD image with {workers} worker processes (identical to sequential)"
 
 
-def check_writer() -> Tuple[bool, str]:
-    """The writer makes a CHD of a tiny data + audio disc (in worker processes), the reader reads it back."""
+def check_writer(require_native: bool = False) -> Tuple[bool, str]:
+    """The writer makes a CHD of a tiny data + audio disc (in worker processes), the reader reads it back.
+
+    With ``require_native`` it also fails unless the CHD was made in worker processes with a FLAC audio hunk."""
     from . import cdimage, chdwrite, flacenc
     from . import chd as chdlib
     with tempfile.TemporaryDirectory(prefix="romorg-selfcheck-") as tmp:
@@ -179,9 +185,14 @@ def check_writer() -> Tuple[bool, str]:
             checks = c.verify()
         if got != [hashlib.sha1(t1).hexdigest(), hashlib.sha1(pcm).hexdigest()] or not checks["overall"]:
             return False, "the writer's CHD does not read back as the tracks it was made from"
+    flac_hunks = info.get("stored", {}).get("cdfl", 0)
+    if require_native and (info["engine"] != "processes" or not flac_hunks):
+        return False, (f"the writer made a CHD ({info['engine']}, {flac_hunks} cdfl hunks) but a package needs "
+                       "worker processes and FLAC (cdfl) audio")
     extra = [] if flacenc.available() else ["no libFLAC: audio is stored without FLAC"]
     extra += [] if chdwrite.zstd_available() else ["no Zstandard library: the Zstandard preset is not offered"]
-    return True, (f"the writer made a CHD ({info['engine']}, {'/'.join(info['codecs'])}) that reads back identically"
+    return True, (f"the writer made a CHD ({info['engine']}, {'/'.join(info['codecs'])}, {flac_hunks} cdfl hunks) "
+                  "that reads back identically"
                   + ("; " + "; ".join(extra) if extra else ""))
 
 
@@ -199,6 +210,7 @@ def check_chdman() -> Tuple[str, str]:
 
 def main(argv: List[str] | None = None) -> int:
     from . import bundle
+    require_native = "--require-native" in (sys.argv[1:] if argv is None else argv)
     failures = 0
     root = bundle.bundle_root()
     lines: List[Tuple[str, str]] = []
@@ -215,16 +227,18 @@ def main(argv: List[str] | None = None) -> int:
     status, text = check_chdman()
     lines.append((status, text))
     try:
-        lines.append(check_zstd())
+        status, text = check_zstd()
     except Exception as exc:  # noqa: BLE001
-        lines.append(("WARN", f"Zstandard check: {type(exc).__name__}: {exc}"))
+        status, text = "WARN", f"Zstandard check: {type(exc).__name__}: {exc}"
+    lines.append(("FAIL" if require_native and status != "OK" else status, text))
     for fn in (check_flac, check_scheduler, check_writer):
         try:
-            ok, text = fn()
+            ok, text = check_writer(require_native) if fn is check_writer else fn()
         except Exception as exc:  # noqa: BLE001
             ok, text = False, f"{type(exc).__name__}: {exc}"
-        # inside the bundle libFLAC is REQUIRED; elsewhere its absence only means the slow decoder
-        required = fn is check_scheduler or root is not None
+        # inside the bundle (or a package: --require-native) libFLAC is REQUIRED; elsewhere its absence only means
+        # the slow decoder
+        required = fn is check_scheduler or root is not None or require_native
         lines.append(("OK" if ok else ("FAIL" if required else "WARN"), text))
     for status, text in lines:
         print(f"{status:5} {text}")

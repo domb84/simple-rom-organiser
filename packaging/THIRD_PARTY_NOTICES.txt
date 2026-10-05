@@ -4,10 +4,30 @@ Simple ROM Organiser - third-party notices
 Simple ROM Organiser itself needs nothing but Python's standard library. The Windows packages can carry, or can
 use if you provide them, the programs below. They are separate programs / libraries with their own licences.
 
+libFLAC (bundled in the Windows .zip package in app\native, and inside the single-file .exe)
+-----------------------------------------------------------------------------------------
+Used to encode the FLAC audio when the program creates CD-image CHD files (romorg/flacenc.py) and to decode it
+when CHDs are read (romorg/flacnative.py). If the file is absent or cannot be loaded the program still works:
+audio tracks are then stored with LZMA (valid, but larger) and decoded more slowly.
+
+  * libFLAC 1.5.0, the unmodified libFLAC.dll (Win64) of the official Xiph.Org Windows release
+    flac-1.5.0-win.zip (https://ftp.osuosl.org/pub/xiph/releases/flac/ = https://downloads.xiph.org/releases/flac/,
+    also https://github.com/xiph/flac/releases/tag/1.5.0). Archive SHA-256
+    53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde.
+  * Copyright (C) 2000-2009 Josh Coalson, Copyright (C) 2011-2025 Xiph.Org Foundation. The library is licensed
+    under the BSD 3-clause licence ("Xiph.Org BSD-like"), reproduced in licenses\FLAC-COPYING.Xiph.txt; the
+    contributors are listed in licenses\FLAC-AUTHORS.txt.
+  * That build has Ogg FLAC support linked in: libogg, Copyright (c) 2002 Xiph.org Foundation, BSD 3-clause
+    licence, reproduced in licenses\libogg-COPYING.txt (source: https://github.com/xiph/ogg).
+  * Source code: https://github.com/xiph/flac (https://xiph.org/flac/).
+  * It is loaded dynamically (ctypes). You may replace app\native\libFLAC.dll with your own 64-bit build, or delete
+    it. The single-file .exe carries the DLL and the licences inside (licenses\); the build also writes them next
+    to the exe (licenses\, THIRD_PARTY_NOTICES.txt) to ship with it.
+
 libsndfile (bundled in the Windows .zip package, in the "native" folder)
 -----------------------------------------------------------------------
-Used (optionally) to decode the FLAC audio inside CD-image CHD files quickly (romorg/nativeflac.py). If the
-file is absent or cannot be loaded the program still works, only slower on CD audio.
+Used (optionally) to decode the FLAC audio inside CD-image CHD files quickly (romorg/nativeflac.py) when libFLAC
+cannot be loaded. If the file is absent or cannot be loaded the program still works.
 
   * libsndfile is licensed under the GNU Lesser General Public License, version 2.1 or later (see
     licenses\libsndfile-COPYING.txt). Copyright (C) Erik de Castro Lopo and contributors.
@@ -34,6 +54,7 @@ LGPL (with an unRAR restriction); it is not included.
 
 Python
 ------
-The .zip package contains the unmodified "embeddable" Python distribution from https://www.python.org/ (PSF
-licence, see python\LICENSE.txt); the single-file .exe is built with PyInstaller (GPL-2.0 with the bootloader
+The .zip package contains the unmodified "embeddable" Python 3.14 distribution from https://www.python.org/ (PSF
+licence, see licenses\python-LICENSE.txt, which also carries the licences of libraries it contains, such as
+Zstandard, bzip2 and libffi); the single-file .exe is built from Python 3.14 with PyInstaller (GPL-2.0 with the bootloader
 exception, which allows any licence for the resulting program).

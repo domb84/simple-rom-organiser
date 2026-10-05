@@ -10,7 +10,10 @@ if (-not ((Test-Path $dll) -and (Test-Path "$dir\COPYING") -and (Test-Path "$dir
     New-Item -ItemType Directory -Force $dir | Out-Null
     $tmp = Join-Path $env:TEMP "romorg-sndfile-wheel"
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-    python -m pip download soundfile --no-deps --only-binary=:all: --platform win_amd64 --python-version 3.13 -d $tmp | Out-Null
+    # pip of the build's Python series (the py launcher's 3.14 when present; "python" on PATH can be anything)
+    $pyExe, $pyArgs = "python", @()
+    if (Get-Command py -ErrorAction SilentlyContinue) { $pyExe, $pyArgs = "py", @("-3.14") }
+    & $pyExe @pyArgs -m pip download soundfile --no-deps --only-binary=:all: --platform win_amd64 --python-version 3.14 -d $tmp | Out-Null
     if ($LASTEXITCODE) { throw "pip download soundfile failed" }
     $whl = Get-ChildItem "$tmp\soundfile-*.whl" | Select-Object -First 1
     Add-Type -AssemblyName System.IO.Compression.FileSystem

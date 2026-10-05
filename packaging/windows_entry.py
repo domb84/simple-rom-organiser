@@ -32,6 +32,32 @@ if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
             bad += 1
     sys.exit(bad)
 
+if len(sys.argv) > 1 and sys.argv[1] == "--self-check":
+    # CHD engine check of THIS exe (romorg/selfcheck.py): libFLAC, Zstandard, worker processes, the writer.
+    # A windowed exe has no console, so the report goes to the file named by "--report FILE" (default: stdout when
+    # the caller redirected it, else selfcheck.log in the data folder). The exit status is 0 when it passed.
+    args = sys.argv[2:]
+    report = None
+    if "--report" in args:
+        i = args.index("--report")
+        report = args[i + 1] if i + 1 < len(args) else None
+        del args[i:i + 2]
+    if report is None and sys.stdout is None:
+        from romorg import paths
+
+        report = str(paths.data_dir() / "selfcheck.log")
+    stream = open(report, "w", encoding="utf-8", buffering=1) if report else sys.stdout
+    sys.stdout = sys.stderr = stream
+    from romorg import selfcheck
+
+    try:
+        code = selfcheck.main(args)
+    except Exception as exc:  # noqa: BLE001 - the report must say why
+        print(f"FAIL  self-check crashed: {type(exc).__name__}: {exc}")
+        code = 1
+    stream.flush()
+    sys.exit(code)
+
 if sys.stdout is None or sys.stderr is None or os.environ.get("ROMORG_LOG") == "1":
     from romorg import paths
 
