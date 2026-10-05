@@ -30,6 +30,7 @@ def _err(rid, kind: str, exc: BaseException) -> dict:
 
 def serve(stdin=None, stdout=None) -> None:
     from . import chd as chdlib
+    chdlib.Chd.threads = 1          # the worker processes are the parallelism: no decode threads inside them
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     cache: "OrderedDict[str, tuple]" = OrderedDict()

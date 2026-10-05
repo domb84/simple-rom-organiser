@@ -8,7 +8,9 @@ order
 2. the copy bundled in the AppImage (``tools/lib``, see :mod:`romorg.bundle`),
 3. the system's ``libFLAC.so.*`` (ctypes' normal search, ``ldconfig``, the usual library folders),
 
-and when none loads, :func:`decode_frames` is simply the pure-Python decoder (same results, slow). The decoder is
+and when none loads, :func:`decode_frames` is simply the pure-Python decoder (same results, slow). When only the
+audio of a hunk is wanted (no subcode), libsndfile is asked first if it can read from a memory file
+(:func:`romorg.nativeflac.decode_frames_fd`, Linux): that path never calls back into Python. The libFLAC decoder is
 fed exactly like libchdr does it: a synthesised ``fLaC`` + STREAMINFO header (44.1 kHz, 2 channels, 16 bit) followed
 by the FLAC *frames* of the hunk; decoding stops after the hunk's sample count and the position tells where the
 zlib-compressed subcode starts.
@@ -104,33 +106,34 @@ def _load():
     if _tried:
         return _lib
     with _lock:
-        if _tried:
-            return _lib
-        _tried = True
-        if os.environ.get("ROMORG_NO_NATIVE_FLAC"):
-            _note = "disabled (ROMORG_NO_NATIVE_FLAC)"
-            return None
-        errors = []
-        libdir = bundle.lib_dir()
-        if libdir is not None:            # libFLAC needs libogg; the bundled one is not on the loader's path
-            for p in sorted(libdir.glob("libogg.so*")):
-                try:
-                    ctypes.CDLL(str(p), mode=ctypes.RTLD_GLOBAL)
-                    break
-                except OSError:
-                    continue
-        for cand in _candidates():
+        if not _tried:
+            _lib, _lib_path, _note = _find()
+            _tried = True               # last: another thread must never see "tried" before the result is there
+        return _lib
+
+
+def _find() -> tuple:
+    """``(library, its path, note)``; ``(None, None, why)`` when libFLAC cannot be loaded."""
+    if os.environ.get("ROMORG_NO_NATIVE_FLAC"):
+        return None, None, "disabled (ROMORG_NO_NATIVE_FLAC)"
+    errors = []
+    libdir = bundle.lib_dir()
+    if libdir is not None:            # libFLAC needs libogg; the bundled one is not on the loader's path
+        for p in sorted(libdir.glob("libogg.so*")):
             try:
-                lib = ctypes.CDLL(cand)
-                _bind(lib)
-            except (OSError, AttributeError) as exc:
-                errors.append(f"{cand}: {exc}")
+                ctypes.CDLL(str(p), mode=ctypes.RTLD_GLOBAL)
+                break
+            except OSError:
                 continue
-            _lib, _lib_path = lib, cand
-            _note = ""
-            return lib
-        _note = "libFLAC not found" + (f" ({errors[0]})" if errors else "")
-        return None
+    for cand in _candidates():
+        try:
+            lib = ctypes.CDLL(cand)
+            _bind(lib)
+        except (OSError, AttributeError) as exc:
+            errors.append(f"{cand}: {exc}")
+            continue
+        return lib, cand, ""
+    return None, None, "libFLAC not found" + (f" ({errors[0]})" if errors else "")
 
 
 def _bind(lib) -> None:
@@ -323,6 +326,17 @@ def decode_pcm(data, start: int, samples_per_channel: int, big_endian: bool = Fa
     offset where they end. Native when libFLAC loads; else, when the caller does not need the end offset
     (``need_end=False``: the subcode after the frames is not wanted), libsndfile if that loads (what the Windows
     build bundles; the offset returned is then 0); else the pure-Python decoder."""
+    if not need_end and start == 0 and _sndfile() and nativeflac.fd_available():
+        # only the audio is wanted: libsndfile reading a memory file decodes without a single callback into Python,
+        # which is a little quicker on one core and, unlike the libFLAC binding below, scales over decode threads
+        try:
+            pcm = nativeflac.decode_frames_fd(data, samples_per_channel)
+        except nativeflac.NativeFlacError:
+            pcm = None                 # damaged data or no memory file: libFLAC below says what is wrong
+        if pcm is not None:
+            if big_endian != _BIG:
+                pcm.byteswap()
+            return bytearray(pcm.tobytes()), 0
     d = _decoder()
     if d is None and not need_end and start == 0 and _sndfile():
         try:

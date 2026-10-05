@@ -2013,3 +2013,46 @@ lands); the rating bar's width was an inline style the CSP refused (set through 
 Escape; Compact shrinks the row buttons; the Incomplete / Vanish boxes show a disclosure marker. `POST /api/library/plan` also returns `categories` (rows per category,
 moving or already in place): the reason chips use it, and the cards say "Excluded now (N already set aside)" - on an already built library the chips used to offer no
 Excluded / Superseded filter at all. Browse > Matched shows "set aside" (row field `aside`), not "move", for files in the app's own folders.
+
+
+# Amendment 20 - Zstandard CHDs
+
+`chd.py` decodes chdman's `cdzs` (CD: sectors and subcode are Zstandard frames, same ECC bitmap header as `cdzl`) and `zstd` (plain hunks, DVD CHDs)
+codecs through `romorg/zstdnative.py`, which loads a Zstandard decoder and compiles nothing: `compression.zstd` (Python 3.14+), else libzstd through ctypes
+(`$ROMORG_LIBZSTD`, the AppImage's `tools/lib`, a `libzstd.dll` / `zstd.dll` next to the Windows app or in its `native` folder, the system library - present on
+every SteamOS / desktop Linux, and already required by chdman). With no library, or `ROMORG_NO_ZSTD=1`, such a hunk raises `ChdUnsupported` with `needs_chdman`
+exactly as before, so the chdman fallback is unchanged. Damaged Zstandard data is `ChdError` (corrupt), not "unsupported". Still not decoded: `huff`, `flac`
+data hunks and `avhu` (chdman's default `createdvd` codec list contains `huff` and `flac`; a hunk that really uses one sends that file to chdman).
+Checked against chdman 0.289 on real discs re-compressed with `-c cdzs,cdzl,cdfl`, `-c cdzs` and `createdvd -c zstd`: every track hash identical to the
+original, the raw SHA-1 (with subcode) matches; speed with 8 workers on the Steam Deck 220-335 MB/s (the same PlayStation disc as `cdlz`: about 100 MB/s).
+`python -m romorg.selfcheck` reports the library. The Windows builds ship Python 3.13 and no libzstd, so there Zstandard CHDs still go to chdman until the
+build moves to Python 3.14 or bundles a `libzstd.dll`.
+
+# Amendment 21 - The reader reads everything chdman reads
+
+Goal: no CHD needs chdman to be *read* (creating CHDs still does). What was missing after Amendment 20, and how each is done:
+
+| What | How | Checked against |
+|---|---|---|
+| `huff` hunks | `romorg/chdhuff.py`. The tree is read in Python; the codes are handed to **zlib**: a deflate dynamic block is canonical Huffman codes for byte values, and MAME's codes are deflate's mirrored (MAME numbers the longest codes from zero), i.e. the same tree on the complemented, per-byte bit-reversed stream with the symbols of each length reversed. Deflate needs an end-of-block code that MAME's full tree has no room for, so the all-zero longest code shares its place with it and decoding restarts behind each occurrence of that (rare) symbol. Trees deflate cannot hold (15/16-bit codes, incomplete) and flat trees (too many restarts) use the plain loop. | chdman 0.289 `createraw -c huff` and default codecs |
+| `flac` data hunks | `L`/`B` byte + FLAC frames through `flacnative` | chdman default `createhd` / `createdvd` / `createraw` |
+| `avhu` (laserdisc) | `chdhuff.avhuff_decode`: metadata, FLAC / Huffman / raw audio, delta-RLE Huffman YUY2 picture | chdman `createld` (mono and stereo, FLAC audio); Huffman and raw audio only on synthetic hunks |
+| Parent files | `Chd(path, parent=...)`, else the CHD with the wanted SHA-1 in the child's folder (`chd.find_parent`, headers only), opened on the first hunk that needs it. v5 compressed (`PARENT`, `PARENT_SELF`, `PARENT_0/1`: unit offsets), v5 uncompressed (an unwritten hunk is the parent's, or zeros without one), v3/v4 (parent hunk number). A child of a parent without checksum (uncompressed) can only be given by hand, as with chdman. | chdman `-op` children of compressed and uncompressed parents |
+| Versions 1 to 4 | 8-byte (v1/v2) and 16-byte (v3/v4) map entries, entry types compressed / uncompressed / mini / self / parent, MD5-only v1/v2, unit size from the metadata, `CHCD` binary and `CHTR` text CD track lists | **synthetic files only** (`chdtestlib.build_old_chd`, written from MAME's format description): no current chdman writes these |
+| Zstandard without a library | `romorg/zstddec.py`, a pure-Python RFC 8878 decoder (about 1 MB/s) behind `zstdnative` | libzstd: 976 real hunks and 600 fuzzed frames (levels -5 to 22), identical |
+| `chdman verify` | `Chd.verify()`: data SHA-1 and the overall SHA-1 (data + sorted hashes of the flagged metadata); `None` for a CHD without checksums | every fixture |
+
+`ChdUnsupported.needs_chdman` is now only set for a compression name the reader does not know (a later MAME); the chdman fallback in `discsys` stays for that case and for the forced `chdman` engine.
+
+Real files written by chdman 0.289 from generated content are in `tests/fixtures/chd` (`make_fixtures.py` there shows how); `tests/test_chd_formats.py` uses them.
+
+Speed (Steam Deck, 8 threads; chdman 0.289 timed on the same files):
+
+| File | chdman `extract*` | chdman `verify` | reader, 1 process 1 thread | reader, 1 process 4 threads | scheduler, 8 workers, all tracks hashed |
+|---|---|---|---|---|---|
+| CD, FLAC audio only (420 MB) | 3.9-4.3 s | 5.8 s | 4.5 s | 2.8 s | 1.5 s |
+| DVD, chdman's default codecs, 410 MB of PS2 data (16 % `huff` hunks) | 3.8-4.0 s | 5.8 s | 7.2 s | (no threads: 4 KiB hunks) | 2.6 s |
+
+FLAC: one core is bound by the same libFLAC chdman uses, so the gain comes from decoding in parallel. `Chd.threads` (default up to 4, `ROMORG_CHD_THREADS`; 1 inside the scheduler's workers) decodes several hunks at once for hunks of 16 KiB and more. The libFLAC binding calls back into Python for every read and write, which keeps threads queueing for the GIL, so when only the audio is wanted the hunk goes to libsndfile through an anonymous memory file (`nativeflac.decode_frames_fd`, Linux): no callback at all, 94 -> 311 MB/s from 1 to 4 threads in isolation. Audio tracks are decoded straight to CD byte order (one byte swap less). A hunk that many others copy (silence, zeros) is decoded once.
+
+Known limits: `huff` in pure Python + zlib is about 14 MB/s per process (chdman: far more), so a default-codec DVD CHD read by ONE process is slower than chdman; the scheduler's workers make up for it. `avhu` video is a Python loop (about 1 MB/s). Nothing here was run on Windows.

@@ -203,14 +203,14 @@ class ReaderTest(unittest.TestCase):
     def test_unsupported_codec_asks_for_chdman_not_a_crash(self) -> None:
         iso = T.make_iso(20, 14)
         p = self.dir / "z.chd"
-        T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "huff"), pick=lambda h: "zstd" if h == 1 else "zlib")
+        T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "wxyz"), pick=lambda h: "wxyz" if h == 1 else "zlib")
         with chdlib.Chd(p) as c:                                # header / metadata still readable: identification works
             self.assertEqual(c.raw_sha1, sha1(iso))
             with self.assertRaises(chdlib.ChdUnsupported) as cm:
                 chdlib.hash_track(c, c.tracks[0])
         self.assertTrue(cm.exception.needs_chdman)
         self.assertIn("needs chdman", str(cm.exception))
-        self.assertIn("zstd", str(cm.exception))
+        self.assertIn("wxyz", str(cm.exception))
 
     def test_dvd_decode_can_be_cancelled(self) -> None:
         p = self.dir / "c.chd"
@@ -312,7 +312,7 @@ class Ps2ScanTest(unittest.TestCase):
     def test_zstd_dvd_chd_is_identified_by_its_header_and_verify_says_needs_chdman(self) -> None:
         iso = self.w.iso["Gamma (Japan)"]
         p = self.w.root / "Gamma.chd"
-        T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "huff"), pick=lambda h: "zstd" if h == 2 else "zlib")
+        T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "wxyz"), pick=lambda h: "wxyz" if h == 2 else "zlib")
         r = self.w.scan()
         self.assertEqual(r.matched[0].level, "identified")
         res = discsys.verify_units(r, cache_path=self.w.cache)
@@ -324,7 +324,7 @@ class Ps2ScanTest(unittest.TestCase):
         p.parent.mkdir()
         T.build_chd(p, [{"type": "MODE1", "data": self.w.iso["Alpha (USA)"]}], gd=False)
         raw = bytearray(p.read_bytes())
-        raw[16:20] = b"cdzs"                         # the first codec slot now names zstd: all hunks of that slot
+        raw[16:20] = b"wxyz"                         # the first codec slot now names an unknown codec: all hunks of that slot
         p.write_bytes(bytes(raw))
         r = self.w.scan()
         self.assertEqual(r.matched, [])
@@ -480,7 +480,7 @@ class ConvertTest(unittest.TestCase):
         p.parent.mkdir()
         T.build_chd(p, [{"type": "MODE1", "data": self.iso}], gd=False)
         raw = bytearray(p.read_bytes())
-        raw[16:20] = b"cdzs"                          # a codec the built-in reader cannot decode (zstd)
+        raw[16:20] = b"wxyz"                          # a codec the built-in reader cannot decode
         p.write_bytes(bytes(raw))
         (self.w.base / "log.txt").write_text("")
         r = self.w.scan(chdman=self.chdman, engine="python")          # python: never chdman

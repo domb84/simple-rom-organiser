@@ -263,10 +263,32 @@ def _huff_bits(values: Sequence[int], widths: Sequence[int]) -> str:
     return "".join(format(v, f"0{w}b") for v, w in zip(values, widths))
 
 
+def zstd_compress(data: bytes) -> Optional[bytes]:
+    """One Zstandard frame of ``data`` (what chdman's ``zstd`` / ``cdzs`` codecs store), or None when this machine has
+    no Zstandard library - the tests that need it skip."""
+    from romorg import zstdnative
+    lib = zstdnative.status()["library"]
+    if not lib:
+        return None
+    if lib == "compression.zstd":
+        from compression import zstd
+        return zstd.compress(data)
+    import ctypes
+    z = ctypes.CDLL(lib)
+    z.ZSTD_compressBound.restype = ctypes.c_size_t
+    z.ZSTD_compressBound.argtypes = [ctypes.c_size_t]
+    z.ZSTD_compress.restype = ctypes.c_size_t
+    z.ZSTD_compress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+    cap = z.ZSTD_compressBound(len(data))
+    buf = ctypes.create_string_buffer(cap)
+    n = z.ZSTD_compress(buf, cap, data, len(data), 3)
+    return buf.raw[:n]
+
+
 def _compress_hunk(codec: str, raw_sectors: bytes, subcode: bytes, frames: int, audio_flac: Optional[bytes],
                    hunk_bytes: int) -> bytes:
     """Compress one CD hunk (``raw_sectors`` = frames*2352 bytes in hunk byte order)."""
-    if codec in ("cdlz", "cdzl"):
+    if codec in ("cdlz", "cdzl", "cdzs"):
         ecc = bytearray((frames + 7) // 8)
         base = bytearray(raw_sectors)
         for fr in range(frames):
@@ -281,6 +303,10 @@ def _compress_hunk(codec: str, raw_sectors: bytes, subcode: bytes, frames: int, 
         if codec == "cdlz":
             comp = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=chdlib._lzma_filters(frames * SECTOR))
             body = comp.compress(bytes(base)) + comp.flush()
+        elif codec == "cdzs":                         # sectors AND subcode are Zstandard frames
+            clb = 2 if hunk_bytes < 65536 else 3
+            return bytes(ecc) + len(zstd_compress(bytes(base))).to_bytes(clb, "big") + zstd_compress(bytes(base)) \
+                + zstd_compress(subcode)
         else:
             c = zlib.compressobj(9, zlib.DEFLATED, -15)
             body = c.compress(bytes(base)) + c.flush()
@@ -383,6 +409,8 @@ def build_chd(path, tracks: Sequence[dict], codecs: Sequence[str] = ("cdlz", "cd
             elif generic == "zlib":
                 c = zlib.compressobj(9, zlib.DEFLATED, -15)
                 comp, ctype = c.compress(raw_h) + c.flush(), comp_slot["zlib"]
+            elif generic == "zstd":
+                comp, ctype = zstd_compress(raw_h), comp_slot["zstd"]
             else:
                 c = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=chdlib._lzma_filters(hunk_bytes))
                 comp, ctype = c.compress(raw_h) + c.flush(), comp_slot["lzma"]
@@ -487,8 +515,9 @@ def build_dvd_chd(path, iso: bytes, codecs: Sequence[str] = ("lzma", "zlib", "hu
                   pick=None, compressed_map: bool = True) -> dict:
     """Write a DVD CHD like ``chdman createdvd``: metadata ``DVD ``, 2048-byte units, the ISO as the logical data,
     header raw SHA-1 = the ISO's SHA-1. ``pick(hunk_index)`` chooses the codec of a hunk (``lzma`` | ``zlib`` |
-    ``none``, or any other name from ``codecs``: a hunk of that codec with garbage data, to test the reader's
-    refusal of codecs it cannot decode, e.g. ``zstd``). Identical hunks become SELF references."""
+    ``huff`` | ``flac`` | ``zstd`` | ``none``, or any other name from ``codecs``: a hunk of that codec with garbage
+    data, to test the reader's refusal of a codec it does not know, e.g. ``wxyz``). Identical hunks become SELF
+    references."""
     unit = 2048
     assert len(iso) % unit == 0
     hunk_bytes = hunk_sectors * unit
@@ -514,6 +543,12 @@ def build_dvd_chd(path, iso: bytes, codecs: Sequence[str] = ("lzma", "zlib", "hu
         elif codec == "lzma":
             c = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=chdlib._lzma_filters(hunk_bytes))
             comp, ctype = c.compress(raw_h) + c.flush(), list(codecs).index("lzma")
+        elif codec == "zstd" and zstd_compress(b"x") is not None:
+            comp, ctype = zstd_compress(raw_h), list(codecs).index("zstd")
+        elif codec == "huff":
+            comp, ctype = huff_compress(raw_h), list(codecs).index("huff")
+        elif codec == "flac":
+            comp, ctype = b"L" + flac_stream(raw_h, block=len(raw_h) // 4), list(codecs).index("flac")
         else:
             comp, ctype = b"not really " + codec.encode(), list(codecs).index(codec)
         entries.append((ctype, len(comp), len(out), crc))
@@ -791,3 +826,313 @@ def disable_native_flac(testcase) -> None:
         testcase.addCleanup(p.stop)
     flacnative.reload()                      # libFLAC too: forget a library loaded earlier, and load again afterwards
     testcase.addCleanup(flacnative.reload)
+
+
+# --------------------------------------------------------------------------- MAME Huffman (test-side encoders)
+
+def huff_lengths(counts: Sequence[int], maxbits: int = 16) -> list[int]:
+    """Huffman code lengths for a histogram (0 for unused symbols). A lone symbol gets the length 1; a tree that
+    would be deeper than ``maxbits`` is flattened (the rare symbols are counted up) until it fits."""
+    import heapq
+    counts = list(counts)
+    while True:
+        heap = [(c, i, (i,)) for i, c in enumerate(counts) if c]
+        lengths = [0] * len(counts)
+        if len(heap) == 1:
+            lengths[heap[0][1]] = 1
+            return lengths
+        heapq.heapify(heap)
+        while len(heap) > 1:
+            a = heapq.heappop(heap)
+            b = heapq.heappop(heap)
+            for sym in a[2] + b[2]:
+                lengths[sym] += 1
+            heapq.heappush(heap, (a[0] + b[0], min(a[1], b[1]), a[2] + b[2]))
+        if max(lengths) <= maxbits:
+            return lengths
+        counts = [(c + 1) // 2 + 1 if c else 0 for c in counts]
+
+
+def mame_codes(lengths: Sequence[int]) -> dict[int, str]:
+    """MAME's canonical codes as bit strings: the LONGEST codes are numbered from zero."""
+    out: dict[int, str] = {}
+    code = 0
+    for ln in range(max(lengths), 0, -1):
+        for sym, b in enumerate(lengths):
+            if b == ln:
+                out[sym] = format(code, f"0{ln}b")
+                code += 1
+        code >>= 1
+    return out
+
+
+def _bits_to_bytes(bits: str) -> bytes:
+    bits += "0" * (-len(bits) % 8)
+    return int(bits, 2).to_bytes(len(bits) // 8, "big") if bits else b""
+
+
+def huff_compress(data: bytes, lengths: Optional[Sequence[int]] = None, rle: bool = True) -> bytes:
+    """A ``huff`` hunk as chdman writes it: the 24 lengths of a small tree, the 256 code lengths coded with it
+    (symbol 0 = repeat the last length), then one code per byte."""
+    if lengths is None:
+        counts = [0] * 256
+        for b in data:
+            counts[b] += 1
+        lengths = huff_lengths(counts)
+    # tokens of the tree: ("len", L) or ("run", count)
+    tokens: list[tuple[str, int]] = []
+    i = 0
+    last = None
+    while i < 256:
+        ln = lengths[i]
+        run = 1
+        while i + run < 256 and lengths[i + run] == ln:
+            run += 1
+        if rle and ln == last and run >= 2:
+            take = min(run, 2 + 7 + 255)
+            tokens.append(("run", take))
+            i += take
+            continue
+        tokens.append(("len", ln))
+        last = ln
+        i += 1
+    small_counts = [0] * 24
+    for kind, v in tokens:
+        small_counts[0 if kind == "run" else v + 1] += 1
+    small = huff_lengths(small_counts, 6)
+    if sum(1 for x in small if x) == 1:            # a lone symbol: give it a partner so the tree is complete
+        small[[k for k in range(24) if not small[k]][0]] = 1
+    codes = mame_codes(small)
+    bits = format(small[0], "03b") + "000" + "".join(format(small[k], "03b") for k in range(1, 24))
+    for kind, v in tokens:
+        if kind == "len":
+            bits += codes[v + 1]
+        else:
+            bits += codes[0] + (format(v - 2, "03b") if v - 2 < 7 else "111" + format(v - 9, "08b"))
+    data_codes = mame_codes(lengths)
+    bits += "".join(data_codes[b] for b in data)
+    return _bits_to_bytes(bits)
+
+
+def _tree_rle(lengths: Sequence[int], numbits: int) -> str:
+    """``export_tree_rle`` without the runs: a length of 1 is escaped as ``1, 1``."""
+    return "".join(format(1, f"0{numbits}b") * 2 if ln == 1 else format(ln, f"0{numbits}b") for ln in lengths)
+
+
+def avhuff_compress(meta: bytes, channels: Sequence[Sequence[int]], width: int, height: int, yuy2: bytes,
+                    audio: str = "huffman") -> bytes:
+    """An ``avhu`` hunk: ``channels`` are lists of signed 16-bit samples; ``audio`` = ``huffman`` | ``raw``
+    (FLAC audio is covered by the real chdman fixtures)."""
+    samples = len(channels[0]) if channels else 0
+    deltas = []
+    for ch in channels:
+        prev = 0
+        row = []
+        for v in ch:
+            row.append((v - prev) & 0xFFFF)
+            prev = v
+        deltas.append(row)
+    tree = b""
+    streams = []
+    if audio == "raw" or not channels:
+        streams = [b"".join(d.to_bytes(2, "big") for d in row) for row in deltas]
+    else:
+        hi_counts, lo_counts = [0] * 256, [0] * 256
+        for row in deltas:
+            for d in row:
+                hi_counts[d >> 8] += 1
+                lo_counts[d & 0xFF] += 1
+        hi, lo = huff_lengths(hi_counts), huff_lengths(lo_counts)
+        for t in (hi, lo):
+            if sum(1 for x in t if x) == 1:
+                t[[k for k in range(256) if not t[k]][0]] = 1
+        tree = _bits_to_bytes(_tree_rle(hi, 5)) + _bits_to_bytes(_tree_rle(lo, 5))
+        hc, lc = mame_codes(hi), mame_codes(lo)
+        streams = [_bits_to_bytes("".join(hc[d >> 8] + lc[d & 0xFF] for d in row)) for row in deltas]
+    head = bytes([len(meta), len(channels), samples >> 8, samples & 0xFF, width >> 8, width & 0xFF,
+                  height >> 8, height & 0xFF]) + len(tree).to_bytes(2, "big")
+    head += b"".join(len(s).to_bytes(2, "big") for s in streams)
+    video = b""
+    if width and height:
+        # delta + run-length symbols per plane, in the order the decoder asks for them (Y Cb Y Cr)
+        planes = {"y": [], "cb": [], "cr": []}
+        order = []
+        prev = {"y": 0, "cb": 0, "cr": 0}
+        for row in range(height):
+            line = yuy2[row * width * 2:(row + 1) * width * 2]
+            pending = {"y": [], "cb": [], "cr": []}
+            for x in range(0, len(line), 4):
+                for name, v in (("y", line[x]), ("cb", line[x + 1]), ("y", line[x + 2]), ("cr", line[x + 3])):
+                    pending[name].append(v)
+            for name, values in pending.items():
+                syms = []
+                k = 0
+                while k < len(values):
+                    run = 0
+                    while k + run < len(values) and values[k + run] == prev[name]:
+                        run += 1
+                    if run >= 8:            # a run code: 0x100 + (n - 8) for 8..15, 0x108.. for 16 << k
+                        n = min(run, 15) if run < 16 else 1 << (run.bit_length() - 1)
+                        syms.append((0x100 + n - 8) if n < 16 else 0x108 + (n.bit_length() - 5))
+                        k += n
+                    else:
+                        syms.append((values[k] - prev[name]) & 0xFF)
+                        prev[name] = values[k]
+                        k += 1
+                planes[name].append(syms)
+        trees = {}
+        for name in planes:
+            counts = [0] * 272
+            for syms in planes[name]:
+                for sy in syms:
+                    counts[sy] += 1
+            ln = huff_lengths(counts)
+            if sum(1 for x in ln if x) == 1:
+                ln[[k for k in range(272) if not ln[k]][0]] = 1
+            trees[name] = (ln, mame_codes(ln))
+        bits = "10000000"
+        for name in ("y", "cb", "cr"):
+            t = _tree_rle(trees[name][0], 5)
+            bits += t + "0" * (-(len(bits) + len(t)) % 8)
+        # interleave: walk the pixels again and emit a plane's next symbol whenever its run is used up
+        for row in range(height):
+            cursor = {"y": 0, "cb": 0, "cr": 0}
+            left = {"y": 0, "cb": 0, "cr": 0}
+            for _x in range(width // 2):
+                for name in ("y", "cb", "y", "cr"):
+                    if left[name]:
+                        left[name] -= 1
+                        continue
+                    sy = planes[name][row][cursor[name]]
+                    cursor[name] += 1
+                    bits += trees[name][1][sy]
+                    if sy >= 0x100:
+                        left[name] = ((8 + sy - 0x100) if sy <= 0x107 else 16 << (sy - 0x108)) - 1
+        video = _bits_to_bytes(bits)
+    return head + meta + tree + b"".join(streams) + video
+
+
+def avhuff_raw(meta: bytes, channels: Sequence[Sequence[int]], width: int, height: int, yuy2: bytes,
+               hunk_bytes: int) -> bytes:
+    """The decoded form of an A/V hunk (``chav`` header, metadata, big-endian audio, picture, zero padding)."""
+    samples = len(channels[0]) if channels else 0
+    out = b"chav" + bytes([len(meta), len(channels), samples >> 8, samples & 0xFF, width >> 8, width & 0xFF,
+                          height >> 8, height & 0xFF]) + meta
+    for ch in channels:
+        out += b"".join((v & 0xFFFF).to_bytes(2, "big") for v in ch)
+    out += yuy2
+    return out + bytes(hunk_bytes - len(out))
+
+
+# --------------------------------------------------------------------------- old CHD versions (1 to 4)
+
+def meta_entry(tag: bytes, body: bytes, next_offset: int, flags: int = 1) -> bytes:
+    return tag + bytes([flags]) + len(body).to_bytes(3, "big") + next_offset.to_bytes(8, "big") + body
+
+
+def overall_sha1(raw_sha1: bytes, metadata: Sequence[tuple]) -> bytes:
+    """The v4 / v5 header SHA-1: the data SHA-1 and the hashes of the (flagged) metadata entries, sorted."""
+    h = hashlib.sha1(raw_sha1)
+    for item in sorted(tag + hashlib.sha1(body).digest() for tag, body in metadata):
+        h.update(item)
+    return h.digest()
+
+
+def build_old_chd(path, version: int, data: bytes, hunk_bytes: int, kinds=None, metadata: Sequence[tuple] = (),
+                  parent: Optional[dict] = None, compression: int = 1, avhu=None, geometry=None) -> dict:
+    """Write a CHD of version 1 to 4 the way the chdman of its time did.
+
+    ``kinds(hunk) -> "zlib" | "raw" | "mini" | "self" | "parent"`` picks the map entry type (default: zlib, and
+    ``self`` for a hunk seen before); ``mini`` needs a hunk that is one 8-byte pattern, ``parent`` a hunk equal to
+    the parent's hunk of the same number (``parent`` = the dict another build returned). ``avhu(hunk) -> bytes``
+    gives the compressed form for ``compression`` 3. v1 / v2 are hard disks: ``geometry`` =
+    ``(cylinders, heads, sectors)`` and 512-byte sectors."""
+    hunks_n = (len(data) + hunk_bytes - 1) // hunk_bytes
+    raw = data + bytes(hunks_n * hunk_bytes - len(data))
+    head_len = {1: 76, 2: 80, 3: 120, 4: 108}[version]
+    entry = 8 if version <= 2 else 16
+    out = bytearray(head_len + entry * hunks_n)
+    if version >= 3:
+        out += b"EndOfListCookie\0"
+    meta_off = 0
+    if metadata:
+        assert version >= 3
+        meta_off = len(out)
+        pos = meta_off
+        for k, (tag, body) in enumerate(metadata):
+            nxt = pos + 16 + len(body) if k + 1 < len(metadata) else 0
+            out += meta_entry(tag, body, nxt)
+            pos += 16 + len(body)
+    seen: dict[bytes, int] = {}
+    table = bytearray()
+    for h in range(hunks_n):
+        raw_h = raw[h * hunk_bytes:(h + 1) * hunk_bytes]
+        kind = kinds(h) if kinds else ("self" if raw_h in seen else "zlib")
+        crc = zlib.crc32(raw_h) & 0xFFFFFFFF
+        if version <= 2:
+            if kind == "zlib":
+                c = zlib.compressobj(9, zlib.DEFLATED, -15)
+                comp = c.compress(raw_h) + c.flush()
+                if len(comp) >= hunk_bytes:
+                    comp = raw_h
+            else:
+                comp = raw_h
+            table += ((len(comp) << 44) | len(out)).to_bytes(8, "big")
+            out += comp
+            continue
+        if kind == "self":
+            table += struct.pack(">QIHBB", seen[raw_h], crc, 0, 0, 4)
+            continue
+        seen.setdefault(raw_h, h)
+        if kind == "mini":
+            assert raw_h == raw_h[:8] * (hunk_bytes // 8)
+            table += struct.pack(">QIHBB", int.from_bytes(raw_h[:8], "big"), crc, 0, 0, 3)
+        elif kind == "parent":
+            table += struct.pack(">QIHBB", h, crc, 0, 0, 5)
+        elif kind == "raw":
+            table += struct.pack(">QIHBB", len(out), crc, hunk_bytes & 0xFFFF, hunk_bytes >> 16, 2)
+            out += raw_h
+        else:
+            if compression == 3:
+                comp = avhu(h)
+            else:
+                c = zlib.compressobj(9, zlib.DEFLATED, -15)
+                comp = c.compress(raw_h) + c.flush()
+            table += struct.pack(">QIHBB", len(out), crc, len(comp) & 0xFFFF, len(comp) >> 16, 1)
+            out += comp
+    out[head_len:head_len + len(table)] = table
+    raw_sha1 = hashlib.sha1(raw[:len(data)]).digest()
+    md5 = hashlib.md5(raw[:len(data)]).digest()
+    flags = 1 if parent else 0
+    header = bytearray(b"MComprHD" + struct.pack(">III", head_len, version, flags) + struct.pack(">I", compression))
+    info = {"raw_sha1": raw_sha1.hex(), "md5": md5.hex(), "hunks": hunks_n}
+    if version <= 2:
+        cyls, heads, secs = geometry
+        assert cyls * heads * secs * 512 == len(data) and hunk_bytes % 512 == 0
+        header += struct.pack(">5I", hunk_bytes // 512, hunks_n, cyls, heads, secs) + md5
+        header += bytes.fromhex(parent["md5"]) if parent else bytes(16)
+        if version == 2:
+            header += struct.pack(">I", 512)
+        info["sha1"] = ""
+    elif version == 3:
+        header += struct.pack(">IQQ", hunks_n, len(data), meta_off) + md5
+        header += (bytes.fromhex(parent["md5"]) if parent else bytes(16)) + struct.pack(">I", hunk_bytes)
+        header += raw_sha1 + (bytes.fromhex(parent["sha1"]) if parent else bytes(20))
+        info["sha1"] = raw_sha1.hex()
+    else:
+        sha1 = overall_sha1(raw_sha1, metadata)
+        header += struct.pack(">IQQI", hunks_n, len(data), meta_off, hunk_bytes)
+        header += sha1 + (bytes.fromhex(parent["sha1"]) if parent else bytes(20)) + raw_sha1
+        info["sha1"] = sha1.hex()
+    assert len(header) == head_len, (len(header), head_len)
+    out[:head_len] = header
+    Path(path).write_bytes(bytes(out))
+    return info
+
+
+def old_cd_metadata(tracks: Sequence[tuple], order: str = "<") -> bytes:
+    """The binary ``CHCD`` track list of the first CD CHDs: ``tracks`` = ``(type number, frames)``."""
+    body = struct.pack(order + "I", len(tracks))
+    for ttype, frames in tracks:
+        body += struct.pack(order + "6I", ttype, 0, 2352 if ttype in (1, 6, 7) else 2048, 0, frames, (-frames) % 4)
+    return body + bytes(4 + 24 * 99 - len(body))

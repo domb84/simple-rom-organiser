@@ -133,6 +133,11 @@ def _load() -> Optional[ctypes.CDLL]:
             lib.sf_readf_short.argtypes = [ctypes.c_void_p, ctypes.c_void_p, _i64]
             lib.sf_close.argtypes = [ctypes.c_void_p]
             lib.sf_close.restype = ctypes.c_int
+            try:
+                lib.sf_open_fd.restype = ctypes.c_void_p
+                lib.sf_open_fd.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(_SfInfo), ctypes.c_int]
+            except AttributeError:
+                pass
             return lib
         except (OSError, AttributeError):
             continue
@@ -187,3 +192,53 @@ def decode_frames(data: bytes, samples_per_channel: int) -> array:
         if handle:
             lib.sf_close(handle)
         _SOURCES.pop(key, None)
+
+
+# --------------------------------------------------------------------------- without callbacks (Linux)
+# sf_open_virtual calls back into Python for every read, which holds the GIL: decode threads then queue up behind
+# each other. Handing libsndfile a file descriptor instead keeps the whole decode in C. The "file" is an anonymous
+# memory file (memfd), one per thread, rewritten for every hunk - nothing touches a disk.
+_local = threading.local()
+
+
+def fd_available() -> bool:
+    """True when hunks can be decoded without any callback (libsndfile with ``sf_open_fd`` and Linux memfds)."""
+    lib = _get()
+    return lib is not None and hasattr(os, "memfd_create") and hasattr(lib, "sf_open_fd") \
+        and getattr(lib.sf_open_fd, "argtypes", None) is not None
+
+
+def decode_frames_fd(data: bytes, samples_per_channel: int) -> array:
+    """Like :func:`decode_frames`, through a memory file: no Python runs while libsndfile decodes, so several
+    threads really decode at once."""
+    lib = _get()
+    if lib is None or not fd_available():
+        raise NativeFlacError("libsndfile cannot read from a memory file here")
+    st = _local.__dict__
+    fd = st.get("fd")
+    if fd is None:
+        try:
+            fd = st["fd"] = os.memfd_create("romorg-flac")
+        except OSError as exc:
+            raise NativeFlacError(f"no memory file: {exc}") from exc
+        st["info"] = _SfInfo()
+    stream = _stream_header(samples_per_channel) + bytes(data)
+    try:
+        os.pwrite(fd, stream, 0)
+        os.ftruncate(fd, len(stream))
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError as exc:
+        raise NativeFlacError(f"memory file: {exc}") from exc
+    info = st["info"]
+    info.format = 0
+    handle = lib.sf_open_fd(fd, SFM_READ, ctypes.byref(info), 0)
+    if not handle:
+        raise NativeFlacError("libsndfile could not open the hunk")
+    try:
+        out = array("h", bytes(samples_per_channel * 4))
+        got = lib.sf_readf_short(handle, out.buffer_info()[0], samples_per_channel)
+    finally:
+        lib.sf_close(handle)
+    if got != samples_per_channel or info.channels != 2:
+        raise NativeFlacError(f"libsndfile decoded {got} of {samples_per_channel} samples")
+    return out

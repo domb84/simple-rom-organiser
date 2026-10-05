@@ -123,6 +123,22 @@ def check_flac() -> Tuple[bool, str]:
     return True, f"libFLAC {st['library']} decodes a synthetic hunk bit-identically (consumed {end} bytes)"
 
 
+def check_zstd() -> Tuple[str, str]:
+    """``("OK" | "WARN", text)``: Zstandard CHDs (cdzs / zstd) are fast with a library and slow without one."""
+    from . import zstdnative
+    st = zstdnative.status()
+    if not st["native"]:
+        if zstdnative.decompress(bytes.fromhex("28b52ffd2005" "290000") + b"romor", 5) != b"romor":
+            return "WARN", "the built-in Zstandard decoder did not decode a test frame"
+        return "WARN", (f"no Zstandard library ({st['note']}): cdzs / zstd CHDs are decoded by the built-in "
+                        "Python decoder (correct, about 1 MB/s)")
+    # a hand-made frame: magic, single-segment header with content size 5, one last raw block holding "romor"
+    frame = bytes.fromhex("28b52ffd2005" "290000") + b"romor"
+    if zstdnative.decompress(frame, 5) != b"romor":
+        return "WARN", "the Zstandard library did not decode a test frame"
+    return "OK", f"Zstandard CHDs (cdzs / zstd) are decoded with {st['library']}"
+
+
 def check_scheduler() -> Tuple[bool, str]:
     from . import chd as chdlib
     from . import chdsched
@@ -174,6 +190,10 @@ def main(argv: List[str] | None = None) -> int:
         lines.append(("SKIP", "not running from an AppImage (no bundle)"))
     status, text = check_chdman()
     lines.append((status, text))
+    try:
+        lines.append(check_zstd())
+    except Exception as exc:  # noqa: BLE001
+        lines.append(("WARN", f"Zstandard check: {type(exc).__name__}: {exc}"))
     for fn in (check_flac, check_scheduler):
         try:
             ok, text = fn()

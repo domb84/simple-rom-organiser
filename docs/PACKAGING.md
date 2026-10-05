@@ -189,8 +189,14 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
 - External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
 - Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
 - **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
-  used for codecs the reader lacks (zstd, huff, ...) and when forced with `engine = "chdman"`. Creating a CHD is
+  used only for a codec name the reader does not know (a format newer than chdman 0.289) and when forced with
+  `engine = "chdman"`. Creating a CHD is
   always `chdman createcd/createdvd` with its own (multi-threaded) defaults.
+- **Zstandard CHDs (`cdzs` / `zstd`).** Decoded by the built-in reader when a Zstandard library loads
+  (`romorg/zstdnative.py`): Python 3.14's `compression.zstd`, or a `libzstd.dll` / `zstd.dll` next to the app or in its
+  `native` folder (`ROMORG_LIBZSTD` names one). The Windows builds use Python 3.13 and bundle no libzstd, so there
+  these CHDs are decoded by the pure-Python fallback (`romorg/zstddec.py`: correct, about 1 MB/s per worker) unless
+  you add the DLL. On Linux the system `libzstd` is used.
 - **Native FLAC (optional).** CD-audio (`cdfl`) hunks are decoded by `romorg/flacnative.py` with libFLAC when one
   loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, a `libFLAC.dll` next to the app or in its `native` folder,
   the system's). When none does, `romorg/nativeflac.py` decodes the audio with libsndfile (which contains libFLAC;

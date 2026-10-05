@@ -544,8 +544,11 @@ workers when the machine is short of RAM). FLAC audio (`cdfl`) is decoded by the
 ctypes** (about 80-100 MB/s per core instead of 1.2 MB/s in pure Python; the pure-Python decoder remains as the fallback,
 same results). The Dreamcast / PlayStation bar shows which engine ran and its MB/s. See the table in
 `docs/ARCHITECTURE.md` (Amendment 14) for measured times on a Steam Deck. **chdman** is used only (a) to *create* CHDs when
-you convert (multi-core), and (b) as the fallback for a CHD the built-in reader cannot decode (e.g. zstd made by a newer
-chdman), or always when you choose "always chdman" in the Convert step; the engine setting `chd_engine` is `auto`
+you convert (multi-core), and (b) for a CHD in a format newer than the built-in reader knows, or always when you
+choose "always chdman" in the Convert step. The built-in reader reads everything chdman 0.289 reads: CHD versions 1 to
+5, every compression (`zlib`, `lzma`, `zstd`, `huff`, `flac`, the CD codecs `cdlz` / `cdzl` / `cdfl` / `cdzs`, the
+laserdisc codec `avhu`) and CHDs that need a parent file (the parent is found by its SHA-1 in the same folder).
+Zstandard uses the system's libzstd (SteamOS has it) and falls back to a slow built-in decoder without one; the engine setting `chd_engine` is `auto`
 | `python` (never chdman) | `chdman`.
 
 **chdman.** The AppImage ships the MAME `chdman` (and libFLAC / libogg / libutf8proc) under `tools/`; they are NOT in
@@ -606,9 +609,9 @@ extracted file), a PlayStation disc as `MODE2_RAW`; the built-in reader decodes 
 error-correction bytes rebuilt, with the header counted as zeros as the CD standard says) and the result must equal
 the Redump size and crc32 / md5 / sha1 - a PS2 CHD matches only if the whole ISO (or every bin track) is identical. A DVD
 CHD made by `chdman createdvd` (metadata `DVD `, 2048-byte units) carries the ISO's SHA-1 in its header, so it is
-*identified* instantly without decoding; **Verify fully** decodes it (*verified*). CHDs that use a codec the built-in reader
-lacks (Zstandard - newer chdman versions use it by default) are reported as *needs chdman* and **left in place** (never moved to
-`_unmatched/`); with chdman installed they are read by chdman. PS2 DVD games have no audio tracks, so for them
+*identified* instantly without decoding; **Verify fully** decodes it (*verified*). Every compression chdman 0.289
+writes is decoded by the built-in reader; a CHD in a format newer than that is reported as *needs chdman* and **left
+in place** (never moved to `_unmatched/`); with such a chdman installed it is read by chdman. PS2 DVD games have no audio tracks, so for them
 *identified* from a decode is already fully verified.
 
 **Big-file scan times (built-in reader, Steam Deck, 8 decode processes).** Measured on the real files: God of War II (8.1 GB of ISO data)

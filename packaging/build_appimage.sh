@@ -224,7 +224,7 @@ else
 fi
 
 # Sanity check: everything the app needs imports with the bundled interpreter alone.
-"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.whdload, romorg.redump, romorg.convert, romorg.chd, romorg.chdtool, romorg.tempspace, romorg.chdsched, romorg.chdworker, romorg.flacnative, romorg.bundle, romorg.multihash, romorg.discsys, romorg.dreamcast, romorg.playstation, lzma, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
+"$PY" -I -B -c 'import romorg, romorg.server, romorg.__main__, romorg.tags, romorg.library, romorg.autoupdate, romorg.nointro, romorg.whdload, romorg.redump, romorg.convert, romorg.chd, romorg.chdtool, romorg.tempspace, romorg.chdsched, romorg.chdworker, romorg.chdhuff, romorg.zstdnative, romorg.zstddec, romorg.flacnative, romorg.nativeflac, romorg.bundle, romorg.multihash, romorg.discsys, romorg.dreamcast, romorg.playstation, lzma, urllib.request, sqlite3, ssl, zlib, zipfile, hashlib, xml.etree.ElementTree, http.server, webbrowser, importlib.resources as r; assert (r.files("romorg") / "static" / "index.html").is_file()' \
   || die "bundled Python failed the import self-check"
 # CHD reader self-check: raw LZMA1 + raw deflate (cdlz / cdzl hunks) and the big-integer ECC rebuild must work in
 # the bundled interpreter (the lzma module is optional in some Python builds).

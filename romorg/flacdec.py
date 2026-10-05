@@ -289,6 +289,8 @@ def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2)
             side = chans[1]                           # ((2m | s&1) + s) >> 1  ==  m + ((s + (s & 1)) >> 1)
             left = [m + ((s + (s & 1)) >> 1) for m, s in zip(chans[0], side)]
             right = list(map(sub, left, side))
+        elif nch == 1:
+            left, right = chans[0], ()
         else:
             left, right = chans
         pos = (pos + 7) & ~7                          # byte align
@@ -298,8 +300,10 @@ def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2)
         total += blocksize
     if total != samples_per_channel:
         raise FlacError("FLAC frames overshoot the hunk")
-    pcm = array("h", bytes(4 * total))
     try:
+        if channels == 1:
+            return array("h", left_all), start + (pos + 7) // 8
+        pcm = array("h", bytes(4 * total))
         pcm[0::2] = array("h", left_all)
         pcm[1::2] = array("h", right_all)
     except OverflowError as exc:                      # pragma: no cover - corrupt data

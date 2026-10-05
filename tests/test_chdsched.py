@@ -237,7 +237,7 @@ class ErrorsTest(Base):
             with self.assertRaises(chd.ChdError):
                 s.hash_tracks(c, [0, 1, 2])
         z = str(self.dir / "zstd.chd")
-        T.build_dvd_chd(z, T.make_iso(40, 3), pick=lambda h: "zstd", codecs=("lzma", "zlib", "huff", "zstd"))
+        T.build_dvd_chd(z, T.make_iso(40, 3), pick=lambda h: "wxyz", codecs=("lzma", "zlib", "wxyz", "zstd"))
         with chd.Chd(z, load_map=False) as c, chdsched.Scheduler(2) as s:
             with self.assertRaises(chd.ChdUnsupported) as cm:
                 s.hash_tracks(c, [0])

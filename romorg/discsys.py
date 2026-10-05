@@ -317,7 +317,7 @@ class DcUnit:
     candidates: list[str] = field(default_factory=list)
     gd: bool = True
     disc_kind: str = ""             # gdrom | cd | dvd (what the CHD is; "" for raw sets)
-    needs_chdman: bool = False      # a valid CHD whose codec the built-in reader lacks and no chdman identified it
+    needs_chdman: bool = False      # a valid CHD in a format newer than the built-in reader, and no chdman identified it
     decoded: bool = False           # identification had to decode (not served by the cache / the header)
 
     @property
@@ -885,8 +885,9 @@ def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chd
     """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first).
 
     Engine policy: ``auto`` / ``python`` decode with the built-in reader (parallel scheduler + native FLAC);
-    chdman is only used when the reader says it cannot decode the file (``needs_chdman``: e.g. a zstd CHD made by a
-    newer chdman) unless ``engine`` is ``python``; ``chdman`` forces chdman first."""
+    chdman is only used when the reader says it cannot decode the file (``needs_chdman``: a compression name it
+    does not know, i.e. a format newer than chdman 0.289) unless ``engine`` is ``python``; ``chdman`` forces chdman
+    first."""
     path = unit.path
     system = index.system
     try:

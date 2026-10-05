@@ -146,6 +146,64 @@ class SyntheticChdTest(unittest.TestCase):
         self.assert_disc(self.write("l.chd", codecs=("lzma", "zlib", "", ""), generic="lzma"))
         self.assert_disc(self.write("n.chd", codecs=("zlib", "", "", ""), generic="none"))
 
+    # -- Zstandard (chdman's ``cdzs`` / ``zstd`` codecs); the library is loaded, never compiled
+    def needs_zstd(self) -> None:
+        from romorg import zstdnative
+        zstdnative.reload()
+        if not zstdnative.available():
+            self.skipTest("no Zstandard library on this machine")
+
+    def test_cdzs_sectors_subcode_and_ecc(self) -> None:
+        self.needs_zstd()
+        self.assert_disc(self.write("zs.chd", codecs=("cdzs", "cdzl", "cdfl", "")))                 # data: cdzs
+        self.assert_disc(self.write("zs2.chd", codecs=("cdzs", "cdzl", "cdfl", ""), audio_codec=0))  # audio too
+
+    def test_generic_zstd_hunks(self) -> None:
+        self.needs_zstd()
+        self.assert_disc(self.write("zg.chd", codecs=("zstd", "zlib", "", ""), generic="zstd"))
+
+    def test_zstd_dvd_chd(self) -> None:
+        self.needs_zstd()
+        iso = T.make_iso(40, 3)
+        p = str(Path(self.tmp.name) / "zd.chd")
+        T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "huff"), pick=lambda h: "zstd" if h % 3 else "lzma")
+        with chd.Chd(p) as c:
+            self.assertEqual(b"".join(c.iter_track(c.tracks[0])), iso)
+
+    def test_damaged_zstd_is_corrupt_not_unsupported(self) -> None:
+        self.needs_zstd()
+        p = self.write("zbad.chd", codecs=("zstd", "zlib", "", ""), generic="zstd")
+        with chd.Chd(p) as c:
+            off, n = c._coff[0], c._clen[0]
+        raw = bytearray(Path(p).read_bytes())
+        raw[off + 4:off + n] = bytes(n - 4)                 # keep the frame magic, wreck the rest
+        Path(p).write_bytes(bytes(raw))
+        with chd.Chd(p) as c, self.assertRaises(chd.ChdError) as cm:
+            c.read_hunk_raw(0)
+        self.assertNotIsInstance(cm.exception, chd.ChdUnsupported)
+        self.assertIn("Zstandard", str(cm.exception))
+
+    def test_without_a_zstd_library_the_python_decoder_reads_it(self) -> None:
+        self.needs_zstd()
+        from unittest import mock
+        from romorg import zstdnative
+        p = self.write("zno.chd", codecs=("cdzs", "cdzl", "cdfl", ""))
+        with chd.Chd(p) as c:
+            want = [b"".join(c.iter_track(t)) for t in c.tracks]
+            self.assertTrue(c.verify_raw_sha1())
+        with mock.patch.dict(os.environ, {zstdnative.ENV_OFF: "1"}):
+            zstdnative.reload()
+            try:
+                self.assertFalse(zstdnative.native())
+                self.assertTrue(zstdnative.available())
+                self.assertIn("disabled", zstdnative.status()["note"])
+                with chd.Chd(p) as c:
+                    self.assertEqual([b"".join(c.iter_track(t)) for t in c.tracks], want)
+                    self.assertTrue(c.verify_raw_sha1())
+            finally:
+                zstdnative.reload()
+        self.assertTrue(zstdnative.native())
+
     def test_uncompressed_map(self) -> None:
         p = self.write("u.chd", codecs=("", "", "", ""), generic="none", compressed_map=False)
         with chd.Chd(p) as c:
@@ -193,9 +251,9 @@ class SyntheticChdTest(unittest.TestCase):
         bad.write_bytes(b"not a chd" + bytes(200))
         with self.assertRaises(chd.ChdError):
             chd.Chd(bad)
-        v4 = bytearray(raw)
-        v4[12:16] = struct.pack(">I", 4)
-        bad.write_bytes(bytes(v4))
+        v6 = bytearray(raw)
+        v6[12:16] = struct.pack(">I", 6)                # a version no chdman writes (1 to 5 are read)
+        bad.write_bytes(bytes(v6))
         with self.assertRaises(chd.ChdUnsupported):
             chd.Chd(bad)
         trunc = raw[:len(raw) - 40]                    # the map is cut off
@@ -220,14 +278,19 @@ class SyntheticChdTest(unittest.TestCase):
             with self.assertRaises(chd.ChdError):
                 b"".join(c.iter_track(c.tracks[0]))
 
-    def test_parent_chd_is_unsupported(self) -> None:
+    def test_a_chd_naming_a_parent_opens_and_reads_what_it_holds_itself(self) -> None:
+        # chdman refuses to open a child without its parent; the reader only needs the parent for the hunks that
+        # are taken from it (tests/test_chd_formats.py has real parent / child pairs)
         p = self.write("par.chd")
         raw = bytearray(Path(p).read_bytes())
         raw[104:124] = bytes(range(1, 21))
-        q = Path(self.tmp.name) / "parent.chd"
+        q = Path(self.tmp.name) / "child.chd"
         q.write_bytes(bytes(raw))
-        with self.assertRaises(chd.ChdUnsupported):
-            chd.Chd(q)
+        with chd.Chd(q) as c, chd.Chd(p) as plain:
+            self.assertTrue(c.has_parent)
+            self.assertEqual(c.describe()["parent_sha1"], bytes(range(1, 21)).hex())
+            self.assertEqual(plain.describe()["parent_sha1"], "")
+            self.assertEqual(b"".join(c.iter_track(c.tracks[0])), b"".join(plain.iter_track(plain.tracks[0])))
 
     def test_cancel(self) -> None:
         p = self.write("cancel.chd")

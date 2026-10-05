@@ -1563,7 +1563,7 @@
       : (s.engine === "mixed" ? `CHDs were read with the built-in reader; chdman (${s.chdman}) decoded the ones the reader cannot. `
         : "CHDs were read with the built-in reader (no chdman needed). ")
         + "Data tracks are hashed, audio is checked by length until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "")
-        + (s.needs_chdman ? ` ${fmt(s.needs_chdman)} CHD(s) use a compression the built-in reader cannot decode (zstd) - they are left in place; install chdman to identify them.` : "");
+        + (s.needs_chdman ? ` ${fmt(s.needs_chdman)} CHD(s) use a compression this version does not know (made by a newer chdman?) - they are left in place; install that chdman to identify them.` : "");
     const speed = s.engine_text || state.dcSpeed || "";
     $("dc-speed-line").textContent = speed ? `Last decode: ${speed}` : "";
     $("dc-speed-line").classList.toggle("hidden", !speed);
@@ -1584,7 +1584,7 @@
       el("ul", {},
         el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
         el("li", { text: "The built-in reader decodes with every CPU core at once (and the system\u2019s libFLAC for audio): typically 100-250 MB/s on a Steam Deck, so a 1 GB disc takes seconds and an 8 GB PlayStation 2 DVD well under a minute or two. Nothing is written to disk." }),
-        el("li", { text: "chdman is only used for a CHD the built-in reader cannot decode (for example zstd compression) or when you chose \"always chdman\": it extracts the disc to scratch space (in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder) and deletes it again. You can cancel at any time." })));
+        el("li", { text: "The built-in reader reads every CHD chdman 0.289 can (all versions and compressions, parent files next to their child). chdman is only used for a CHD in a format newer than that, or when you chose \"always chdman\": it extracts the disc to scratch space (in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder) and deletes it again. You can cancel at any time." })));
     if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
     Jobs.start("/api/dc/verify", {});
   }
