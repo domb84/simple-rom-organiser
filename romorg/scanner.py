@@ -92,13 +92,12 @@ class Entry:
     @property
     def rel(self) -> str:
         """Path relative to the scan root (POSIX style), plus ``::member`` for archives."""
-        p = self.path
+        text = os.fspath(self.path)
         if self.root is not None:
-            try:
-                p = p.relative_to(self.root)
-            except ValueError:
-                pass
-        s = p.as_posix()
+            base = os.fspath(self.root)
+            if text.startswith(base + os.sep) or (base.endswith(os.sep) and text.startswith(base)):
+                text = text[len(base):].lstrip(os.sep) if base.endswith(os.sep) else text[len(base) + 1:]
+        s = text.replace(os.sep, "/")
         return f"{s}::{self.member}" if self.member is not None else s
 
 
@@ -277,8 +276,12 @@ CONVERTIBLE_EXTS = {".sfc", ".z64"}
 
 def _rel_parts(path: Path, root: Path) -> tuple[str, ...]:
     """``path`` relative to ``root`` as name parts; ``()`` when it is not inside (cheaper than relative_to)."""
-    parts, base = Path(path).parts, Path(root).parts
-    return parts[len(base):] if parts[:len(base)] == base else ()
+    text, base = os.fspath(path), os.fspath(root)
+    if base.endswith(os.sep):
+        rel = text[len(base):] if text.startswith(base) else ""
+    else:
+        rel = text[len(base) + 1:] if text.startswith(base + os.sep) else ""
+    return tuple(rel.split(os.sep)) if rel else ()
 
 
 def is_converted_original(path: Path, root: Path) -> bool:

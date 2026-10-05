@@ -341,6 +341,54 @@ class Rules(unittest.TestCase):
         self.assertTrue(all(d.action == KEEP for d in by.values()))
 
 
+class OverrideTests(unittest.TestCase):
+    """The user's per-game "always keep" / "always exclude" beat every rule."""
+
+    def prof(self, *overrides: tuple[str, str]) -> LibraryProfile:
+        return replace(library.default_profile(AMIGA), overrides=tuple((GAMES, n + ".adf", a) for n, a in overrides))
+
+    # an override names the game as the DAT does: the set name (No-Intro) or the rom name with its extension (TOSEC)
+
+    def test_always_keep_rescues_an_excluded_and_a_superseded_file(self) -> None:
+        bad, old, new = "B (1990)(P)[b]", "G v1.0 (1990)(P)", "G v1.1 (1991)(P)"
+        base = run([bad, old, new])[2]
+        self.assertEqual((base[bad].action, base[old].action), (EXCLUDED, SUPERSEDED))
+        by = run([bad, old, new], self.prof((bad, "keep"), (old, "keep")))[2]
+        self.assertEqual(actions(by), {bad: KEEP, old: KEEP, new: KEEP})
+        self.assertEqual(by[bad].codes, (library.OVERRIDE_KEEP,))
+
+    def test_always_exclude_sets_a_kept_file_aside_with_its_own_code(self) -> None:
+        name = "Good (1990)(P)"
+        d = run([name], self.prof((name, "exclude")))[2][name]
+        self.assertEqual((d.action, d.codes), (EXCLUDED, (library.OVERRIDE_EXCLUDE,)))
+
+    def test_an_excluded_disk_drops_the_playlist_of_its_set(self) -> None:
+        names = ["Two (1990)(P)(Disk 1 of 2)", "Two (1990)(P)(Disk 2 of 2)"]
+        self.assertEqual(len(run(names)[1].sets), 1)
+        _i, sel, by = run(names, self.prof((names[1], "exclude")))
+        self.assertEqual(sel.sets, [])
+        self.assertEqual(by[names[1]].action, EXCLUDED)
+
+    def test_other_games_and_other_dats_are_untouched(self) -> None:
+        a, b = "A (1990)(P)", "B (1990)(P)"
+        by = run([a, b], self.prof((a, "exclude")))[2]
+        self.assertEqual(actions(by), {a: EXCLUDED, b: KEEP})
+        other = replace(library.default_profile(AMIGA), overrides=(("Some other DAT", a + ".adf", "exclude"),))
+        self.assertEqual(actions(run([a], other)[2]), {a: KEEP})
+
+    def test_overrides_round_trip_and_bad_entries_are_dropped(self) -> None:
+        prof = LibraryProfile(overrides=[(GAMES, "B", "keep"), (GAMES, "A", "exclude"), (GAMES, "A", "keep"),
+                                         ("", "x", "keep"), (GAMES, "C", "maybe"), "junk", (GAMES, "D")])
+        self.assertEqual(prof.overrides, ((GAMES, "A", "keep"), (GAMES, "B", "keep")))        # last wins, sorted
+        again = LibraryProfile.from_dict(prof.to_dict())
+        self.assertEqual(again.overrides, prof.overrides)
+        self.assertEqual(LibraryProfile.from_dict({"exclude": []}, prof).overrides, prof.overrides)   # kept when not mentioned
+
+    def test_the_profile_signature_follows_the_overrides(self) -> None:
+        from romorg import totals
+        self.assertNotEqual(totals.profile_signature(self.prof()), totals.profile_signature(self.prof(("A (1990)(P)", "keep"))))
+
+
 class NoIntro(unittest.TestCase):
     def test_latest_per_region_and_rules(self) -> None:
         dat = "Nintendo - Game Boy Advance"

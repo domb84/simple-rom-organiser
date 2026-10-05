@@ -60,9 +60,11 @@ Rules:
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import difflib
 import errno
+import functools
 import filecmp
 import hashlib
 import json
@@ -157,6 +159,7 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
+@functools.lru_cache(maxsize=131072)
 def safe_filename(name: str) -> str:
     """Return ``name`` made safe for Windows/FAT/exFAT and common Linux filesystems.
 
@@ -186,10 +189,13 @@ def dat_folder_name(dat_name: str) -> str:
 
 def canonical_dir(root: Path, dat_name: str, layout: Optional[str] = LAYOUT_PER_DAT) -> Path:
     """Folder matched files of ``dat_name`` belong in: ``root/<DAT folder>`` or ``root`` (flat)."""
-    root = Path(root)
-    if layout == LAYOUT_FLAT:
-        return root
-    return root / dat_folder_name(dat_name)
+    return _canonical_dir_cached(os.fspath(root), dat_name, layout)
+
+
+@functools.lru_cache(maxsize=4096)
+def _canonical_dir_cached(root: str, dat_name: str, layout: Optional[str]) -> Path:
+    base = Path(root)           # Paths are immutable: every file of a DAT shares this one
+    return base if layout == LAYOUT_FLAT else base / dat_folder_name(dat_name)
 
 
 def _archive_stem(rom: "Rom") -> str:
@@ -290,11 +296,20 @@ def _abs(path: Path, root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _rel_text(path: Path, root: Path) -> Optional[str]:
+    """``path`` relative to ``root`` as an os-separated string (None when it is outside; "" for the root itself).
+    String work only: this runs for every file of a big scan and pathlib's ``relative_to`` was the planner's hot spot."""
+    text, base = os.fspath(path), os.fspath(root)
+    if text == base:
+        return ""
+    if base.endswith(os.sep):                # the filesystem root
+        return text[len(base):] if text.startswith(base) else None
+    return text[len(base) + 1:] if text.startswith(base + os.sep) else None
+
+
 def _rel_to(path: Path, root: Path) -> Optional[Path]:
-    try:
-        return path.relative_to(root)
-    except ValueError:
-        return None
+    text = _rel_text(path, root)
+    return None if text is None else Path(text)
 
 
 def _add_reason(op: RenameOp, extra: str) -> None:
@@ -305,8 +320,8 @@ def _add_reason(op: RenameOp, extra: str) -> None:
 
 
 def _parts_of(path: Path, root: Path) -> tuple[str, ...]:
-    rel = _rel_to(path, root)
-    return rel.parts if rel is not None else ()
+    text = _rel_text(path, root)
+    return tuple(text.split(os.sep)) if text else ()
 
 
 def _is_reserved_path(path: Path, root: Path) -> bool:
@@ -479,15 +494,46 @@ def _collect(result: "ScanResult", root: Path) -> tuple[dict[Path, "Match"], set
 def _scan_units(result: "ScanResult", layout: Optional[str] = None,
                 planner: Optional[_Planner] = None) -> tuple[list[MatchedUnit], list[RenameOp]]:
     """``(units, other ops)``; ``other ops`` (unmatched / skipped / converted originals / unsupported /
-    unreadable files) are only built when a ``planner`` is given."""
-    from .datfile import unit_key
+    unreadable files) are only built when a ``planner`` is given.
 
+    The planner-independent part (the units) is worked out once per scan result and layout and handed out as copies:
+    the plan edits its ops, and every preview / total used to rebuild all of them."""
     root = result.root
     if layout is None:
         layout = getattr(result, "layout", LAYOUT_PER_DAT) or LAYOUT_PER_DAT
+    units, others, unmatched_loose, unmatched_archives = _base_units(result, layout)
+    units = [dataclasses.replace(u, op=copy.copy(u.op)) for u in units]
+    others = [copy.copy(o) for o in others]
+    if planner is not None:
+        for p in unmatched_loose:
+            others.append(planner.unmatched(p, "no DAT match"))
+        for p, why in unmatched_archives:
+            others.append(planner.unmatched(p, why))
+        for p in result.unsupported:
+            others.append(planner.unmatched(_abs(Path(p), root), "unsupported archive (7z not found)"))
+        for p, msg in result.errors:
+            ap = _abs(Path(p), root)
+            others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))
+    return units, others
+
+
+def _base_units(result: "ScanResult", layout: str) -> tuple[list[MatchedUnit], list[RenameOp], list[Path], list[tuple[Path, str]]]:
+    if not getattr(result, "cache_units", False):    # only the server, which never edits a finished scan, opts in
+        return _build_units(result, layout)
+    cache = result.__dict__.setdefault("_base_units_cache", {})
+    if layout not in cache:
+        cache[layout] = _build_units(result, layout)
+    return cache[layout]
+
+
+def _build_units(result: "ScanResult", layout: str) -> tuple[list[MatchedUnit], list[RenameOp], list[Path], list[tuple[Path, str]]]:
+    from .datfile import unit_key
+
+    root = result.root
     loose_matched, loose_unmatched, archives = _collect(result, root)
     units: list[MatchedUnit] = []
     others: list[RenameOp] = []
+    unmatched_archives: list[tuple[Path, str]] = []
 
     def style_of(rom: "Rom") -> str:
         from .tags import style_of_rom
@@ -501,9 +547,7 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
         op, rom = _matched_op(p, root, m.primary, None, layout, via, getattr(m, "byte_order", "") or "")
         units.append(MatchedUnit(p, op, rom, frozenset(unit_key(r) for r in m.primary), _header_form(rom, via),
                                  rom.dat, via == "raw", False, os.path.islink(p), None, 1, style_of(rom)))
-    if planner is not None:
-        for p in loose_unmatched - set(loose_matched):
-            others.append(planner.unmatched(p, "no DAT match"))
+    unmatched_loose = sorted(loose_unmatched - set(loose_matched), key=os.fspath)
 
     for p, members in archives.items():
         if _is_converted_original(p, root):
@@ -513,8 +557,7 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
         n = len(members)
         _, ext = _split_ext(p.name)
         if not matches:
-            if planner is not None:
-                others.append(planner.unmatched(p, "no DAT match" if n == 1 else f"none of {n} members match"))
+            unmatched_archives.append((p, "no DAT match" if n == 1 else f"none of {n} members match"))
             continue
         if len(matches) == n:
             # All members matched: usable if they belong to one game (set) of one DAT.
@@ -534,14 +577,7 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
                                          True, os.path.islink(p), members[0][0].member, n, style_of(rom)))
                 continue
         others.append(RenameOp(p, p, "skip", f"archive has {n} members ({len(matches)} matched)"))
-
-    if planner is not None:
-        for p in result.unsupported:
-            others.append(planner.unmatched(_abs(Path(p), root), "unsupported archive (7z not found)"))
-        for p, msg in result.errors:
-            ap = _abs(Path(p), root)
-            others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))
-    return units, others
+    return units, others, unmatched_loose, unmatched_archives
 
 
 def matched_units(result: "ScanResult", layout: Optional[str] = None) -> list[MatchedUnit]:
@@ -602,8 +638,10 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
     planner = _Planner(root, missing_dats, layout)
     units, others = _scan_units(result, layout, planner)
     ops: list[RenameOp] = [u.op for u in units] + others
+    links = {id(u.op) for u in units if u.link}        # the units already know (one lstat per file, done once)
+    known = {id(u.op) for u in units}
     for op in ops:
-        if op.status in MOVE_STATUSES and os.path.islink(op.src):
+        if op.status in MOVE_STATUSES and (id(op) in links if id(op) in known else os.path.islink(op.src)):
             op.status, op.dst, op.reason = "skip", op.src, "symbolic link - left in place"
 
     # Duplicates first (independent of the library rules): one keeper per rom, spare copies set aside.
@@ -723,6 +761,16 @@ class LibraryPlan:
 
 
 def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
+                 layout: Optional[str] = None, savedisk: bool = False,
+                 labels: bool = True, platform: Any = None, ratings: Any = None) -> LibraryPlan:
+    """See :func:`_plan_library`; playlists on disk are looked at once for the whole plan (``m3u.one_look``)."""
+    from . import m3u
+
+    with m3u.one_look():
+        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings)
+
+
+def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
                  layout: Optional[str] = None, savedisk: bool = False,
                  labels: bool = True, platform: Any = None, ratings: Any = None) -> LibraryPlan:
     """The combined plan: tidy + duplicates + the profile's rules + playlists of the kept multi-disk sets.
@@ -1140,17 +1188,42 @@ def _new_log_path(root: Path) -> Path:
     return path
 
 
-def _inside(path: Path, root: Path) -> bool:
-    """True when ``path``'s real parent directory lies inside ``root`` (no symlink escapes)."""
-    try:
-        real_root = os.path.realpath(root)
-        real_parent = os.path.realpath(path.parent)
-    except (OSError, ValueError):
+def _inside(path: Path, root: Path, seen: Optional[dict[str, Optional[str]]] = None) -> bool:
+    """True when ``path``'s real parent directory lies inside ``root`` (no symlink escapes).
+
+    ``seen``: real paths already resolved during this one read of a log (a log names the same folders thousands of
+    times, and resolving walks every path component on disk)."""
+    def real(p: Any) -> Optional[str]:
+        key = os.fspath(p)
+        if seen is None:
+            try:
+                return os.path.realpath(key)
+            except (OSError, ValueError):
+                return None
+        if key not in seen:
+            out: Optional[str]
+            parent, name = os.path.split(key)
+            try:
+                if not name or parent == key:
+                    out = os.path.realpath(key)
+                else:
+                    # resolve the parent first (remembered): then only this one component can still be a link
+                    above = real(parent)
+                    here = None if above is None else os.path.join(above, name)
+                    out = here if here is not None and not os.path.islink(here) else os.path.realpath(key)
+            except (OSError, ValueError):
+                out = None
+            seen[key] = out
+        return seen[key]
+
+    real_root, real_parent = real(root), real(os.path.dirname(os.fspath(path)))
+    if real_root is None or real_parent is None:
         return False
     return real_parent == real_root or real_parent.startswith(real_root.rstrip(os.sep) + os.sep)
 
 
-def _resolve_logged(raw: Any, root: Path, old_root: Optional[str]) -> Optional[Path]:
+def _resolve_logged(raw: Any, root: Path, old_root: Optional[str],
+                    seen: Optional[dict[str, Optional[str]]] = None) -> Optional[Path]:
     """A logged path as an absolute path inside ``root``, or None if it is unsafe.
 
     Relative paths (v3) resolve against root; absolute ones (v1/v2) are rebased
@@ -1173,7 +1246,7 @@ def _resolve_logged(raw: Any, root: Path, old_root: Optional[str]) -> Optional[P
     if not parts or any(part in ("..", "") for part in parts) or Path(*parts).is_absolute():
         return None
     out = root.joinpath(*parts)
-    return out if _inside(out, root) else None
+    return out if _inside(out, root, seen) else None
 
 
 def read_undo_log(log_path: Path) -> dict[str, Any]:
@@ -1190,6 +1263,7 @@ def read_undo_log(log_path: Path) -> dict[str, Any]:
     """
     log_path = Path(log_path)
     root = log_path.parent.absolute()
+    seen: dict[str, Optional[str]] = {}       # real paths resolved while reading this log
     text = log_path.read_text(encoding="utf-8")
     records: list[dict[str, Any]] = []
     header: dict[str, Any] = {}
@@ -1234,14 +1308,14 @@ def read_undo_log(log_path: Path) -> dict[str, Any]:
         if op == "failed" or ("i" in rec and rec["i"] in failed):
             continue
         if op == "move":
-            src, dst = _resolve_logged(rec.get("src"), root, old_root), _resolve_logged(rec.get("dst"), root, old_root)
+            src, dst = _resolve_logged(rec.get("src"), root, old_root, seen), _resolve_logged(rec.get("dst"), root, old_root, seen)
             if src is None or dst is None:
                 out["rejected"] += 1
             else:
                 out["moves"].append({"src": src, "dst": dst})
                 out["steps"].append({"op": "move", "src": src, "dst": dst})
         elif op == "create":
-            p = _resolve_logged(rec.get("path"), root, old_root)
+            p = _resolve_logged(rec.get("path"), root, old_root, seen)
             sha1, size = rec.get("sha1"), rec.get("size")
             if (p is None or not isinstance(sha1, str) or not sha1
                     or not isinstance(size, int) or isinstance(size, bool)):
@@ -1251,13 +1325,13 @@ def read_undo_log(log_path: Path) -> dict[str, Any]:
                 out["created_files"].append(item)
                 out["steps"].append({"op": "create", **item})
         elif op == "tmp":  # a temporary file Convert was about to write
-            p = _resolve_logged(rec.get("path"), root, old_root)
+            p = _resolve_logged(rec.get("path"), root, old_root, seen)
             if p is None or CONVERT_TEMP_MARKER not in p.name:
                 out["rejected"] += 1
             else:
                 out["temp_files"].append(p)
         elif op in ("mkdir", "unmkdir", "rmdir"):
-            p = _resolve_logged(rec.get("path"), root, old_root)
+            p = _resolve_logged(rec.get("path"), root, old_root, seen)
             if p is None:
                 out["rejected"] += 1
             elif op == "mkdir":
@@ -1267,7 +1341,7 @@ def read_undo_log(log_path: Path) -> dict[str, Any]:
             else:
                 out["removed_dirs"].append(p)
         elif op == "delete":
-            p = _resolve_logged(rec.get("path"), root, old_root)
+            p = _resolve_logged(rec.get("path"), root, old_root, seen)
             content = rec.get("content")
             if p is None or not isinstance(content, str):
                 out["rejected"] += 1
@@ -1750,6 +1824,33 @@ def undo(log_path: Path, root: Optional[Path] = None) -> dict[str, Any]:
 
 
 _LOG_RE = re.compile(re.escape(UNDO_PREFIX) + r".*\.json$")
+
+
+def count_undo_log(log_path: Path) -> int:
+    """How many changes an undo log holds (moves + created files), for display.
+
+    Counts the records without building or checking their paths (``read_undo_log`` does that, and takes seconds on the
+    log of a big library); records the real undo would reject as outside the folder are therefore counted too."""
+    text = Path(log_path).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, list):                                          # version 1
+        return sum(1 for m in data if isinstance(m, dict))
+    if isinstance(data, dict) and "moves" in data and data.get("version", 2) < 3:   # version 2
+        return sum(1 for m in data.get("moves", []) if isinstance(m, dict))
+    n = 0
+    for line in text.splitlines():                                      # version 3: JSON lines
+        if '"move"' not in line and '"create"' not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("op") in ("move", "create"):
+            n += 1
+    return n
 
 
 def list_undo_logs(root: Path) -> list[Path]:

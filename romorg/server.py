@@ -377,6 +377,30 @@ def _page(items: list[Any], offset: Any, limit: Any, q: Any) -> dict[str, Any]:
     return {"total": len(items), "offset": off, "limit": lim, "items": items[off:off + lim]}
 
 
+SORT_KEYS = ("rating_desc", "rating_asc", "name_asc", "name_desc", "year_asc", "year_desc", "size_asc", "size_desc")
+
+
+def _sort_rows(rows: list[tuple[dict[str, Any], str]], sort: str,
+               name: Callable[[dict[str, Any]], str]) -> list[tuple[dict[str, Any], str]]:
+    """Sort result rows by ``rating | name | year | size`` + ``_asc | _desc`` (``rating`` alone = ``rating_desc``).
+    Rows without the sorted value (unrated, no year, no size) are always last, whichever way it runs; ties fall back to
+    the votes (ratings), then the name. Other values keep the order."""
+    sort = "rating_desc" if sort == "rating" else sort
+    if sort not in SORT_KEYS:
+        return rows
+    key, _, direction = sort.partition("_")
+    desc = direction == "desc"
+    if key == "name":
+        return sorted(rows, key=lambda r: name(r[0]).casefold(), reverse=desc)
+    have = [r for r in rows if r[0].get(key) is not None]
+    lack = [r for r in rows if r[0].get(key) is None]
+    sign = -1 if desc else 1
+    have.sort(key=lambda r: (sign * r[0][key], sign * (r[0].get("votes") or 0) if key == "rating" else 0,
+                             name(r[0]).casefold()))
+    lack.sort(key=lambda r: name(r[0]).casefold())
+    return have + lack
+
+
 def _status_counts(ops: list[Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for op in ops:
@@ -451,6 +475,15 @@ def _optional_mod(name: str) -> Any:
         return _mod(name)
     except ImportError:
         return None
+
+
+def _year_of(rom: Any) -> int | None:
+    """The release year of a TOSEC rom (its name's date paren), else None (No-Intro / Redump names carry none)."""
+    try:
+        date = getattr(rom.tags, "date", "") or ""
+    except Exception:  # noqa: BLE001 - informative only
+        return None
+    return int(date[:4]) if date[:4].isdigit() else None
 
 
 def _tags_json(rom: Any, tags_mod: Any) -> dict[str, Any] | None:
@@ -752,6 +785,7 @@ class App:
         self._fallback_dat_lock = threading.Lock()
         self.updates = self._make_updates(auto_update)
         self._scan: ScanState | None = None
+        self._undo_counts: dict[tuple[str, int, int], int] = {}
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
@@ -1034,6 +1068,20 @@ class App:
         state.library_plans.clear()
         for key in [k for k in state.items if isinstance(k, tuple) and k[0] in ("rename", "convert", "m3u", "library", "warnings")]:
             del state.items[key]
+
+    def _shed_scan_caches(self) -> None:
+        """A new scan is about to start: drop what the previous one derived (result pages, plans, checksum indexes) so the
+        old and the new scan never sit in memory together. Pages and plans of the old results are rebuilt on demand."""
+        with self._lock:
+            state = self._scan
+        if state is None:
+            return
+        self._drop_plans(state)
+        state.items.clear()
+        state.sources.clear()
+        state.match_index = None
+        result = state.result
+        result.__dict__.pop("_base_units_cache", None)
 
     def _require_scan(self) -> ScanState:
         with self._lock:
@@ -1324,6 +1372,7 @@ class App:
                                "reached. Connect to the internet and press Retry.", "offline_no_dats") from None
             raise ApiError(HTTPStatus.BAD_GATEWAY, f"Updating the {platform.name} DATs failed: {exc}",
                            "update_failed") from None
+        self._shed_scan_caches()
         job.report(0, 0, f"Loading {platform.name} DATs...")
         dats, missing = self._platform_dats(platform)
         sig = self._dats_signature(platform)  # what this scan parsed (see _scan_is_stale)
@@ -1352,6 +1401,7 @@ class App:
         if cancellable and job.cancel.is_set():
             return None
         dat_names = list(getattr(result, "dat_names", None) or [getattr(d, "name", "") for d in dats])
+        result.cache_units = True      # a finished scan is never edited: its organiser units can be reused
         state = ScanState(result=result, root=root, platform=platform, dat_names=dat_names,
                           missing_dats=list(missing), layout=_enum_str(getattr(result, "layout", None), layout),
                           dats_sig=sig)
@@ -1670,6 +1720,8 @@ class App:
             "other_dats": sorted({_rom_dat(r) for r in match.roms} - {dat, ""}),
             "named_ok": named,
             "placed_ok": placed,
+            # set aside on purpose (_excluded/, _superseded/ ...): not "needs moving"
+            "aside": _rel(path, root).split("/", 1)[0] in RESERVED_DIRS,
             "via": via,
             "header": getattr(match, "header", 0) or 0,
             "byte_order": getattr(match, "byte_order", "") or "",
@@ -1703,7 +1755,8 @@ class App:
                        "roms": list(g.get("roms") or ()),
                        "files": [_entry_rel(f, state.root) if hasattr(f, "path") else _rel(f, state.root)
                                  for f in g.get("files") or ()],
-                       "tags": _tags_json(rom, tags_mod), "title": self._game_title(rom, g.get("dat", ""))}
+                       "tags": _tags_json(rom, tags_mod), "title": self._game_title(rom, g.get("dat", "")),
+                       "year": _year_of(rom), "size": getattr(rom, "size", None)}
                 if g["name"] in levels:
                     row["level"], row["kind"] = levels[g["name"]]
                 rows.append(row)
@@ -2003,6 +2056,30 @@ class App:
         self._save_profile(platform, dataclasses.replace(profile, **changes))
         return self._profile_info(platform)
 
+    def library_override(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/library/override``: ``{platform, action: keep | exclude | clear, games: [{dat, game}]}`` - the
+        user's own "always keep" / "always exclude" of single games (stored in the platform's library profile)."""
+        platform = self._resolve_platform(body.get("platform"))
+        library = self._library_mod()
+        action = _str_arg(body.get("action"))
+        if action not in library.OVERRIDE_ACTIONS + ("clear",):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "action must be keep, exclude or clear")
+        games = body.get("games")
+        if not isinstance(games, list) or not games or len(games) > 5000 or not all(
+                isinstance(g, dict) and _str_arg(g.get("dat")) and _str_arg(g.get("game")) for g in games):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "games must be a list of {dat, game} (1 to 5000)")
+        profile = self._profile(platform)
+        current = {(d, n): a for d, n, a in profile.overrides}
+        for g in games:
+            key = (_str_arg(g["dat"]), _str_arg(g["game"]))
+            if action == "clear":
+                current.pop(key, None)
+            else:
+                current[key] = action
+        self._save_profile(platform, dataclasses.replace(
+            profile, overrides=tuple((d, n, a) for (d, n), a in current.items())))
+        return self._profile_info(platform)
+
     @staticmethod
     def _rating_changes(body: dict[str, Any], library: Any) -> dict[str, Any]:
         """The rating fields of a profile save (strict: a wrong type or range is a 400, never silently ignored)."""
@@ -2140,9 +2217,7 @@ class App:
                 if rated_q:
                     wanted = _bool_arg(rated_q)
                     rows = [r for r in rows if (r[0].get("rating") is not None) is wanted]
-                if query.get("sort", "").strip() == "rating":
-                    rows = sorted(rows, key=lambda r: (r[0].get("rating") is None, -(r[0].get("rating") or 0),
-                                                       -(r[0].get("votes") or 0), r[0]["name"].casefold()))
+                rows = _sort_rows(rows, query.get("sort", "").strip(), lambda i: i["name"])
             if kind in TAG_KINDS:
                 key = ("facets", kind, dat, (query.get("have", "").strip() + "|" + rated_q) if kind == "games" else "")
                 if key not in state.items:
@@ -2151,8 +2226,13 @@ class App:
                 rows = _tag_filter(rows, query)
         else:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown result kind: {kind}")
+        if kind in ("matched", "unmatched", "missing"):
+            rows = _sort_rows(rows, query.get("sort", "").strip(),
+                              lambda i: i.get("file") or i.get("set_name") or i.get("name") or "")
         page = _page(rows, query.get("offset"), query.get("limit"), query.get("q"))
         page["kind"] = kind
+        if kind == "games":
+            page["has_year"] = any(r[0].get("year") is not None for r in state.items["games"][:2000])
         if facets is not None:
             page["facets"] = facets
         if kind in CHECKSUM_KINDS and _bool_arg(query.get("checksums")):
@@ -2509,13 +2589,23 @@ class App:
         for log in _mod("organiser").list_undo_logs(root):
             log = Path(log)
             try:
-                mtime = log.stat().st_mtime
-                reader = getattr(_mod("organiser"), "read_undo_log", None)
-                if reader is not None:
-                    info = reader(log)
-                    count = len(info["moves"]) + len(info.get("created_files") or ())
-                else:
-                    count = _undo_log_count(json.loads(log.read_text(encoding="utf-8")))
+                st = log.stat()
+                mtime = st.st_mtime
+                key = (str(log), st.st_size, st.st_mtime_ns)
+                count = self._undo_counts.get(key)
+                if count is None:          # counted once per log version: this is asked every time a tab opens
+                    counter = getattr(_mod("organiser"), "count_undo_log", None)
+                    reader = getattr(_mod("organiser"), "read_undo_log", None)
+                    if counter is not None:
+                        count = counter(log)
+                    elif reader is not None:
+                        info = reader(log)
+                        count = len(info["moves"]) + len(info.get("created_files") or ())
+                    else:
+                        count = _undo_log_count(json.loads(log.read_text(encoding="utf-8")))
+                    if len(self._undo_counts) > 64:
+                        self._undo_counts.clear()
+                    self._undo_counts[key] = count
             except (OSError, ValueError, TypeError, KeyError):
                 mtime, count = 0.0, None
             logs.append({"log": str(log), "name": log.name, "mtime": mtime, "count": count})
@@ -2660,6 +2750,7 @@ class App:
         data = report(plan.selection, None, "")
         rows = [(item, f"{item['title']} {item['name']} {' '.join(item['languages'])}".lower())
                 for item in data["items"] if not reason or item["reason"] == reason]
+        rows = _sort_rows(rows, _str_arg(body.get("sort")), lambda i: i["title"])
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         by_language: dict[str, int] = {}
         for item in data["items"]:
@@ -2679,6 +2770,10 @@ class App:
         rows = self._library_rows(state, key)
         file_rows = [r for r in rows if r[0].get("item") == "file"]
         reasons = self._reason_counts(plan, rows)
+        # rows per category, whether they move or already sit in place (``reasons`` counts only what this build changes)
+        categories: dict[str, int] = {}
+        for item, _t in rows:
+            categories[item["category"]] = categories.get(item["category"], 0) + 1
         status, reason, dest = _str_arg(body.get("status")), _str_arg(body.get("reason")), _str_arg(body.get("dest"))
         if reason and reason not in LIBRARY_REASONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown reason filter: {reason}")
@@ -2691,6 +2786,9 @@ class App:
                     if (not status or r[0]["status"] == status) and (not reason or r[0]["category"] == reason)
                     and (not dest or r[0].get("dest") == folder)
                     and (not why or (r[0]["category"] == "excluded" and r[0].get("reasons", [""])[:1] == [why]))]
+        self._annotate_library(state, rows)
+        rows = _sort_rows(rows, _str_arg(body.get("sort")),
+                          lambda i: i.get("to_name") or Path(i.get("path") or "").name)
         wkey = ("warnings", "library", key)
         if wkey not in state.items:
             state.items[wkey] = [(dict(text=w), "") for w in self._plan_warnings(state, file_rows)]
@@ -2712,7 +2810,7 @@ class App:
         page.update(
             plan_id=self._plan_id(state, key), files=len(ops),
             root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile),
-            counts=_status_counts(ops), reasons=reasons, by_dest=by_dest,
+            counts=_status_counts(ops), reasons=reasons, categories=categories, by_dest=by_dest,
             playlists={"write": writes, "ok": statuses.count("ok"),
                        "remove": sum(1 for op in ops if op.status == "delete"),
                        "conflict": statuses.count("conflict")},
@@ -2725,7 +2823,54 @@ class App:
             actionable=actionable, empty=actionable == 0,
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
             reserved_dirs=list(RESERVED_DIRS))
+        page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
+        if _bool_arg(body.get("checksums")):     # only this page's rows, from the scan in memory
+            for it in page["items"]:
+                if it.get("cs_kind"):
+                    src = self._kind_rows(state, it["cs_kind"])
+                    it["checksums"] = self._checksums(state, it["cs_kind"], src[it["cs_id"]][0])
         return page
+
+    def _annotate_library(self, state: ScanState, rows: list[tuple[dict[str, Any], str]]) -> None:
+        """Library rows: ``rating`` / ``votes`` of the game the file belongs to, and ``cs_kind`` / ``cs_id`` - the scan
+        result row (matched, unmatched or game) whose checksums ``/api/scan/checksums`` shows for it."""
+        games = self._kind_rows(state, "games")
+        try:
+            self._annotate_ratings(state, games)
+        except ImportError:                      # no ratings module: the rows simply have no rating
+            for item, _t in games:
+                item.setdefault("rating", None)
+                item.setdefault("votes", None)
+        ikey = ("libref",)
+        if ikey not in state.items:
+            self._kind_rows(state, "matched")
+            self._kind_rows(state, "unmatched")
+            by_file: dict[str, tuple[str, int]] = {}
+            for i, m in enumerate(state.sources.get("matched") or []):
+                by_file.setdefault(_entry_rel(m.entry, state.root).split("::", 1)[0], ("matched", i))
+            for i, e in enumerate(state.sources.get("unmatched") or []):
+                by_file.setdefault(_entry_rel(e, state.root).split("::", 1)[0], ("unmatched", i))
+            game_of_file: dict[str, dict[str, Any]] = {}
+            game_of_name: dict[str, dict[str, Any]] = {}
+            for item, _t in games:
+                game_of_name.setdefault(item["name"], item)
+                for rel in item.get("files") or ():
+                    game_of_file.setdefault(rel.split("::", 1)[0], item)
+            state.items[ikey] = (by_file, game_of_file, game_of_name)  # type: ignore[assignment]
+        by_file, game_of_file, game_of_name = state.items[ikey]  # type: ignore[misc]
+        for item, _t in rows:
+            if item.get("item") != "file":
+                continue
+            src = item["from"].split("::", 1)[0]
+            game = game_of_file.get(src) or game_of_name.get(item.get("game") or "")
+            item["rating"], item["votes"] = (game.get("rating"), game.get("votes")) if game else (None, None)
+            item["year"], item["size"] = (game.get("year"), game.get("size")) if game else (None, None)
+            item["game_ref"] = {"dat": game["dat"], "game": game["name"]} if game else None
+            item["tags"] = game.get("tags") if game else None
+            ref = by_file.get(src)
+            if ref is None and game is not None:
+                ref = ("games", game["id"])
+            item["cs_kind"], item["cs_id"] = ref if ref else (None, None)
 
     def library_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
@@ -3017,6 +3162,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/library/profile"): App.library_profile,
     ("GET", "/api/library/totals"): App.library_totals,
     ("POST", "/api/library/profile"): App.library_profile_save,
+    ("POST", "/api/library/override"): App.library_override,
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,
     ("POST", "/api/library/apply"): App.library_apply,

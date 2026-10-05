@@ -168,13 +168,13 @@ h1 { margin: 0; font-size: 24px; }
 
 /* ---------- paged tables ---------- */
 .ptable-tools { display: flex; gap: 12px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.table-wrap { overflow: auto; max-height: min(78vh, 1000px); border: 1px solid var(--border); border-radius: 8px; }   /* the header row stays visible while the rows scroll */
 table { width: 100%; border-collapse: collapse; font-size: 15px; }
 th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { background: var(--panel-2); font-weight: 600; position: sticky; top: 0; }
+th { background: var(--panel-2); font-weight: 600; position: sticky; top: 0; z-index: 2; vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-td.wrap { word-break: break-word; }
+td.wrap { overflow-wrap: anywhere; }
 .pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; margin-top: 10px; }
 .pager .muted { font-variant-numeric: tabular-nums; }
 .empty {
@@ -263,7 +263,7 @@ details summary { cursor: pointer; min-height: 32px; display: flex; align-items:
 .dat-card-name { font-weight: 600; }
 .dat-card-main .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .dat-card-stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
-.mono-path { word-break: break-all; }
+.mono-path { overflow-wrap: anywhere; }   /* break inside a word only when a whole word cannot fit */
 
 /* ---------- Kickstart destinations ---------- */
 .dest-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; margin: 8px 0; }
@@ -628,3 +628,29 @@ td.cs-col { vertical-align: middle; }
 .th-sort { background: none; border: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 6px 0; min-height: 36px; }
 .th-sort:hover, .th-sort:focus-visible { color: var(--accent); }
 .rating-cell { white-space: nowrap; }
+
+/* ---------- table extras: rating bar, row selection, column menu, details, compact view ---------- */
+.rbar { display: inline-block; width: 44px; height: 6px; margin-left: 8px; border-radius: 3px; background: var(--border); vertical-align: middle; overflow: hidden; }
+.rbar > i { display: block; height: 100%; background: var(--accent); }
+.sel-col { width: 1%; padding-right: 0; }
+.sel-col input { width: 20px; height: 20px; }
+.sel-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 8px; background: rgba(79, 156, 255, 0.12); }
+.col-menu { position: relative; }
+.col-menu > summary { list-style: none; cursor: pointer; }
+.col-menu > summary::-webkit-details-marker { display: none; }
+.col-menu-pop { position: absolute; right: 0; z-index: 5; margin-top: 4px; min-width: 180px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
+.why-panel { padding: 10px 14px 4px; display: flex; flex-direction: column; gap: 4px; }
+.cs-sums { padding: 0; }
+body.dense td, body.dense th { padding: 3px 8px; }
+body.dense table { font-size: 13px; }
+body.dense .th-sort { min-height: 24px; padding: 2px 0; }
+body.dense .chip, body.dense .tag { padding-top: 0; padding-bottom: 0; }
+body.dense td .btn-small, body.dense .cs-toggle { min-height: 28px; padding: 0 10px; font-size: 13px; }
+body.dense .sel-col input { width: 16px; height: 16px; }
+.incomplete-box > summary { list-style: none; }
+.incomplete-box > summary::-webkit-details-marker { display: none; }
+.incomplete-box > summary::before { content: "\25B8"; color: var(--accent); display: inline-block; width: 1.2em; }
+.incomplete-box[open] > summary::before { content: "\25BE"; }
+td.why-col { width: 20%; min-width: 180px; }
+td.change-col { width: 44%; min-width: 300px; }
+.th-sort { text-align: left; }

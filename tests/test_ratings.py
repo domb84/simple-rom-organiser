@@ -195,6 +195,7 @@ class IndexTests(TmpDirCase):
 
     def test_store_reloads_when_the_index_is_replaced(self) -> None:
         st = ratings.Store(self.dir)
+        st.check_interval = 0
         self.assertFalse(st.available())
         self.assertIsNone(st.lookup(G, "Alpha Quest"))
         self.build()

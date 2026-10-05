@@ -137,19 +137,70 @@
     });
   }
 
+  // ------------------------------------------------------------ remembered view settings
+  /** Per-system view settings (sort, filters), a global density flag and per-table hidden columns, in localStorage.
+   *  Everything is optional: with storage blocked the app simply starts from its defaults. */
+  const Prefs = {
+    KEY: "romorg.prefs.v1",
+    SYSTEM_FIELDS: ["gamesSort", "libSort", "vanishSort", "gamesHave", "gamesRated", "libReason", "libStatus", "tagFilter", "kindSort"],
+    data: null,
+    read() {
+      if (this.data) return this.data;
+      try { this.data = JSON.parse(localStorage.getItem(this.KEY) || "{}") || {}; } catch (_) { this.data = {}; }
+      if (typeof this.data !== "object") this.data = {};
+      return this.data;
+    },
+    write() {
+      try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); } catch (_) { /* private window / blocked */ }
+    },
+    /** Remember the current sort and filters of the selected system. */
+    save() {
+      const d = this.read();
+      if (!state.platform) return;
+      d.systems = d.systems || {};
+      d.systems[state.platform] = Object.fromEntries(this.SYSTEM_FIELDS.map((k) => [k, state[k]]));
+      this.write();
+    },
+    /** Put the remembered sort and filters of ``name`` back into the state (unknown / wrong-typed values are ignored). */
+    restore(name) {
+      const saved = ((this.read().systems || {})[name]) || {};
+      for (const k of this.SYSTEM_FIELDS) {
+        if (saved[k] === undefined || typeof saved[k] !== typeof state[k]) continue;
+        state[k] = saved[k];
+      }
+    },
+    hiddenColumns(table) { return new Set(((this.read().columns || {})[table]) || []); },
+    setHiddenColumns(table, set) {
+      const d = this.read();
+      d.columns = d.columns || {};
+      d.columns[table] = [...set];
+      this.write();
+    },
+    get dense() { return !!this.read().dense; },
+    set dense(on) { this.read().dense = !!on; this.write(); },
+  };
+
   // ------------------------------------------------------------ paged table
   /**
    * Searchable, paged table backed by a server fetch function.
-   * opts: {columns: [{label, cls, render(item)}], fetch({offset, limit, q}), pageSize,
-   *        placeholder, emptyText, rowClass(item)}
+   * opts: {id, columns: [{label, cls, render(item), sortKey, sortFirst, when(data), always}], fetch({offset, limit, q}),
+   *        pageSize, placeholder, emptyText, rowClass(item),
+   *        sort: {get, set}                       header clicks cycle a column's sort (sortKey name|rating|year|size)
+   *        detail: {kind, ref(item), extra(item)} per-row "Details" panel (a note + the checksums)
+   *        select: {id(item), can(item), actions: [{label, run(items)}]}   tick rows, act on them}
+   * ``id`` names the table for the remembered hidden columns (the "Columns" menu).
    */
   class PagedTable {
+    static n = 0;
     constructor(container, opts) {
       this.container = container;
       this.opts = Object.assign({ pageSize: 50, placeholder: "Search...", emptyText: "Nothing to show." }, opts);
       this.offset = 0;
       this.q = "";
       this.seq = 0;
+      this.data = null;
+      this.selected = new Map();
+      this.hidden = this.opts.id ? Prefs.hiddenColumns(this.opts.id) : new Set();
       this.search = el("input", {
         type: "search", class: "input grow", placeholder: this.opts.placeholder, autocomplete: "off", "aria-label": this.opts.placeholder,
         on: { input: debounce(() => { this.q = this.search.value.trim(); this.offset = 0; this.load(); }, 250) },
@@ -159,17 +210,21 @@
       this.prev = el("button", { class: "btn btn-small", text: "Previous", on: { click: () => this.go(-1) } });
       this.next = el("button", { class: "btn btn-small", text: "Next", on: { click: () => this.go(1) } });
       this.pageInfo = el("span", { class: "muted" });
+      this.selBar = el("div", { class: "sel-bar hidden", role: "status" });
       const tools = [this.search, this.countEl];
       if (this.opts.detail) {
-        // global switch: every visible row shows its checksums (the page is then fetched with them)
-        this.allBox = el("input", { type: "checkbox", id: "show-checksums", checked: state.showChecksums ? "" : null });
+        // global switch: every visible row shows its details and checksums (the page is then fetched with them)
+        this.allBox = el("input", { type: "checkbox", id: `show-checksums-${++PagedTable.n}`, checked: state.showChecksums ? "" : null });
         this.allBox.checked = !!state.showChecksums;
         this.allBox.addEventListener("change", () => { state.showChecksums = this.allBox.checked; this.load(); });
-        tools.push(el("label", { class: "check", title: "Show the DAT checksums of every game below - and those of your own file when it matched" },
+        tools.push(el("label", { class: "check", title: "Show the details and DAT checksums of every game below - and those of your own file when it matched" },
           this.allBox, "Show checksums"));
       }
+      this.colMenu = el("details", { class: "col-menu hidden" }, el("summary", { class: "btn btn-small", text: "Columns" }), el("div", { class: "col-menu-pop" }));
+      tools.push(this.colMenu);
       container.replaceChildren(
         el("div", { class: "ptable-tools" }, ...tools),
+        this.selBar,
         this.body,
         el("div", { class: "pager" }, this.pageInfo, this.prev, this.next),
       );
@@ -183,6 +238,7 @@
     async load() {
       const seq = ++this.seq;
       let data;
+      Prefs.save();
       try {
         data = await this.opts.fetch({ offset: this.offset, limit: this.opts.pageSize, q: this.q,
           checksums: !!(this.opts.detail && state.showChecksums) });
@@ -194,53 +250,118 @@
       this.render(data);
     }
 
+    /** The columns to show: not hidden by the user and not switched off by their own ``when(data)``. */
+    visibleColumns() {
+      return this.opts.columns.filter((c) => !this.hidden.has(c.label) && (!c.when || c.when(this.data || {})));
+    }
+
+    drawColumnMenu() {
+      const optional = this.opts.columns.filter((c) => c.label && !c.always && (!c.when || c.when(this.data || {})));
+      this.colMenu.classList.toggle("hidden", !this.opts.id || optional.length < 2);
+      this.colMenu.querySelector(".col-menu-pop").replaceChildren(...optional.map((c) => el("label", { class: "check" },
+        el("input", { type: "checkbox", checked: this.hidden.has(c.label) ? null : "",
+          on: { change: (e) => {
+            if (e.target.checked) this.hidden.delete(c.label); else this.hidden.add(c.label);
+            Prefs.setHiddenColumns(this.opts.id, this.hidden);
+            this.render(this.data);
+          } } }), c.label)));
+    }
+
+    drawSelection() {
+      const sel = this.opts.select;
+      if (!sel) return;
+      const n = this.selected.size;
+      this.selBar.classList.toggle("hidden", !n);
+      this.selBar.replaceChildren(
+        el("strong", { text: `${fmt(n)} selected` }),
+        ...sel.actions.map((a) => el("button", { class: `btn btn-small ${a.cls || ""}`, text: a.label, title: a.title || "",
+          on: { click: async () => { await a.run([...this.selected.values()]); this.selected.clear(); this.render(this.data); } } })),
+        el("button", { class: "btn btn-small", text: "Clear", on: { click: () => { this.selected.clear(); this.render(this.data); } } }));
+    }
+
     render(data) {
+      this.data = data;
       const { total, items } = data;
       if (this.offset > 0 && this.offset >= total) { this.offset = 0; this.load(); return; }
       this.countEl.textContent = `${fmt(total)} item${total === 1 ? "" : "s"}`;
+      this.drawColumnMenu();
       if (!items.length) {
         this.body.replaceChildren(el("div", { class: "empty", text: this.q ? `No results for "${this.q}".` : this.opts.emptyText }));
       } else {
         const detail = this.opts.detail;
-        const head = el("tr", {}, this.opts.columns.map((c) => (c.sortKey
-          ? el("th", { "aria-sort": state.gamesSort === c.sortKey ? "descending" : "none" },
-            el("button", { class: "th-sort", type: "button", title: "Sort by rating, best first",
-              text: `${c.label}${state.gamesSort === c.sortKey ? " \u25BC" : ""}`,
-              on: { click: () => { state.gamesSort = state.gamesSort === c.sortKey ? "" : c.sortKey; this.offset = 0; this.load(); } } }))
-          : el("th", { text: c.label }))), detail ? el("th", { class: "cs-col", text: "Checksums" }) : null);
+        const select = this.opts.select;
+        const cols = this.visibleColumns();
+        const sort = this.opts.sort;
+        const cur = sort ? sort.get() : "";
+        const selectable = (item) => !select.can || select.can(item);
+        const headBox = select ? el("input", { type: "checkbox", "aria-label": "Select every row of this page",
+          on: { change: (e) => {
+            for (const it of items.filter(selectable)) { if (e.target.checked) this.selected.set(select.id(it), it); else this.selected.delete(select.id(it)); }
+            this.render(this.data);
+          } } }) : null;
+        if (headBox) headBox.checked = items.filter(selectable).length > 0 && items.filter(selectable).every((it) => this.selected.has(select.id(it)));
+        const head = el("tr", {}, select ? el("th", { class: "sel-col" }, headBox) : null, cols.map((c) => {
+          if (!c.sortKey || !sort) return el("th", { text: c.label });
+          const first = c.sortFirst || "asc";
+          const [key, dir] = cur === "rating" ? ["rating", "desc"] : cur.split("_");
+          const on = key === c.sortKey;
+          const next = !on ? `${c.sortKey}_${first}` : dir === first ? `${c.sortKey}_${first === "asc" ? "desc" : "asc"}` : "";
+          return el("th", { "aria-sort": on ? (dir === "asc" ? "ascending" : "descending") : "none" },
+            el("button", { class: "th-sort", type: "button",
+              title: `Sort by ${c.sortKey}${on ? (next ? "" : " (click to clear)") : ""}`,
+              text: `${c.label}${on ? (dir === "asc" ? " ▲" : " ▼") : ""}`,
+              on: { click: () => { sort.set(next); this.offset = 0; this.load(); } } }));
+        }), detail ? el("th", { class: "cs-col", text: "Details" }) : null);
         const rows = [];
+        const span = cols.length + (select ? 1 : 0) + 1;
         for (const item of items) {
+          let pick = null;
+          if (select) {
+            pick = el("td", { class: "sel-col" }, selectable(item) ? el("input", { type: "checkbox", "aria-label": "Select this row",
+              checked: this.selected.has(select.id(item)) ? "" : null,
+              on: { change: (e) => {
+                if (e.target.checked) this.selected.set(select.id(item), item); else this.selected.delete(select.id(item));
+                this.drawSelection();
+              } } }) : null);
+          }
           const tr = el("tr", { class: this.opts.rowClass ? this.opts.rowClass(item) : null },
-            this.opts.columns.map((c) => el("td", { class: c.cls || "" }, c.render(item))));
+            pick, cols.map((c) => el("td", { class: c.cls || "" }, c.render(item))));
           rows.push(tr);
-          if (detail) rows.push(...this.detailRows(item, tr, detail, this.opts.columns.length + 1));
+          if (detail) rows.push(...this.detailRows(item, tr, detail, span));
         }
         this.body.replaceChildren(el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, head), el("tbody", {}, rows))));
       }
+      this.drawSelection();
       const end = Math.min(this.offset + items.length, total);
       this.pageInfo.textContent = total ? `${fmt(this.offset + 1)}-${fmt(end)} of ${fmt(total)}` : "";
       this.prev.disabled = this.offset === 0;
       this.next.disabled = end >= total;
     }
 
-    /** The "Checksums" toggle cell of a row (appended to it) and the full-width panel row below it. */
+    /** The "Details" toggle cell of a row (appended to it) and the full-width panel row below it. */
     detailRows(item, tr, detail, span) {
+      const ref = detail.ref ? detail.ref(item) : { kind: detail.kind, id: item.id };
+      const extra = detail.extra ? detail.extra(item) : null;
+      if (!ref && !extra) { tr.append(el("td", { class: "cs-col" })); return []; }
       const panel = el("td", { colspan: String(span), class: "cs-cell" });
       const row = el("tr", { class: "detail-row hidden" }, panel);
       const btn = el("button", { class: "btn btn-small cs-toggle", "aria-expanded": "false", text: "Show",
-        title: "DAT checksums and the checksums of your matching file" });
+        title: "Why this row is where it is, and the DAT checksums with those of your matching file" });
       const set = async (open) => {
         btn.setAttribute("aria-expanded", open ? "true" : "false");
         btn.textContent = open ? "Hide" : "Show";
         row.classList.toggle("hidden", !open);
         if (open && !panel.firstChild) {
-          panel.replaceChildren(el("span", { class: "muted", text: "Loading checksums..." }));
+          const sums = el("div", { class: "cs-sums" });
+          panel.replaceChildren(extra, sums);
+          if (!ref) return;
+          sums.replaceChildren(el("span", { class: "muted", text: "Loading checksums..." }));
           try {
-            const payload = item.checksums || await get(`/api/scan/checksums?${qs({ kind: detail.kind, id: item.id })}`);
+            const payload = item.checksums || await get(`/api/scan/checksums?${qs({ kind: ref.kind, id: ref.id })}`);
             item.checksums = payload;
-            panel.replaceChildren(checksumPanel(payload));
+            sums.replaceChildren(checksumPanel(payload));
           } catch (err) {
-            panel.replaceChildren(el("span", { class: "error-text", text: err.message }));
+            sums.replaceChildren(el("span", { class: "error-text", text: err.message }));
           }
         }
       };
@@ -323,7 +444,10 @@
     libStats: null,    // numbers of the last plan: {reasons, vanish, exclusions}
     gamesHave: "",     // "" | "1" | "0"
     gamesRated: "",    // "" | "1" (rated) | "0" (unrated)  -  Browse > Games
-    gamesSort: "",     // "" | "rating"
+    gamesSort: "",     // "" | rating_desc | rating_asc | name_asc | name_desc
+    libSort: "",       // the same, for the Library preview
+    vanishSort: "",    // ... and for "Games that vanish"
+    kindSort: {},      // Browse: result kind -> sort of the matched / unmatched / missing tabs
     convertFilter: "",
     organiseFilter: "",
     organiseDest: "",
@@ -996,6 +1120,9 @@
     state.gamesHave = "";
     state.libReason = "";
     state.libStatus = "";
+    state.gamesSort = state.libSort = state.vanishSort = "";
+    state.kindSort = {};
+    Prefs.restore(name);
     // plan filters belong to the previous system (its destinations / statuses)
     state.organiseFilter = "";
     state.organiseDest = "";
@@ -1104,8 +1231,8 @@
 
   /** Pull the current scan from /api/status and re-render everything that depends on it. */
   async function refreshScan() {
-    await loadStatus();
-    try { state.platforms = await get("/api/platforms"); } catch (_) { /* keep the old list */ }
+    const [, platforms] = await Promise.all([loadStatus(), get("/api/platforms").catch(() => null)]);
+    if (platforms) state.platforms = platforms;      // else keep the old list
     renderHome();
     applyScan();
   }
@@ -1309,12 +1436,12 @@
     if (s.unsupported) tabs.push(["unsupported", "Unsupported", s.unsupported]);
     if (s.errors) tabs.push(["errors", "Errors", s.errors]);
     if (!tabs.some((t) => t[0] === activeTab)) activeTab = tabs[0][0];
-    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSort = ""; }
+    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; }
     if (!DAT_FILTER_TABS.has(activeTab)) state.resultDat = "";
     $("result-tabs").replaceChildren(...tabs.map(([key, label, count]) => el("button", {
       class: `tab ${key === activeTab ? "active" : ""}`, role: "tab", "aria-selected": key === activeTab ? "true" : "false",
       tabindex: key === activeTab ? "0" : "-1",
-      on: { click: () => { activeTab = key; if (key !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSort = ""; } browseDirty = true; renderBrowse(); } },
+      on: { click: () => { activeTab = key; if (key !== "games") { state.gamesHave = ""; state.gamesRated = ""; } browseDirty = true; renderBrowse(); } },
     }, label, el("span", { class: "count", text: `(${fmt(count)})` }))));
     syncBrowseHash();
 
@@ -1363,11 +1490,19 @@
     return !!(info && (info.available || {}).ratings);
   }
 
+  /** A small 0-10 bar. The width is set through the style object: the page's CSP refuses inline style attributes. */
+  function ratingBar(rating) {
+    const fill = el("i");
+    fill.style.width = `${Math.max(0, Math.min(10, Number(rating))) * 10}%`;
+    return el("span", { class: "rbar", "aria-hidden": "true" }, fill);
+  }
+
   /** "8.4 · 123 votes" or a dash. */
   function ratingCell(i) {
     if (i.rating === null || i.rating === undefined) return el("span", { class: "muted", text: "\u2014", title: "No rating found" });
     return el("span", { class: "rating-cell", title: i.rating_match ? `LaunchBox match: ${i.rating_match}` : "" },
-      el("b", { text: Number(i.rating).toFixed(1) }), el("span", { class: "muted small", text: ` \u00B7 ${fmt(i.votes)} vote${i.votes === 1 ? "" : "s"}` }));
+      el("b", { text: Number(i.rating).toFixed(1) }), ratingBar(i.rating),
+      el("span", { class: "muted small", text: ` \u00B7 ${fmt(i.votes)} vote${i.votes === 1 ? "" : "s"}` }));
   }
 
   /** Name tag chips plus the Dreamcast level chip in ONE chip row (the tag row alone for other systems). */
@@ -1627,12 +1762,15 @@
     return el("div", {}, el("div", { text: name }), dir ? el("div", { class: "sub", text: dir }) : null);
   }
 
+  const SORTABLE_KINDS = new Set(["games", "matched", "unmatched", "missing"]);
+  const kindSort = (kind) => (kind === "games" ? state.gamesSort : (state.kindSort[kind] || ""));
+
   function resultTableOptions(kind, tagBar, reload) {
     const dat = DAT_FILTER_TABS.has(kind) ? state.resultDat : "";
     const fetchKind = async ({ offset, limit, q, checksums }) => {
       const have = kind === "games" ? state.gamesHave : "";
       const rated = kind === "games" && ratingsAvailable() ? state.gamesRated : "";
-      const sort = kind === "games" && ratingsAvailable() ? state.gamesSort : "";
+      const sort = kindSort(kind);
       const tagParams = TAG_TABS.has(kind) ? state.tagFilter : {};
       const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, rated, sort, checksums: checksums ? "1" : "", ...tagParams })}`);
       if (tagBar) renderTagBar(tagBar, data.facets, reload);
@@ -1640,7 +1778,11 @@
     };
     const multi = state.scan && state.scan.dat_names.length > 1;
     const detail = CHECKSUM_TABS.has(kind) ? { kind } : null;
-    return Object.assign({ detail }, resultColumns(kind, fetchKind, dat, multi));
+    const sortable = SORTABLE_KINDS.has(kind) ? { sort: {
+      get: () => kindSort(kind),
+      set: (v) => { if (kind === "games") state.gamesSort = v; else state.kindSort = { ...state.kindSort, [kind]: v }; },
+    } } : {};
+    return Object.assign({ detail, id: `browse-${kind}` }, sortable, resultColumns(kind, fetchKind, dat, multi));
   }
 
   function resultColumns(kind, fetchKind, dat, multi) {
@@ -1652,14 +1794,14 @@
           columns: [
             { label: "", render: (i) => badge(i.have ? "ok" : "missing", i.have ? "have" : "missing") },
             {
-              label: "Game", cls: "wrap", render: (i) => el("div", {},
+              label: "Game", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
                 el("div", { class: "game-name", text: i.name }),
                 gameChips(i.tags, i.level),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
             },
-            ...(ratingsAvailable() ? [{
-              label: "Rating", sortKey: "rating", render: ratingCell,
-            }] : []),
+            { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(), render: ratingCell },
+            { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "-") },
+            { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => fmtBytes(i.size) },
             {
               label: "Your file(s)", cls: "wrap", render: (i) => (i.files && i.files.length
                 ? el("div", {}, ...i.files.slice(0, 3).map((f) => el("div", { class: "mono-path small", text: f })),
@@ -1672,7 +1814,7 @@
         return {
           fetch: fetchKind, placeholder: "Search matched files or DAT names...", emptyText: "No files matched.",
           columns: [
-            { label: "Local file", cls: "wrap", render: (i) => fileCell(i.file) },
+            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => fileCell(i.file) },
             {
               label: "DAT entry", cls: "wrap", render: (i) => el("div", {},
                 el("div", { text: i.game || i.roms[0] || "" }),
@@ -1685,10 +1827,11 @@
             {
               label: "Place", render: (i) => {
                 if (i.placed_ok && i.named_ok) return badge("ok");
+                if (i.aside) return el("span", { class: "badge skip", text: "set aside", title: "In one of the app's own folders (_excluded/, _superseded/ ...) on purpose" });
                 return el("span", { class: "badge move", text: i.placed_ok ? "rename" : "move" });
               },
             },
-            { label: "Size", cls: "num", render: (i) => fmtBytes(i.size) },
+            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
           ],
         };
       case "missing":
@@ -1697,11 +1840,11 @@
           rowClass: () => "row-missing",
           columns: [
             {
-              label: "DAT entry", cls: "wrap", render: (i) => el("div", {}, el("div", { text: i.set_name || i.name }),
+              label: "DAT entry", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {}, el("div", { text: i.set_name || i.name }),
                 tagChips(i.tags),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
             },
-            { label: "Size", cls: "num", render: (i) => fmtBytes(i.size) },
+            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
             { label: "CRC32", cls: "mono", render: (i) => i.crc },
           ],
         };
@@ -1709,9 +1852,9 @@
         return {
           fetch: fetchKind, placeholder: "Search unmatched files...", emptyText: "Every file matched a DAT.",
           columns: [
-            { label: "Local file", cls: "wrap", render: (i) => fileCell(i.file) },
+            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => fileCell(i.file) },
             ...(isGameFolder(currentPlatform()) ? [{ label: "Why", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason || "" }) }] : []),
-            { label: "Size", cls: "num", render: (i) => fmtBytes(i.size) },
+            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
             ...(isGameFolder(currentPlatform()) ? [] : [{ label: "CRC32", cls: "mono", render: (i) => i.crc || "" }]),
           ],
         };
@@ -2084,6 +2227,7 @@
   async function loadLibraryProfile() {
     const name = state.platform;
     if (!name) return;
+    const hadRatings = ratingsAvailable();
     try {
       state.library[name] = await get(`/api/library/profile?${qs({ platform: name })}`);
     } catch (err) {
@@ -2091,7 +2235,10 @@
       $("library-rules").replaceChildren(el("div", { class: "muted", text: `Library rules are not available: ${err.message}` }));
       return;
     }
-    if (name === state.platform) renderLibraryRules();
+    if (name !== state.platform) return;
+    renderLibraryRules();
+    // The Browse list may have been drawn before the profile arrived: its rating column and chips depend on it.
+    if (!hadRatings && ratingsAvailable() && inSystem() && state.tab === "browse") { browseDirty = true; renderBrowse(); }
   }
 
   // Everything below is rendered from the server's rule catalog (library.rule_catalog / profile_info): no rule list lives here.
@@ -2876,14 +3023,16 @@
   }
 
   function renderLibraryCards(plan) {
-    const r = plan.reasons || {}, pl = plan.playlists || {}, vanish = plan.vanish || {};
+    const r = plan.reasons || {}, pl = plan.playlists || {}, vanish = plan.vanish || {}, cats = plan.categories || {};
+    // the cards count what this build moves; files a previous build already set aside are named next to it
+    const aside = (label, moving, all) => ((all || 0) > (moving || 0) ? `${label} now (${fmt(all - (moving || 0))} already set aside)` : label);
     $("lib-cards").replaceChildren(
       card(fmt(r.kept), "Kept", "ok"),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
-      card(fmt(r.excluded), "Excluded", r.excluded ? "warn" : ""),
-      card(fmt(r.superseded), "Superseded", r.superseded ? "warn" : ""),
-      ...(isGameFolder(currentPlatform()) ? [] : [card(fmt(r.incomplete), "Incomplete", r.incomplete ? "warn" : "")]),
-      card(fmt(r.duplicates), "Duplicates", r.duplicates ? "warn" : ""),
+      card(fmt(r.excluded), aside("Excluded", r.excluded, cats.excluded), r.excluded ? "warn" : ""),
+      card(fmt(r.superseded), aside("Superseded", r.superseded, cats.superseded), r.superseded ? "warn" : ""),
+      ...(isGameFolder(currentPlatform()) ? [] : [card(fmt(r.incomplete), aside("Incomplete", r.incomplete, cats.incomplete), r.incomplete ? "warn" : "")]),
+      card(fmt(r.duplicates), aside("Duplicates", r.duplicates, cats.duplicate), r.duplicates ? "warn" : ""),
       ...(r.unmatched ? [card(fmt(r.unmatched), `Unmatched → ${UNMATCHED}/`, "warn")] : []),
       ...(pl.write || pl.remove || pl.ok ? [card(fmt(pl.write), "Playlists to write", pl.write ? "info" : ""),
         card(fmt(pl.remove), "Playlists to remove", pl.remove ? "warn" : "")] : []),
@@ -2901,7 +3050,7 @@
     whyBox.classList.toggle("hidden", !Object.keys(why).length);
     const infoNow = state.library[state.platform];
     const whyOrder = infoNow ? [...catalogOf(infoNow).filter((e) => e.kind === "exclude").map((e) => e.id),
-      ...catalogOf(infoNow).filter((e) => e.kind === "keep_flag").map((e) => `flag_${e.id}`), "language", ...(infoNow.rating_codes || [])] : [];
+      ...catalogOf(infoNow).filter((e) => e.kind === "keep_flag").map((e) => `flag_${e.id}`), "language", ...(infoNow.rating_codes || []), ...(infoNow.override_codes || [])] : [];
     filterChips(whyBox, why, state.libWhy, whyOrder, (key) => { state.libWhy = key; if (key) state.libReason = "excluded"; libTable.offset = 0; libTable.load(); },
       reasonLabel, "All exclusions");
     renderVanishBox(plan);
@@ -2921,6 +3070,44 @@
   }
 
   /** Reason / note cell of one preview row. */
+  /** The "why" paragraph of a Library row's details: the rule that decided, the version that won, the rating. */
+  function libraryWhyPanel(i) {
+    if (i.item !== "file") return null;
+    const lines = [];
+    const cat = i.category;
+    const names = (i.reasons || []).map(reasonLabel);
+    if ((i.reasons || []).includes("override_exclude")) lines.push("You chose to always exclude this game.");
+    else if (cat === "kept") lines.push(i.reason && i.reason.includes("always keep") ? "You chose to always keep this game." : "Kept: no rule sets this file aside, and it is the best version you have.");
+    else if (cat === "excluded") lines.push(`Excluded by: ${names.join("; ") || i.reason}.${i.flags_text ? ` Flags: ${i.flags_text}.` : ""}`);
+    else if (cat === "superseded") lines.push(`A better version of the same game wins${i.superseded_by ? `: ${i.superseded_by}` : ""}. ${i.reason || ""}`);
+    else if (cat === "incomplete") lines.push(`Part of an incomplete multi-disk set${i.missing && i.missing.length ? ` (missing disk ${i.missing.join(", ")})` : ""}.`);
+    else if (cat === "duplicate") lines.push(`The same content as ${i.keeper || "another file"}, which is the copy kept.`);
+    else if (cat === "unmatched") lines.push("This file matches nothing in the DATs.");
+    else if (i.reason) lines.push(i.reason);
+    const t = i.tags;
+    const facts = [];
+    if (i.rating !== null && i.rating !== undefined) facts.push(`rated ${Number(i.rating).toFixed(1)} from ${fmt(i.votes)} vote${i.votes === 1 ? "" : "s"}`);
+    if (t && t.regions && t.regions.length) facts.push(`region ${t.regions.join(", ")}`);
+    if (t && t.languages && t.languages.length) facts.push(`language ${t.languages.join(", ")}${t.languages_implied ? " (assumed)" : ""}`);
+    if (t && t.version) facts.push(`version ${t.version}`);
+    if (i.year) facts.push(`released ${i.year}`);
+    if (i.status === "move" || i.status === "rename") facts.push(`will be ${i.kind === "rename" ? "renamed" : "moved"} to ${i.to}`);
+    return el("div", { class: "why-panel" }, ...lines.map((l) => el("div", { text: l })),
+      facts.length ? el("div", { class: "muted small", text: facts.join(" - ") }) : null);
+  }
+
+  /** "Always keep / exclude / back to the rules" for the ticked Library rows (one choice per game, not per file). */
+  async function setOverrides(items, action) {
+    const seen = new Map();
+    for (const i of items) if (i.game_ref) seen.set(`${i.game_ref.dat}\t${i.game_ref.game}`, i.game_ref);
+    if (!seen.size) return;
+    try {
+      const info = await post("/api/library/override", { platform: state.platform, action, games: [...seen.values()] });
+      adoptProfile(state.platform, info);        // the preview is marked out of date: Recalculate applies it
+      toast(action === "clear" ? `${fmt(seen.size)} game(s) back under the rules` : `${fmt(seen.size)} game(s) will always be ${action === "keep" ? "kept" : "excluded"} - press Recalculate to see it`, "ok", 6000);
+    } catch (err) { toast(err.message, "error"); }
+  }
+
   function libraryNote(i) {
     if (i.item === "playlist") {
       return el("div", {}, el("span", { class: "muted", text: i.reason || `${i.disks} disk${i.disks === 1 ? "" : "s"}` }),
@@ -2991,14 +3178,15 @@
 
   function showVanishTable() {
     vanishTable = new PagedTable($("lib-vanish-table"), {
-      placeholder: "Search titles...", emptyText: "Nothing in this category.", pageSize: 25,
+      placeholder: "Search titles...", emptyText: "Nothing in this category.", pageSize: 25, id: "vanish",
+      sort: { get: () => state.vanishSort, set: (v) => { state.vanishSort = v; } },
       fetch: async ({ offset, limit, q }) => {
-        const data = await post("/api/library/vanished", { ...libOptions(), reason: state.vanishReason, offset, limit, q });
+        const data = await post("/api/library/vanished", { ...libOptions(), reason: state.vanishReason, sort: state.vanishSort, offset, limit, q });
         renderVanishHints(data);
         return data;
       },
       columns: [
-        { label: "Title", cls: "wrap", render: (i) => el("div", {}, el("div", { text: i.title }), el("div", { class: "sub mono-path", text: i.name }))},
+        { label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {}, el("div", { text: i.title }), el("div", { class: "sub mono-path", text: i.name }))},
         { label: "Why it vanishes", cls: "wrap", render: (i) => el("div", {}, el("div", { text: vanishText(i.reason) }),
           i.hint ? el("div", { class: "sub", text: `${i.detail ? i.detail + " - " : ""}${i.hint}` }) : null,
           el("div", { class: "tags" }, (i.codes || []).map((c) => el("span", { class: "tag tag-excl", text: reasonLabel(c) })),
@@ -3016,11 +3204,23 @@
     if (!libTable) {
       vanishTable = null;
       libTable = new PagedTable($("lib-table"), {
+        id: "library",
         placeholder: "Search file names, folders or playlists...",
         emptyText: "Nothing in this category.",
+        detail: { kind: "library", ref: (i) => (i.cs_kind ? { kind: i.cs_kind, id: i.cs_id } : null), extra: libraryWhyPanel },
+        sort: { get: () => state.libSort, set: (v) => { state.libSort = v; } },
+        select: {
+          id: (i) => `${i.from}`, can: (i) => i.item === "file" && !!i.game_ref,
+          actions: [
+            { label: "Always keep", title: "Keep these games whatever the rules say", run: (items) => setOverrides(items, "keep") },
+            { label: "Always exclude", title: "Set these games aside whatever the rules say", run: (items) => setOverrides(items, "exclude") },
+            { label: "Back to the rules", title: "Remove your choice for these games", run: (items) => setOverrides(items, "clear") },
+          ],
+        },
         fetch: Previews.wrap("lib", async ({ offset, limit, q, refresh }) => {
           const data = await post("/api/library/plan", {
             ...libOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q, refresh,
+            sort: state.libSort, checksums: state.showChecksums ? true : undefined,
           });
           libPlan = data;
           renderLibraryCards(data);
@@ -3031,7 +3231,8 @@
           box.replaceChildren(...notes.map((n) => el("div", { text: n })));
           const reload = () => { libTable.offset = 0; libTable.load(); };
           const r = data.reasons || {}, pl = data.playlists || {};
-          const rc = { kept: r.kept, excluded: r.excluded, superseded: r.superseded, incomplete: r.incomplete,
+          // every row of a category, moving or already in place (an already built library has few moves but many rows)
+          const rc = data.categories || { kept: r.kept, excluded: r.excluded, superseded: r.superseded, incomplete: r.incomplete,
             duplicate: r.duplicates, unmatched: r.unmatched, playlist: (pl.write || 0) + (pl.ok || 0) + (pl.remove || 0) + (pl.conflict || 0) };
           filterChips($("lib-reason-filters"), Object.fromEntries(Object.entries(rc).filter(([, n]) => n)), state.libReason, REASON_ORDER,
             (key) => { state.libReason = key; if (key !== "excluded") state.libWhy = ""; reload(); }, (k) => REASON_LABEL[k] || k, "All reasons");
@@ -3042,10 +3243,10 @@
           return data;
         }),
         columns: [
-          { label: "Status", render: (i) => badge(i.status) },
+          { label: "Status", render: (i) => badge(i.status, i.status === "move" && i.kind === "rename" ? "rename" : i.status) },
           { label: "Reason", render: (i) => badge(REASON_BADGE[i.category] || "skip", REASON_LABEL[i.category] || i.category) },
           {
-            label: "Change (relative to the system folder)", cls: "wrap", render: (i) => {
+            label: "Change (relative to the system folder)", cls: "wrap change-col", sortKey: "name", sortFirst: "asc", always: true, render: (i) => {
               if (i.item === "playlist") {
                 return el("div", {}, el("div", { class: "rename-to mono-path", text: i.path }),
                   i.lines && i.lines.length ? el("details", {}, el("summary", { text: `${i.disks} disk${i.disks === 1 ? "" : "s"}` }),
@@ -3057,7 +3258,11 @@
                 changed ? el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })) : null);
             },
           },
-          { label: "Why", cls: "wrap", render: libraryNote },
+          { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(),
+            render: (i) => (i.item === "playlist" ? el("span", { class: "muted", text: "" }) : ratingCell(i)) },
+          { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "") },
+          { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => (i.size ? fmtBytes(i.size) : "") },
+          { label: "Why", cls: "wrap why-col", render: libraryNote },
         ],
       });
     }
@@ -3272,11 +3477,14 @@
   }
 
   let undoLogs = [];
+  let undoFetch = null;      // the request in flight: every tab intro asks at once when a page opens
   async function refreshUndo() {
-    undoLogs = [];
+    let logs = [];
     if (state.scan) {
-      try { undoLogs = (await get("/api/organise/undo-logs")).logs || []; } catch (_) { undoLogs = []; }
+      undoFetch = undoFetch || get("/api/organise/undo-logs").finally(() => { undoFetch = null; });
+      try { logs = (await undoFetch).logs || []; } catch (_) { logs = []; }
     }
+    undoLogs = logs;
     for (const id of ["undo-btn", "convert-undo-btn", "lib-undo-btn"]) {
       const btn = $(id);
       btn.dataset.blocked = undoLogs.length ? "0" : "1";
@@ -3824,6 +4032,16 @@
     $("kick-native-browse-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("kick-dest"), "Choose the RetroArch system / BIOS folder"));
     $("kick-apply-btn").addEventListener("click", applyKick);
     $("quit-btn").addEventListener("click", quit);
+    document.addEventListener("click", (e) => {
+      for (const m of document.querySelectorAll(".col-menu[open]")) if (!m.contains(e.target)) m.open = false;
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") for (const m of document.querySelectorAll(".col-menu[open]")) m.open = false;
+    });
+    const dense = $("density-btn");
+    const applyDensity = () => { document.body.classList.toggle("dense", Prefs.dense); dense.setAttribute("aria-pressed", Prefs.dense ? "true" : "false"); dense.textContent = Prefs.dense ? "Roomy" : "Compact"; };
+    dense.addEventListener("click", () => { Prefs.dense = !Prefs.dense; applyDensity(); });
+    applyDensity();
   }
 
   /** The single folder field of the Overview tab: edits are saved right away (no Save button to forget). */
@@ -3862,9 +4080,11 @@
     await loadStatus();
     const s = state.status || {};
     state.platform = (s.scan && s.scan.platform) || s.last_platform || s.default_platform || null;
+    if (state.platform) Prefs.restore(state.platform);
     await loadPlatforms();
     setKickDest(currentPlatform());
-    await refreshScan();
+    renderHome();          // status and platforms were just loaded: no second round trip (refreshScan would refetch both)
+    applyScan();
     applyRoute();
     // Resume tracking a job that was started before a page reload.
     try {

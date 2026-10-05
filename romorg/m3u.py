@@ -63,12 +63,14 @@ TOSEC-v2025-01-30, 34410 roms, 19183 carrying a disk token)::
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Iterator, Mapping, Optional, Sequence
 
 from . import tags as _tags
 from .organiser import TEMP_MARKER, safe_filename
@@ -558,8 +560,36 @@ def _fold(p: Path) -> str:
     return os.path.normcase(str(p)).casefold()
 
 
+_LOOK = threading.local()      # .memo: dict while inside one_look() on this thread
+
+
+@contextlib.contextmanager
+def one_look() -> Iterator[None]:
+    """Within this block every folder is walked for playlists once and every playlist is read once.
+
+    One library plan asks twice which playlists exist and what they contain (stale playlists of moving disks, then
+    playlists the new ones replace); nothing is written in between, so the second look can only repeat the first."""
+    outer = getattr(_LOOK, "memo", None)
+    if outer is None:
+        _LOOK.memo = {}
+    try:
+        yield
+    finally:
+        _LOOK.memo = outer
+
+
 def find_m3us(root: Path) -> list[Path]:
     """Every ``*.m3u`` under root (hidden files/dirs and symlinked dirs skipped), sorted."""
+    memo = getattr(_LOOK, "memo", None)
+    if memo is not None:
+        key = ("walk", os.fspath(root))
+        if key not in memo:
+            memo[key] = _find_m3us(root)
+        return list(memo[key])
+    return _find_m3us(root)
+
+
+def _find_m3us(root: Path) -> list[Path]:
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
@@ -599,6 +629,17 @@ def entry_paths(lines: Iterable[str], directory: Path) -> list[Path]:
 
 def read_m3u(path: Path) -> Optional[tuple[bool, list[Path]]]:
     """(made by us?, referenced disk paths) for an m3u file, or None if unreadable."""
+    memo = getattr(_LOOK, "memo", None)
+    if memo is not None:
+        key = ("read", os.fspath(path))
+        if key not in memo:
+            memo[key] = _read_m3u(path)
+        hit = memo[key]
+        return None if hit is None else (hit[0], list(hit[1]))
+    return _read_m3u(path)
+
+
+def _read_m3u(path: Path) -> Optional[tuple[bool, list[Path]]]:
     try:
         text = _read_text(path)
     except OSError:

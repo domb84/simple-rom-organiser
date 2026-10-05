@@ -392,14 +392,21 @@ class _Plat:
 class Store:
     """The local ratings index (read-only). Cheap to create; platforms load lazily and reload when the file changes."""
 
+    check_interval = 0.5      # seconds between looks at the index file (a replaced index is seen within this)
+
     def __init__(self, directory: Any = None) -> None:
         self.directory = directory
         self._lock = threading.RLock()
         self._sig: Optional[tuple] = None
         self._plats: dict[str, _Plat] = {}
         self._cache: dict[tuple[str, str], Optional[dict[str, Any]]] = {}
+        self._checked = 0.0
 
     def _check(self) -> bool:
+        now = time.monotonic()
+        if self._sig is not None and now - self._checked < self.check_interval:   # lookups come in thousands: stat the file twice a second
+            return True
+        self._checked = now
         p = index_path(self.directory)
         try:
             st = p.stat()

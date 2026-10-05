@@ -287,6 +287,20 @@ class ExtractAndListTest(unittest.TestCase):
         tosec.recover_dats_dir(out)
         self.assertFalse((self.root / ".dats-new-live").exists())
 
+    def test_list_follows_the_folder_without_a_stale_answer(self) -> None:
+        d = self.root / "dats2"
+        d.mkdir()
+        (d / "A (TOSEC-v2024-01-01_CM).dat").write_text("x")
+        first = tosec.list_dats(d)
+        self.assertEqual([(i.name, i.version) for i in first], [("A", "2024-01-01")])
+        self.assertEqual(tosec.list_dats(d)[0], first[0])                       # an unchanged folder: the same answer
+        (d / "A (TOSEC-v2025-01-01_CM).dat").write_text("x")                    # a newer DAT of the same name
+        (d / "B (TOSEC-v2024-01-01_CM).dat").write_text("x")
+        (d / "sub.dat").mkdir()                                                  # a folder is never a DAT
+        self.assertEqual([(i.name, i.version) for i in tosec.list_dats(d)], [("A", "2025-01-01"), ("B", "2024-01-01")])
+        (d / "B (TOSEC-v2024-01-01_CM).dat").unlink()
+        self.assertEqual([i.name for i in tosec.list_dats(d)], ["A"])
+
     def test_list_and_find_latest(self) -> None:
         d = self.root / "dats"
         d.mkdir()

@@ -32,7 +32,11 @@ FLAG_CODES = tuple(f"flag_{f}" for f in tags.KEEP_FLAGS)
 # Rating filter codes (Amendment 18): applied after every other rule, at GAME level.
 RATING_LOW, RATING_NOT_TOP, RATING_UNRATED = "rating_low", "rating_not_top", "rating_unrated"
 RATING_CODES = (RATING_LOW, RATING_NOT_TOP, RATING_UNRATED)
-ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,) + RATING_CODES
+# Per-game overrides (the user's own "always keep" / "always exclude" of one game), applied after every rule.
+OVERRIDE_KEEP, OVERRIDE_EXCLUDE = "override_keep", "override_exclude"
+OVERRIDE_CODES = (OVERRIDE_KEEP, OVERRIDE_EXCLUDE)
+OVERRIDE_ACTIONS = ("keep", "exclude")
+ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,) + RATING_CODES + OVERRIDE_CODES
 BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a set of another edition
 
 _RULE_SHORT = {
@@ -44,6 +48,7 @@ _RULE_SHORT = {
     "language": "not in the selected languages",
     "rating_low": "rated below the minimum", "rating_not_top": "not among the top rated games",
     "rating_unrated": "no usable rating",
+    "override_keep": "always kept by you", "override_exclude": "always excluded by you",
 }
 
 RANK_SCOPES = ("dat", "owned")
@@ -94,6 +99,16 @@ def _valid_votes(v: Any) -> bool:
     return n is not None and n >= 1
 
 
+def _norm_overrides(raw: Any) -> tuple[tuple[str, str, str], ...]:
+    """``((dat, game, "keep" | "exclude"), ...)``: valid entries only, one per game (the last wins), sorted."""
+    found: dict[tuple[str, str], str] = {}
+    for entry in raw if isinstance(raw, (list, tuple)) else ():
+        if isinstance(entry, (list, tuple)) and len(entry) == 3 and all(isinstance(x, str) for x in entry) \
+                and entry[0] and entry[1] and entry[2] in OVERRIDE_ACTIONS:
+            found[(entry[0], entry[1])] = entry[2]
+    return tuple(sorted((d, n, a) for (d, n), a in found.items()))
+
+
 def _norm_votes(v: Any) -> int:
     n = _num(v)
     return DEFAULT_MIN_VOTES if n is None or n < 1 else int(n)
@@ -122,6 +137,8 @@ class LibraryProfile:
     min_votes: int = DEFAULT_MIN_VOTES           # a game with fewer votes counts as UNRATED
     keep_unrated: bool = False                   # with a rating filter: keep games that have no usable rating
     rank_scope: str = "dat"                      # top_n ranks against the whole DAT target set ("dat") or only your games ("owned")
+    # "Always keep" / "always exclude" of single games: (DAT name, game = set name or rom name, action).
+    overrides: tuple[tuple[str, str, str], ...] = ()
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -133,6 +150,7 @@ class LibraryProfile:
         object.__setattr__(self, "top_n", _norm_top_n(self.top_n))
         object.__setattr__(self, "min_votes", _norm_votes(self.min_votes))
         object.__setattr__(self, "rank_scope", self.rank_scope if self.rank_scope in RANK_SCOPES else "dat")
+        object.__setattr__(self, "overrides", _norm_overrides(self.overrides))
 
     @property
     def rating_active(self) -> bool:
@@ -147,7 +165,8 @@ class LibraryProfile:
                 "region_priority": list(self.region_priority), "one_per_game": self.one_per_game,
                 "borrow_other_editions": self.borrow_other_editions,
                 "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
-                "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope}
+                "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
+                "overrides": [list(o) for o in self.overrides]}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -191,7 +210,8 @@ class LibraryProfile:
                    borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions),
                    **{**{"min_rating": base.min_rating, "top_n": base.top_n, "min_votes": base.min_votes,
                          "rank_scope": base.rank_scope}, **rating},
-                   keep_unrated=flag("keep_unrated", base.keep_unrated))
+                   keep_unrated=flag("keep_unrated", base.keep_unrated),
+                   overrides=_norm_overrides(d["overrides"]) if "overrides" in d else base.overrides)
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -735,8 +755,36 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     sel = _select_base(items, profile, platform)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
+    apply_overrides(sel, items, profile)
     sel.vanished = _vanished(items, sel)
     return sel
+
+
+def override_game(dat: str, rom: Any) -> tuple[str, str]:
+    """The (DAT, game) an override is stored under: the set name (No-Intro / Redump) or the rom name (TOSEC)."""
+    return (dat, getattr(rom, "set_name", "") or rom.name)
+
+
+def apply_overrides(sel: Selection, items: Sequence[Item], profile: LibraryProfile) -> None:
+    """The user's per-game choices beat every rule: ``keep`` keeps the file (whatever excluded / superseded / left it
+    out), ``exclude`` sets it aside. A playlist is dropped when one of its disks is excluded this way."""
+    if not profile.overrides:
+        return
+    wanted = {(d, n): a for d, n, a in profile.overrides}
+    excluded_keys: set[int] = set()
+    for it in items:
+        action = wanted.get(override_game(it.dat, it.rom))
+        if action == "keep":
+            d = sel.decisions.get(it.key)
+            if d is None or d.action != KEEP or BORROWED_CODE in d.codes:
+                sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(OVERRIDE_KEEP,),
+                                                 reason="kept because you chose to always keep it")
+        elif action == "exclude":
+            sel.decisions[it.key] = Decision(key=it.key, action=EXCLUDED, codes=(OVERRIDE_EXCLUDE,),
+                                             reason="excluded because you chose to always exclude it")
+            excluded_keys.add(it.key)
+    if excluded_keys:
+        sel.sets = [cs for cs in sel.sets if not excluded_keys & set(cs.slots.values())]
 
 
 def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> Selection:
@@ -1673,7 +1721,8 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dic
             "ratings": _ratings_supported(platform),
         },
         "rating_codes": list(RATING_CODES),
-        "reason_labels": {c: _RULE_SHORT[c] for c in RATING_CODES},
+        "reason_labels": {c: _RULE_SHORT[c] for c in RATING_CODES + OVERRIDE_CODES},
+        "override_codes": list(OVERRIDE_CODES),
         "scopes": {
             "latest_dats": list(_dats(platform, "latest_dats")),
             "best_variant_dats": list(_dats(platform, "best_variant_dats")),

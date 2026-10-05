@@ -863,6 +863,10 @@ class NoIntroOrganiseTests(unittest.TestCase):
         before = self.files()
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["failed"], [])
+        from romorg import organiser as _org           # the quick count agrees with the full reader
+        info = _org.read_undo_log(Path(res["undo_log"]))
+        self.assertEqual(_org.count_undo_log(Path(res["undo_log"])), len(info["moves"]) + len(info["created_files"]))
+        self.assertGreater(len(info["moves"]), 0)
         self.assertEqual(self.files(), {
             "Alpha (USA).gba", "Beta Quest (Europe) (En,Fr,De).gba", "Gamma (Japan).gba",
             "Zipped (World).zip", "_unmatched/junk/readme.txt", "media/images/alpha.png",
@@ -872,6 +876,22 @@ class NoIntroOrganiseTests(unittest.TestCase):
         self.assertEqual({o.status for o in self.plan().values()} - {"skip"}, {"ok"})
         undo(Path(res["undo_log"]))
         self.assertEqual(self.files(), before)
+
+    def test_a_cached_scan_hands_out_independent_plans(self) -> None:
+        self.dat_name = NES
+        prg = self.data(2048)
+        self.add("Nes Game (USA).nes", b"NES\x1a" + bytes(12) + prg)
+        self.write("misc/a.nes", b"NES\x1a" + bytes(12) + prg)
+        self.write("junk.txt", b"x")
+        res = self.scan()
+        plain = [(o.src.name, o.dst, o.status) for o in plan_renames(res, layout="flat")]
+        res.cache_units = True                       # what the server sets on a finished scan
+        first = plan_renames(res, layout="flat")
+        for op in first:                             # a plan edits its ops...
+            op.status, op.dst = "skip", op.src
+        again = plan_renames(res, layout="flat")     # ...and the next one must not see that
+        self.assertEqual([(o.src.name, o.dst, o.status) for o in again], plain)
+        self.assertTrue(res.__dict__["_base_units_cache"])
 
     def test_alternates_of_one_set_keep_their_own_names(self) -> None:
         self.dat_name = NES

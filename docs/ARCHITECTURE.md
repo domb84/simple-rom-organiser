@@ -1958,3 +1958,58 @@ the rating cards / chips / vanish list with hints, top N + keep unrated, rank sc
 and the REAL startup flow (filter saved, no index: the app downloaded the zip, showed "Building the ratings index (n%)", then calculated the totals by itself).
 Not verified in a browser: touch hardware, a gamepad, screen readers; the "Download ratings" button while updates are enabled was exercised through the real startup
 flow and unit tests only.
+
+
+# Amendment 19 - sortable lists, per-game overrides, remembered views, planner speed, browser tests
+
+Binding. Everything here is additive; no existing contract changed.
+
+## A. Sorting (Browse and Library)
+`GET /api/scan/results` (`sort=`) and `POST /api/library/plan` / `POST /api/library/vanished` (`sort` in the body) take one of
+`rating_asc | rating_desc | name_asc | name_desc | year_asc | year_desc | size_asc | size_desc` (`rating` alone = `rating_desc`; anything else keeps the
+natural order). Rows without the sorted value (unrated, no year, no size) are ALWAYS last, whichever way it runs; ties fall back to the votes (ratings), then the name.
+`server._sort_rows` is the one implementation. Browse > Games rows carry `year` (TOSEC date paren only) and `size` (the DAT rom's size); the page carries `has_year`.
+The matched / unmatched / missing lists sort by name and size. Library rows carry `rating`, `votes`, `year`, `size`, `tags`, `game_ref` ({dat, game}) and
+`cs_kind` / `cs_id` (the scan result row whose checksums `/api/scan/checksums` shows); `checksums: true` in the plan body inlines them for the page.
+
+## B. Per-game overrides
+`LibraryProfile.overrides` = `((dat, game, "keep" | "exclude"), ...)`, `game` being the DAT's own name for the game (No-Intro / Redump: the set name; TOSEC: the rom name
+with its extension - the `name` of a Browse > Games row). `library.apply_overrides` runs after every rule and the rating filter and before the vanish report: `keep` keeps the
+file whatever excluded / superseded / left it out (code `override_keep`), `exclude` sets it aside (action `excluded`, code `override_exclude`, so it goes to `_excluded/`);
+a playlist whose disk is excluded this way is dropped. Stored in the profile (`overrides` in `to_dict`, hence in the totals signature); `POST /api/library/override`
+`{platform, action: keep | exclude | clear, games: [{dat, game}]}` (1-5000 games) edits it. UI: tick Library rows, then Always keep / Always exclude / Back to the rules;
+the preview is marked out of date (Recalculate applies it).
+
+## C. Row details
+Each Library row has a Details toggle (and the global "Show checksums" switch opens all): a plain-language why (rule that fired, version that won, rating, region,
+language) plus the DAT / file checksums. The panel is built when opened.
+
+## D. View settings
+Per system, in `localStorage` (`romorg.prefs.v1`, always optional): the sorts, the Have / Rated / Library reason / status / tag filters; globally the compact view; per table
+the hidden columns (the Columns menu). Table headers stay visible while the rows scroll (the table scrolls inside a bounded box).
+
+## E. Planner speed (measured with `tools/bench_server.py`, Amiga 31,754 matched files, warm hash cache, Steam Deck; before -> after)
+scan 12.0 -> 8.5 s (the hashing is cached: the rest is the summary); first Library preview 15.0 -> 10.2 s; preview after a rule change 13.5 -> 8.5 s; Browse > Games first page
+7.8 -> 6.4 s (about two thirds is the one-off parsing of 29k TOSEC names, shared with the plan); sorting, paging and searching 0.01-0.15 s (precomputed search text, no cache
+needed). Changes: path arithmetic by string instead of pathlib (`organiser._rel_text`, `scanner._rel_parts`, `Entry.rel`); the planner-independent units of a finished
+scan are built once and handed out as copies (`result.cache_units`, set by the server only: a plan edits its ops); `safe_filename` / `canonical_dir` memoised; the ratings
+store looks at its index file twice a second, not per lookup; a new scan first drops the previous scan's derived caches (pages, plans, checksum index) so the old and the new
+scan never share memory. Not done: re-planning only the games a rule touches (the selection depends on the whole profile; 3 s of the 8.5 s is `library.select`).
+
+## F. Browser tests
+`tests/test_browser.py` drives a real headless Chromium / Chrome / Brave (or the Brave flatpak on the Deck, or `ROMORG_BROWSER_PORT`) through a tiny DevTools-protocol client
+(`tests/cdp.py`, stdlib only) against a synthetic Amiga + GBA library (`tests/uifixture.py`); it fails on any JavaScript error and is skipped without a browser or with
+`ROMORG_NO_BROWSER=1`.
+
+## G. Second pass (found by driving the real UI on the real folders)
+Speed: `tosec.list_dats` (4,743 files, behind every status / platforms / profile / totals request) uses `scandir` and reuses its answer while the file names are
+unchanged: `/api/status` 130 -> 45 ms, `/api/platforms` 140 -> 40 ms. The page asks for status and platforms once at start (was twice) and shares one undo-log request.
+`GET /api/organise/undo-logs` counted a log's changes by fully reading it (path checks included): 13.5 s for the Amiga log of 33k moves, on every Library / Tools open;
+`organiser.count_undo_log` counts records only (0.24 s) and the server remembers the count per (path, size, mtime). `read_undo_log` (the real Undo) keeps its symlink-escape
+check but resolves each folder once per read: 12.5 -> 6.3 s. `m3u.one_look()` (thread-local) makes one library plan walk the folder for playlists and read each playlist once.
+UI: Browse > Games lost its Rating column and chips when the list was drawn before the profile arrived (columns now carry `when`, and the list is redrawn when the profile
+lands); the rating bar's width was an inline style the CSP refused (set through the style object); sort-button headers sat lower than plain ones; names broke mid-word
+(`overflow-wrap: anywhere`); the Library "Why" column was squeezed into tall rows; an in-place rename showed the badge "move"; the Columns menu closes on an outside click /
+Escape; Compact shrinks the row buttons; the Incomplete / Vanish boxes show a disclosure marker. `POST /api/library/plan` also returns `categories` (rows per category,
+moving or already in place): the reason chips use it, and the cards say "Excluded now (N already set aside)" - on an already built library the chips used to offer no
+Excluded / Superseded filter at all. Browse > Matched shows "set aside" (row field `aside`), not "move", for files in the app's own folders.

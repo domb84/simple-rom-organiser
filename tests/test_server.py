@@ -874,6 +874,33 @@ class JobTests(ServerTestCase):
         self.assertTrue(job.cancel())
 
 
+class SortRowsTests(unittest.TestCase):
+    ROWS = [({"name": n, "rating": r, "votes": v}, "") for n, r, v in
+            [("b", 7.0, 10), ("a", None, None), ("c", 9.0, 5), ("d", 7.0, 50), ("e", None, None)]]
+
+    def order(self, sort: str) -> str:
+        return "".join(r[0]["name"] for r in server._sort_rows(self.ROWS, sort, lambda i: i["name"]))
+
+    def test_rating_both_ways_keeps_unrated_last(self) -> None:
+        self.assertEqual(self.order("rating_desc"), "cdbae")
+        self.assertEqual(self.order("rating"), "cdbae")
+        self.assertEqual(self.order("rating_asc"), "bdcae")
+
+    def test_year_and_size_sorts_put_the_unknown_last(self) -> None:
+        rows = [({"name": n, "year": y, "size": z}, "") for n, y, z in
+                [("a", 1992, 30), ("b", None, None), ("c", 1990, 10), ("d", 1991, None), ("e", None, 20)]]
+        order = lambda sort: "".join(r[0]["name"] for r in server._sort_rows(rows, sort, lambda i: i["name"]))  # noqa: E731
+        self.assertEqual(order("year_asc"), "cdabe")
+        self.assertEqual(order("year_desc"), "adcbe")
+        self.assertEqual(order("size_desc"), "aecbd")
+        self.assertEqual(order("size_asc"), "cb"[0] + "e" + "a" + "bd")
+
+    def test_name_both_ways_and_unknown_keeps_order(self) -> None:
+        self.assertEqual(self.order("name_asc"), "abcde")
+        self.assertEqual(self.order("name_desc"), "edcba")
+        self.assertEqual(self.order(""), "bacde")
+
+
 class HelperTests(unittest.TestCase):
     def test_call_drops_unknown_kwargs(self) -> None:
         def old(a: int, labels: bool = True) -> tuple[int, bool]:
@@ -1882,6 +1909,50 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual(self.post("/api/library/plan", {"why": "language"})["total"], 0)  # primary reason only
         status, _, _ = self.request("POST", "/api/library/plan", {"why": "nonsense"})
         self.assertEqual(status, 400)
+
+    def test_plan_rows_carry_rating_checksum_refs_and_sort_by_name(self) -> None:
+        self._vanish_plan()
+        plan = self.post("/api/library/plan", {"limit": 100, "checksums": True})
+        files = [i for i in plan["items"] if i.get("item") == "file"]
+        self.assertTrue(all("rating" in i and "cs_kind" in i for i in files))
+        self.assertTrue(any(i.get("checksums") for i in files if i["cs_kind"]))
+        names = [i["to_name"].casefold() for i in files]
+        up = self.post("/api/library/plan", {"limit": 100, "sort": "name_asc"})["items"]
+        down = self.post("/api/library/plan", {"limit": 100, "sort": "name_desc"})["items"]
+        key = lambda i: (i.get("to_name") or "").casefold()
+        self.assertEqual([key(i) for i in up if i.get("item") == "file"], sorted(names))
+        self.assertEqual([key(i) for i in down if i.get("item") == "file"], sorted(names, reverse=True))
+
+    def test_plan_counts_every_row_per_category(self) -> None:
+        self._vanish_plan()
+        plan = self.post("/api/library/plan", {"limit": 200})
+        rows: dict[str, int] = {}
+        for item in plan["items"]:
+            rows[item["category"]] = rows.get(item["category"], 0) + 1
+        self.assertEqual(plan["categories"], rows)
+        self.assertEqual(sum(plan["categories"].values()), plan["total"])
+
+    def test_override_endpoint_stores_validates_and_clears(self) -> None:
+        self.scan()
+        game = {"dat": GAMES, "game": "Alpha (1990)(P)"}
+        info = self.post("/api/library/override", {"action": "exclude", "games": [game]})
+        self.assertEqual(info["profile"]["overrides"], [[GAMES, "Alpha (1990)(P)", "exclude"]])
+        self.assertEqual(self.get("/api/library/profile")["profile"]["overrides"], info["profile"]["overrides"])
+        info = self.post("/api/library/override", {"action": "keep", "games": [game]})
+        self.assertEqual(info["profile"]["overrides"], [[GAMES, "Alpha (1990)(P)", "keep"]])
+        info = self.post("/api/library/override", {"action": "clear", "games": [game]})
+        self.assertEqual(info["profile"]["overrides"], [])
+        for bad in ({"action": "nope", "games": [game]}, {"action": "keep", "games": []},
+                    {"action": "keep", "games": [{"dat": GAMES}]}, {"action": "keep"}):
+            status, _, _ = self.request("POST", "/api/library/override", bad)
+            self.assertEqual(status, 400, bad)
+
+    def test_vanished_endpoint_sorts_by_title_both_ways(self) -> None:
+        self._vanish_plan()
+        up = [i["title"] for i in self.post("/api/library/vanished", {"sort": "name_asc"})["items"]]
+        down = [i["title"] for i in self.post("/api/library/vanished", {"sort": "name_desc"})["items"]]
+        self.assertEqual(up, ["Anstoss", "Zool", "Zork"])
+        self.assertEqual(down, ["Zork", "Zool", "Anstoss"])
 
     def test_vanished_endpoint_pages_filters_and_searches(self) -> None:
         self._vanish_plan()

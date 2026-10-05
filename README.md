@@ -449,6 +449,12 @@ disk count. Switch the option off to get the old behaviour (such sets go to `_in
 Games DAT with every ROM present and the default English-only rules this completes 14 sets (41 files that
 would have been `_incomplete`); with no language filter 26 sets (102 files).
 
+**Sorting, details and your own choices.** Every column header that sorts (name, rating, year, size) cycles ascending, descending, off; games without a rating
+(or year, or size) always stay at the bottom. The **Library** list shows each file's rating, year and size, and its **Details** button explains why the file is kept,
+excluded or superseded and shows the DAT and file checksums. Tick rows and use **Always keep** / **Always exclude** to override the rules for single games (**Back to the
+rules** undoes it; press Recalculate to see the result). The **Columns** menu hides columns, **Compact** shrinks the rows, and sorts, filters and hidden columns are
+remembered per system. `tools/bench_server.py` times the scan, lists and planner on a real folder; `python3 -m unittest tests.test_browser` clicks through the UI in a real browser.
+
 **Ratings (optional filter).** The rules panel has a **Ratings** group for every system with a LaunchBox
 platform (Amiga, WHDLoad, GBA, N64, NES, SNES, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
 rating data is needed**. Set a **Minimum rating** (0-10, shown as LaunchBox stars x 2 with the vote count, e.g.

@@ -524,19 +524,29 @@ def parse_dat_filename(filename: str) -> tuple[str, str]:
 def list_dats(directory: Optional[Union[str, os.PathLike[str]]] = None) -> list[DatInfo]:
     """Newest DAT per name in directory (default: dats_dir()), sorted by name."""
     folder = Path(directory) if directory is not None else paths.dats_dir()
-    best: dict[str, DatInfo] = {}
+    best: dict[str, tuple[str, str]] = {}      # name -> (version, file name)
     try:
-        entries = list(folder.iterdir())
+        # scandir: the TOSEC pack is ~4,700 files and this runs for every status / platform / totals request;
+        # the directory entry already says "regular file", so no stat per file
+        with os.scandir(folder) as it:
+            for e in it:
+                fname = e.name
+                if not fname.lower().endswith(".dat") or not e.is_file():
+                    continue
+                name, version = parse_dat_filename(fname)
+                cur = best.get(name)
+                if cur is None or (version, fname) > cur:
+                    best[name] = (version, fname)
     except OSError:
         return []
-    for p in entries:
-        if not p.is_file() or not p.name.lower().endswith(".dat"):
-            continue
-        name, version = parse_dat_filename(p.name)
-        cur = best.get(name)
-        if cur is None or (version, p.name) > (cur.version, cur.path.name):
-            best[name] = DatInfo(name=name, version=version, path=p)
-    return sorted(best.values(), key=lambda d: d.name.casefold())
+    key = (os.fspath(folder), tuple(sorted(best.items())))
+    if _LISTED.get("key") != key:            # same files as last time: reuse the DatInfo objects (4,700 Paths otherwise)
+        found = [DatInfo(name=name, version=version, path=folder / fname) for name, (version, fname) in best.items()]
+        _LISTED["key"], _LISTED["value"] = key, sorted(found, key=lambda d: d.name.casefold())
+    return list(_LISTED["value"])
+
+
+_LISTED: dict[str, Any] = {}
 
 
 def find_latest_dat(name: str = DEFAULT_DAT_NAME,
