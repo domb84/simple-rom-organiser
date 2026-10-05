@@ -21,8 +21,9 @@ file is absent or cannot be loaded the program still works, only slower on CD au
 
 chdman (NOT bundled)
 --------------------
-CHD creation and, for some discs, reading uses chdman from MAME (https://www.mamedev.org/). It is not included.
-Put chdman.exe on your PATH, next to the program, or in a common MAME folder and it is found automatically.
+The program reads and writes CHD files itself; chdman from MAME (https://www.mamedev.org/) is optional and not
+included. If you want to use it, put chdman.exe on your PATH, next to the program, or in a common MAME folder: it is
+found automatically and can be chosen in the Convert step.
 MAME is made available under the GNU General Public License; MAME is a registered trademark of Gregory Ember.
 This project is not affiliated with or endorsed by the MAME team.
 

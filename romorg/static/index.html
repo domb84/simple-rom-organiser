@@ -267,6 +267,21 @@
                 <option value="chdman">always chdman (extracts every disc to temporary space)</option>
               </select>
             </div>
+            <div class="row">
+              <label class="label-inline" for="chd-writer">Writing CHDs</label>
+              <select id="chd-writer" class="input select">
+                <option value="auto">the built-in writer (no chdman needed)</option>
+                <option value="chdman">chdman, when it is installed</option>
+              </select>
+            </div>
+            <div class="row">
+              <label class="label-inline" for="chd-preset">Compression of new CHDs</label>
+              <select id="chd-preset" class="input select">
+                <option value="default">standard (LZMA / FLAC) - every emulator reads it</option>
+                <option value="zstd">Zstandard - converts about 3x faster and loads faster, but needs an emulator from 2024 or later</option>
+              </select>
+            </div>
+            <div class="muted hidden" id="chd-preset-note">Zstandard CHDs are not read by older emulators and some RetroArch cores. Convert one game and load it in your emulators before converting a collection.</div>
           </div>
           <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
             byte-swapped N64 dump stays <code>.v64</code> / <code>.n64</code>. Converting writes a clean copy exactly as

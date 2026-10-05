@@ -543,21 +543,21 @@ order (crc32 + md5 + sha1 in parallel threads). Memory stays bounded (at most 25
 workers when the machine is short of RAM). FLAC audio (`cdfl`) is decoded by the system's / the bundled **libFLAC through
 ctypes** (about 80-100 MB/s per core instead of 1.2 MB/s in pure Python; the pure-Python decoder remains as the fallback,
 same results). The Dreamcast / PlayStation bar shows which engine ran and its MB/s. See the table in
-`docs/ARCHITECTURE.md` (Amendment 14) for measured times on a Steam Deck. **chdman** is used only (a) to *create* CHDs when
-you convert (multi-core), and (b) for a CHD in a format newer than the built-in reader knows, or always when you
-choose "always chdman" in the Convert step. The built-in reader reads everything chdman 0.289 reads: CHD versions 1 to
+`docs/ARCHITECTURE.md` (Amendment 14) for measured times on a Steam Deck. **chdman is not needed**: the app reads and writes CHDs itself. An installed chdman is used only for a CHD in a
+format newer than the built-in reader knows, or when you choose it in the Convert step ("always chdman" for
+reading, "chdman, when it is installed" for writing). The built-in reader reads everything chdman 0.289 reads: CHD versions 1 to
 5, every compression (`zlib`, `lzma`, `zstd`, `huff`, `flac`, the CD codecs `cdlz` / `cdzl` / `cdfl` / `cdzs`, the
 laserdisc codec `avhu`) and CHDs that need a parent file (the parent is found by its SHA-1 in the same folder).
 Zstandard uses the system's libzstd (SteamOS has it) and falls back to a slow built-in decoder without one; the engine setting `chd_engine` is `auto`
 | `python` (never chdman) | `chdman`.
 
-**chdman.** The AppImage ships the MAME `chdman` (and libFLAC / libogg / libutf8proc) under `tools/`; they are NOT in
-git (the build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` for versions, licences as the packages
-declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). Detection order:
-`$ROMORG_CHDMAN` / the saved chdman path, the **bundled** chdman (started with its own library folder first), `chdman` on `PATH`,
-the Flatpak `org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... If the bundled chdman cannot start (the system lacks
-e.g. libSDL2) the app says so ("bundled chdman could not start: missing libSDL2") and uses the next one; everything else
-keeps working. `Simple_ROM_Organiser.AppImage --self-check` tests the bundle (chdman starts, libFLAC decodes, scheduler runs).
+**chdman (optional).** The AppImage no longer ships chdman. It ships libFLAC / libogg under `tools/lib` (not in git: the
+build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` for versions, licences as the packages
+declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). A chdman
+you have installed is still found - `$ROMORG_CHDMAN` / the saved chdman path, `chdman` on `PATH`, the Flatpak
+`org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... - and can be chosen in the Convert step.
+`Simple_ROM_Organiser.AppImage --self-check` tests the CHD engine (libFLAC decodes, the scheduler runs, the writer writes
+a CHD that reads back).
 When chdman does extract, the disc goes to **scratch space - never your game folder**: (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or
 `/tmp` when it is a tmpfs) when it has the room AND the machine has that much memory available PLUS a 2 GiB reserve
 (`ROMORG_TEMP_RESERVE_MB` / config `temp_ram_reserve_mb`); (2) otherwise `<data dir>/cache/tmp` (`$ROMORG_TEMP_DIR` /
@@ -565,14 +565,19 @@ config `temp_dir`); (3) otherwise the built-in reader is used and the job messag
 swept after crashes; a cancel deletes it at once. A Flatpak chdman can only see folders the Flatpak is allowed to
 (`flatpak override --user --filesystem=/run/media/deck org.mamedev.MAME`).
 
-**Convert raw sets to CHD** (needs chdman). A folder with a `.gdi` (or a `.cue` with one file per track) and its
+**Convert raw sets to CHD.** The app writes the CHD itself (`romorg/chdwrite.py`): for the same set it produces the
+same disc image as `chdman createcd` / `createdvd` - identical data SHA-1, metadata and header SHA-1, accepted by
+`chdman verify` - within 0.5 % of chdman's size and in the same time or less (PlayStation 2 images about twice as
+fast; measurements in `docs/ARCHITECTURE.md`, Amendment 22). *Compression of new CHDs* offers **standard** (LZMA /
+FLAC, read by every emulator) and **Zstandard** (about 3x faster to convert and faster to load, but only emulators
+from 2024 on read it - convert one game and try it before converting a collection). A folder with a `.gdi` (or a `.cue` with one file per track) and its
 track files that matches a Redump game is flagged *raw (convertible)*. A Dreamcast set that has only a `.cue` is converted only when
 the cue carries Redump's `REM SINGLE-DENSITY AREA` / `REM HIGH-DENSITY AREA` markers: the app then generates the `.gdi` (track 1 at LBA 0,
-the following single-density tracks back to back, the first high-density track at LBA 45000) in scratch space with symlinks to your files; otherwise
-the set is marked *needs a .gdi* and not converted. *Convert* runs `chdman createcd` writing the new CHD
+the following single-density tracks back to back, the first high-density track at LBA 45000) in memory (chdman, if you chose it, gets it in scratch space with symlinks to your files); otherwise
+the set is marked *needs a .gdi* and not converted. *Convert* writes the new CHD
 as `<Redump name>.chd.romorg.part` next to its final place (that is the intended output, not scratch), **checks the kind of disc
-(a Dreamcast game must come out as a GD-ROM CHD `CHGD`, not a CD `CHT2`), decodes it again with the built-in reader - independent of chdman, the job
-message says so; chdman extract is only the fallback for a CHD the reader cannot decode - and compares every track with Redump**, and
+(a Dreamcast game must come out as a GD-ROM CHD `CHGD`, not a CD `CHT2`), decodes it again with the built-in reader
+and compares every track with Redump**, and
 only if all tracks match renames it into `<Redump name>/<Redump name>.chd` and moves the raw files to
 `_converted_originals/<their path>` (nothing is deleted). Any failure, mismatch, missing space or Cancel leaves the raw files
 untouched and no `.part` / temp files behind. About the disc size must be free next to the games during a conversion. **Undo last**
@@ -630,11 +635,11 @@ prototype / pre-release (plus the `(Beta)`, `(Proto)`, `(Sample)` and Japanese `
 **Playlists:** PlayStation multi-disc games get an `.m3u` with relative paths next to disc 1 (RetroArch and DuckStation read it);
 **PlayStation 2 gets none** - PCSX2 does not use `.m3u` playlists (the policy is a per-system setting).
 
-**Convert (needs chdman).** A PlayStation `.cue` + `.bin` set (or a PS2 CD set) is converted with `chdman createcd`;
-a single PS2 `.iso` with `chdman createdvd` (config key `ps2_iso_chd` = `dvd` (default) | `cd` makes it `createcd`, which
-produces the same kind of CHD as the one in your library). The new CHD is decoded again and compared with Redump before
+**Convert.** A PlayStation `.cue` + `.bin` set (or a PS2 CD set) becomes a CD-image CHD (what `chdman createcd` writes);
+a single PS2 `.iso` a DVD-image CHD (`createdvd`; config key `ps2_iso_chd` = `dvd` (default) | `cd` makes it a CD image, which
+is the same kind of CHD as the one in your library). The new CHD is decoded again and compared with Redump before
 the originals move to `_converted_originals/`. *Assumption, not verified here:* PCSX2 loads both `createcd` and
-`createdvd` CHDs (the createcd ones are what the test library uses). Without chdman the step is disabled and explains how to get it.
+`createdvd` CHDs (the createcd ones are what the test library uses).
 
 ## Convert to No-Intro format (SNES, N64)
 

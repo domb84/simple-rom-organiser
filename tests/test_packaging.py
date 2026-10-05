@@ -137,11 +137,13 @@ class SourceFileTests(unittest.TestCase):
         doc = (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8")
         script = (PKG / "build_appimage.sh").read_text(encoding="utf-8")
         pins = re.findall(r'^PKG_\w+="([^|]+)\|([^|]+)\|([0-9a-f]{64})"', script, re.M)
-        self.assertEqual(len(pins), 4)
+        self.assertEqual(len(pins), 2)                          # libFLAC + libogg; chdman is no longer shipped
         for file, directory, sha in pins:
             self.assertIn(sha, doc, file)                       # the document lists the same checksums
             self.assertIn(f"{directory}/{file}", doc)
-        for needle in ("chdman", "libFLAC", "libogg", "utf8proc", "BSD-3-Clause", "GPL-2.0", "MIT",
+        self.assertNotIn("mame-tools", script)
+        self.assertNotIn("tools/chdman", script)
+        for needle in ("chdman is not shipped", "libFLAC", "libogg", "BSD-3-Clause", "GPL-2.0",
                        "Corresponding source", "gitlab.archlinux.org", "github.com/mamedev/mame"):
             self.assertIn(needle, doc)
         # the build verifies and fails on a mismatch, and ships the document inside the image
@@ -149,7 +151,7 @@ class SourceFileTests(unittest.TestCase):
         self.assertIn("SHA-256 mismatch", script)
         self.assertIn('licenses/THIRD_PARTY.md', script)
         self.assertIn("--self-check", script)
-        self.assertIn("ALLOW_NO_CHDMAN", (PKG / "smoke_test.sh").read_text(encoding="utf-8"))
+        self.assertIn("the writer", (PKG / "smoke_test.sh").read_text(encoding="utf-8"))
 
     def test_gitignore(self) -> None:
         lines = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
@@ -187,12 +189,13 @@ class BuiltArtifactTests(unittest.TestCase):
         for trimmed in ("tkinter", "idlelib", "test", "ensurepip", "site-packages/pip"):
             self.assertFalse((stdlib / trimmed).exists(), f"{trimmed} should be stripped")
         if (APPDIR / "tools").is_dir():                       # a build with BUNDLE_TOOLS=1 (the default)
-            self.assertTrue(os.access(APPDIR / "tools" / "chdman", os.X_OK))
-            for lib in ("libFLAC.so.14", "libogg.so.0", "libutf8proc.so.3"):
+            self.assertFalse((APPDIR / "tools" / "chdman").exists(), "chdman is no longer shipped")
+            for lib in ("libFLAC.so.14", "libogg.so.0"):
                 self.assertTrue((APPDIR / "tools" / "lib" / lib).exists(), lib)
             self.assertEqual((APPDIR / "licenses" / "THIRD_PARTY.md").read_text(encoding="utf-8"),
                              (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8"))
-            for pkg in ("mame-tools", "libutf8proc", "flac", "libogg"):
+            self.assertFalse((APPDIR / "licenses" / "mame-tools").exists())
+            for pkg in ("flac", "libogg"):
                 self.assertTrue(any((APPDIR / "licenses" / pkg).iterdir()), f"licence text of {pkg}")
 
 

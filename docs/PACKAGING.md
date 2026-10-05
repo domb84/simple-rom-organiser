@@ -175,8 +175,9 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
 
 ### Windows: chdman, 7-Zip and speed
 
-- **chdman** is optional but much faster than the built-in Python CHD reader (above all for FLAC audio tracks,
-  which the Python reader decodes at only 1-2 MB/s per process). The app looks for `chdman.exe` on `PATH`, next to
+- **chdman** is optional: the app reads and writes CHDs itself. (Without a FLAC library the reader decodes audio
+  in Python at 1-2 MB/s per process and the writer stores audio without FLAC; the zip ships libsndfile for reading.)
+  The app looks for `chdman.exe` on `PATH`, next to
   the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`, RetroArch, Scoop,
   `C:\mame`). Or set `ROMORG_CHDMAN` / the `chdman_path` setting. It ships in the MAME download.
   Drop `chdman.exe` beside `Simple_ROM_Organiser-*.exe` and it is picked up.
@@ -190,8 +191,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
 - Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
 - **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
   used only for a codec name the reader does not know (a format newer than chdman 0.289) and when forced with
-  `engine = "chdman"`. Creating a CHD is
-  always `chdman createcd/createdvd` with its own (multi-threaded) defaults.
+  `engine = "chdman"`. Creating a CHD is the built-in writer (`romorg/chdwrite.py`, settings `chd_writer` =
+  `auto` | `chdman`, `chd_preset` = `default` | `zstd`); its FLAC encoder needs a libFLAC DLL next to the app (not
+  shipped: audio tracks are then stored with LZMA, larger but valid), its Zstandard preset a `libzstd.dll`.
+  **The writer has not been run on Windows yet.**
 - **Zstandard CHDs (`cdzs` / `zstd`).** Decoded by the built-in reader when a Zstandard library loads
   (`romorg/zstdnative.py`): Python 3.14's `compression.zstd`, or a `libzstd.dll` / `zstd.dll` next to the app or in its
   `native` folder (`ROMORG_LIBZSTD` names one). The Windows builds use Python 3.13 and bundle no libzstd, so there

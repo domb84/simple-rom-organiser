@@ -161,12 +161,36 @@ def check_scheduler() -> Tuple[bool, str]:
     return True, f"the scheduler hashed a tiny GD image with {workers} worker processes (identical to sequential)"
 
 
+def check_writer() -> Tuple[bool, str]:
+    """The writer makes a CHD of a tiny data + audio disc (in worker processes), the reader reads it back."""
+    from . import cdimage, chdwrite, flacenc
+    from . import chd as chdlib
+    with tempfile.TemporaryDirectory(prefix="romorg-selfcheck-") as tmp:
+        folder = Path(tmp)
+        t1, pcm = write_tiny_chd(folder / "reference.chd")
+        (folder / "t1.bin").write_bytes(t1)
+        (folder / "t2.bin").write_bytes(pcm)
+        (folder / "disc.cue").write_text('FILE "t1.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+                                         'FILE "t2.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n')
+        info = chdwrite.write_chd(folder / "new.chd", cdimage.open_image(folder / "disc.cue"), threads=2,
+                                  processes=True)
+        with chdlib.Chd(folder / "new.chd") as c:
+            got = [chdlib.hash_track(c, t).sha1 for t in c.tracks]
+            checks = c.verify()
+        if got != [hashlib.sha1(t1).hexdigest(), hashlib.sha1(pcm).hexdigest()] or not checks["overall"]:
+            return False, "the writer's CHD does not read back as the tracks it was made from"
+    extra = [] if flacenc.available() else ["no libFLAC: audio is stored without FLAC"]
+    extra += [] if chdwrite.zstd_available() else ["no Zstandard library: the Zstandard preset is not offered"]
+    return True, (f"the writer made a CHD ({info['engine']}, {'/'.join(info['codecs'])}) that reads back identically"
+                  + ("; " + "; ".join(extra) if extra else ""))
+
+
 def check_chdman() -> Tuple[str, str]:
     """``("OK" | "WARN" | "SKIP", text)``"""
     from . import bundle, chdtool
     c = chdtool.bundled_chdman()
     if c is None:
-        return "SKIP", "no bundled chdman (not an AppImage build)"
+        return "SKIP", "no chdman is shipped (the app reads and writes CHDs itself; an installed chdman is optional)"
     ok, why = chdtool._probe_detail(c.argv, c.environ())
     if ok:
         return "OK", f"the bundled chdman starts ({c.argv[0]})"
@@ -179,13 +203,13 @@ def main(argv: List[str] | None = None) -> int:
     root = bundle.bundle_root()
     lines: List[Tuple[str, str]] = []
     if root is not None:
-        need = [root / "tools" / "chdman", root / "licenses" / "THIRD_PARTY.md"]
+        need = [root / "licenses" / "THIRD_PARTY.md"]
         libs = list((root / "tools" / "lib").glob("libFLAC.so*")) if (root / "tools" / "lib").is_dir() else []
         missing = [str(p) for p in need if not p.exists()] + ([] if libs else ["tools/lib/libFLAC.so*"])
         if missing:
             lines.append(("FAIL", "bundle incomplete: missing " + ", ".join(missing)))
         else:
-            lines.append(("OK", f"bundle at {root}: tools/chdman, tools/lib/libFLAC, licenses/THIRD_PARTY.md"))
+            lines.append(("OK", f"bundle at {root}: tools/lib/libFLAC, licenses/THIRD_PARTY.md"))
     else:
         lines.append(("SKIP", "not running from an AppImage (no bundle)"))
     status, text = check_chdman()
@@ -194,7 +218,7 @@ def main(argv: List[str] | None = None) -> int:
         lines.append(check_zstd())
     except Exception as exc:  # noqa: BLE001
         lines.append(("WARN", f"Zstandard check: {type(exc).__name__}: {exc}"))
-    for fn in (check_flac, check_scheduler):
+    for fn in (check_flac, check_scheduler, check_writer):
         try:
             ok, text = fn()
         except Exception as exc:  # noqa: BLE001

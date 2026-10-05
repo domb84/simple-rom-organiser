@@ -2056,3 +2056,31 @@ Speed (Steam Deck, 8 threads; chdman 0.289 timed on the same files):
 FLAC: one core is bound by the same libFLAC chdman uses, so the gain comes from decoding in parallel. `Chd.threads` (default up to 4, `ROMORG_CHD_THREADS`; 1 inside the scheduler's workers) decodes several hunks at once for hunks of 16 KiB and more. The libFLAC binding calls back into Python for every read and write, which keeps threads queueing for the GIL, so when only the audio is wanted the hunk goes to libsndfile through an anonymous memory file (`nativeflac.decode_frames_fd`, Linux): no callback at all, 94 -> 311 MB/s from 1 to 4 threads in isolation. Audio tracks are decoded straight to CD byte order (one byte swap less). A hunk that many others copy (silence, zeros) is decoded once.
 
 Known limits: `huff` in pure Python + zlib is about 14 MB/s per process (chdman: far more), so a default-codec DVD CHD read by ONE process is slower than chdman; the scheduler's workers make up for it. `avhu` video is a Python loop (about 1 MB/s). Nothing here was run on Windows.
+
+# Amendment 22 - The app writes CHDs itself
+
+`docs/CHD_WRITER_PLAN.md` was carried out for its tier 1 (what the app converts): `romorg/cdimage.py` (inputs), `romorg/chdwrite.py` (container, codec choice, parallelism), `romorg/flacenc.py` (libFLAC encoder), `cdecc.valid` (which sectors carry standard ECC), a `compress` request in `romorg/chdworker.py`.
+
+**Same image as chdman.** For the same set the CHD has chdman's data SHA-1, metadata text and header SHA-1 (which covers both), `chdman verify` accepts it, and the reader gets the source tracks back. Checked for 16 layouts (`tests/fixtures/chdwrite/layouts.py`: Redump multi-file cue with `INDEX 00`, single-file cue, `PREGAP` / `POSTGAP`, cooked `MODE1/2048`, `MODE2/2336`, two data tracks, audio only, three GDIs, ISO as CD and as DVD) against chdman 0.289; its answers are stored in `chdman_reference.json`, so the suite needs no chdman. Layout rules as chdman has them: frames of 2448 bytes with zero subcode, audio big-endian, tracks padded to 4 frames, `INDEX 00` = pregap inside the track (`PGTYPE:V<type>`), `PREGAP` / `POSTGAP` commands metadata only, a GDI track runs to the next one (`PAD` zero frames). A cue or GDI the parser is not sure about is refused (`ImageError`), never guessed; an installed chdman then gets the set.
+
+**Compressed bytes are our own**, except FLAC: libFLAC with MAME's settings (level 8, block size = samples halved to at most 2352 for `cdfl`) gives frames byte-identical to chdman's. MAME's decoder rejects frames with another block size, so there is no fallback encoder: without libFLAC audio goes to `cdlz`. LZMA is Python's `lzma` (`FORMAT_RAW`, the dictionary MAME's decoder expects, `nice_len` 32).
+
+**Codec choice.** chdman tries every codec on every hunk. Here: a copy of an earlier hunk is found by SHA-1 before compressing; audio hunks get FLAC only; a data hunk is probed (deflate level 1 on two 2 KiB samples) - if that does not compress, deflate and no LZMA, else LZMA and no deflate. Measured on PlayStation / PlayStation 2 / Dreamcast hunks, not trying deflate everywhere costs 0.14-0.45 % in size (deflate wins many hunks, each by very little).
+
+**Parallelism.** Worker processes (the `chdworker` ones), fed by threads; batches overlap so the parent reads and hashes while the workers compress. Plain threads were tried first and are the fallback (small images, no worker): LZMA releases the GIL, but the ECC check is Python arithmetic (about 0.4 ms per hunk) and eight threads queue for the interpreter behind it.
+
+Measured (Steam Deck, 8 threads, chdman 0.289 on the same files; every result has chdman's SHA-1 and passes `chdman verify`):
+
+| Input | chdman | built-in, standard | built-in, Zstandard |
+|---|---|---|---|
+| PlayStation CD, 429 MB, one MODE2 track | 15.8 s, 285.4 MB | 15.8 s, 286.4 MB (+0.35 %) | 4.2 s, 286.0 MB |
+| Dreamcast GD-ROM, 1.2 GB, with audio | 50.7 s, 662.3 MB | 44.4 s, 663.6 MB (+0.20 %) | 13.3 s, 690.4 MB (+4.2 %) |
+| PlayStation 2 ISO, 1.5 GB, as DVD (`createdvd`) | 91.2 s, 1268.8 MB | 39.7 s, 1273.7 MB (+0.38 %) | 24.2 s, 1287.8 MB (+1.5 %) |
+| the same ISO as CD (`createcd`) | 66.4 s, 1323.3 MB | 33.4 s, 1323.9 MB (+0.04 %) | - |
+
+So: never slower, about twice as fast where data does not compress or repeats, and level on a disc where every hunk is unique and compressible (both tools are then bound by LZMA at the same speed per core; chdman's encoder is a little quicker than liblzma, the saved deflate trials make up for it).
+
+**In the app.** `discsys.apply_conversions(..., writer="auto" | "chdman", preset="default" | "zstd")`; settings `chd_writer`, `chd_preset` (`POST /api/chdman`). `auto` = built-in, chdman only for a set the built-in parser refuses. The flow around it is unchanged: `.part` file next to the target, kind check, every track decoded again and compared with Redump, originals kept, undo. The AppImage no longer ships chdman (libFLAC / libogg stay); an installed chdman is detected as before.
+
+Not done / not known: the writer was never run on Windows; no emulator was started on a written file (the evidence is SHA-1 equality with chdman, `chdman verify`, and the reader); tiers 2 and 3 of the plan (hard disks, parents, `huff` / `flac` data hunks, laserdiscs) are out of scope by the user's decision.
+

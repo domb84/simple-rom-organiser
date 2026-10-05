@@ -1,0 +1,302 @@
+{
+ "audio_only": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 127296,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:21 PREGAP:5 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "848f358cdb6bd18f19803ba90b8fa91bf10d810e",
+  "sha1": "69b650f381bc485209786a0842a8277d70493284",
+  "size": 54095,
+  "unit_bytes": 2448
+ },
+ "cooked": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 97920,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1 SUBTYPE:NONE FRAMES:37 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "1eb9dd6b2d17e4030c1c3c2064144ccc39610910",
+  "sha1": "bf44131a68157c62e9cb3cde85dd6cb64a3eb40a",
+  "size": 3157,
+  "unit_bytes": 2448
+ },
+ "gd": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 110228544,
+  "metadata": [
+   [
+    "CHGD",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:600 PAD:570 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:44400 PAD:44373 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:3 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:26 PAD:0 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "a4c69a43533179c7958f1a1acadb9d96db501255",
+  "sha1": "766322a9d09327b7f5f5452c4fd7918c37f6de16",
+  "size": 39681,
+  "unit_bytes": 2448
+ },
+ "gd5": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 111168576,
+  "metadata": [
+   [
+    "CHGD",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:756 PAD:726 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:44244 PAD:44217 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:3 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:180 PAD:154 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:4 TYPE:AUDIO SUBTYPE:NONE FRAMES:220 PAD:199 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:5 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:11 PAD:0 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "21367eff7875fa6690bdde140b02dd081dbacf0f",
+  "sha1": "d6c492d5629e80437a5f5e21ee97037bde20dcf3",
+  "size": 65606,
+  "unit_bytes": 2448
+ },
+ "gdq": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 110257920,
+  "metadata": [
+   [
+    "CHGD",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:600 PAD:570 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:44400 PAD:44373 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHGD",
+    "TRACK:3 TYPE:MODE1 SUBTYPE:NONE FRAMES:37 PAD:0 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "0669d14ac3abda736fdbf76014cf36b603b6a790",
+  "sha1": "84717468c183f37b830d3d7663d6992b9205d5a2",
+  "size": 38299,
+  "unit_bytes": 2448
+ },
+ "idx2": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 146880,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:10 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "3eb9b451b298d3f9f5d509d58583e0902591d605",
+  "sha1": "ecb700dc90b36ac8f485b508d8acf6e64f1a6d09",
+  "size": 35193,
+  "unit_bytes": 2448
+ },
+ "iso_cd": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 97920,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1 SUBTYPE:NONE FRAMES:37 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "1eb9dd6b2d17e4030c1c3c2064144ccc39610910",
+  "sha1": "bf44131a68157c62e9cb3cde85dd6cb64a3eb40a",
+  "size": 3157,
+  "unit_bytes": 2448
+ },
+ "iso_dvd": {
+  "hunk_bytes": 4096,
+  "logical_bytes": 75776,
+  "metadata": [
+   [
+    "DVD ",
+    "\u0000"
+   ]
+  ],
+  "raw_sha1": "89b251436c17f3fff1aa16be0e3c5c822c469f87",
+  "sha1": "c07133fb71fd264968a45df948c1b438c18fd763",
+  "size": 3068,
+  "unit_bytes": 2048
+ },
+ "m2336": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 78336,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE2 SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "9ce484526a9f83ad20cd51196e415f5d4eaf8a78",
+  "sha1": "c8742340a6fe8112f26152c34b3c57985a0f246f",
+  "size": 16983,
+  "unit_bytes": 2448
+ },
+ "noidx0": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 186048,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:3 TYPE:AUDIO SUBTYPE:NONE FRAMES:13 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "0dc942077f511311a19c37272a2ef1607fea2304",
+  "sha1": "caa77b5b303fd448da4cd593299eb100b520b711",
+  "size": 50314,
+  "unit_bytes": 2448
+ },
+ "postgap": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 146880,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:150\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:10 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "3eb9b451b298d3f9f5d509d58583e0902591d605",
+  "sha1": "48e4ea27e5d9918cfabce1c04086ee2347cc385a",
+  "size": 35195,
+  "unit_bytes": 2448
+ },
+ "pregap": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 146880,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:150 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "3eb9b451b298d3f9f5d509d58583e0902591d605",
+  "sha1": "46e1e1288367971e388948ccf711d11fab194539",
+  "size": 35193,
+  "unit_bytes": 2448
+ },
+ "redump": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 205632,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:10 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:3 TYPE:AUDIO SUBTYPE:NONE FRAMES:21 PREGAP:7 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "9e7427a305a5c03bb5991e18174a6638c5e1a515",
+  "sha1": "b38ba2d090dc6a60ea29e0eb303381431f63bc2c",
+  "size": 64127,
+  "unit_bytes": 2448
+ },
+ "single": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 205632,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:27 PREGAP:5 PGTYPE:VAUDIO PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:3 TYPE:AUDIO SUBTYPE:NONE FRAMES:21 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "ef9abd2e9763be8697c77da7e8c18e14f323bec2",
+  "sha1": "61b9a5b94292b20a7b39836e24737e8fd6c403e2",
+  "size": 59093,
+  "unit_bytes": 2448
+ },
+ "spaces": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 78336,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "e41552cf0a347281398c744d8e741768520477b4",
+  "sha1": "7396ed74dd817dfb384c7b3f7aaac5f1fd2d88ce",
+  "size": 5142,
+  "unit_bytes": 2448
+ },
+ "two_data": {
+  "hunk_bytes": 19584,
+  "logical_bytes": 156672,
+  "metadata": [
+   [
+    "CHT2",
+    "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0\u0000"
+   ],
+   [
+    "CHT2",
+    "TRACK:2 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:30 PREGAP:4 PGTYPE:VMODE2_RAW PGSUB:NONE POSTGAP:0\u0000"
+   ]
+  ],
+  "raw_sha1": "eadfca9e3ebfa6ce30a2f49da2ac1e4c65802138",
+  "sha1": "98c53f2ee6881da288bcf4cbe15e64127b7d3121",
+  "size": 15176,
+  "unit_bytes": 2448
+ }
+}

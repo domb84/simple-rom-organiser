@@ -369,18 +369,34 @@ class DcEndpointTests(DcServerCase):
         self.assertTrue((self.roms / "raw set" / "e.gdi").is_file())
         self.assertFalse((self.roms / "Epsilon (USA)").exists())
 
-    def test_convert_without_chdman_is_disabled_and_explains(self) -> None:
+    def test_convert_without_chdman_uses_the_builtin_writer(self) -> None:
         self.discs["Epsilon (USA)"].write_raw(self.roms / "raw set", "e")
         with mock.patch("romorg.chdtool.detect", return_value=None):
-            self.call("/api/chdman?refresh=1")
+            info = self.call("/api/chdman?refresh=1")
+            self.assertEqual((info["found"], info["writer"], info["preset"]), (False, "auto", "default"))
             self.scan()
             plan = self.call("/api/convert/plan", {})
             self.assertFalse(plan["chdman"]["found"])
-            self.assertIn("MAME", plan["chdman"]["hint"])
-            self.assertEqual([i["status"] for i in plan["items"]], ["skip"])
-            err = self.call("/api/convert/apply", {}, expect=409)       # never pretends to convert
-            self.assertIn("MAME", err["error"])
-        self.assertTrue((self.roms / "raw set" / "e.gdi").is_file())
+            self.assertEqual(plan["chdman"]["writer"], "auto")
+            self.assertEqual([i["status"] for i in plan["items"]], ["convert"])
+            res = self.run_job("/api/convert/apply", {})
+            self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {"builtin": 1}))
+        self.assertTrue((self.roms / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
+        self.assertFalse((self.roms / "raw set" / "e.gdi").exists())           # kept in _converted_originals/
+
+    def test_writer_and_preset_settings(self) -> None:
+        self.assertEqual(self.call("/api/chdman", {"writer": "chdman"})["writer"], "chdman")
+        self.assertEqual(self.call("/api/chdman", {"writer": "auto"})["writer"], "auto")
+        self.call("/api/chdman", {"writer": "sometimes"}, expect=400)
+        self.call("/api/chdman", {"preset": "tiny"}, expect=400)
+        with mock.patch("romorg.chdwrite.zstd_available", return_value=False):
+            self.call("/api/chdman", {"preset": "zstd"}, expect=409)
+            self.assertFalse(self.call("/api/chdman")["zstd_writer"])
+        with mock.patch("romorg.chdwrite.zstd_available", return_value=True):
+            self.assertEqual(self.call("/api/chdman", {"preset": "zstd"})["preset"], "zstd")
+        with mock.patch("romorg.chdwrite.zstd_available", return_value=False):
+            self.assertEqual(self.call("/api/chdman")["preset"], "default")     # saved, but not usable here
+        self.assertEqual(self.call("/api/chdman", {"preset": "default"})["preset"], "default")
 
     def test_startup_sweeps_stale_temp_folders(self) -> None:
         self.call("/api/folders", {"platform": PLAT, "path": str(self.roms)})

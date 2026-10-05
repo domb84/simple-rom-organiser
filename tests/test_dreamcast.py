@@ -524,7 +524,7 @@ class ConvertTest(unittest.TestCase):
 
     def run_convert(self, **kw):
         r, ops = self.plan()
-        return dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, **kw)
+        return dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, **{"writer": "chdman", **kw})
 
     def test_plan_shows_the_target_and_the_originals(self) -> None:
         r, ops = self.plan()
@@ -591,12 +591,53 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(tree(self.w.root), before)
         self.assertFalse([p for p in os.listdir(self.w.root) if p.startswith(".romorg-chd-")])
 
-    def test_without_chdman_nothing_is_offered(self) -> None:
+    def test_without_chdman_the_builtin_writer_converts(self) -> None:
         r, ops = self.plan(found=False)
-        self.assertEqual([o.status for o in ops], ["skip"])
-        self.assertIn("chdman not found", ops[0].reason)
+        self.assertEqual([o.status for o in ops], ["convert"])
+        (self.w.base / "log.txt").write_text("")
+        res = dreamcast.apply_conversions(ops, self.w.root, None, r.index)
+        self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {"builtin": 1}))
+        self.assertEqual((self.w.base / "log.txt").read_text(), "")            # chdman was never started
+        new = self.w.root / "Epsilon (USA)" / "Epsilon (USA).chd"
+        with chdlib.Chd(new) as c:
+            self.assertTrue(c.is_gd)
+            self.assertEqual(c.verify()["overall"], True)
+            self.assertEqual([chdlib.hash_track(c, t).sha1 for t in c.tracks],
+                             [hashlib.sha1(b).hexdigest() for b in self.disc.bins])
+        self.assertTrue((self.w.root / dreamcast.CONVERTED_DIR / "raw dump" / "Epsilon.gdi").is_file())
+        r2 = self.w.scan()
+        self.assertEqual([m.kind for m in r2.matched if m.unit.game.name == "Epsilon (USA)"], ["chd"])
+
+    def test_builtin_writer_is_the_default_even_with_a_chdman(self) -> None:
+        r, ops = self.plan()
+        (self.w.base / "log.txt").write_text("")
         res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
-        self.assertEqual(res["converted"], 0)
+        self.assertEqual((res["converted"], res["written_by"]), (1, {"builtin": 1}))
+        self.assertEqual((self.w.base / "log.txt").read_text(), "")
+
+    def test_a_set_the_builtin_writer_refuses_goes_to_chdman_or_fails_cleanly(self) -> None:
+        from romorg import cdimage
+        before = tree(self.w.root)
+        r, ops = self.plan()
+        with mock.patch.object(cdimage, "open_image", side_effect=cdimage.ImageError("odd layout")):
+            res = dreamcast.apply_conversions(ops, self.w.root, None, r.index)
+            self.assertEqual(res["converted"], 0)
+            self.assertIn("odd layout", res["failed"][0]["error"])
+            self.assertEqual(tree(self.w.root), before)
+            res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+            self.assertEqual((res["converted"], res["written_by"]), (1, {"chdman": 1}))
+
+    def test_cancel_while_the_builtin_writer_runs_leaves_nothing(self) -> None:
+        before = tree(self.w.root)
+        r, ops = self.plan()
+        calls = []
+
+        def cancel() -> bool:
+            calls.append(1)
+            return len(calls) > 2
+        res = dreamcast.apply_conversions(ops, self.w.root, None, r.index, cancel=cancel)
+        self.assertEqual((res["converted"], res["cancelled"]), (0, True))
+        self.assertEqual(tree(self.w.root), before)
 
     def test_not_enough_space_is_a_failure_not_a_partial_result(self) -> None:
         before = tree(self.w.root)
@@ -619,7 +660,7 @@ class ConvertTest(unittest.TestCase):
         r, ops = self.plan()
         self.assertEqual(ops[0].status, "conflict")
         before = tree(self.w.root)
-        dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+        dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual(tree(self.w.root), before)
 
     def test_cue_without_gdi_is_not_converted_for_a_gd_rom_system(self) -> None:
@@ -630,7 +671,7 @@ class ConvertTest(unittest.TestCase):
         r, ops = self.plan()
         self.assertEqual([o.status for o in ops], ["skip"])
         self.assertIn("needs a .gdi", ops[0].reason)
-        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual(res["converted"], 0)
         self.assertEqual(tree(self.w.root), before)
 
@@ -674,7 +715,7 @@ class ConvertTest(unittest.TestCase):
 
     def test_chdman_engine_verifies_with_chdman_extract(self) -> None:
         r, ops = self.plan()
-        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, engine="chdman")
+        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, engine="chdman", writer="chdman")
         self.assertEqual(res["converted"], 1)
         self.assertIn("extractcd", (self.w.base / "log.txt").read_text())
         self.assertIn("chdman extract", res["verify_text"])

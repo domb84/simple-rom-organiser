@@ -324,7 +324,7 @@ class ConvertTempTest(unittest.TestCase):
             seen.append(sorted(p.name for p in Path(out).parent.iterdir()))
             return res
         with mock.patch.object(chdtool, "create_cd", spy):
-            res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+            res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual(res["converted"], 1)
         dst = self.w.root / "Epsilon (USA)" / "Epsilon (USA).chd"
         self.assertEqual(seen[0], dst.with_name(dst.name + dreamcast.PART_SUFFIX))
@@ -337,7 +337,7 @@ class ConvertTempTest(unittest.TestCase):
         r = self.w.scan()
         ops = dreamcast.plan_convert(r, True)
         with mock.patch.object(tempspace, "free_bytes", return_value=1000):     # only the scratch policy sees this
-            res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+            res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual((res["converted"], res["failed"]), (1, []))
         self.assertTrue((self.w.root / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
         self.assertEqual(sum(1 for ln in (self.w.base / "log.txt").read_text().splitlines() if ln.startswith("extractcd")), 0)
@@ -350,7 +350,7 @@ class ConvertTempTest(unittest.TestCase):
         dst.with_name(dst.name + dreamcast.PART_SUFFIX).write_bytes(b"half")
         r = self.w.scan()
         ops = dreamcast.plan_convert(r, True)
-        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index)
+        res = dreamcast.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual(res["converted"], 1)
         self.assertEqual(sorted(os.listdir(dst.parent)), ["Epsilon (USA).chd"])
 

@@ -25,7 +25,7 @@ from typing import Callable, List, Optional
 
 from . import bundle, zstddec
 
-__all__ = ["ZstdError", "available", "native", "decompress", "status", "reload"]
+__all__ = ["ZstdError", "available", "native", "decompress", "compress", "can_compress", "status", "reload"]
 
 ENV_LIB = "ROMORG_LIBZSTD"
 ENV_OFF = "ROMORG_NO_ZSTD"
@@ -101,6 +101,7 @@ def _stdlib() -> Optional[Callable[[bytes, int], bytes]]:
         except Exception as exc:  # noqa: BLE001 - ZstdError and friends
             raise ZstdError(str(exc)) from exc
 
+    decode.compress = lambda data, level: _z.compress(data, level)      # type: ignore[attr-defined]
     return decode
 
 
@@ -120,6 +121,20 @@ def _ctypes(path: str) -> Callable[[bytes, int], bytes]:
             raise ZstdError((lib.ZSTD_getErrorName(n) or b"error").decode("ascii", "replace"))
         return buf.raw[:n]
 
+    lib.ZSTD_compressBound.restype = ctypes.c_size_t
+    lib.ZSTD_compressBound.argtypes = [ctypes.c_size_t]
+    lib.ZSTD_compress.restype = ctypes.c_size_t
+    lib.ZSTD_compress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+
+    def compress(data: bytes, level: int) -> bytes:
+        cap = lib.ZSTD_compressBound(len(data))
+        buf = ctypes.create_string_buffer(cap)
+        n = lib.ZSTD_compress(buf, cap, bytes(data), len(data), level)   # releases the GIL
+        if lib.ZSTD_isError(n):
+            raise ZstdError((lib.ZSTD_getErrorName(n) or b"error").decode("ascii", "replace"))
+        return buf.raw[:n]
+
+    decode.compress = compress      # type: ignore[attr-defined]
     return decode
 
 
@@ -179,6 +194,19 @@ def reload() -> None:
     global _tried, _decode, _source, _note
     with _lock:
         _tried, _decode, _source, _note = False, None, None, ""
+
+
+def can_compress() -> bool:
+    """Compressing needs a library (there is no pure-Python Zstandard *encoder*)."""
+    return _load() is not None
+
+
+def compress(data: bytes, level: int = 3) -> bytes:
+    """One Zstandard frame holding ``data`` (what chdman's ``zstd`` / ``cdzs`` codecs store)."""
+    fn = _load()
+    if fn is None:
+        raise ZstdError(_note or "no Zstandard library")
+    return fn.compress(data, level)     # type: ignore[attr-defined]
 
 
 def decompress(data: bytes, size: int) -> bytes:

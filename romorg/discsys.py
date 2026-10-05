@@ -50,7 +50,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
-from . import chdsched, chdtool, flacnative, folders, multihash, organiser, scanner, tags, tempspace
+from . import cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -1722,7 +1722,7 @@ class DcConvertOp:
     status: str                     # convert | conflict | skip
     reason: str = ""
     rom_name: str = ""
-    via: str = "chdman"
+    via: str = "builtin"            # who wrote the CHD: builtin | chdman (set when it was converted)
     unit: Any = None
     moves: list = field(default_factory=list)   # [(src, dst)] raw files -> originals
     raw_bytes: int = 0
@@ -1743,7 +1743,10 @@ def iso_convert_mode(system: DiscSystem, config: Optional[dict] = None) -> str:
     return mode
 
 
-def plan_convert(result: DcScanResult, chdman_found: bool, config: Optional[dict] = None) -> list[DcConvertOp]:
+def plan_convert(result: DcScanResult, chdman_found: bool = False,
+                 config: Optional[dict] = None) -> list[DcConvertOp]:
+    """The raw sets that can become a CHD. ``chdman_found`` no longer decides anything: the built-in writer
+    (:mod:`romorg.chdwrite`) converts when there is no chdman."""
     root = Path(result.root)
     system = result.system or system_for_dat(result.dat_names[0] if result.dat_names else "")
     have_chd = {u.game.name for u in result.units if u.kind == "chd" and u.game is not None}
@@ -1776,8 +1779,6 @@ def plan_convert(result: DcScanResult, chdman_found: bool, config: Optional[dict
                 op.gdi_text, op.note = text, "the .gdi was generated from the .cue (Redump single / high-density layout)"
         if op.status != "convert":
             pass
-        elif not chdman_found:
-            op.status, op.reason = "skip", "chdman not found - install MAME (Flatpak) or put chdman on PATH"
         elif g.name in have_chd:
             op.status, op.reason = "skip", "a CHD of this game already exists"
         elif _fold(dst) in claimed:
@@ -1797,10 +1798,10 @@ def assert_new_chd(info: chdlib.Chd, system: DiscSystem, mode: str) -> None:
     hashes alone cannot tell a GD-ROM CHD (CHGD) from a CD CHD (CHT2) with the same tracks)."""
     if mode == "createdvd":
         if not info.is_dvd:
-            raise chdtool.ChdmanError("chdman createdvd did not write a DVD CHD")
+            raise chdtool.ChdmanError("the new CHD is not a DVD image")
         return
     if not info.is_cd:
-        raise chdtool.ChdmanError("chdman createcd did not write a CD / GD-ROM CHD")
+        raise chdtool.ChdmanError("the new CHD is not a CD / GD-ROM image")
     if system.gd and not info.is_gd:
         raise chdtool.ChdmanError("the new CHD is a CD image (CHT2) but a Dreamcast game needs a GD-ROM image (CHGD) - "
                                   "the set needs a .gdi; nothing was changed")
@@ -1871,10 +1872,33 @@ def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tupl
     return work, sheet
 
 
-def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcIndex, journal: Any,
+def write_builtin(op: DcConvertOp, new: Path, preset: str, progress: Optional[ProgressFn], cancel: Any,
+                  label: str) -> dict:
+    """Create ``new`` from the set of ``op`` with the built-in writer. :class:`cdimage.ImageError` = this set has a
+    layout the writer does not take (nothing was written); other failures are :class:`chdtool.ChdmanError`."""
+    files = sheet_track_files(op.src) if op.gdi_text is not None else None
+    if op.gdi_text is not None and not files:
+        raise cdimage.ImageError("the .cue cannot be turned into a .gdi")
+    image = cdimage.open_image(op.src, op.mode, gdi_text=op.gdi_text, gdi_files=files)
+
+    def report(done: int, total: int) -> None:
+        if progress:
+            progress(done, total, f"{label}: Compressing, {100 * done // max(1, total)}% complete")
+    try:
+        return chdwrite.write_chd(new, image, preset=preset, progress=report,
+                                  cancel=lambda: organiser._is_cancelled(cancel))
+    except chdwrite.Cancelled:
+        raise chdtool.ChdmanError("cancelled", cancelled=True) from None
+    except cdimage.ImageError as exc:               # a file vanished or shrank while it was read
+        raise chdtool.ChdmanError(f"could not read the set: {exc}") from exc
+    except chdwrite.ChdWriteError as exc:
+        raise chdtool.ChdmanError(f"could not write the CHD: {exc}") from exc
+
+
+def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], index: DcIndex, journal: Any,
                  created: list[str], progress: Optional[ProgressFn], cancel: Any,
                  sched: Optional[chdsched.Scheduler] = None, engine: str = "auto",
-                 verify_notes: Optional[list[str]] = None) -> None:
+                 verify_notes: Optional[list[str]] = None, writer: str = "auto", preset: str = "default") -> None:
     unit: DcUnit = op.unit
     game = unit.game
     system = index.system
@@ -1895,17 +1919,32 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
         if new.is_file() and not new.is_symlink():
             new.unlink()                      # a leftover of a crashed run (our own distinctive name)
         label = op.rom_name
-        make = chdtool.create_dvd if op.mode == "createdvd" else chdtool.create_cd
-        source = op.src
-        if op.gdi_text is not None:
-            chdtool.check_access(chdman, Path(op.src).parent)
-            gdi_work, source = _link_gdi_dir(op, chdman, root)
-        make(chdman, source, new,
-             progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
-             cancel=cancel)
-        if gdi_work is not None:
-            chdtool.remove_workdir(gdi_work)
-            gdi_work = None
+        # Who writes: the built-in writer, unless chdman was chosen and is there. A set whose layout the built-in
+        # writer does not take goes to chdman when there is one.
+        use_chdman = chdman is not None and writer == "chdman"
+        if not use_chdman:
+            try:
+                write_builtin(op, new, preset, progress, cancel, label)
+                op.via = "builtin"
+            except cdimage.ImageError as exc:
+                if chdman is None:
+                    raise chdtool.ChdmanError(f"this set cannot be converted: {exc}") from exc
+                if progress:
+                    progress(0, 1, f"{label}: {exc} - converting with chdman")
+                use_chdman = True
+        if use_chdman:
+            make = chdtool.create_dvd if op.mode == "createdvd" else chdtool.create_cd
+            source = op.src
+            if op.gdi_text is not None:
+                chdtool.check_access(chdman, Path(op.src).parent)
+                gdi_work, source = _link_gdi_dir(op, chdman, root)
+            make(chdman, source, new,
+                 progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
+                 cancel=cancel)
+            op.via = "chdman"
+            if gdi_work is not None:
+                chdtool.remove_workdir(gdi_work)
+                gdi_work = None
         # verify the new CHD against Redump before anything of the original is touched
         info = chdlib.Chd(new, load_map=False)
         try:
@@ -1978,10 +2017,14 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: chdtool.Chdman, index: DcI
             pass
 
 
-def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Chdman, index: DcIndex,
+def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[chdtool.Chdman], index: DcIndex,
                       progress: Optional[ProgressFn] = None, cancel: Any = None, workers: int = 1,
-                      engine: str = "auto") -> dict[str, Any]:
-    """Convert the ``convert`` ops with chdman (multi-core): create -> verify against Redump -> place -> keep originals.
+                      engine: str = "auto", writer: str = "auto", preset: str = "default") -> dict[str, Any]:
+    """Convert the ``convert`` ops: create -> verify against Redump -> place -> keep originals.
+
+    ``writer``: ``auto`` = the built-in writer (:mod:`romorg.chdwrite`; chdman only for a set it does not take),
+    ``chdman`` = chdman when there is one. ``preset``: ``default`` (chdman's codecs, read by every emulator) or
+    ``zstd`` (Zstandard: much faster, needs an emulator from 2024 on; built-in writer only).
 
     The new CHD is verified INDEPENDENTLY of chdman: the built-in reader decodes it (parallel scheduler, ``workers``
     processes) and compares every track with Redump; chdman ``extract`` is only the fallback for a CHD the reader
@@ -2008,7 +2051,8 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Ch
             if progress:
                 progress(i, len(todo), op.rom_name)
             try:
-                _convert_one(op, root, chdman, index, journal, created, progress, cancel, sched, engine, notes)
+                _convert_one(op, root, chdman, index, journal, created, progress, cancel, sched, engine, notes,
+                             writer, preset)
                 converted.append(op)
             except organiser.UndoLogError:
                 raise
@@ -2039,4 +2083,7 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: chdtool.Ch
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
             "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
             "temp": tempspace.report(), "verify_text": notes[-1] if notes else "",
-            "generated_gdi": sum(1 for o in converted if o.gdi_text is not None)}
+            "generated_gdi": sum(1 for o in converted if o.gdi_text is not None),
+            "written_by": {v: sum(1 for o in converted if o.via == v) for v in ("builtin", "chdman")
+                           if any(o.via == v for o in converted)},
+            "preset": preset}

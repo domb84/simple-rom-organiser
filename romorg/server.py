@@ -2923,7 +2923,8 @@ class App:
         page.update(counts=_status_counts(ops), all=len(ops), root=str(state.root), available=available,
                     latest_only=latest_only, originals_dir=CONVERTED_DIR)
         if self._is_dc(state):
-            page["chdman"] = self._chdman_info()
+            page["chdman"] = dict(self._chdman_info())
+            self._writer_facts(page["chdman"])
             page["kind"] = "chd"
             page["disc"] = self._disc_info(state.platform, self._config())
         return page
@@ -2934,23 +2935,20 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, f"{state.platform.name} files are not converted")
         latest_only = self._latest_arg(state, body)
         self._convert_plan(state, latest_only)  # errors (e.g. module missing) before starting a job
-        if self._is_dc(state) and self._chdman() is None:   # never pretend to convert
-            raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
 
         def work(job: Job) -> Any:
             ops = self._convert_plan(state, latest_only)
             todo = sum(1 for op in ops if op.status == "convert")
             job.report(0, todo, "Converting files...")
             if self._is_dc(state):
-                chdman = self._chdman()
-                if chdman is None:
-                    raise ApiError(HTTPStatus.CONFLICT, _mod("chdtool").INSTALL_HINT)
+                chdman = self._chdman()         # optional: the built-in writer converts without it
                 cfg = self._config()
                 self._configure_temp(cfg)
                 res = dict(_mod("discsys").apply_conversions(
                     ops, state.root, chdman, state.result.index, progress=job.report, cancel=job.cancel,
                     workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
-                    engine=str(cfg.get("chd_engine") or "auto")))
+                    engine=str(cfg.get("chd_engine") or "auto"), writer=self._chd_writer(cfg),
+                    preset=self._chd_preset(cfg)))
             else:
                 res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
                                  cancel=job.cancel))
@@ -3063,11 +3061,36 @@ class App:
         except Exception:  # noqa: BLE001 - informational only
             pass
 
+    @staticmethod
+    def _chd_writer(cfg: dict[str, Any]) -> str:
+        return "chdman" if str(cfg.get("chd_writer") or "auto") == "chdman" else "auto"
+
+    @staticmethod
+    def _chd_preset(cfg: dict[str, Any]) -> str:
+        """``zstd`` only while a Zstandard library can compress; else the default codecs."""
+        if str(cfg.get("chd_preset") or "default") == "zstd":
+            try:
+                if _mod("chdwrite").zstd_available():
+                    return "zstd"
+            except Exception:  # noqa: BLE001 - fall back to the codecs every emulator reads
+                pass
+        return "default"
+
+    def _writer_facts(self, info: dict[str, Any]) -> None:
+        cfg = self._config()
+        info["writer"] = self._chd_writer(cfg)
+        info["preset"] = self._chd_preset(cfg)
+        try:
+            info["zstd_writer"] = bool(_mod("chdwrite").zstd_available())
+        except Exception:  # noqa: BLE001 - informational only
+            info["zstd_writer"] = False
+
     def chdman_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """chdman detection result (``?refresh=1`` forces a new look)."""
         info = self._chdman_info(refresh=_bool_arg(query.get("refresh")))
         info["engine"] = str(self._config().get("chd_engine") or "auto")
         self._engine_facts(info)
+        self._writer_facts(info)
         return info
 
     def chdman_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -3090,12 +3113,25 @@ class App:
             if engine not in ("auto", "python", "chdman"):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "engine must be auto, python or chdman")
             values["chd_engine"] = engine
+        writer = body.get("writer")
+        if writer is not None:
+            if writer not in ("auto", "chdman"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "writer must be auto or chdman")
+            values["chd_writer"] = writer
+        preset = body.get("preset")
+        if preset is not None:
+            if preset not in ("default", "zstd"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "preset must be default or zstd")
+            if preset == "zstd" and not _mod("chdwrite").zstd_available():
+                raise ApiError(HTTPStatus.CONFLICT, "Zstandard compression needs a Zstandard library (libzstd)")
+            values["chd_preset"] = preset
         if not values:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path and / or engine)")
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path, engine, writer or preset)")
         self._config_update(strict=True, **values)
         info = self._chdman_info(refresh=True)
         info["engine"] = str(self._config().get("chd_engine") or "auto")
         self._engine_facts(info)
+        self._writer_facts(info)
         if raw and not info.get("found"):
             info["warning"] = f"{raw} did not answer like chdman"
         return info

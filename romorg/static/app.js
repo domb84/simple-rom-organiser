@@ -3573,10 +3573,10 @@
 
   // ----------------------------------------------------------- 4. Convert
   let convertTable = null;
-  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "chdman createcd, then checked against Redump by the built-in reader" };
-  const MODE_TEXT = { createcd: "chdman createcd, then checked against Redump by the built-in reader", createdvd: "chdman createdvd, then checked against Redump by the built-in reader" };
+  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "written as a CHD, then checked against Redump by the built-in reader", builtin: "written as a CHD, then checked against Redump by the built-in reader" };
+  const MODE_TEXT = { createcd: "written as a CD image CHD, then checked against Redump by the built-in reader", createdvd: "written as a DVD image CHD, then checked against Redump by the built-in reader" };
 
-  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track, or a single .iso) into a CHD with chdman (createcd for CD images, createdvd for a PlayStation 2 .iso). "
+  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track, or a single .iso) into a CHD (a CD image, or a DVD image for a PlayStation 2 .iso) - the app writes it itself, chdman is not needed. "
     + "The new CHD is checked track by track against Redump BEFORE anything of your set is touched; only if every track matches is it placed in the "
     + "game folder (named like the Redump entry) and the raw files are moved to _converted_originals/ - nothing is deleted, and Undo last removes "
     + "the CHD and puts the raw files back. The new CHD is written next to its final place (needs the disc size free there); the check decodes it in scratch space (RAM or the app's cache folder, never in your game folder).";
@@ -3595,18 +3595,24 @@
     box.classList.toggle("hidden", !dc || !chdmanInfo);
     if (!dc || !chdmanInfo) return;
     const found = !!chdmanInfo.found;
-    box.classList.toggle("missing", !found);
+    box.classList.remove("missing");
     const notes = (chdmanInfo.notes || []).join(" ");
-    $("chdman-line").textContent = (found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.bundled ? " - shipped with the app" : ""}`
-      : "chdman not found - converting is disabled (scanning and verifying still work with the built-in reader).")
+    $("chdman-line").textContent = (found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.bundled ? " - shipped with the app" : ""} (optional: the app reads and writes CHDs by itself).`
+      : "chdman not found - it is not needed: the app reads and writes CHDs by itself.")
       + (notes ? ` (${notes})` : "")
       + (chdmanInfo.flac ? (chdmanInfo.flac.native ? " Audio decoding: native libFLAC." : " Audio decoding: built-in Python FLAC (slow) - libFLAC was not found.") : "")
       + (chdmanInfo.workers ? ` Decode processes: ${chdmanInfo.workers}.` : "");
     const steps = $("chdman-steps");
-    steps.classList.toggle("hidden", found);
-    steps.replaceChildren(...(found ? [] : (chdmanInfo.steps || []).map((t) => el("li", { text: t }))));
+    const wantsChdman = chdmanInfo.writer === "chdman" || chdmanInfo.engine === "chdman";
+    steps.classList.toggle("hidden", found || !wantsChdman);       // how to install it: only when it was asked for
+    steps.replaceChildren(...(found || !wantsChdman ? [] : (chdmanInfo.steps || []).map((t) => el("li", { text: t }))));
     if (document.activeElement !== $("chdman-path")) $("chdman-path").value = chdmanInfo.override || "";
     $("chdman-engine").value = chdmanInfo.engine || "auto";
+    $("chd-writer").value = chdmanInfo.writer || "auto";
+    const zstdOption = $("chd-preset").querySelector('option[value="zstd"]');
+    zstdOption.disabled = !chdmanInfo.zstd_writer || chdmanInfo.writer === "chdman";
+    $("chd-preset").value = zstdOption.disabled ? "default" : (chdmanInfo.preset || "default");
+    $("chd-preset-note").classList.toggle("hidden", $("chd-preset").value !== "zstd");
   }
 
   async function saveChdman(body) {
@@ -3614,14 +3620,14 @@
       chdmanInfo = await post("/api/chdman", body);
       renderChdman();
       if (chdmanInfo.warning) toast(chdmanInfo.warning, "error", 8000);
-      else toast(chdmanInfo.found ? `chdman: ${chdmanInfo.label}` : "Saved", "ok");
+      else toast("Saved", "ok");
       if (convertTable) { convertTable.offset = 0; convertTable.load(); }
     } catch (err) { toast(err.message, "error", 8000); }
   }
 
   function renderConvertIntro() {
     const dc = isGameFolder(currentPlatform());
-    $("convert-title").textContent = dc ? "Convert raw Redump sets to CHD (optional, needs chdman)" : "Convert to No-Intro format (optional)";
+    $("convert-title").textContent = dc ? "Convert raw Redump sets to CHD (optional)" : "Convert to No-Intro format (optional)";
     if (dc) $("convert-intro").textContent = CHD_INTRO;
     if (dc) loadChdman(); else $("chdman-box").classList.add("hidden");
     if (!Previews.has("convert")) resetConvertPreview();
@@ -3656,7 +3662,7 @@
           if (data.chdman) { chdmanInfo = { ...(chdmanInfo || {}), ...data.chdman }; renderChdman(); }
           filterChips($("convert-filters"), data.counts || {}, state.convertFilter, ["convert", "conflict", "skip"],
             (key) => { state.convertFilter = key; convertTable.offset = 0; convertTable.load(); });
-          $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert && !(data.chdman && !data.chdman.found) ? "0" : "1";
+          $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert ? "0" : "1";
           Jobs.setRunning(Jobs.running);
           return data;
         }),
@@ -3683,9 +3689,8 @@
     } catch (err) { toast(err.message, "error"); return; }
     const n = (data.counts || {}).convert || 0;
     if (!n) { toast("Nothing to convert.", "ok"); return; }
-    if (data.chdman && !data.chdman.found) { toast("chdman was not found - see the instructions above.", "error", 8000); return; }
     const body = isGameFolder(currentPlatform()) ? el("div", {},
-      el("p", { text: `Convert ${fmt(n)} raw set${n === 1 ? "" : "s"} inside ${state.scan.root} to CHD (chdman ${data.chdman ? data.chdman.label : ""})?` }),
+      el("p", { text: `Convert ${fmt(n)} raw set${n === 1 ? "" : "s"} inside ${state.scan.root} to CHD${data.chdman && data.chdman.writer === "chdman" && data.chdman.found ? ` with chdman (${data.chdman.label})` : ""}${data.chdman && data.chdman.preset === "zstd" && !(data.chdman.writer === "chdman" && data.chdman.found) ? " with Zstandard compression (needs an emulator from 2024 or later)" : ""}?` }),
       el("ul", {},
         el("li", { text: "The new CHD is decoded again and compared with every Redump track before it is kept; on any mismatch nothing changes." }),
         el("li", { text: `The raw files are moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
@@ -4053,6 +4058,8 @@
     $("chdman-save").addEventListener("click", () => saveChdman({ path: $("chdman-path").value.trim() }));
     $("chdman-refresh").addEventListener("click", () => loadChdman(true));
     $("chdman-engine").addEventListener("change", (e) => saveChdman({ engine: e.target.value }));
+    $("chd-writer").addEventListener("change", (e) => saveChdman({ writer: e.target.value }));
+    $("chd-preset").addEventListener("change", (e) => saveChdman({ preset: e.target.value }));
     $("convert-apply-btn").addEventListener("click", applyConvert);
     $("convert-undo-btn").addEventListener("click", undoLast);
     for (const id of ["m3u-labels", "m3u-savedisk"]) {

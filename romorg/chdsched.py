@@ -157,29 +157,59 @@ class _Chunk:
     tries: int = 0
 
 
-class _Worker:
-    def __init__(self, sched: "Scheduler", wid: int) -> None:
-        env = dict(os.environ)
-        env["PYTHONPATH"] = _package_parent()          # a directory, a .pyz or an AppImage's site-packages
-        env["PYTHONNOUSERSITE"] = "1"
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env.pop("PYTHONSTARTUP", None)
-        self.sched, self.wid = sched, wid
-        try:
-            if getattr(sys, "frozen", False):   # PyInstaller exe: sys.executable is the app itself (its worker mode)
-                cmd = [sys.executable, "--chd-worker"]
-            else:
-                cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
-            self.proc = subprocess.Popen(cmd, env=env,
-                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                         bufsize=0, **winproc.popen_kwargs(new_session=True))
-        except OSError as exc:
-            raise PoolError(f"cannot start a worker: {exc}") from exc
-        if fcntl is not None:
+def spawn_worker() -> "subprocess.Popen":
+    """Start one ``romorg.chdworker`` process (binary pipes on stdin / stdout); :class:`PoolError` when it cannot."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _package_parent()          # a directory, a .pyz or an AppImage's site-packages
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONSTARTUP", None)
+    try:
+        if getattr(sys, "frozen", False):   # PyInstaller exe: sys.executable is the app itself (its worker mode)
+            cmd = [sys.executable, "--chd-worker"]
+        else:
+            cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
+        proc = subprocess.Popen(cmd, env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                bufsize=0, **winproc.popen_kwargs(new_session=True))
+    except OSError as exc:
+        raise PoolError(f"cannot start a worker: {exc}") from exc
+    if fcntl is not None:
+        for pipe in (proc.stdout, proc.stdin):
             try:
-                fcntl.fcntl(self.proc.stdout.fileno(), _F_SETPIPE_SZ, 1 << 20)
+                fcntl.fcntl(pipe.fileno(), _F_SETPIPE_SZ, 1 << 20)
             except (OSError, AttributeError):
                 pass
+    return proc
+
+
+def kill_worker(proc: "subprocess.Popen") -> None:
+    if winproc.IS_WINDOWS:
+        winproc.kill_tree(proc)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, AttributeError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    for f in (proc.stdin, proc.stdout):
+        try:
+            if f:
+                f.close()
+        except (OSError, ValueError):
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class _Worker:
+    def __init__(self, sched: "Scheduler", wid: int) -> None:
+        self.sched, self.wid = sched, wid
+        self.proc = spawn_worker()
         self.rd = io.BufferedReader(self.proc.stdout, buffer_size=1 << 16)
         self.dead = False
         self.thread = threading.Thread(target=self._loop, name=f"chd-worker-{wid}", daemon=True)

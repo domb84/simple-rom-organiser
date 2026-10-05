@@ -6,6 +6,12 @@ Protocol (binary over stdin / stdout; ``python -m romorg.chdworker``, never star
     reply    (JSON line + raw bytes): {"id": 7, "n": 4214784}\\n<n bytes of extracted track data>
     or       {"id": 7, "err": {"kind": "unsupported" | "corrupt" | "other", "msg": "...", "needs_chdman": false}}
 
+The CHD writer (:mod:`romorg.chdwrite`) uses the same processes to compress::
+
+    request  {"id": 7, "op": "compress", "codecs": ["cdlz", "cdzl", "cdfl", ""], "hunk_bytes": 19584, "cd": true,
+              "hints": ["data", "audio", ...], "n": <bytes that follow: the hunks, one after the other>}
+    reply    {"id": 7, "n": <bytes that follow>, "items": [[slot, length, crc16], ...]}\n<the compressed hunks>
+
 ``first`` / ``count`` are frames of the track (2048-byte units for a DVD CHD) and the reply is exactly what
 ``chdman extractcd`` / ``extractdvd`` would write for them. The worker keeps its opened CHDs (and their parsed hunk
 maps) between requests, so a file's map is parsed once per worker, not once per chunk. It exits at EOF of stdin.
@@ -34,6 +40,7 @@ def serve(stdin=None, stdout=None) -> None:
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     cache: "OrderedDict[str, tuple]" = OrderedDict()
+    compressors: dict = {}
     jitter = float(os.environ.get(ENV_JITTER) or 0) / 1000.0
     crash = os.environ.get(ENV_CRASH, "")
 
@@ -60,6 +67,18 @@ def serve(stdin=None, stdout=None) -> None:
         try:
             req = json.loads(line)
             rid = req.get("id")
+            if req.get("op") == "compress":
+                from . import chdwrite
+                n = int(req["n"])
+                data = inp.read(n)
+                if len(data) != n:
+                    return
+                key = (tuple(req["codecs"]), int(req["hunk_bytes"]), bool(req["cd"]))
+                if key not in compressors:
+                    compressors[key] = chdwrite._Compressor(*key)
+                items, blob = chdwrite.compress_many(compressors[key], data, req["hints"])
+                reply({"id": rid, "n": len(blob), "items": items}, blob)
+                continue
             path = req["path"]
             sig = tuple(req.get("sig") or ())
             hit = cache.get(path)

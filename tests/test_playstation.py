@@ -505,7 +505,7 @@ class ConvertTest(unittest.TestCase):
     def run_convert(self, config=None):
         r = self.w.scan()
         ops = discsys.plan_convert(r, True, config)
-        return ops, discsys.apply_conversions(ops, self.w.root, self.chdman, r.index)
+        return ops, discsys.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
 
     def test_iso_defaults_to_createdvd_and_is_verified_against_redump(self) -> None:
         before = tree(self.w.root)
@@ -558,16 +558,37 @@ class ConvertTest(unittest.TestCase):
             r = self.w.scan()
             ops = discsys.plan_convert(r, True)
             self.assertEqual((ops[0].mode, ops[0].status), ("createcd", "convert"))
-            res = discsys.apply_conversions(ops, self.w.root, self.chdman, r.index)
+            res = discsys.apply_conversions(ops, self.w.root, self.chdman, r.index, writer="chdman")
         self.assertEqual(res["converted"], 1)
         self.assertIn("createcd", (self.w.base / "log.txt").read_text())
         self.assertTrue((self.w.root / "Cee (USA)" / "Cee (USA).chd").is_file())
 
-    def test_without_chdman_nothing_is_offered(self) -> None:
+    def test_without_chdman_the_builtin_writer_converts(self) -> None:
         r = self.w.scan()
         ops = discsys.plan_convert(r, False)
-        self.assertEqual(ops[0].status, "skip")
-        self.assertIn("chdman not found", ops[0].reason)
+        self.assertTrue(ops and all(o.status == "convert" for o in ops))
+        res = discsys.apply_conversions(ops, self.w.root, None, r.index)
+        self.assertEqual((res["converted"], res["failed"]), (len(ops), []))
+        self.assertEqual(res["written_by"], {"builtin": len(ops)})
+        r2 = self.w.scan()
+        self.assertEqual(sorted(m.kind for m in r2.matched if m.kind == "chd"), ["chd"] * len(ops))
+        for op in ops:
+            with chdlib.Chd(op.dst) as c:
+                self.assertEqual(c.verify()["overall"], True)
+                self.assertEqual(c.is_dvd, op.mode == "createdvd")
+
+    def test_zstandard_preset(self) -> None:
+        from romorg import chdwrite
+        if not chdwrite.zstd_available():
+            self.skipTest("no Zstandard library")
+        r = self.w.scan()
+        ops = discsys.plan_convert(r, False)
+        res = discsys.apply_conversions(ops, self.w.root, None, r.index, preset="zstd")
+        self.assertEqual((res["converted"], res["failed"], res["preset"]), (len(ops), [], "zstd"))
+        for op in ops:
+            with chdlib.Chd(op.dst) as c:
+                self.assertIn(c.compressors[0], ("zstd", "cdzs"))
+                self.assertEqual(c.verify()["overall"], True)
 
 
 @unittest.skipUnless(glob.glob(str(SCRATCH / "*.dat")), "real Sony Redump DATs not available")

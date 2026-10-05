@@ -101,21 +101,17 @@ def _body(s, end: int) -> bytes:
     return bytes(s[12:end])
 
 
-def generate(sectors: Sequence) -> None:
-    """Fill sync header + P/Q parity (in place) of every 2352-byte sector in the list.
-
-    The items may be ``bytearray`` or writable ``memoryview`` objects of length 2352.
-    """
+def _p_parity(sectors: Sequence):
+    """``(first, second)``: the two P parity rows (86 bytes per sector each) of the sectors' data."""
     n = len(sectors)
-    if not n:
-        return
-    # ---- P parity: rows of 86 bytes, 24 steps ----
     blkp = b"".join([_body(s, 2076) for s in sectors])
     rows = [b"".join(g(blkp)) for g in _p_getters(n)]
-    first, second = _horner(rows, 86 * n)
-    for i, s in enumerate(sectors):
-        s[2076:2248] = first[i * 86:(i + 1) * 86] + second[i * 86:(i + 1) * 86]
-    # ---- Q parity (covers header, data and P) ----
+    return _horner(rows, 86 * n)
+
+
+def _q_parity(sectors: Sequence) -> List[bytes]:
+    """The 104 Q parity bytes of every sector (they cover header, data and the P parity that is in the sector)."""
+    n = len(sectors)
     blk = b"".join([_body(s, 2248) for s in sectors])
     lanes = 52 * n
     m7f, m01 = _masks(lanes)
@@ -134,7 +130,8 @@ def generate(sectors: Sequence) -> None:
     r = fb(r.to_bytes(lanes, "big").translate(_BINV), "big")
     ra = r.to_bytes(lanes, "big")
     rb = (r ^ x).to_bytes(lanes, "big")
-    for i, s in enumerate(sectors):
+    out = []
+    for i in range(n):
         o0 = i * 26
         o1 = (n + i) * 26
         q = bytearray(104)
@@ -143,8 +140,48 @@ def generate(sectors: Sequence) -> None:
             e1 = vec[o1:o1 + 26]
             q[base:base + 52:2] = e0[17:] + e0[:17]
             q[base + 1:base + 52:2] = e1[17:] + e1[:17]
+        out.append(bytes(q))
+    return out
+
+
+def generate(sectors: Sequence) -> None:
+    """Fill sync header + P/Q parity (in place) of every 2352-byte sector in the list.
+
+    The items may be ``bytearray`` or writable ``memoryview`` objects of length 2352.
+    """
+    if not sectors:
+        return
+    first, second = _p_parity(sectors)
+    for i, s in enumerate(sectors):
+        s[2076:2248] = first[i * 86:(i + 1) * 86] + second[i * 86:(i + 1) * 86]
+    for s, q in zip(sectors, _q_parity(sectors)):
         s[2248:2352] = q
         s[0:12] = SYNC
+
+
+def valid(sectors: Sequence) -> List[bool]:
+    """Per sector: does it carry exactly the sync header and P/Q parity that :func:`generate` would write? (What a
+    CHD writer needs to know before it drops them.) Nothing is modified. P is checked first and Q only for the
+    sectors that pass, so sectors without error correction (audio, MODE 2 form 2) cost little."""
+    n = len(sectors)
+    ok = [bytes(s[0:12]) == SYNC for s in sectors]
+    idx = [i for i in range(n) if ok[i]]
+    if idx:
+        cand = [sectors[i] for i in idx]
+        first, second = _p_parity(cand)
+        keep = []
+        for k, i in enumerate(idx):
+            s = cand[k]
+            if bytes(s[2076:2162]) == first[k * 86:(k + 1) * 86] and bytes(s[2162:2248]) == second[k * 86:(k + 1) * 86]:
+                keep.append(i)
+            else:
+                ok[i] = False
+        if keep:
+            cand = [sectors[i] for i in keep]
+            for i, s, q in zip(keep, cand, _q_parity(cand)):
+                if bytes(s[2248:2352]) != q:
+                    ok[i] = False
+    return ok
 
 
 def generate_reference(sector: bytearray) -> None:

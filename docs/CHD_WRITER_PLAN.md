@@ -1,6 +1,10 @@
 # Plan: a built-in CHD writer (drop chdman altogether)
 
-Status: **plan only, nothing implemented.** Written 2026-10-05 after the reader reached read parity (commit
+Status: **tier 1 is implemented** (2026-10-05; `docs/ARCHITECTURE.md` Amendment 22 has the result and the
+measurements, including phases 5b and 5c). What is left: a run on Windows, and trying written CHDs in the emulators.
+The text below is the plan as it was written.
+
+Original status: **plan only, nothing implemented.** Written 2026-10-05 after the reader reached read parity (commit
 `a8c5366`, `docs/ARCHITECTURE.md` Amendment 21). This file is meant to be picked up cold by another session: it
 states the goal, what is already proven, the work in order, how each step is checked, and what is still unknown.
 
