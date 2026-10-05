@@ -159,7 +159,120 @@ class SourceFileTests(unittest.TestCase):
             self.assertIn(entry, lines)
 
 
+def _ps1_value(text: str, name: str) -> str:
+    match = re.search(r'^\$' + name + r'\s*=\s*"([^"]+)"', text, re.M)
+    assert match, name
+    return match.group(1)
+
+
+class WindowsPackagingTests(unittest.TestCase):
+    """The Windows build scripts: Python 3.14, libFLAC from Xiph.Org (pinned), the self-check, no chdman."""
+
+    def setUp(self) -> None:
+        self.zip_ps1 = (PKG / "build_windows.ps1").read_text(encoding="utf-8")
+        self.exe_ps1 = (PKG / "build_windows_exe.ps1").read_text(encoding="utf-8")
+        self.flac_ps1 = (PKG / "fetch_flac.ps1").read_text(encoding="utf-8")
+
+    def test_builds_use_python_3_14(self) -> None:
+        self.assertRegex(self.zip_ps1, r'\[string\]\$PyVersion = "3\.14\.\d+"')   # has compression.zstd
+        self.assertIn("python-$PyVersion-embed-amd64.zip", self.zip_ps1)
+        self.assertIn('[string]$PySeries = "3.14"', self.exe_ps1)
+        self.assertIn("venv-pyinstaller-$PySeries", self.exe_ps1)               # PyInstaller goes into a build venv
+        self.assertIn("--python-version 3.14", (PKG / "fetch_sndfile.ps1").read_text(encoding="utf-8"))
+        for text in (self.zip_ps1, self.exe_ps1):
+            self.assertNotIn("3.13", text)
+
+    def test_libflac_is_pinned_and_documented(self) -> None:
+        notices = (PKG / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+        doc = (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8")
+        version = _ps1_value(self.flac_ps1, "FlacVersion")
+        for name in ("FlacZipSha256", "DllSha256", "OggZipSha256"):
+            sha = _ps1_value(self.flac_ps1, name)
+            self.assertRegex(sha, r"^[0-9a-f]{64}$")
+            self.assertIn(sha, doc, name)
+        self.assertIn(_ps1_value(self.flac_ps1, "FlacZipSha256"), notices)
+        self.assertIn("https://ftp.osuosl.org/pub/xiph/releases/flac/flac-$FlacVersion-win.zip", self.flac_ps1)
+        self.assertIn(f"flac-{version}-win.zip", doc)
+        self.assertIn("flac-$FlacVersion-win/Win64/libFLAC.dll", self.flac_ps1)
+        for needle in ("libFLAC", "BSD", "FLAC-COPYING.Xiph.txt", "libogg-COPYING.txt"):
+            self.assertIn(needle, notices)
+
+    def test_both_builds_ship_libflac_and_run_the_self_check(self) -> None:
+        self.assertIn('"$stage\\app\\native\\libFLAC.dll"', self.zip_ps1)
+        self.assertIn('"--add-binary", "$flac;native"', self.exe_ps1)
+        for text in (self.zip_ps1, self.exe_ps1):
+            self.assertIn("fetch_flac.ps1", text)
+            self.assertIn("FLAC-COPYING.Xiph.txt", text)
+            self.assertIn("libogg-COPYING.txt", text)
+            self.assertIn("--self-check", text)
+            self.assertIn("--require-native", text)
+            self.assertIn('Remove-Item "Env:$v"', text)    # ROMORG_LIBFLAC & co. never leak into the checks
+        entry = (PKG / "windows_entry.py").read_text(encoding="utf-8")
+        self.assertIn('"--self-check"', entry)
+        self.assertIn('"--report"', entry)
+        self.assertIn('"--chd-worker"', entry)
+
+    def test_no_chdman_in_the_windows_packages(self) -> None:
+        for text in (self.zip_ps1, self.exe_ps1):
+            self.assertNotIn("chdman.exe", text)
+            self.assertNotIn("fetch_chdman", text)
+        self.assertIn("chdman is not needed", self.zip_ps1)
+        self.assertIn("chdman (NOT bundled)", (PKG / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8"))
+
+    def test_libflac_is_found_in_a_frozen_bundle(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        from romorg import flacnative
+        with tempfile.TemporaryDirectory() as tmp:
+            dll = Path(tmp) / "native" / "libFLAC.dll"
+            dll.parent.mkdir()
+            dll.write_bytes(b"MZ")
+            with mock.patch.object(sys, "platform", "win32"), \
+                    mock.patch.object(sys, "frozen", True, create=True), \
+                    mock.patch.object(sys, "_MEIPASS", tmp, create=True), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(flacnative.ENV_LIB, None)
+                self.assertIn(str(dll), flacnative._candidates())
+
+    def test_require_native_makes_the_libraries_required(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+
+        from romorg import bundle, selfcheck
+        with mock.patch.object(bundle, "bundle_root", return_value=None), \
+                mock.patch.object(selfcheck, "check_chdman", return_value=("SKIP", "-")), \
+                mock.patch.object(selfcheck, "check_zstd", return_value=("WARN", "no zstd library")), \
+                mock.patch.object(selfcheck, "check_flac", return_value=(False, "no libFLAC")), \
+                mock.patch.object(selfcheck, "check_scheduler", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_writer", return_value=(True, "ok")) as writer, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(selfcheck.main([]), 0)                    # a dev tree: only warnings
+            self.assertEqual(selfcheck.main(["--require-native"]), 1)  # a package: both are failures
+        self.assertEqual(out.getvalue().count("FAIL "), 2)
+        self.assertEqual(writer.call_args_list, [mock.call(False), mock.call(True)])
+
+
 class BuiltArtifactTests(unittest.TestCase):
+    def test_windows_zip(self) -> None:
+        path = ROOT / "dist" / f"Simple_ROM_Organiser-{_version()}-win64.zip"
+        if not path.is_file():
+            self.skipTest("Windows zip not built (run packaging/build_windows.ps1)")
+        import hashlib
+        import zipfile
+        sha = _ps1_value((PKG / "fetch_flac.ps1").read_text(encoding="utf-8"), "DllSha256")
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            top = "Simple_ROM_Organiser/"
+            for name in ("app/native/libFLAC.dll", "licenses/FLAC-COPYING.Xiph.txt", "licenses/libogg-COPYING.txt",
+                         "THIRD_PARTY_NOTICES.txt", "python/python.exe", "python/python314.dll",
+                         "python/_zstd.pyd", "app/romorg/chdwrite.py"):
+                self.assertTrue(top + name in names, f"{name} is missing from {path.name}")
+            self.assertEqual(hashlib.sha256(z.read(top + "app/native/libFLAC.dll")).hexdigest(), sha)
+            self.assertFalse([n for n in names if n.lower().endswith("chdman.exe")])
+
+
     def test_appimage(self) -> None:
         path = ROOT / "dist" / f"Simple_ROM_Organiser-{_version()}-x86_64.AppImage"
         if not path.is_file():

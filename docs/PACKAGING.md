@@ -162,25 +162,36 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1   # dis
 powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dist\Simple_ROM_Organiser-<version>-win64.zip
 ```
 
-- **Single `.exe` (main download, about 9 MB):** built with PyInstaller `--onefile --windowed` from
+- **Single `.exe` (main download, about 12 MB):** built with PyInstaller `--onefile --windowed` from
   `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
   (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
   startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
-  The build needs Python 3.11+ with `pip`; it installs PyInstaller if missing, then starts the finished exe
-  and checks that the UI answers.
-- **Zip (fallback):** the official embeddable CPython plus the `romorg` sources, started by
-  `Simple ROM Organiser.vbs`. Nothing is unpacked at run time and it never trips antivirus.
+  The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs PyInstaller into a build venv
+  (`packaging\.cache\venv-pyinstaller-3.14`), bundles libFLAC (`-NoFlac` leaves it out), then runs the finished
+  exe's import check, its CHD engine self-check and checks that the UI answers. The licence texts go inside the
+  exe (`licenses\`) and next to it (`dist\licenses`, `dist\THIRD_PARTY_NOTICES.txt`): ship them with the exe.
+- **Zip (about 14 MB):** the official embeddable CPython 3.14 (`-PyVersion`, default 3.14.8) plus the `romorg`
+  sources, libFLAC and libsndfile in `app\native`, started by `Simple ROM Organiser.vbs`. Nothing is unpacked at
+  run time and it never trips antivirus.
+- **Why Python 3.14:** its `compression.zstd` reads Zstandard CHDs at library speed and makes the Zstandard preset
+  available, with no `libzstd.dll` to ship.
+- **Self-check.** Both builds fail unless the package's own CHD engine self-check passes with `--require-native`:
+  libFLAC loads from the package, Zstandard comes from `compression.zstd`, the scheduler runs worker processes and
+  the writer makes a CHD with FLAC (`cdfl`) audio hunks in worker processes. Run it by hand with
+  `"Simple ROM Organiser (console).cmd" --self-check --require-native` (zip) or
+  `Simple_ROM_Organiser-<version>-win64.exe --self-check --require-native --report check.txt` (exe: it has no
+  console, so the report goes to the file; without `--report` to `selfcheck.log` in the data folder; the exit code
+  is 0 when it passed).
 - Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
 - The folder dialog is a native Windows dialog opened through PowerShell.
 
 ### Windows: chdman, 7-Zip and speed
 
-- **chdman** is optional: the app reads and writes CHDs itself. (Without a FLAC library the reader decodes audio
-  in Python at 1-2 MB/s per process and the writer stores audio without FLAC; the zip ships libsndfile for reading.)
-  The app looks for `chdman.exe` on `PATH`, next to
-  the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`, RetroArch, Scoop,
-  `C:\mame`). Or set `ROMORG_CHDMAN` / the `chdman_path` setting. It ships in the MAME download.
-  Drop `chdman.exe` beside `Simple_ROM_Organiser-*.exe` and it is picked up.
+- **chdman is not needed and not shipped**: the app reads, verifies and writes CHDs itself, with the bundled
+  libFLAC for CD audio. An installed chdman stays usable as an option: the app looks for `chdman.exe` on `PATH`,
+  next to the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`,
+  RetroArch, Scoop, `C:\mame`), or `ROMORG_CHDMAN` / the `chdman_path` setting, and it can be chosen in the
+  Convert step.
 - **7-Zip** (`7z.exe`, for `.7z` / `.rar`) is found on `PATH`, in `C:\Program Files\7-Zip` and next to the app.
 - CHD hashing uses the same engine as on Linux (`romorg/chdsched.py`, Amendment 14): one work queue over all tracks
   of all CHDs, decoded by worker processes (the frozen exe starts itself with `--chd-worker`; no console windows;
@@ -192,22 +203,23 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
 - **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
   used only for a codec name the reader does not know (a format newer than chdman 0.289) and when forced with
   `engine = "chdman"`. Creating a CHD is the built-in writer (`romorg/chdwrite.py`, settings `chd_writer` =
-  `auto` | `chdman`, `chd_preset` = `default` | `zstd`); its FLAC encoder needs a libFLAC DLL next to the app (not
-  shipped: audio tracks are then stored with LZMA, larger but valid), its Zstandard preset a `libzstd.dll`.
-  **The writer has not been run on Windows yet.**
+  `auto` | `chdman`, `chd_preset` = `default` | `zstd`); its FLAC encoder uses the bundled libFLAC (without one,
+  audio tracks are stored with LZMA, larger but valid), its Zstandard preset Python 3.14's `compression.zstd`.
 - **Zstandard CHDs (`cdzs` / `zstd`).** Decoded by the built-in reader when a Zstandard library loads
-  (`romorg/zstdnative.py`): Python 3.14's `compression.zstd`, or a `libzstd.dll` / `zstd.dll` next to the app or in its
-  `native` folder (`ROMORG_LIBZSTD` names one). The Windows builds use Python 3.13 and bundle no libzstd, so there
-  these CHDs are decoded by the pure-Python fallback (`romorg/zstddec.py`: correct, about 1 MB/s per worker) unless
-  you add the DLL. On Linux the system `libzstd` is used.
-- **Native FLAC (optional).** CD-audio (`cdfl`) hunks are decoded by `romorg/flacnative.py` with libFLAC when one
-  loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, a `libFLAC.dll` next to the app or in its `native` folder,
-  the system's). When none does, `romorg/nativeflac.py` decodes the audio with libsndfile (which contains libFLAC;
-  this is what the Windows builds bundle): found via `ROMORG_SNDFILE`, next to the app (or in a `native` folder, or
-  inside the onefile exe), or as the system's `libsndfile`. Both are byte-identical to the pure-Python decoder
-  (`tests/test_flacnative.py`), which is the fallback and roughly 100 times slower.
-  `ROMORG_NO_NATIVE_FLAC=1` switches both off (`ROMORG_NATIVE_FLAC=0`: libsndfile only).
-  **The Windows `.zip` package bundles it** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
+  (`romorg/zstdnative.py`): Python 3.14's `compression.zstd` (what the Windows builds use), or a `libzstd.dll` /
+  `zstd.dll` next to the app or in its `native` folder (`ROMORG_LIBZSTD` names one). Without either they are decoded
+  by the pure-Python fallback (`romorg/zstddec.py`: correct, about 1 MB/s per worker). On Linux the system `libzstd`
+  is used.
+- **Native FLAC.** CD-audio (`cdfl`) hunks are encoded (`romorg/flacenc.py`) and decoded (`romorg/flacnative.py`)
+  with libFLAC when one loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, a `libFLAC.dll` next to the app or in
+  its `native` folder or inside the onefile exe, the system's). **Both Windows builds bundle libFLAC 1.5.0** (the
+  official Xiph.Org Win64 DLL, fetched and checksum-checked by `fetch_flac.ps1`, BSD-3-Clause; see
+  `docs/THIRD_PARTY.md`). When none loads, `romorg/nativeflac.py` decodes the audio with libsndfile (which contains
+  libFLAC): found via `ROMORG_SNDFILE`, next to the app (or in a `native` folder, or inside the onefile exe), or as
+  the system's `libsndfile`. Both are byte-identical to the pure-Python decoder (`tests/test_flacnative.py`), which
+  is the fallback and roughly 100 times slower. `ROMORG_NO_NATIVE_FLAC=1` switches both off
+  (`ROMORG_NATIVE_FLAC=0`: libsndfile only).
+  **The Windows `.zip` package also bundles libsndfile** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
   `fetch_sndfile.ps1`; `build_windows.ps1 -NoSndfile` leaves it out) together with `THIRD_PARTY_NOTICES.txt` and
   the licence texts in `licenses\`. **The single-file `.exe` does not by default** (`build_windows_exe.ps1
   -BundleSndfile` adds it and writes the notices to `dist\`): libsndfile is LGPL-2.1+, loaded dynamically only, and

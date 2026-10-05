@@ -2,15 +2,18 @@
 #
 # Bundles the official CPython "embeddable" zip (no installer, no admin rights needed) with the romorg
 # package and a launcher. Unzip anywhere and double-click Simple ROM Organiser.vbs.
-#   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-PyVersion 3.13.15]
-param([string]$PyVersion = "3.13.15", [switch]$NoSndfile)   # -NoSndfile: leave out libsndfile (LGPL, native FLAC decoding)
+#   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-PyVersion 3.14.8]
+# Python 3.14 brings compression.zstd (fast Zstandard CHDs and the Zstandard preset) without a separate DLL.
+param([string]$PyVersion = "3.14.8",
+      [switch]$NoSndfile,   # leave out libsndfile (LGPL, native FLAC decoding through its virtual I/O)
+      [switch]$NoFlac)      # leave out libFLAC (BSD-3-Clause, FLAC encoding for the CHD writer + decoding)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
 $cache = "$root\packaging\.cache"; New-Item -ItemType Directory -Force $cache | Out-Null
 $zipName = "python-$PyVersion-embed-amd64.zip"
 if (-not (Test-Path "$cache\$zipName")) {
-    Invoke-WebRequest "https://www.python.org/ftp/python/$PyVersion/$zipName" -OutFile "$cache\$zipName"
+    Invoke-WebRequest "https://www.python.org/ftp/python/$PyVersion/$zipName" -OutFile "$cache\$zipName" -UseBasicParsing
 }
 
 $stage = "$root\build\windows\Simple_ROM_Organiser"
@@ -35,6 +38,15 @@ if (-not $NoSndfile) {
     Copy-Item (Join-Path (Split-Path $dll) "COPYING") "$stage\licenses\libsndfile-COPYING.txt"
     Copy-Item (Join-Path (Split-Path $dll) "license_notes.md") "$stage\licenses\libsndfile-license_notes.md"
 }
+if (-not $NoFlac) {
+    # BSD-3-Clause: the official Xiph.Org build (imports only KERNEL32 / msvcrt), loaded with ctypes by flacnative.py
+    $flac = & "$PSScriptRoot\fetch_flac.ps1"
+    New-Item -ItemType Directory -Force "$stage\app\native" | Out-Null
+    Copy-Item $flac "$stage\app\native\libFLAC.dll"
+    Copy-Item (Join-Path (Split-Path $flac) "COPYING.Xiph") "$stage\licenses\FLAC-COPYING.Xiph.txt"
+    Copy-Item (Join-Path (Split-Path $flac) "FLAC-AUTHORS") "$stage\licenses\FLAC-AUTHORS.txt"
+    Copy-Item (Join-Path (Split-Path $flac) "libogg-COPYING") "$stage\licenses\libogg-COPYING.txt"   # linked into libFLAC.dll
+}
 Get-ChildItem "$stage\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 & "$stage\python\python.exe" -m compileall -q --invalidation-mode unchecked-hash "$stage\app\romorg"
 if ($LASTEXITCODE) { throw "compileall failed" }
@@ -53,6 +65,7 @@ sh.Run cmd, 0, False
 @'
 @echo off
 rem Console version (shows log output). Extra options: --port N --no-browser --no-update --verbose
+rem "--self-check" tests the CHD engine of this package (libFLAC, Zstandard, worker processes, the writer).
 "%~dp0python\python.exe" -I -u -m romorg %*
 '@ | Set-Content "$stage\Simple ROM Organiser (console).cmd" -Encoding ascii
 @"
@@ -62,10 +75,17 @@ Double-click "Simple ROM Organiser.vbs". It starts a local server and opens your
 Quit with the Quit button in the top bar (closing the tab does not stop it).
 Data (DATs, settings) and app.log live in %LOCALAPPDATA%\simple-rom-organiser.
 Use "Simple ROM Organiser (console).cmd" to see log output or pass options.
-native\ (inside app\) holds libsndfile, a replaceable LGPL library that makes CD audio checks much faster;
-see THIRD_PARTY_NOTICES.txt and the licenses folder. chdman and 7-Zip are not included (see the notices).
+The app reads, checks and creates CHD files itself: chdman is not needed. An installed chdman is still
+found and can be chosen in the Convert step.
+native\ (inside app\) holds libFLAC (BSD licence: FLAC audio when CHDs are read and written) and libsndfile
+(a replaceable LGPL library); see THIRD_PARTY_NOTICES.txt and the licenses folder. 7-Zip is not included.
 No installation or admin rights needed; delete the folder to remove the app.
 "@ | Set-Content "$stage\README.txt" -Encoding ascii
+
+# The checks below must see only what the package brings, never a developer's environment.
+foreach ($v in "ROMORG_LIBFLAC", "ROMORG_SNDFILE", "ROMORG_LIBZSTD", "ROMORG_NO_NATIVE_FLAC", "ROMORG_NATIVE_FLAC") {
+    Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+}
 
 # Smoke test: bundled interpreter can serve the UI.
 $data = "$root\build\windows\smoke-data"
@@ -87,12 +107,24 @@ try {
 }
 Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
 
+$env:PYTHONDONTWRITEBYTECODE = "1"
 if (-not $NoSndfile) {   # the embedded Python must find and load the bundled libsndfile
-    $env:PYTHONDONTWRITEBYTECODE = "1"
     $native = & "$stage\python\python.exe" -I -c "from romorg import nativeflac; print(nativeflac.available())"
-    Remove-Item Env:PYTHONDONTWRITEBYTECODE
     if ($native -ne "True") { throw "self-test failed: the bundled libsndfile could not be loaded" }
     Write-Host "native FLAC decoder loads from native\libsndfile-1.dll"
+}
+# CHD engine self-check inside the package: Zstandard (compression.zstd), libFLAC from app\native, the scheduler
+# with worker processes, and the writer making a CHD with FLAC audio in worker processes.
+$checkArgs = @("-I", "-m", "romorg", "--self-check")
+if (-not $NoFlac) { $checkArgs += "--require-native" }
+$out = & "$stage\python\python.exe" @checkArgs
+$rc = $LASTEXITCODE
+Remove-Item Env:PYTHONDONTWRITEBYTECODE
+$out | ForEach-Object { Write-Host $_ }
+if ($rc) { throw "CHD engine self-check failed" }
+if (-not $NoFlac) {
+    $want = [regex]::Escape("OK    libFLAC $stage\app\native\libFLAC.dll")
+    if (-not ($out | Where-Object { $_ -match "^$want" })) { throw "libFLAC was not loaded from app\native" }
 }
 
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null

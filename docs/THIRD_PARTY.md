@@ -46,6 +46,32 @@ verifies the package checksums and copies the files unchanged). If you cannot ob
 locations, write to the maintainer of this project (see the repository) and we will provide it on request, for at
 least three years after the release that shipped the binaries.
 
+## Windows packages (.zip and .exe)
+
+The Windows builds (`packaging/build_windows.ps1`, `packaging/build_windows_exe.ps1`) ship their own notices,
+`packaging/THIRD_PARTY_NOTICES.txt` (as `THIRD_PARTY_NOTICES.txt`, with the licence texts in `licenses\`). They
+contain:
+
+| Component | Version | Files | Licence | Where it comes from |
+|---|---|---|---|---|
+| libFLAC | 1.5.0 | zip: `app\native\libFLAC.dll`; exe: inside, `native\libFLAC.dll` | BSD-3-Clause (`COPYING.Xiph`, shipped as `licenses\FLAC-COPYING.Xiph.txt`) | the official Xiph.Org Windows release, `Win64/libFLAC.dll` of `flac-1.5.0-win.zip`, fetched and checked by `packaging/fetch_flac.ps1` |
+| libsndfile | as in the `soundfile` wheel | zip: `app\native\libsndfile-1.dll` (exe: only with `-BundleSndfile`) | LGPL-2.1-or-later | the `soundfile` wheel on PyPI (`packaging/fetch_sndfile.ps1`) |
+| CPython | 3.14 | zip: `python\` (the embeddable distribution); exe: inside (PyInstaller) | PSF licence + bundled libraries (`licenses\python-LICENSE.txt`) | https://www.python.org/ftp/python/ |
+
+libFLAC encodes the FLAC audio of the CHDs the writer makes and decodes it when CHDs are read. The Windows DLL is
+a MinGW build whose only imports are `KERNEL32.dll` and `msvcrt.dll` (both part of Windows), so no other DLL ships
+with it. It has Ogg FLAC support linked in (libogg, BSD-3-Clause, Xiph.Org), so libogg's licence text ships as
+`licenses\libogg-COPYING.txt`; the FLAC release zip does not contain it, so `fetch_flac.ps1` takes it from the
+official libogg source release. Pinned checksums:
+
+| File | URL | SHA-256 |
+|---|---|---|
+| libogg-1.3.5.zip (for `COPYING` only) | https://ftp.osuosl.org/pub/xiph/releases/ogg/libogg-1.3.5.zip | `fd4e5ba7e93b84b3ec41cdf01494cc586ef6e912b313dbab25512dd02665dfaf` |
+| flac-1.5.0-win.zip | https://ftp.osuosl.org/pub/xiph/releases/flac/flac-1.5.0-win.zip (where https://downloads.xiph.org/releases/flac/ redirects; the same file is at https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip) | `53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde` |
+| libFLAC.dll (Win64, from that archive) | | `f93499172875fc2c0df80b57086f32e3f39e835283952ee2a59a3d4ffb097644` |
+
+Source: https://github.com/xiph/flac/releases/tag/1.5.0. chdman and 7-Zip are not in the Windows packages either.
+
 ## Python
 
 The AppImage also contains a relocatable CPython (python-build-standalone, `install_only_stripped`), under the
