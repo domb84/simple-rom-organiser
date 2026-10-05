@@ -12,12 +12,17 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import unittest
 import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 from types import ModuleType
 
+sys.path.insert(0, os.path.dirname(__file__))
+from chdtestlib import find_bash  # noqa: E402
+
+BASH = find_bash()
 ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "packaging"
 APPDIR = ROOT / "build" / "appimage" / "AppDir"
@@ -107,14 +112,14 @@ class SourceFileTests(unittest.TestCase):
         root = ET.parse(PKG / "simple-rom-organiser.appdata.xml").getroot()
         self.assertEqual(root.findtext("id"), "simple-rom-organiser")
 
-    @unittest.skipUnless(shutil.which("bash"), "bash not available")
+    @unittest.skipUnless(BASH, "bash not available")
     def test_shell_scripts_parse(self) -> None:
         for name in ("build_appimage.sh", "build_pyz.sh", "install.sh", "smoke_test.sh"):
             script = PKG / name
             with self.subTest(script=name):
                 self.assertIn("set -euo pipefail", script.read_text(encoding="utf-8"))
-                subprocess.run(["bash", "-n", str(script)], check=True)
-        subprocess.run(["sh", "-n", str(PKG / "AppRun")], check=True)
+                subprocess.run([BASH, "-n", script.as_posix()], check=True)
+        subprocess.run([BASH, "-n", (PKG / "AppRun").as_posix()], check=True)
 
     def test_build_self_check_imports_new_modules(self) -> None:
         text = (PKG / "build_appimage.sh").read_text(encoding="utf-8")

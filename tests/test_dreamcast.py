@@ -25,12 +25,12 @@ def tree(root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         for d in dirnames:
-            out[str((Path(dirpath) / d).relative_to(root))] = "DIR"
+            out[(Path(dirpath) / d).relative_to(root).as_posix()] = "DIR"
         for f in filenames:
             if f.startswith(".romorg-undo-"):
                 continue
             p = Path(dirpath) / f
-            out[str(p.relative_to(root))] = hashlib.sha1(p.read_bytes()).hexdigest()
+            out[p.relative_to(root).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
     return out
 
 
@@ -38,6 +38,7 @@ class World:
     """A temp ROM folder, a synthetic Redump DAT and the discs it describes."""
 
     def __init__(self, testcase: unittest.TestCase) -> None:
+        T.disable_native_flac(testcase)
         self.tmp = tempfile.TemporaryDirectory()
         testcase.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)

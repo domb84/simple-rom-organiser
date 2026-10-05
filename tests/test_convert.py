@@ -292,14 +292,38 @@ class ConvertTests(unittest.TestCase):
             tmp.write_bytes(self.s_a[:1000])
             os._exit(0)
 
-        pid = os.fork()
+        if not hasattr(os, "fork"):  # Windows: no fork, so a child process repeats the plan and dies half-way
+            import subprocess
+            import sys
+            here = os.path.dirname(os.path.abspath(__file__))
+            code = f"""
+import os, sys
+from pathlib import Path
+from unittest import mock
+sys.path[:0] = [{here!r}, {os.path.dirname(here)!r}]
+import test_convert as t
+from romorg import convert
+tc = t.ConvertTests('test_interrupted_convert_leftover'); tc.setUp()
+r = Path(sys.argv[1])
+ops = convert.plan_conversions(tc._scan(r, tc.snes, ('snes_header',)))
+def dying_write(op, original, tmp):
+    tmp.write_bytes(tc.s_a[:1000]); os._exit(0)
+with mock.patch.object(convert, '_write_loose', side_effect=dying_write):
+    convert.apply_conversions(ops, r)
+os._exit(1)
+"""
+            subprocess.run([sys.executable, "-c", code, str(r)], check=False, timeout=60)
+            pid = None
+        else:
+            pid = os.fork()
         if pid == 0:  # child
             try:
                 with mock.patch.object(convert, "_write_loose", side_effect=dying_write):
                     convert.apply_conversions(ops, r)
             finally:
                 os._exit(1)
-        os.waitpid(pid, 0)
+        if pid:
+            os.waitpid(pid, 0)
         self.assertIs(convert._write_loose, real_write)
         leftovers = [p for p in r.iterdir() if convert.CONVERT_TEMP_MARKER in p.name]
         self.assertEqual(len(leftovers), 1)

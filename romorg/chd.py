@@ -575,7 +575,7 @@ class Chd:
             return _strip_subcode(raw)
         return raw
 
-    def _cd_base(self, codec: str, comp: bytes):
+    def _cd_base(self, codec: str, comp: bytes, need_end: bool = True):
         """Decode the sector part of a CD hunk: ``(base, pending, end)``.
 
         ``pending`` lists the sectors whose sync + P/Q parity still has to be
@@ -588,7 +588,8 @@ class Chd:
             # libFLAC through ctypes when it loads (100x faster), else the pure-Python decoder; hunks hold CD audio
             # big-endian
             try:
-                base, end = flacnative.decode_pcm(comp, 0, frames * (CD_SECTOR // 4), big_endian=True)
+                base, end = flacnative.decode_pcm(comp, 0, frames * (CD_SECTOR // 4), big_endian=True,
+                                                 need_end=need_end)
             except flacnative.FlacError as exc:
                 raise ChdError(f"corrupt FLAC audio: {exc}") from exc
         else:
@@ -615,7 +616,7 @@ class Chd:
 
     def _decode_cd(self, codec: str, comp: bytes, with_subcode: bool) -> bytes:
         frames = self.hunk_bytes // CD_FRAME
-        base, pending, end = self._cd_base(codec, comp)
+        base, pending, end = self._cd_base(codec, comp, need_end=with_subcode)
         cdecc.generate(pending)
         if not with_subcode:
             return bytes(base)
@@ -647,7 +648,7 @@ class Chd:
                 comp = self._f.read(self._clen[i])
                 if len(comp) < self._clen[i]:
                     raise ChdError("file is truncated (hunk %d)" % i)
-                base, pend, _end = self._cd_base(codec, comp)
+                base, pend, _end = self._cd_base(codec, comp, need_end=False)
                 pending.extend(pend)
                 bases.append((i, base))
             else:

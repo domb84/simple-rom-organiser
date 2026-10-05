@@ -14,6 +14,10 @@ import zlib
 from pathlib import Path
 from unittest import mock
 
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from chdtestlib import make_symlink  # noqa: E402
+
 from romorg import library, m3u, organiser, platforms, scanner
 from romorg.datfile import DatFile, Rom
 from romorg.organiser import (
@@ -390,7 +394,7 @@ class OrganiseTests(unittest.TestCase):
         d = self.data()
         self.add_rom(GAMES, "Alpha (1990)(Pub).adf", d)
         self.write("library/alpha.adf", d)
-        (self.root / "link.adf").symlink_to("library/alpha.adf")
+        make_symlink(self.root / "link.adf", "library/alpha.adf")
         ops = self.plan()
         self.assertEqual(ops["link.adf"].status, "skip")
         self.assertIn("symbolic link", ops["link.adf"].reason)
@@ -584,7 +588,7 @@ class OrganiseTests(unittest.TestCase):
         outside = Path(self.tmp.name) / "victim"
         outside.mkdir()
         (outside / "id_rsa").write_bytes(b"secret")
-        (self.root / "evil").symlink_to(outside)
+        make_symlink(self.root / "evil", outside)
         log = self.root / ".romorg-undo-29991231-000000.json"
         log.write_text(json.dumps({"version": 2, "moves": [
             {"src": str(self.root / "stolen"), "dst": str(outside / "id_rsa")},
@@ -1332,7 +1336,7 @@ class LibraryPlanTests(unittest.TestCase):
         self.assertEqual(by["Nur Deutsch (1991)(Pub)(DE).adf"].code, "excluded")
         self.assertEqual(by["Crack (1990)(Pub)[cr X].adf"].reasons, ("flag_cr",))
         self.assertEqual(by["Crack (1990)(Pub)[cr X].adf"].flags_text, "[cr X]")
-        self.assertTrue(str(by["Crack (1990)(Pub)[cr X].adf"].dst).endswith("_excluded/in/Crack (1990)(Pub)[cr X].adf"))
+        self.assertTrue(by["Crack (1990)(Pub)[cr X].adf"].dst.as_posix().endswith("_excluded/in/Crack (1990)(Pub)[cr X].adf"))
         self.assertEqual(by["Clean (1990)(Pub)[cr Y].adf"].code, "excluded")
         self.assertEqual(by["Clean (1990)(Pub).adf"].code, "")
         rc = organiser.reason_counts(plan)

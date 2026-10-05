@@ -204,7 +204,7 @@ class SystemDirTests(unittest.TestCase):
             existing = [x for x in dirs if x["exists"]]
             self.assertEqual([x["label"] for x in existing], ["RetroDECK", "EmuDeck (SD)"])
             self.assertEqual(dirs[:2], existing)  # existing first
-            self.assertTrue(any(x["path"].endswith("org.libretro.RetroArch/config/retroarch/system")
+            self.assertTrue(any(x["path"].replace("\\", "/").endswith("org.libretro.RetroArch/config/retroarch/system")
                                 for x in dirs))
             self.assertTrue(all(re.match(r".+", x["path"]) for x in dirs))
 

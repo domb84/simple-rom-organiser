@@ -16,6 +16,8 @@ import re
 import subprocess
 import uuid
 import zipfile
+
+from . import winproc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
@@ -371,7 +373,8 @@ def _read_source(entry: "Entry", root: Optional[Path] = None) -> bytes:
     if exe is None:
         raise RuntimeError("7z is needed to extract from " + path.name)
     proc = subprocess.run([exe, "e", "-so", "-p", "--", str(path), entry.member],
-                          stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
+                          stdin=subprocess.DEVNULL, capture_output=True, timeout=300,
+                          creationflags=winproc.NO_WINDOW)
     if proc.returncode != 0:
         msg = proc.stderr.decode("utf-8", "replace").strip().splitlines()
         raise RuntimeError(msg[-1] if msg else f"7z exited with code {proc.returncode}")

@@ -615,75 +615,103 @@ def write_dat(path: Path, games: Sequence[tuple], version: str = "2026-06-14 18-
 
 # --------------------------------------------------------------------------- fake chdman (shell script)
 
-FAKE_CHDMAN = r"""#!/bin/sh
+FAKE_CHDMAN = r"""
 # fake chdman for the tests: createcd copies $FAKE_CHD, extractcd copies the raw files in $FAKE_RAW
-cmd="$1"; shift
-case "$cmd" in
-  help|-help|--help)
-    echo "chdman - MAME Compressed Hunks of Data (CHD) manager 0.fake"
-    echo "Usage: chdman <command> [options]"
-    echo "  createcd createdvd extractcd extractdvd info verify"
-    exit 1 ;;
-esac
-in=""; out=""; outbin=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -i) in="$2"; shift 2 ;;
-    -o) out="$2"; shift 2 ;;
-    -ob) outbin="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$FAKE_LOG" ] && echo "$cmd $in $out" >> "$FAKE_LOG"
-if [ "$FAKE_FAIL" = "$cmd" ]; then echo "Error: simulated $cmd failure" >&2; exit 1; fi
-case "$cmd" in
-  createcd)
-    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
-    [ -e "$out" ] && { echo "Error: output file already exists" >&2; exit 1; }
-    i=0
-    while [ $i -le 10 ]; do
-      printf 'Compressing, %d.0%% complete... (ratio=50.0%%)\r' $((i*10))
-      [ -n "$FAKE_SLOW" ] && sleep 1
-      i=$((i+1))
-    done
-    echo
-    [ -n "$FAKE_GDI_COPY" ] && cp "$in" "$FAKE_GDI_COPY"
-    src="$FAKE_CHD"
-    case "$in" in *.cue) [ -n "$FAKE_CHD_CUE" ] && src="$FAKE_CHD_CUE" ;; esac
-    cp "$src" "$out" ;;
-  extractcd)
-    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
-    dir=$(dirname "$out")
-    printf 'Extracting, 50.0%% complete...\r'
-    [ -n "$FAKE_SLOW_EXTRACT" ] && sleep 20
-    case "$out" in
-      *.gdi) cp "$FAKE_RAW"/disc.gdi "$out"; for f in "$FAKE_RAW"/disc[0-9]*; do cp "$f" "$dir"/; done ;;
-      *) cp "$FAKE_RAW"/disc.cue "$out"; cp "$FAKE_RAW"/disc.bin "$outbin" ;;
-    esac
-    echo ;;
-  createdvd)
-    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
-    [ -e "$out" ] && { echo "Error: output file already exists" >&2; exit 1; }
-    printf 'Compressing, 50.0%% complete... (ratio=50.0%%)\r'
-    echo
-    cp "${FAKE_DVD_CHD:-$FAKE_CHD}" "$out" ;;
-  extractdvd)
-    [ -f "$in" ] || { echo "Error opening input: No such file or directory" >&2; exit 1; }
-    printf 'Extracting, 50.0%% complete...\r'
-    [ -n "$FAKE_SLOW_EXTRACT" ] && sleep 20
-    echo
-    cp "$FAKE_ISO" "$out" ;;
-  *) echo "unknown command" >&2; exit 2 ;;
-esac
-exit 0
+import glob, os, shutil, sys, time
+
+def fail(msg, code=1):
+    sys.stderr.write(msg + "\n")
+    sys.exit(code)
+
+def progress(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+args = sys.argv[1:]
+cmd = args.pop(0) if args else ""
+if cmd in ("help", "-help", "--help"):
+    print("chdman - MAME Compressed Hunks of Data (CHD) manager 0.fake")
+    print("Usage: chdman <command> [options]")
+    print("  createcd createdvd extractcd extractdvd info verify")
+    sys.exit(1)
+inp = out = outbin = ""
+while args:
+    if args[0] in ("-i", "-o", "-ob") and len(args) > 1:
+        v = args[1]
+        if args[0] == "-i": inp = v
+        elif args[0] == "-o": out = v
+        else: outbin = v
+        del args[:2]
+    else:
+        del args[:1]
+env = os.environ.get
+if env("FAKE_LOG"):
+    with open(env("FAKE_LOG"), "a") as f:
+        f.write("%s %s %s\n" % (cmd, inp, out))
+if env("FAKE_FAIL") == cmd:
+    fail("Error: simulated %s failure" % cmd)
+NOINPUT = "Error opening input: No such file or directory"
+if cmd == "createcd":
+    if not os.path.isfile(inp): fail(NOINPUT)
+    if os.path.exists(out): fail("Error: output file already exists")
+    for i in range(11):
+        progress("Compressing, %d.0%% complete... (ratio=50.0%%)\r" % (i * 10))
+        if env("FAKE_SLOW"): time.sleep(1)
+    print()
+    if env("FAKE_GDI_COPY"): shutil.copyfile(inp, env("FAKE_GDI_COPY"))
+    src = env("FAKE_CHD")
+    if inp.endswith(".cue") and env("FAKE_CHD_CUE"): src = env("FAKE_CHD_CUE")
+    shutil.copyfile(src, out)
+elif cmd == "extractcd":
+    if not os.path.isfile(inp): fail(NOINPUT)
+    d = os.path.dirname(out)
+    progress("Extracting, 50.0% complete...\r")
+    if env("FAKE_SLOW_EXTRACT"): time.sleep(20)
+    raw = env("FAKE_RAW")
+    if out.endswith(".gdi"):
+        shutil.copyfile(os.path.join(raw, "disc.gdi"), out)
+        for f in glob.glob(os.path.join(raw, "disc[0-9]*")):
+            shutil.copyfile(f, os.path.join(d, os.path.basename(f)))
+    else:
+        shutil.copyfile(os.path.join(raw, "disc.cue"), out)
+        shutil.copyfile(os.path.join(raw, "disc.bin"), outbin)
+    print()
+elif cmd == "createdvd":
+    if not os.path.isfile(inp): fail(NOINPUT)
+    if os.path.exists(out): fail("Error: output file already exists")
+    progress("Compressing, 50.0% complete... (ratio=50.0%)\r")
+    print()
+    shutil.copyfile(env("FAKE_DVD_CHD") or env("FAKE_CHD"), out)
+elif cmd == "extractdvd":
+    if not os.path.isfile(inp): fail(NOINPUT)
+    progress("Extracting, 50.0% complete...\r")
+    if env("FAKE_SLOW_EXTRACT"): time.sleep(20)
+    print()
+    shutil.copyfile(env("FAKE_ISO"), out)
+else:
+    fail("unknown command", 2)
 """
 
 
+def install_script(path: Path, source: str) -> Path:
+    """An executable stand-in for a command-line tool, written in Python: ``<path>.py`` plus a launcher (a
+    ``#!`` script on POSIX, a ``.cmd`` on Windows). Returns the launcher; calling it again replaces the script."""
+    import sys
+    path = Path(path)
+    script = path.with_name(path.name + ".py")
+    script.write_text(source, encoding="utf-8", newline="\n")
+    if os.name == "nt":
+        launcher = path.with_name(path.name + ".cmd")
+        launcher.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+    else:
+        launcher = path
+        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return launcher
+
+
 def install_fake_chdman(folder: Path) -> Path:
-    p = folder / "chdman"
-    p.write_text(FAKE_CHDMAN)
-    p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return p
+    return install_script(folder / "chdman", FAKE_CHDMAN)
 
 
 def prepare_fake_raw(folder: Path, disc: Disc) -> Path:
@@ -720,3 +748,46 @@ def isolate_temp(testcase, base: Path, ram: bool = False) -> Path:
         p.start()
         testcase.addCleanup(p.stop)
     return scratch
+
+
+def make_symlink(link, target) -> None:
+    """``link`` -> ``target``; skips the test where symlinks are not allowed (Windows without developer mode)."""
+    import unittest
+    try:
+        Path(link).symlink_to(target)
+    except (OSError, NotImplementedError):
+        raise unittest.SkipTest("symlinks unavailable")
+
+
+def find_bash():
+    """A bash that really runs (not Windows' WSL stub): PATH first, then the one bundled with Git for Windows."""
+    import shutil
+    import subprocess
+    cands = [shutil.which("bash")]
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent.parent
+        cands += [str(root / "usr" / "bin" / "bash.exe"), str(root / "bin" / "bash.exe")]
+    for c in cands:
+        if not c or not os.path.exists(c):
+            continue
+        try:
+            if subprocess.run([c, "-c", "exit 0"], capture_output=True, timeout=20).returncode == 0:
+                return c
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def disable_native_flac(testcase) -> None:
+    """Tests that count on the pure-Python decoder (slow enough to cancel, or the chdman policy) must not depend on
+    whether this machine happens to have a libsndfile: switch it off here and in any worker process."""
+    from unittest import mock
+    from romorg import flacnative, nativeflac
+    patches = [mock.patch.object(nativeflac, "_get", return_value=None),
+               mock.patch.dict(os.environ, {nativeflac.ENV_ENABLE: "0", "ROMORG_NO_NATIVE_FLAC": "1"})]
+    for p in patches:
+        p.start()
+        testcase.addCleanup(p.stop)
+    flacnative.reload()                      # libFLAC too: forget a library loaded earlier, and load again afterwards
+    testcase.addCleanup(flacnative.reload)

@@ -29,7 +29,7 @@ from array import array
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import bundle, flacdec
+from . import bundle, flacdec, nativeflac
 from .flacdec import FlacError
 
 __all__ = ["FlacError", "available", "library_path", "decode_frames", "decode_pcm", "status", "reload"]
@@ -63,6 +63,24 @@ def _candidates() -> List[str]:
             out += sorted(str(p) for p in d.glob("libFLAC.so*") if p.is_file() or p.is_symlink())
         except OSError:
             pass
+    if sys.platform.startswith("win"):      # a libFLAC DLL next to the app / in its "native" folder, then the system's
+        folders = []
+        if getattr(sys, "frozen", False):
+            if getattr(sys, "_MEIPASS", None):
+                folders.append(Path(sys._MEIPASS))
+            folders.append(Path(sys.executable).resolve().parent)
+        folders += [Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd(),
+                    Path(__file__).resolve().parent.parent]
+        for folder in folders:
+            for sub in ("", "native"):
+                for name in ("libFLAC.dll", "FLAC.dll", "libFLAC-14.dll", "libFLAC-12.dll", "libFLAC-8.dll"):
+                    cand = folder / sub / name if sub else folder / name
+                    try:
+                        if cand.is_file():
+                            out.append(str(cand))
+                    except OSError:
+                        pass
+        out += ["libFLAC.dll", "FLAC.dll"]
     found = ctypes.util.find_library("FLAC")
     if found:
         out.append(found)
@@ -130,8 +148,14 @@ def _bind(lib) -> None:
     lib.FLAC__stream_decoder_get_decode_position.restype = ctypes.c_int
 
 
+def _sndfile() -> bool:
+    """libsndfile (what the Windows build bundles) can stand in for libFLAC when only the audio is wanted."""
+    return not os.environ.get("ROMORG_NO_NATIVE_FLAC") and nativeflac.available()
+
+
 def available() -> bool:
-    return _load() is not None
+    """True when CD audio is decoded natively: libFLAC, or libsndfile as the stand-in."""
+    return _load() is not None or _sndfile()
 
 
 def library_path() -> Optional[str]:
@@ -142,6 +166,8 @@ def library_path() -> Optional[str]:
 def status() -> dict:
     """``{"native": bool, "library": path | None, "note": why not}`` for the UI / self-check."""
     _load()
+    if _lib is None and _sndfile():
+        return {"native": True, "library": "libsndfile", "note": "libFLAC not found: CD audio is decoded through libsndfile"}
     return {"native": _lib is not None, "library": _lib_path, "note": _note}
 
 
@@ -291,13 +317,25 @@ def _decoder() -> Optional[_Decoder]:
     return d
 
 
-def decode_pcm(data, start: int, samples_per_channel: int, big_endian: bool = False) -> Tuple[bytearray, int]:
+def decode_pcm(data, start: int, samples_per_channel: int, big_endian: bool = False,
+               need_end: bool = True) -> Tuple[bytearray, int]:
     """Decode a hunk's FLAC frames to interleaved stereo 16-bit PCM bytes (little- or big-endian samples) and the
-    offset where they end. Native when libFLAC loads, else the pure-Python decoder."""
+    offset where they end. Native when libFLAC loads; else, when the caller does not need the end offset
+    (``need_end=False``: the subcode after the frames is not wanted), libsndfile if that loads (what the Windows
+    build bundles; the offset returned is then 0); else the pure-Python decoder."""
     d = _decoder()
+    if d is None and not need_end and start == 0 and _sndfile():
+        try:
+            pcm = nativeflac.decode_frames(bytes(data), samples_per_channel)
+        except nativeflac.NativeFlacError:
+            pcm = None                 # not available / not decoded exactly: the Python decoder below
+        if pcm is not None:
+            if big_endian != _BIG:
+                pcm.byteswap()
+            return bytearray(pcm.tobytes()), 0
     if d is None:
         pcm, end = flacdec.decode_frames(data, start, samples_per_channel)
-        if big_endian:
+        if big_endian != _BIG:
             pcm.byteswap()
         return bytearray(pcm.tobytes()), end
     return d.decode(data, start, samples_per_channel, big_endian)

@@ -144,10 +144,32 @@ class DiscoveryTest(unittest.TestCase):
             flacnative.reload()
             self.assertEqual(flacnative.library_path(), real)
 
+    def test_without_libflac_libsndfile_decodes_the_audio_when_the_end_is_not_needed(self) -> None:
+        from romorg import nativeflac
+        if not nativeflac.available():
+            self.skipTest("no libsndfile on this machine")
+        data = pcm(800)
+        stream = T.flac_stream(data, block=400)
+        frames = stream[stream.index(b"\xff\xf8"):] if stream[:4] == b"fLaC" else stream
+        with mock.patch("romorg.flacnative._candidates", return_value=[]):
+            flacnative.reload()
+            self.assertTrue(flacnative.available())
+            self.assertEqual(flacnative.status()["library"], "libsndfile")
+            with mock.patch("romorg.flacdec.decode_frames", side_effect=AssertionError("the Python decoder ran")):
+                le, end = flacnative.decode_pcm(frames, 0, 800, need_end=False)
+                be, _ = flacnative.decode_pcm(frames, 0, 800, big_endian=True, need_end=False)
+            self.assertEqual((bytes(le), end), (data, 0))
+            self.assertEqual(bytes(be[0:2]), bytes([data[1], data[0]]))
+            got, end = flacnative.decode_pcm(frames, 0, 800)                    # the end offset: the Python decoder
+            self.assertEqual(bytes(got), data)
+            self.assertGreater(end, 0)
+        flacnative.reload()
+
     def test_without_libflac_the_python_decoder_does_the_work(self) -> None:
         data = pcm(800)
         stream = T.flac_stream(data, block=400)
-        with mock.patch("romorg.flacnative._candidates", return_value=[]):
+        with mock.patch("romorg.flacnative._candidates", return_value=[]), \
+                mock.patch("romorg.nativeflac._get", return_value=None):      # no libsndfile stand-in either
             flacnative.reload()
             self.assertFalse(flacnative.available())
             st = flacnative.status()

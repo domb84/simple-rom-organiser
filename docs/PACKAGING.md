@@ -152,3 +152,63 @@ Stopping the game in Steam ends the server.
 
 Checks on `dist/*.AppImage` (ELF + `AI\x02` magic) and `build/appimage/AppDir` (bundled Python present,
 stdlib trimmed, `romorg/static` included) are skipped until `packaging/build_appimage.sh` has been run.
+
+## Windows
+
+Two builds, both 64-bit and needing no install or admin rights:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1   # dist\Simple_ROM_Organiser-<version>-win64.exe
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dist\Simple_ROM_Organiser-<version>-win64.zip
+```
+
+- **Single `.exe` (main download, about 9 MB):** built with PyInstaller `--onefile --windowed` from
+  `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
+  (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
+  startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
+  The build needs Python 3.11+ with `pip`; it installs PyInstaller if missing, then starts the finished exe
+  and checks that the UI answers.
+- **Zip (fallback):** the official embeddable CPython plus the `romorg` sources, started by
+  `Simple ROM Organiser.vbs`. Nothing is unpacked at run time and it never trips antivirus.
+- Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
+- The folder dialog is a native Windows dialog opened through PowerShell.
+
+### Windows: chdman, 7-Zip and speed
+
+- **chdman** is optional but much faster than the built-in Python CHD reader (above all for FLAC audio tracks,
+  which the Python reader decodes at only 1-2 MB/s per process). The app looks for `chdman.exe` on `PATH`, next to
+  the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`, RetroArch, Scoop,
+  `C:\mame`). Or set `ROMORG_CHDMAN` / the `chdman_path` setting. It ships in the MAME download.
+  Drop `chdman.exe` beside `Simple_ROM_Organiser-*.exe` and it is picked up.
+- **7-Zip** (`7z.exe`, for `.7z` / `.rar`) is found on `PATH`, in `C:\Program Files\7-Zip` and next to the app.
+- CHD hashing uses the same engine as on Linux (`romorg/chdsched.py`, Amendment 14): one work queue over all tracks
+  of all CHDs, decoded by worker processes (the frozen exe starts itself with `--chd-worker`; no console windows;
+  a worker is killed with its process tree). Auto worker count on Windows: one per CPU thread minus one, at most 12,
+  limited by the free memory. Loose files are hashed and archives listed by a small thread pool
+  (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
+- External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
+- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
+- **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
+  used for codecs the reader lacks (zstd, huff, ...) and when forced with `engine = "chdman"`. Creating a CHD is
+  always `chdman createcd/createdvd` with its own (multi-threaded) defaults.
+- **Native FLAC (optional).** CD-audio (`cdfl`) hunks are decoded by `romorg/flacnative.py` with libFLAC when one
+  loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, a `libFLAC.dll` next to the app or in its `native` folder,
+  the system's). When none does, `romorg/nativeflac.py` decodes the audio with libsndfile (which contains libFLAC;
+  this is what the Windows builds bundle): found via `ROMORG_SNDFILE`, next to the app (or in a `native` folder, or
+  inside the onefile exe), or as the system's `libsndfile`. Both are byte-identical to the pure-Python decoder
+  (`tests/test_flacnative.py`), which is the fallback and roughly 100 times slower.
+  `ROMORG_NO_NATIVE_FLAC=1` switches both off (`ROMORG_NATIVE_FLAC=0`: libsndfile only).
+  **The Windows `.zip` package bundles it** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
+  `fetch_sndfile.ps1`; `build_windows.ps1 -NoSndfile` leaves it out) together with `THIRD_PARTY_NOTICES.txt` and
+  the licence texts in `licenses\`. **The single-file `.exe` does not by default** (`build_windows_exe.ps1
+  -BundleSndfile` adds it and writes the notices to `dist\`): libsndfile is LGPL-2.1+, loaded dynamically only, and
+  a user can replace the separate DLL in the zip, which is awkward when it is packed inside an exe.
+- **chdman and 7-Zip are never bundled** (GPL / LGPL programs run as separate processes; see
+  `packaging/THIRD_PARTY_NOTICES.txt` for the wording and where to get them).
+- **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so
+  listing one costs ~0.1 ms instead of an ~86 ms `7z.exe` launch, and no 7-Zip is needed for them. BCJ / PPMd /
+  BZip2 / encrypted archives and `.rar` still use `7z.exe`; big members are also extracted by `7z.exe` when it is
+  installed (it decodes ~2x faster than Python). Zip members are matched from the CRC in the zip directory, so
+  nothing is decompressed for a scan.
+- The exe build runs `--selftest` with the name of every `romorg` module: the server imports modules by name, which
+  PyInstaller cannot see, so `--collect-submodules romorg` is required and checked.

@@ -18,13 +18,15 @@ spread over *processes*. A job (a scan, a Verify fully, the verification after a
 * cancellation: :class:`Cancelled`; :meth:`Scheduler.close` kills the workers (process groups) and reaps them.
 
 Results are identical to the sequential :func:`romorg.chd.hash_track` (property-tested). ``workers <= 1`` (config
-``chd_workers`` / ``$ROMORG_CHD_WORKERS`` = 1) or a platform without POSIX pipes selects the old sequential path
-inside the calling thread.
+``chd_workers`` / ``$ROMORG_CHD_WORKERS`` = 1) selects the old sequential path inside the calling thread.
+
+Linux and Windows run the same pool: each worker is drained by its own thread with blocking pipe reads (no
+``select``), a frozen Windows exe starts itself with ``--chd-worker`` (it has no separate interpreter), no console
+window flashes, and a worker is killed with its process group (POSIX) or its process tree (Windows).
 """
 
 from __future__ import annotations
 
-import fcntl
 import io
 import json
 import os
@@ -40,13 +42,19 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Sequence
 
 from . import chd as chdlib
-from . import multihash
+from . import multihash, winproc
+
+try:                             # POSIX only: used to enlarge the workers' pipes
+    import fcntl
+except ImportError:              # Windows
+    fcntl = None  # type: ignore[assignment]
 
 ENV_WORKERS = "ROMORG_CHD_WORKERS"
 CHUNK_BYTES = 4 << 20            # extracted bytes per work unit (2-8 MB measured best, see tools/bench_chd.py)
 MAX_BUDGET = 256 << 20           # hunks handed out but not yet hashed
 PER_WORKER_BYTES = 80 << 20      # what one worker process costs in RAM (python + a chunk + temporaries)
 MAX_WORKERS = 32
+WINDOWS_MAX_AUTO = 12            # automatic worker count on Windows (not measured there beyond 8)
 INFLIGHT = 2                     # requests in flight per worker (hides the pipe / hashing latency)
 MAX_RESPAWNS = 3
 _F_SETPIPE_SZ = 1031
@@ -61,7 +69,26 @@ class Cancelled(Exception):
 
 
 def mem_available() -> Optional[int]:
-    """Bytes of RAM available without swapping (``MemAvailable``), None when unknown."""
+    """Bytes of RAM available without swapping (``MemAvailable`` / Windows' available physical memory), None when
+    unknown."""
+    if winproc.IS_WINDOWS:
+        try:
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = _Status()
+            st.dwLength = ctypes.sizeof(_Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):  # type: ignore[attr-defined]
+                return int(st.ullAvailPhys)
+        except Exception:  # noqa: BLE001 - only a hint for the worker count
+            pass
+        return None
     try:
         with open("/proc/meminfo", "rb") as f:
             for line in f:
@@ -82,6 +109,8 @@ def default_workers(configured: Any = 0) -> int:
     if n > 0:
         return max(1, min(n, MAX_WORKERS))
     n = os.cpu_count() or 1
+    if winproc.IS_WINDOWS:      # starting a process costs more there (a onefile exe unpacks itself per worker)
+        n = min(WINDOWS_MAX_AUTO, max(1, n - 1))
     mem = mem_available()
     if mem is not None:
         n = min(n, max(2, (mem - (256 << 20)) // PER_WORKER_BYTES))
@@ -137,15 +166,20 @@ class _Worker:
         env.pop("PYTHONSTARTUP", None)
         self.sched, self.wid = sched, wid
         try:
-            self.proc = subprocess.Popen([sys.executable, "-B", "-u", "-m", "romorg.chdworker"], env=env,
+            if getattr(sys, "frozen", False):   # PyInstaller exe: sys.executable is the app itself (its worker mode)
+                cmd = [sys.executable, "--chd-worker"]
+            else:
+                cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
+            self.proc = subprocess.Popen(cmd, env=env,
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                         bufsize=0, start_new_session=True)
+                                         bufsize=0, **winproc.popen_kwargs(new_session=True))
         except OSError as exc:
             raise PoolError(f"cannot start a worker: {exc}") from exc
-        try:
-            fcntl.fcntl(self.proc.stdout.fileno(), _F_SETPIPE_SZ, 1 << 20)
-        except (OSError, AttributeError):
-            pass
+        if fcntl is not None:
+            try:
+                fcntl.fcntl(self.proc.stdout.fileno(), _F_SETPIPE_SZ, 1 << 20)
+            except (OSError, AttributeError):
+                pass
         self.rd = io.BufferedReader(self.proc.stdout, buffer_size=1 << 16)
         self.dead = False
         self.thread = threading.Thread(target=self._loop, name=f"chd-worker-{wid}", daemon=True)
@@ -207,13 +241,16 @@ class _Worker:
 
     def kill(self) -> None:
         self.dead = True
-        try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
-        except (OSError, AttributeError):
+        if winproc.IS_WINDOWS:
+            winproc.kill_tree(self.proc)
+        else:
             try:
-                self.proc.kill()
-            except OSError:
-                pass
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except (OSError, AttributeError):
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
         for f in (self.proc.stdin, self.rd):
             try:
                 if f:
@@ -257,7 +294,7 @@ class Scheduler:
 
     @property
     def pooled(self) -> bool:
-        return self.workers > 1 and os.name == "posix" and not self.broken
+        return self.workers > 1 and not self.broken
 
     # -- public
     def hash_tracks(self, info: Any, indexes: Sequence[int], progress: Optional[Callable[[int], None]] = None,
@@ -615,5 +652,5 @@ def _strip(msg: str) -> str:
 
 
 def make_scheduler(workers: int, **kw: Any) -> Scheduler:
-    """A scheduler for ``workers`` processes (1 = sequential, in-process; also the answer on non-POSIX systems)."""
-    return Scheduler(workers if os.name == "posix" else 1, **kw)
+    """A scheduler for ``workers`` processes (1 = sequential, in-process)."""
+    return Scheduler(workers, **kw)

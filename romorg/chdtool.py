@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import bundle, tempspace
+from . import bundle, tempspace, winproc
 
 TEMP_PREFIX = ".romorg-chd-"
 ENV_VAR = "ROMORG_CHDMAN"
@@ -102,7 +102,7 @@ def _probe_detail(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> 
     """``(runs and prints chdman's usage, why not)``; ``help``'s exit status is not 0."""
     try:
         proc = subprocess.run([*argv, "help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, env=env)
+                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, env=env, **winproc.popen_kwargs())
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"cannot run: {exc}"
     text = proc.stdout.decode("utf-8", "replace")
@@ -153,6 +153,10 @@ def _candidates(config: Optional[dict], extra_dirs: Sequence[str] = ()) -> list[
     found = shutil.which("chdman")
     if found:
         out.append(("path", [found], found, ""))
+    elif winproc.IS_WINDOWS:
+        found = winproc.find_tool(("chdman",))
+        if found:
+            out.append(("folder", [found], found, ""))
     if shutil.which("flatpak"):
         for app in FLATPAK_APPS:
             out.append(("flatpak", ["flatpak", "run", "--command=chdman", app], f"{app} (Flatpak)", app))
@@ -377,7 +381,7 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None,
-                                start_new_session=True, env=chdman.environ())
+                                env=chdman.environ(), **winproc.popen_kwargs(new_session=True))
     except OSError as exc:
         raise ChdmanError(f"cannot run chdman: {exc}") from exc
     chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()
@@ -448,6 +452,9 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
 
 
 def _terminate(proc: "subprocess.Popen[bytes]") -> None:
+    if winproc.IS_WINDOWS:
+        winproc.kill_tree(proc)
+        return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except (OSError, AttributeError):

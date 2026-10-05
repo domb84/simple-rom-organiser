@@ -15,10 +15,51 @@ verify the decoded audio against the CHD / DAT hashes).
 from __future__ import annotations
 
 from array import array
-from operator import mul
+from operator import add, sub
 import math
+import re
 
 _sumprod = getattr(math, 'sumprod', None)
+_RICE: dict = {}        # (rice parameter, codes in the partition) -> pattern matching the whole partition
+_CODES: dict = {}       # rice parameter -> (pattern of one code, code string -> value)
+
+
+class _RiceTable(dict):
+    """``"0001" + low bits`` -> zigzag-decoded residual, filled on demand."""
+
+    def __init__(self, k: int) -> None:
+        super().__init__()
+        self.k = k
+
+    def __missing__(self, code: str) -> int:
+        k = self.k
+        zeros = len(code) - 1 - k
+        u = (zeros << k) | (int(code[zeros + 1:], 2) if k else 0)
+        v = self[code] = (u >> 1) ^ -(u & 1)
+        return v
+_LPC: dict = {}         # predictor order -> generated function
+
+
+def _lpc_fn(order: int):
+    """``f(warm, res, coefs, shift)`` for one LPC order, with the history kept in local variables (no slicing)."""
+    fn = _LPC.get(order)
+    if fn is None:
+        hist = ["h%d" % i for i in range(order)]          # h0 = newest sample
+        src = ["def f(out, res, c, shift):",
+               "    %s = c" % (", ".join("c%d" % i for i in range(order)) + ","),
+               "    %s = out[::-1]" % (", ".join(hist) + ","),
+               "    append = out.append",
+               "    for r in res:",
+               "        v = r + ((%s) >> shift)" % " + ".join("c%d * h%d" % (i, i) for i in range(order))]
+        if order > 1:
+            src.append("        %s = %s" % (", ".join(reversed(hist)), ", ".join(reversed(["v"] + hist[:-1]))))
+        else:
+            src.append("        h0 = v")
+        src += ["        append(v)", "    return out"]
+        ns: dict = {}
+        exec(chr(10).join(src), ns)                       # noqa: S102 - fixed template, integer order only
+        fn = _LPC[order] = ns["f"]
+    return fn
 
 __all__ = ["FlacError", "decode_frames"]
 
@@ -67,22 +108,28 @@ def _residual(bits: str, pos: int, blocksize: int, order: int):
                     append(_signed(int(bits[pos:pos + n], 2), n))
                     pos += n
             continue
-        if k == 0:
-            for _ in range(count):
-                i = find("1", pos)
-                if i < 0:
-                    raise FlacError("truncated residual")
-                u = i - pos
-                pos = i + 1
-                append((u >> 1) ^ -(u & 1))
-        else:
-            for _ in range(count):
-                i = find("1", pos)
-                if i < 0:
-                    raise FlacError("truncated residual")
-                u = ((i - pos) << k) | int(bits[i + 1:i + 1 + k], 2)
-                pos = i + 1 + k
-                append((u >> 1) ^ -(u & 1))
+        if not count:
+            continue
+        # One regex match finds where the partition ends, findall splits it into whole Rice codes and a
+        # memoising table turns each code string into its value: the per-sample loop runs in C.
+        key = (k, count)
+        whole = _RICE.get(key)
+        if whole is None:
+            if len(_RICE) > 4096:
+                _RICE.clear()
+            whole = _RICE[key] = re.compile("(?:0*1[01]{%d}){%d}" % (k, count))
+        m = whole.match(bits, pos)
+        if m is None:
+            raise FlacError("truncated residual")
+        end = m.end()
+        codes = _CODES.get(k)
+        if codes is None:
+            codes = _CODES[k] = (re.compile("0*1[01]{%d}" % k), _RiceTable(k))
+        table = codes[1]
+        if len(table) > 1 << 18:
+            table.clear()
+        out += map(table.__getitem__, codes[0].findall(bits, pos, end))
+        pos = end
     return out, pos
 
 
@@ -160,17 +207,7 @@ def _subframe(bits: str, pos: int, blocksize: int, bps: int):
         if shift < 0:
             raise FlacError("negative LPC shift")
         res, pos = _residual(bits, pos, blocksize, order)
-        coefs.reverse()
-        out = warm
-        append = out.append
-        if _sumprod is not None:
-            sp = _sumprod
-            for r in res:
-                append(r + (sp(coefs, out[-order:]) >> shift))
-        else:
-            for r in res:
-                append(r + (sum(map(mul, coefs, out[-order:])) >> shift))
-        samples = out
+        samples = _lpc_fn(order)(warm, res, coefs, shift)   # coefs[0] applies to the newest sample
     else:
         raise FlacError("reserved subframe type")
     if len(samples) != blocksize:
@@ -244,17 +281,14 @@ def decode_frames(data, start: int, samples_per_channel: int, channels: int = 2)
             chans.append(s)
         if ch_code == 8:                              # left / side
             left = chans[0]
-            right = [a - b for a, b in zip(left, chans[1])]
+            right = list(map(sub, left, chans[1]))
         elif ch_code == 9:                            # side / right
             right = chans[1]
-            left = [a + b for a, b in zip(chans[0], right)]
+            left = list(map(add, chans[0], right))
         elif ch_code == 10:                           # mid / side
-            left = []
-            right = []
-            for m, s in zip(chans[0], chans[1]):
-                m = (m << 1) | (s & 1)
-                left.append((m + s) >> 1)
-                right.append((m - s) >> 1)
+            side = chans[1]                           # ((2m | s&1) + s) >> 1  ==  m + ((s + (s & 1)) >> 1)
+            left = [m + ((s + (s & 1)) >> 1) for m, s in zip(chans[0], side)]
+            right = list(map(sub, left, side))
         else:
             left, right = chans
         pos = (pos + 7) & ~7                          # byte align

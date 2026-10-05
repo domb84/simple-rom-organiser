@@ -112,6 +112,8 @@ def free_bytes(path: Path) -> int:
     p = Path(path)
     while not p.exists() and p != p.parent:
         p = p.parent
+    if not hasattr(os, "statvfs"):  # Windows
+        return shutil.disk_usage(p).free
     st = os.statvfs(p)
     return st.f_bavail * st.f_frsize
 

@@ -1,0 +1,38 @@
+Simple ROM Organiser - third-party notices
+==========================================
+
+Simple ROM Organiser itself needs nothing but Python's standard library. The Windows packages can carry, or can
+use if you provide them, the programs below. They are separate programs / libraries with their own licences.
+
+libsndfile (bundled in the Windows .zip package, in the "native" folder)
+-----------------------------------------------------------------------
+Used (optionally) to decode the FLAC audio inside CD-image CHD files quickly (romorg/nativeflac.py). If the
+file is absent or cannot be loaded the program still works, only slower on CD audio.
+
+  * libsndfile is licensed under the GNU Lesser General Public License, version 2.1 or later (see
+    licenses\libsndfile-COPYING.txt). Copyright (C) Erik de Castro Lopo and contributors.
+  * It contains libFLAC and other libraries (Ogg, Vorbis, Opus, LAME, mpg123 ...) under their own licences; their
+    copyrights and source locations are listed in licenses\libsndfile-license_notes.md.
+  * Source code: https://github.com/libsndfile/libsndfile  (the DLL is the unmodified build distributed in the
+    "soundfile" wheel on PyPI, https://github.com/bastibe/python-soundfile).
+  * It is loaded dynamically (ctypes) and is NOT linked into the program. You may replace
+    native\libsndfile-1.dll with your own build of libsndfile, or delete it, and the program keeps working.
+    (The single-file .exe, if built with -BundleSndfile, carries the DLL inside; use the .zip package to replace it.)
+
+chdman (NOT bundled)
+--------------------
+CHD creation and, for some discs, reading uses chdman from MAME (https://www.mamedev.org/). It is not included.
+Put chdman.exe on your PATH, next to the program, or in a common MAME folder and it is found automatically.
+MAME is made available under the GNU General Public License; MAME is a registered trademark of Gregory Ember.
+This project is not affiliated with or endorsed by the MAME team.
+
+7-Zip (NOT bundled)
+-------------------
+.rar and unusual .7z archives are read with 7-Zip (https://www.7-zip.org/), if installed. 7-Zip is under the GNU
+LGPL (with an unRAR restriction); it is not included.
+
+Python
+------
+The .zip package contains the unmodified "embeddable" Python distribution from https://www.python.org/ (PSF
+licence, see python\LICENSE.txt); the single-file .exe is built with PyInstaller (GPL-2.0 with the bootloader
+exception, which allows any licence for the resulting program).
