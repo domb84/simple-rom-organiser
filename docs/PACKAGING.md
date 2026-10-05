@@ -166,18 +166,22 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
   (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
   startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
-  The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs PyInstaller into a build venv
-  (`packaging\.cache\venv-pyinstaller-3.14`), bundles libFLAC (`-NoFlac` leaves it out), then runs the finished
-  exe's import check, its CHD engine self-check and checks that the UI answers. The licence texts go inside the
-  exe (`licenses\`) and next to it (`dist\licenses`, `dist\THIRD_PARTY_NOTICES.txt`): ship them with the exe.
+  The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs the pinned PyInstaller
+  (`-PyInstallerVersion`, default 6.22.3) into a build venv (`packaging\.cache\venv-pyinstaller-3.14`), bundles
+  libFLAC (`-NoFlac` leaves it out), then runs the finished exe's import check, its CHD engine self-check and checks
+  that the UI answers. The licence texts go inside the exe (`licenses\`) and next to it (`dist\licenses`,
+  `dist\THIRD_PARTY_NOTICES.txt`, written by every build): ship them with the exe. A Python without its
+  `LICENSE.txt` stops the build.
 - **Zip (about 14 MB):** the official embeddable CPython 3.14 (`-PyVersion`, default 3.14.8) plus the `romorg`
   sources, libFLAC and libsndfile in `app\native`, started by `Simple ROM Organiser.vbs`. Nothing is unpacked at
   run time and it never trips antivirus.
 - **Why Python 3.14:** its `compression.zstd` reads Zstandard CHDs at library speed and makes the Zstandard preset
   available, with no `libzstd.dll` to ship.
 - **Self-check.** Both builds fail unless the package's own CHD engine self-check passes with `--require-native`:
-  libFLAC loads from the package, Zstandard comes from `compression.zstd`, the scheduler runs worker processes and
-  the writer makes a CHD with FLAC (`cdfl`) audio hunks in worker processes. Run it by hand with
+  libFLAC loads from the package and encodes, Zstandard comes from `compression.zstd`, a shipped libsndfile loads
+  (the Windows package check, `selfcheck.check_windows_package`, which runs whenever the app is frozen or its
+  `app\native` folder exists), the scheduler runs worker processes and the writer makes a CHD with FLAC (`cdfl`)
+  audio hunks in worker processes. Run it by hand with
   `"Simple ROM Organiser (console).cmd" --self-check --require-native` (zip) or
   `Simple_ROM_Organiser-<version>-win64.exe --self-check --require-native --report check.txt` (exe: it has no
   console, so the report goes to the file; without `--report` to `selfcheck.log` in the data folder; the exit code
@@ -188,15 +192,17 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
 ### Windows: chdman, 7-Zip and speed
 
 - **chdman is not needed and not shipped**: the app reads, verifies and writes CHDs itself, with the bundled
-  libFLAC for CD audio. An installed chdman stays usable as an option: the app looks for `chdman.exe` on `PATH`,
-  next to the app (`.exe` or `.zip` folder), and in common folders (Program Files, `%LOCALAPPDATA%\MAME`,
-  RetroArch, Scoop, `C:\mame`), or `ROMORG_CHDMAN` / the `chdman_path` setting, and it can be chosen in the
-  Convert step.
+  libFLAC for CD audio. An installed chdman stays usable as an option (`chdman.exe` is in the MAME download at
+  https://www.mamedev.org/): the app looks for it on `PATH`, next to the app (the exe's folder, or the top folder of
+  the unzipped package, next to `README.txt`; `winproc.app_dirs`), and in common folders (Program Files,
+  `%LOCALAPPDATA%\MAME`, RetroArch, Scoop, `C:\mame`), or `ROMORG_CHDMAN` / the `chdman_path` setting (the path
+  field in the Convert step), and it can be chosen in the Convert step.
 - **7-Zip** (`7z.exe`, for `.7z` / `.rar`) is found on `PATH`, in `C:\Program Files\7-Zip` and next to the app.
 - CHD hashing uses the same engine as on Linux (`romorg/chdsched.py`, Amendment 14): one work queue over all tracks
-  of all CHDs, decoded by worker processes (the frozen exe starts itself with `--chd-worker`; no console windows;
-  a worker is killed with its process tree). Auto worker count on Windows: one per CPU thread minus one, at most 12,
-  limited by the free memory. Loose files are hashed and archives listed by a small thread pool
+  of all CHDs, decoded by worker processes (the frozen exe starts itself with `--chd-worker`; no console windows).
+  Workers start no processes of their own, so they are closed by closing their input and waiting, and only one
+  that is still running is terminated (no `taskkill /T`, which cost about 0.2 s per worker; it stays for chdman and
+  7-Zip). Auto worker count on Windows: one per CPU thread minus one, at most 12, limited by the free memory. Loose files are hashed and archives listed by a small thread pool
   (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
 - External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
 - Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
@@ -222,8 +228,15 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   **The Windows `.zip` package also bundles libsndfile** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
   `fetch_sndfile.ps1`; `build_windows.ps1 -NoSndfile` leaves it out) together with `THIRD_PARTY_NOTICES.txt` and
   the licence texts in `licenses\`. **The single-file `.exe` does not by default** (`build_windows_exe.ps1
-  -BundleSndfile` adds it and writes the notices to `dist\`): libsndfile is LGPL-2.1+, loaded dynamically only, and
-  a user can replace the separate DLL in the zip, which is awkward when it is packed inside an exe.
+  -BundleSndfile` adds it, with its licence texts in the exe's `licenses\` and in `dist\licenses`): libsndfile is
+  LGPL-2.1+, loaded dynamically only, and a user can replace the separate DLL in the zip, which is awkward when it
+  is packed inside an exe.
+- **Licences of what is linked into libFLAC.dll.** Xiph's DLL is a MinGW-w64 build (GCC 14.2.0 from MSYS2) with
+  libogg, winpthreads and the MinGW-w64 runtime start-up code linked in statically (its strings name
+  `mingw-w64-libraries/winpthreads/src/*.c` and "Mingw-w64 runtime failure"). Both packages ship
+  `licenses\libogg-COPYING.txt`, `licenses\winpthreads-COPYING.txt` and `licenses\mingw-w64-runtime-COPYING.txt`
+  (fetched and SHA-256 checked by `fetch_flac.ps1`). Any libgcc code is under the GCC Runtime Library Exception,
+  which sets no conditions.
 - **chdman and 7-Zip are never bundled** (GPL / LGPL programs run as separate processes; see
   `packaging/THIRD_PARTY_NOTICES.txt` for the wording and where to get them).
 - **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so

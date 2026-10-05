@@ -46,6 +46,9 @@ if (-not $NoFlac) {
     Copy-Item (Join-Path (Split-Path $flac) "COPYING.Xiph") "$stage\licenses\FLAC-COPYING.Xiph.txt"
     Copy-Item (Join-Path (Split-Path $flac) "FLAC-AUTHORS") "$stage\licenses\FLAC-AUTHORS.txt"
     Copy-Item (Join-Path (Split-Path $flac) "libogg-COPYING") "$stage\licenses\libogg-COPYING.txt"   # linked into libFLAC.dll
+    # the MinGW-w64 runtime and winpthreads are linked into libFLAC.dll too (see fetch_flac.ps1)
+    Copy-Item (Join-Path (Split-Path $flac) "winpthreads-COPYING") "$stage\licenses\winpthreads-COPYING.txt"
+    Copy-Item (Join-Path (Split-Path $flac) "mingw-w64-runtime-COPYING") "$stage\licenses\mingw-w64-runtime-COPYING.txt"
 }
 Get-ChildItem "$stage\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 & "$stage\python\python.exe" -m compileall -q --invalidation-mode unchecked-hash "$stage\app\romorg"
@@ -76,7 +79,8 @@ Quit with the Quit button in the top bar (closing the tab does not stop it).
 Data (DATs, settings) and app.log live in %LOCALAPPDATA%\simple-rom-organiser.
 Use "Simple ROM Organiser (console).cmd" to see log output or pass options.
 The app reads, checks and creates CHD files itself: chdman is not needed. An installed chdman is still
-found and can be chosen in the Convert step.
+found (on PATH, or chdman from the MAME download at mamedev.org placed in this folder) and can be
+chosen in the Convert step.
 native\ (inside app\) holds libFLAC (BSD licence: FLAC audio when CHDs are read and written) and libsndfile
 (a replaceable LGPL library); see THIRD_PARTY_NOTICES.txt and the licenses folder. 7-Zip is not included.
 No installation or admin rights needed; delete the folder to remove the app.

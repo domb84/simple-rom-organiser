@@ -19,6 +19,16 @@ audio tracks are then stored with LZMA (valid, but larger) and decoded more slow
     contributors are listed in licenses\FLAC-AUTHORS.txt.
   * That build has Ogg FLAC support linked in: libogg, Copyright (c) 2002 Xiph.org Foundation, BSD 3-clause
     licence, reproduced in licenses\libogg-COPYING.txt (source: https://github.com/xiph/ogg).
+  * The DLL was built by Xiph.Org with MSYS2's MinGW-w64 GCC 14.2.0 and has parts of the MinGW-w64 project linked
+    in statically:
+      - winpthreads (POSIX threads for Windows), Copyright (c) 2011 mingw-w64 project, MIT-style licence, with
+        parts Copyright (c) 2010 Lockless Inc. under a BSD 3-clause licence; both reproduced in
+        licenses\winpthreads-COPYING.txt.
+      - the MinGW-w64 runtime (C runtime start-up code), Copyright (c) 2009-2013 by the mingw-w64 project, Zope
+        Public License 2.1 and the other notices listed in licenses\mingw-w64-runtime-COPYING.txt.
+    Source: https://github.com/mingw-w64/mingw-w64 (https://www.mingw-w64.org/). GCC's support library (libgcc)
+    that such a build can contain is under the GPL version 3 with the GCC Runtime Library Exception, which places
+    no conditions on distributing the DLL.
   * Source code: https://github.com/xiph/flac (https://xiph.org/flac/).
   * It is loaded dynamically (ctypes). You may replace app\native\libFLAC.dll with your own 64-bit build, or delete
     it. The single-file .exe carries the DLL and the licences inside (licenses\); the build also writes them next
@@ -42,8 +52,9 @@ cannot be loaded. If the file is absent or cannot be loaded the program still wo
 chdman (NOT bundled)
 --------------------
 The program reads and writes CHD files itself; chdman from MAME (https://www.mamedev.org/) is optional and not
-included. If you want to use it, put chdman.exe on your PATH, next to the program, or in a common MAME folder: it is
-found automatically and can be chosen in the Convert step.
+included. If you want to use it, take chdman.exe from the MAME download at mamedev.org and put it on your PATH,
+next to the program (the .exe, or the top folder of the .zip package), or in a common MAME folder: it is found
+automatically and can be chosen in the Convert step. You can also enter its path in the Convert step.
 MAME is made available under the GNU General Public License; MAME is a registered trademark of Gregory Ember.
 This project is not affiliated with or endorsed by the MAME team.
 
@@ -56,5 +67,5 @@ Python
 ------
 The .zip package contains the unmodified "embeddable" Python 3.14 distribution from https://www.python.org/ (PSF
 licence, see licenses\python-LICENSE.txt, which also carries the licences of libraries it contains, such as
-Zstandard, bzip2 and libffi); the single-file .exe is built from Python 3.14 with PyInstaller (GPL-2.0 with the bootloader
-exception, which allows any licence for the resulting program).
+Zstandard, bzip2 and libffi); the single-file .exe is built from Python 3.14 with PyInstaller 6.22.3 (GPL-2.0 with the
+bootloader exception, which allows any licence for the resulting program).

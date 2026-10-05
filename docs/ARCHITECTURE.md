@@ -2084,3 +2084,31 @@ So: never slower, about twice as fast where data does not compress or repeats, a
 
 Not done / not known: the writer was never run on Windows; no emulator was started on a written file (the evidence is SHA-1 equality with chdman, `chdman verify`, and the reader); tiers 2 and 3 of the plan (hard disks, parents, `huff` / `flac` data hunks, laserdiscs) are out of scope by the user's decision.
 
+# Amendment 23 - The Windows pass
+
+The CHD engine of Amendments 20-22 was written and measured on Linux. This pass ran it on Windows 11 (16 threads, Python 3.14) and brought the Windows packages to the same features, so that **Windows needs no chdman either**. Decisions:
+
+**Python 3.14 in both Windows builds.** The zip bundles the embeddable CPython 3.14 (`build_windows.ps1 -PyVersion`, default 3.14.8), the exe is built with `py -3.14` and a pinned PyInstaller (`build_windows_exe.ps1 -PyInstallerVersion`). `compression.zstd` then reads Zstandard CHDs at library speed and makes the Zstandard preset available, with no `libzstd.dll` to ship. The note at the end of Amendment 20 (Windows sends Zstandard CHDs to chdman) no longer holds.
+
+**libFLAC 1.5.0 is shipped.** The official Xiph.Org Win64 `libFLAC.dll` (SHA-256 pinned in `packaging/fetch_flac.ps1`) goes into `app\native` of the zip and `native\` inside the exe; `flacnative._candidates()` finds it there (and in `_MEIPASS`). Without it the writer stores audio tracks with LZMA: valid, but measured against chdman's size 1.0885x instead of 1.0063x (Alienfront Online) and 1.0044x instead of 1.0032x (Dead or Alive 2). The DLL is a MinGW-w64 build that links libogg, winpthreads and the MinGW-w64 runtime statically, so their licence texts ship with it (`docs/THIRD_PARTY.md`). libsndfile stays in the zip as a stand-in decoder; the UI and the self-check name it when it is the one decoding.
+
+**chdman is not needed and not shipped on Windows.** Nothing chooses chdman by platform: the built-in reader and writer are the defaults everywhere, and chdman stays an option (`chd_engine` / `chd_writer`, the read fallback for an unknown codec, a layout the writer refuses). It is found on `PATH`, next to the app (the exe's folder, or the zip's top folder: `winproc.app_dirs`), in common MAME / tool folders, or at the saved path. The install hint is per platform (`chdtool.install_hint`: chdman.exe from the MAME download at mamedev.org on Windows, the Discover / Flatpak step on the Steam Deck); no text says converting needs chdman. `/api/chdman` and `/api/status` report `os`, `/api/chdman` also `flac_encoder`, and the Convert step says when audio will be stored with LZMA.
+
+**Open handles.** Windows refuses to rename or delete a file another process holds. The reader's worker processes keep a few CHDs open (`chdworker.MAX_OPEN`), so the CHD a conversion has just verified could not be moved into place (WinError 32) while the scheduler lived on. The workers are made to close a CHD before it is renamed or deleted (convert, undo). On Linux nothing changes in behaviour.
+
+**No `taskkill` for CHD workers.** Workers start no processes of their own, so they are closed by closing their input and waiting; only a worker still running is terminated (`TerminateProcess`). `taskkill /T` cost about 0.19 s per worker, run one after another: 2.4-2.7 s per pool and about 5 s per converted disc (one writer pool, one verify pool). `winproc.kill_tree` stays for chdman and 7-Zip, which can start children.
+
+**Smaller Windows fixes.** `os.kill(pid, 0)` sends `CTRL_C_EVENT` on Windows instead of probing, so the scratch-folder sweep (`tempspace`, `chdtool`) uses `winproc.pid_alive`: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess == STILL_ACTIVE`, access denied counted as alive; POSIX keeps `os.kill(pid, 0)`. A browser that closes a connection mid-response (WinError 10053) ends that connection quietly (`Handler._send`) instead of logging a traceback and trying a 500 on the dead socket. The self-check has a Windows package check (`selfcheck.check_windows_package`, when frozen or when `app\native` exists): the shipped libFLAC must be the one loaded and must encode, Zstandard must come from a library, a shipped libsndfile must load; the builds run it with `--require-native`.
+
+Measured on that machine (phase-1 profile, 12 workers, libFLAC, chdman 0.289 on the same sets; every written CHD had chdman's SHA-1, the engine was always `processes`), before the worker-close and buffered-reply fixes:
+
+| Input | chdman | built-in, standard | built-in, Zstandard |
+|---|---|---|---|
+| PlayStation CD (Spider) | 8.76 s | 8.78 s | 6.85 s |
+| Dreamcast GD-ROM (Dead or Alive 2) | 22.73 s | 17.01 s | 12.53 s |
+| Dreamcast GD-ROM (Alienfront Online) | 21.34 s | 16.31 s | 11.86 s |
+| PlayStation 2 ISO as CD | 85.41 s | 42.06 s | 32.70 s |
+| PlayStation 2 ISO as DVD | 110.17 s | 58.98 s | 60.72 s |
+
+With both fixes patched in, the same runs took 6.3-6.7 / 13.5-16.3 / 13.8 / 35.4 / 28.3-36.6 s (standard). Reading (the scheduler, verify path) was 4-8x faster than `chdman verify` once workers close promptly. The worker count is flat from 8 to 16 for writing, so `WINDOWS_MAX_AUTO = 12` stays.
+

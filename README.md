@@ -556,6 +556,9 @@ build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` f
 declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). A chdman
 you have installed is still found - `$ROMORG_CHDMAN` / the saved chdman path, `chdman` on `PATH`, the Flatpak
 `org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... - and can be chosen in the Convert step.
+The Windows packages carry no chdman either and do not need one; to use it anyway, take `chdman.exe` from the MAME
+download at mamedev.org and put it on `PATH`, next to the app (the exe's folder, or the top folder of the unzipped
+package), or save its path in the Convert step (see `docs/PACKAGING.md`).
 `Simple_ROM_Organiser.AppImage --self-check` tests the CHD engine (libFLAC decodes, the scheduler runs, the writer writes
 a CHD that reads back).
 When chdman does extract, the disc goes to **scratch space - never your game folder**: (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or

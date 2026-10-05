@@ -62,15 +62,29 @@ libFLAC encodes the FLAC audio of the CHDs the writer makes and decodes it when 
 a MinGW build whose only imports are `KERNEL32.dll` and `msvcrt.dll` (both part of Windows), so no other DLL ships
 with it. It has Ogg FLAC support linked in (libogg, BSD-3-Clause, Xiph.Org), so libogg's licence text ships as
 `licenses\libogg-COPYING.txt`; the FLAC release zip does not contain it, so `fetch_flac.ps1` takes it from the
-official libogg source release. Pinned checksums:
+official libogg source release.
+
+The DLL is built with MSYS2's MinGW-w64 GCC 14.2.0 (its strings say `GCC: (Rev2, Built by MSYS2 project) 14.2.0`) and
+links parts of MinGW-w64 statically: **winpthreads** (the strings name
+`mingw-w64-libraries/winpthreads/src/barrier.c` and `rwlock.c`; MIT-style licence of the mingw-w64 project, with
+parts under Lockless Inc.'s BSD 3-clause licence) and the **MinGW-w64 runtime** start-up code (`Mingw-w64 runtime
+failure:`, the pseudo-relocation handler; Zope Public License 2.1 plus the notices in
+`COPYING.MinGW-w64-runtime.txt`). Both licences ask for their notices in binary distributions, so they ship as
+`licenses\winpthreads-COPYING.txt` and `licenses\mingw-w64-runtime-COPYING.txt`, taken from the mingw-w64 `v12.0.0`
+tag (identical in `v13.0.0`). Any code from GCC's support library (libgcc) is under the GPL version 3 with the
+GCC Runtime Library Exception, which sets no conditions on distributing the DLL. Pinned checksums:
 
 | File | URL | SHA-256 |
 |---|---|---|
 | libogg-1.3.5.zip (for `COPYING` only) | https://ftp.osuosl.org/pub/xiph/releases/ogg/libogg-1.3.5.zip | `fd4e5ba7e93b84b3ec41cdf01494cc586ef6e912b313dbab25512dd02665dfaf` |
 | flac-1.5.0-win.zip | https://ftp.osuosl.org/pub/xiph/releases/flac/flac-1.5.0-win.zip (where https://downloads.xiph.org/releases/flac/ redirects; the same file is at https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip) | `53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde` |
 | libFLAC.dll (Win64, from that archive) | | `f93499172875fc2c0df80b57086f32e3f39e835283952ee2a59a3d4ffb097644` |
+| winpthreads `COPYING` | https://raw.githubusercontent.com/mingw-w64/mingw-w64/v12.0.0/mingw-w64-libraries/winpthreads/COPYING | `63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177` |
+| `COPYING.MinGW-w64-runtime.txt` | https://raw.githubusercontent.com/mingw-w64/mingw-w64/v12.0.0/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt | `e9b2dc02451ea29092a1f25fa0f3c07207ed421f1807dffb0c4e6dce69dee7bd` |
 
-Source: https://github.com/xiph/flac/releases/tag/1.5.0. chdman and 7-Zip are not in the Windows packages either.
+Source: https://github.com/xiph/flac/releases/tag/1.5.0 and https://github.com/mingw-w64/mingw-w64 (tag `v12.0.0`).
+The exe is built with PyInstaller 6.22.3 (pinned in `build_windows_exe.ps1`; GPL-2.0 with the bootloader exception).
+chdman and 7-Zip are not in the Windows packages either.
 
 ## Python
 

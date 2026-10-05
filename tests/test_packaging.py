@@ -371,7 +371,8 @@ class BuiltArtifactTests(unittest.TestCase):
             names = set(z.namelist())
             top = "Simple_ROM_Organiser/"
             for name in ("app/native/libFLAC.dll", "licenses/FLAC-COPYING.Xiph.txt", "licenses/libogg-COPYING.txt",
-                         "THIRD_PARTY_NOTICES.txt", "python/python.exe", "python/python314.dll",
+                         "licenses/winpthreads-COPYING.txt", "licenses/mingw-w64-runtime-COPYING.txt",
+                         "licenses/python-LICENSE.txt", "THIRD_PARTY_NOTICES.txt", "python/python.exe", "python/python314.dll",
                          "python/_zstd.pyd", "app/romorg/chdwrite.py"):
                 self.assertTrue(top + name in names, f"{name} is missing from {path.name}")
             self.assertEqual(hashlib.sha256(z.read(top + "app/native/libFLAC.dll")).hexdigest(), sha)

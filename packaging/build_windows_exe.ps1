@@ -1,11 +1,13 @@
 # Build a single-file Windows executable with PyInstaller: dist\Simple_ROM_Organiser-<version>-win64.exe
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1
-# Needs Python 3.14 (the py launcher's "py -3.14", or -Python <path to python.exe>). PyInstaller is installed into a
-# build venv (packaging\.cache\venv-pyinstaller-<series>), never into that Python. 3.14 brings compression.zstd.
+# Needs Python 3.14 (the py launcher's "py -3.14", or -Python <path to python.exe>). PyInstaller (the pinned
+# -PyInstallerVersion) is installed into a build venv (packaging\.cache\venv-pyinstaller-<series>), never into that
+# Python. 3.14 brings compression.zstd.
 param([switch]$BundleSndfile,   # include libsndfile (LGPL) for native FLAC decoding through its virtual I/O
       [switch]$NoFlac,          # leave out libFLAC (BSD-3-Clause: FLAC encoding for the CHD writer + decoding)
       [string]$Python = "",     # the interpreter to build with (default: py -3.14)
-      [string]$PySeries = "3.14")
+      [string]$PySeries = "3.14",
+      [string]$PyInstallerVersion = "6.22.3")   # pinned: a new PyInstaller release changes what goes into the exe
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
@@ -25,9 +27,12 @@ if (-not (Test-Path $py)) {
     if ($LASTEXITCODE) { throw "could not create the build venv $venv" }
 }
 $ErrorActionPreference = "Continue"     # Windows PowerShell turns a native command's stderr into an error under Stop
-& $py -c "import PyInstaller" 2>&1 | Out-Null
+$have = & $py -c "import PyInstaller; print(PyInstaller.__version__)" 2>&1
 $ErrorActionPreference = "Stop"
-if ($LASTEXITCODE) { & $py -m pip install --disable-pip-version-check pyinstaller; if ($LASTEXITCODE) { throw "pip install pyinstaller failed" } }
+if ($LASTEXITCODE -or "$have" -ne $PyInstallerVersion) {
+    & $py -m pip install --disable-pip-version-check "pyinstaller==$PyInstallerVersion"
+    if ($LASTEXITCODE) { throw "pip install pyinstaller==$PyInstallerVersion failed" }
+}
 Write-Host "PyInstaller $(& $py -m PyInstaller --version) on Python $(& $py -c 'import sys; print(sys.version.split()[0])')"
 
 $work = "$root\build\pyinstaller"
@@ -53,6 +58,9 @@ if (-not $NoFlac) {
     Copy-Item (Join-Path (Split-Path $flac) "COPYING.Xiph") "$lic\FLAC-COPYING.Xiph.txt"
     Copy-Item (Join-Path (Split-Path $flac) "FLAC-AUTHORS") "$lic\FLAC-AUTHORS.txt"
     Copy-Item (Join-Path (Split-Path $flac) "libogg-COPYING") "$lic\libogg-COPYING.txt"     # linked into libFLAC.dll
+    # the MinGW-w64 runtime and winpthreads are linked into libFLAC.dll too (see fetch_flac.ps1)
+    Copy-Item (Join-Path (Split-Path $flac) "winpthreads-COPYING") "$lic\winpthreads-COPYING.txt"
+    Copy-Item (Join-Path (Split-Path $flac) "mingw-w64-runtime-COPYING") "$lic\mingw-w64-runtime-COPYING.txt"
 }
 if ($BundleSndfile) {
     $snd = & "$PSScriptRoot\fetch_sndfile.ps1"
@@ -61,7 +69,8 @@ if ($BundleSndfile) {
     Copy-Item (Join-Path (Split-Path $snd) "license_notes.md") "$lic\libsndfile-license_notes.md"
 }
 $pyLicense = Join-Path (& $Python -c "import sys; print(sys.base_prefix)") "LICENSE.txt"
-if (Test-Path $pyLicense) { Copy-Item $pyLicense "$lic\python-LICENSE.txt" }
+if (-not (Test-Path $pyLicense)) { throw "Python's licence text $pyLicense is missing: the exe must ship it" }
+Copy-Item $pyLicense "$lic\python-LICENSE.txt"
 Copy-Item "$PSScriptRoot\THIRD_PARTY_NOTICES.txt" "$lic\THIRD_PARTY_NOTICES.txt"
 $extra += @("--add-data", "$lic;licenses")
 & $py -m PyInstaller --noconfirm --clean --onefile --windowed `
