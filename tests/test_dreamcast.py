@@ -38,6 +38,7 @@ class World:
     """A temp ROM folder, a synthetic Redump DAT and the discs it describes."""
 
     def __init__(self, testcase: unittest.TestCase) -> None:
+        T.disable_native_flac(testcase)
         self.tmp = tempfile.TemporaryDirectory()
         testcase.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)

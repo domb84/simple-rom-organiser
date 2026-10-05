@@ -21,6 +21,7 @@ from romorg import chd, chdpool, dreamcast, scanner  # noqa: E402
 
 class PoolTest(unittest.TestCase):
     def setUp(self) -> None:
+        T.disable_native_flac(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.disc = T.Disc("x", 1)
@@ -142,6 +143,40 @@ class ScanWithPoolTest(unittest.TestCase):
             dreamcast.verify_units(r, cache_path=w.base / "other.sqlite", workers=3, cancel=lambda: True)
 
 
+class NativeFlacTests(unittest.TestCase):
+    """romorg.nativeflac (libsndfile / libFLAC through ctypes) must give exactly what the Python decoder gives."""
+
+    def setUp(self) -> None:
+        from romorg import nativeflac
+        if not nativeflac.available():
+            self.skipTest("no libsndfile to load (set ROMORG_SNDFILE)")
+        self.nf = nativeflac
+
+    def test_matches_the_python_decoder(self) -> None:
+        import random
+        from array import array
+        from romorg import flacdec
+        rnd = random.Random(4)
+        walk = 0
+        vals = []
+        for _ in range(588 * 8 * 2):
+            walk = max(-30000, min(30000, walk + rnd.randint(-900, 900)))
+            vals.append(walk)
+        pcm = array("h", vals).tobytes()
+        for kinds in (("fixed2", "fixed2"), ("fixed1", "fixed2")):
+            for stereo in ("indep", "left_side", "side_right", "mid_side"):
+                with self.subTest(kinds=kinds, stereo=stereo):
+                    stream = T.flac_stream(pcm, block=588 * 8 // 2, kinds=kinds, stereo=stereo)
+                    n = len(pcm) // 4
+                    want, _end = flacdec.decode_frames(stream + b"trailing subcode bytes", 0, n)
+                    got = self.nf.decode_frames(stream + b"trailing subcode bytes", n)
+                    self.assertEqual(got, want)
+
+    def test_garbage_raises_instead_of_returning_wrong_audio(self) -> None:
+        with self.assertRaises(self.nf.NativeFlacError):
+            self.nf.decode_frames(os.urandom(2000), 4704)
+
+
 class EnginePolicyTests(unittest.TestCase):
     """discsys.prefer_chdman: the quicker of chdman and the built-in reader, per disc."""
 
@@ -157,7 +192,10 @@ class EnginePolicyTests(unittest.TestCase):
         from romorg import discsys
         self.assertFalse(discsys.prefer_chdman(self.info(650, 0), workers=8))      # data CD: parallel reader
         self.assertFalse(discsys.prefer_chdman(self.info(1500, 0), workers=8))     # DVD: parallel reader
-        self.assertTrue(discsys.prefer_chdman(self.info(50, 500), workers=8))      # audio-heavy CD: chdman
+        with mock.patch.object(discsys.nativeflac, "available", return_value=False):
+            self.assertTrue(discsys.prefer_chdman(self.info(50, 500), workers=8))  # audio-heavy CD: chdman
+        with mock.patch.object(discsys.nativeflac, "available", return_value=True):
+            self.assertFalse(discsys.prefer_chdman(self.info(50, 500), workers=8))  # ... unless libFLAC is there
         self.assertTrue(discsys.prefer_chdman(self.info(10, 0, supported=False)))  # a codec only chdman has
         self.assertFalse(discsys.prefer_chdman(self.info(0, 0), workers=1))        # nothing to decode
 

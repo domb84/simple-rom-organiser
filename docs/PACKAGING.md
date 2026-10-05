@@ -192,6 +192,15 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   and DVD CHDs, `chdman` for audio-heavy CDs and for codecs the reader lacks (zstd, huff, ...). `engine = "chdman"`
   or `"python"` forces one. Verifying a freshly converted CHD follows the same rule. Creating a CHD is always
   `chdman createcd/createdvd` with its own (multi-threaded) defaults.
+- **Native FLAC (optional).** `romorg/nativeflac.py` decodes CD-audio (`cdfl`) hunks with libsndfile (which contains
+  libFLAC) through `ctypes`: ~140 MB/s on one thread against ~4 for the Python decoder, byte-identical output
+  (checked in `tests/test_chdpool.py`), and with the worker pool ~180 MB/s, i.e. faster than `chdman`'s ~100. With it
+  the engine policy keeps audio CDs in the built-in reader too. It is found via `ROMORG_SNDFILE`, next to the app (or
+  in a `native` folder, or inside the onefile exe), or as the system's `libsndfile` (`libsndfile.so.1` on Linux);
+  `ROMORG_NATIVE_FLAC=0` disables it. If it is missing, or a hunk is not decoded exactly, the Python decoder is used.
+  `build_windows_exe.ps1 -BundleSndfile` / `build_windows.ps1 -BundleSndfile` add the DLL (taken from the `soundfile`
+  wheel by `fetch_sndfile.ps1`). **libsndfile is LGPL-2.1+**: it is only loaded dynamically, but shipping it means
+  including its licence text and a pointer to its source (https://github.com/libsndfile/libsndfile).
 - **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so
   listing one costs ~0.1 ms instead of an ~86 ms `7z.exe` launch, and no 7-Zip is needed for them. BCJ / PPMd /
   BZip2 / encrypted archives and `.rar` still use `7z.exe`; big members are also extracted by `7z.exe` when it is

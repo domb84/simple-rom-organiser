@@ -26,6 +26,7 @@ DAT = "Sega - Dreamcast"
 
 class DcServerCase(unittest.TestCase):
     def setUp(self) -> None:
+        T.disable_native_flac(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)

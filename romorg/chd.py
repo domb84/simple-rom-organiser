@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import BinaryIO, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
-from . import cdecc, flacdec
+from . import cdecc, flacdec, nativeflac
 
 READER_CODECS = frozenset({"cdlz", "cdzl", "cdfl", "zlib", "lzma"})  # what the built-in reader can decode
 
@@ -556,8 +556,11 @@ class Chd:
             return _strip_subcode(raw)
         return raw
 
-    def _cd_base(self, codec: str, comp: bytes):
+    def _cd_base(self, codec: str, comp: bytes, need_end: bool = True):
         """Decode the sector part of a CD hunk: ``(base, pending, end)``.
+
+        ``need_end=False`` (sector data only, no subcode) lets a ``cdfl`` hunk use the native FLAC decoder when
+        one is available; ``end`` is then 0 (the native decoder cannot say where the FLAC frames stop).
 
         ``pending`` lists the sectors whose sync + P/Q parity still has to be
         regenerated (``cdecc.generate``); ``end`` is where the subcode starts.
@@ -566,7 +569,14 @@ class Chd:
         nbytes = frames * CD_SECTOR
         pending: list = []
         if codec == "cdfl":
-            pcm, end = flacdec.decode_frames(comp, 0, frames * (CD_SECTOR // 4))
+            pcm = None
+            if not need_end:
+                try:
+                    pcm, end = nativeflac.decode_frames(comp, frames * (CD_SECTOR // 4)), 0
+                except nativeflac.NativeFlacError:
+                    pcm = None                  # not available / not decoded exactly: the Python decoder below
+            if pcm is None:
+                pcm, end = flacdec.decode_frames(comp, 0, frames * (CD_SECTOR // 4))
             pcm.byteswap()                      # hunks hold CD audio big-endian
             base = bytearray(pcm.tobytes())
         else:
@@ -593,7 +603,7 @@ class Chd:
 
     def _decode_cd(self, codec: str, comp: bytes, with_subcode: bool) -> bytes:
         frames = self.hunk_bytes // CD_FRAME
-        base, pending, end = self._cd_base(codec, comp)
+        base, pending, end = self._cd_base(codec, comp, need_end=with_subcode)
         cdecc.generate(pending)
         if not with_subcode:
             return bytes(base)
@@ -624,7 +634,7 @@ class Chd:
                 comp = self._read_at(self._coff[i], self._clen[i])
                 if len(comp) < self._clen[i]:
                     raise ChdError("file is truncated (hunk %d)" % i)
-                base, pend, _end = self._cd_base(codec, comp)
+                base, pend, _end = self._cd_base(codec, comp, need_end=False)
                 pending.extend(pend)
                 bases.append((i, base))
             else:

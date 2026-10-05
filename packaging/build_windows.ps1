@@ -3,7 +3,7 @@
 # Bundles the official CPython "embeddable" zip (no installer, no admin rights needed) with the romorg
 # package and a launcher. Unzip anywhere and double-click Simple ROM Organiser.vbs.
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-PyVersion 3.13.15]
-param([string]$PyVersion = "3.13.15")
+param([string]$PyVersion = "3.13.15", [switch]$BundleSndfile)   # -BundleSndfile: libsndfile (LGPL), native FLAC decoding
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
@@ -24,6 +24,10 @@ $stdlib = (Get-Content $pth.FullName | Where-Object { $_ -like "python*.zip" } |
 Set-Content $pth.FullName -Encoding ascii @($stdlib, ".", "..\app", "import site")
 
 Copy-Item -Recurse "$root\romorg" "$stage\app\romorg"
+if ($BundleSndfile) {
+    New-Item -ItemType Directory -Force "$stage\app\native" | Out-Null
+    Copy-Item (& "$PSScriptRoot\fetch_sndfile.ps1") "$stage\app\native\libsndfile-1.dll"
+}
 Get-ChildItem "$stage\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 & "$stage\python\python.exe" -m compileall -q --invalidation-mode unchecked-hash "$stage\app\romorg"
 if ($LASTEXITCODE) { throw "compileall failed" }

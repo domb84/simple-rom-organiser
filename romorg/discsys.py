@@ -50,7 +50,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
-from . import chdpool, chdtool, folders, organiser, scanner, tags, tempspace
+from . import chdpool, chdtool, folders, nativeflac, organiser, scanner, tags, tempspace
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -736,10 +736,12 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
 # Measured on a 20-thread Windows PC (MB/s of decoded output): chdman extractcd/extractdvd is single-threaded
 # (~54 data, ~100 CD audio, ~63 DVD lzma) and writes the whole disc to scratch space, which is then read back
 # and hashed (~400); the worker pool decodes data / DVD hunks in parallel (~20 per worker up to ~150) but FLAC
-# audio in pure Python is slow (~4 per worker up to ~15).
+# audio in pure Python is slow (~4 per worker up to ~15) - but with libFLAC via romorg.nativeflac it is the fastest
+# of all (~45 per worker up to ~180, against chdman's ~100).
 CHDMAN_DATA, CHDMAN_AUDIO, HASH_RATE = 54.0, 100.0, 400.0
 POOL_DATA_PER_WORKER, POOL_DATA_MAX = 20.0, 150.0
 POOL_AUDIO_PER_WORKER, POOL_AUDIO_MAX = 4.0, 15.0
+NATIVE_AUDIO_PER_WORKER, NATIVE_AUDIO_MAX = 45.0, 180.0     # with a native FLAC decoder (romorg.nativeflac)
 
 
 def prefer_chdman(info: chdlib.Chd, workers: int = 1) -> bool:
@@ -752,8 +754,10 @@ def prefer_chdman(info: chdlib.Chd, workers: int = 1) -> bool:
     audio = sum(t.size for t in info.tracks if t.is_audio)
     data = sum(t.size for t in info.tracks) - audio
     w = max(1, workers)
+    a_per, a_max = ((NATIVE_AUDIO_PER_WORKER, NATIVE_AUDIO_MAX) if nativeflac.available()
+                    else (POOL_AUDIO_PER_WORKER, POOL_AUDIO_MAX))
     python = (data / max(45.0, min(POOL_DATA_MAX, POOL_DATA_PER_WORKER * w))
-              + audio / min(POOL_AUDIO_MAX, POOL_AUDIO_PER_WORKER * w))
+              + audio / min(a_max, a_per * w))
     return data / CHDMAN_DATA + audio / CHDMAN_AUDIO + (data + audio) / HASH_RATE < python
 
 

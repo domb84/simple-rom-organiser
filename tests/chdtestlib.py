@@ -190,6 +190,24 @@ def _subframe(b: _Bits, samples: Sequence[int], kind: str, bps: int = 16) -> Non
         _rice(b, res, k)
 
 
+def _flac_crc8(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def _flac_crc16(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x8005) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
 def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("fixed2", "fixed2"),
                stereo: str = "indep") -> bytes:
     """One FLAC frame (the codec of a CHD ``cdfl`` hunk is a run of these)."""
@@ -207,7 +225,7 @@ def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("f
     assert number < 128
     b.put(number, 8)             # UTF-8 coded frame number (< 128: one byte)
     b.put(n - 1, 16)
-    b.put(0, 8)                  # header CRC-8 (not checked by the reader)
+    b.put(_flac_crc8(b.tobytes()), 8)     # header CRC-8 (the Python reader ignores it, libFLAC checks it)
     if stereo == "indep":
         chans = [(left, 16), (right, 16)]
     elif stereo == "left_side":
@@ -221,7 +239,7 @@ def flac_frame(left: Sequence[int], right: Sequence[int], number: int, kinds=("f
     for (samples, bps), kind in zip(chans, kinds):
         _subframe(b, samples, kind, bps)
     b.align()
-    b.put(0, 16)                 # frame CRC-16 (not checked)
+    b.put(_flac_crc16(b.tobytes()), 16)   # frame CRC-16
     return b.tobytes()
 
 
@@ -753,3 +771,15 @@ def find_bash():
         except (OSError, subprocess.SubprocessError):
             pass
     return None
+
+
+def disable_native_flac(testcase) -> None:
+    """Tests that count on the pure-Python decoder (slow enough to cancel, or the chdman policy) must not depend on
+    whether this machine happens to have a libsndfile: switch it off here and in any worker process."""
+    from unittest import mock
+    from romorg import nativeflac
+    patches = [mock.patch.object(nativeflac, "_get", return_value=None),
+               mock.patch.dict(os.environ, {nativeflac.ENV_ENABLE: "0"})]
+    for p in patches:
+        p.start()
+        testcase.addCleanup(p.stop)

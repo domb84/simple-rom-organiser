@@ -1,6 +1,7 @@
 # Build a single-file Windows executable with PyInstaller: dist\Simple_ROM_Organiser-<version>-win64.exe
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1
 # Needs Python 3.11+ on PATH; installs PyInstaller (pip) if missing.
+param([switch]$BundleSndfile)   # include libsndfile (LGPL) for native FLAC decoding: ~40x faster CD audio
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
@@ -20,10 +21,13 @@ $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0); $bw.Write([byte]0)
 $bw.Write([uint16]1); $bw.Write([uint16]32); $bw.Write([uint32]$png.Length); $bw.Write([uint32]22)
 $bw.Write($png); $bw.Flush(); [IO.File]::WriteAllBytes($ico, $ms.ToArray())
 
+$extra = @()
+if ($BundleSndfile) { $extra += @("--add-binary", "$(& "$PSScriptRoot\fetch_sndfile.ps1");.") }
 python -m PyInstaller --noconfirm --clean --onefile --windowed `
     --name "Simple_ROM_Organiser-$version-win64" --icon $ico `
     --add-data "$root\romorg\static;romorg\static" `
     --collect-submodules romorg `
+    @extra `
     --distpath "$root\dist" --workpath "$work\work" --specpath "$work" `
     --paths $root `
     "$root\packaging\windows_entry.py"
