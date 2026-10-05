@@ -137,6 +137,28 @@ class StartupTests(UiTestCase):
         self.no_js_errors()
 
 
+class DatabasesPanelTests(UiTestCase):
+    def test_every_database_is_listed_with_its_version(self) -> None:
+        self.open()
+        self.page.wait("document.getElementById('updates-line').textContent.includes('Redump')")
+        line = self.page.eval("document.getElementById('updates-line').textContent")
+        for source in ("TOSEC", "No-Intro", "WHDLoad", "Redump"):
+            self.assertIn(source, line)
+        self.click("#databases-btn")
+        self.page.wait("document.querySelectorAll('#databases-panel tbody tr').length > 5")
+        rows = self.page.eval("[...document.querySelectorAll('#databases-panel tbody tr')].map(r => [...r.cells].map(c => c.textContent.trim()))")
+        names = {r[1]: r for r in rows}
+        for wanted in ("Sega - Dreamcast", "Sony - PlayStation", "Sony - PlayStation 2", "Nintendo - Game Boy Advance",
+                       "Commodore - Amiga - WHDLoad"):
+            self.assertIn(wanted, names)
+        self.assertEqual(names["Nintendo - Game Boy Advance"][2], "20250101-000000")     # the fixture's DAT version
+        self.assertEqual(names["Sega - Dreamcast"][2], "not installed")
+        self.assertEqual({r[0] for r in rows}, {"TOSEC", "No-Intro", "WHDLoad", "Redump", "Ratings"})
+        self.click("#databases-btn")
+        self.assertTrue(self.page.eval("document.getElementById('databases-panel').classList.contains('hidden')"))
+        self.no_js_errors()
+
+
 class LibraryListTests(UiTestCase):
     def test_columns_and_name_sort_both_ways(self) -> None:
         self.library_preview()

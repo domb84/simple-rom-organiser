@@ -18,11 +18,13 @@
         <span class="muted" id="app-version"></span>
       </a>
       <div class="updates-line grow" id="updates-line" aria-live="polite">Checking DAT versions...</div>
+      <button class="btn btn-small btn-ghost" id="databases-btn" aria-expanded="false" aria-controls="databases-panel" title="The installed and newest version of every database (TOSEC, No-Intro, WHDLoad, Redump, ratings)">Databases</button>
       <button class="btn btn-small" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
       <button class="btn btn-small btn-ghost" id="density-btn" aria-pressed="false" title="Smaller rows: more of a long list on screen">Compact</button>
       <button class="btn btn-small btn-ghost" id="quit-btn" title="Stop the app">Quit</button>
     </div>
     <div class="topbar-extra">
+      <div class="databases-panel hidden" id="databases-panel"></div>
       <div class="progress hidden" id="updates-progress"><div class="progress-bar" id="updates-progress-bar"></div></div>
       <div class="muted small hidden" id="updates-progress-text"></div>
       <div class="muted small hidden" id="updates-note"></div>

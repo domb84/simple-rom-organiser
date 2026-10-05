@@ -49,7 +49,7 @@ a { color: var(--accent); }
 .brand { display: flex; align-items: baseline; gap: 10px; color: var(--text); text-decoration: none; border-radius: 8px; padding: 4px 6px; min-height: 44px; align-items: center; }
 .brand:hover .brand-title, .brand:focus-visible .brand-title { color: var(--accent); }
 .brand-title { font-weight: 700; font-size: 19px; white-space: nowrap; }
-.updates-line { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.updates-line { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.35; }   /* wraps: every database stays readable */
 .topbar-extra:empty, .topbar-extra:not(:has(:not(.hidden))) { display: none; }
 .topbar-extra { padding-bottom: 4px; }
 .topbar-extra .notice { display: flex; align-items: center; gap: 12px; margin: 4px 0; }
@@ -654,3 +654,6 @@ body.dense .sel-col input { width: 16px; height: 16px; }
 td.why-col { width: 20%; min-width: 180px; }
 td.change-col { width: 44%; min-width: 300px; }
 .th-sort { text-align: left; }
+.databases-panel { margin: 6px 0 8px; }
+.databases-panel .table-wrap { max-height: min(60vh, 520px); margin-bottom: 6px; }
+.databases-panel td, .databases-panel th { padding: 6px 12px; }

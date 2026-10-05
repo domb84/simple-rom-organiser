@@ -645,6 +645,7 @@
         } else {
           const res = await post("/api/updates/check", {});
           if (!res.started) toast("An update is already running.", "info");
+          toggleDatabases(true);            // show what is being checked, database by database
           this.apply(res.updates);
           return;
         }
@@ -667,11 +668,12 @@
   /** The single status line, progress bar, offline note and error box of the updates bar. */
   function renderUpdates(u) {
     if (!u) return;
-    const tosec = u.tosec || {}, ni = u.nointro || {}, whd = u.whdload || {};
+    const tosec = u.tosec || {}, ni = u.nointro || {}, whd = u.whdload || {}, red = u.redump || {};
     const parts = [
       tosec.installed ? `TOSEC ${tosec.installed}` : "TOSEC not installed",
       ni.installed ? `No-Intro ${ni.installed}` : "No-Intro not installed",
       whd.installed ? `WHDLoad ${whd.installed}` : "WHDLoad not installed",
+      red.installed ? `Redump ${red.installed}` : "Redump not installed",
     ];
     const rat = u.ratings || {};
     if (rat.installed) parts.push(`Ratings ${rat.installed}`);
@@ -684,7 +686,8 @@
     const btn = $("updates-btn");
     btn.textContent = u.running ? "Cancel update" : "Check for updates";
     btn.disabled = !u.enabled && !u.running;
-    btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro and WHDLoad for newer DATs and install them" : "Automatic updates are switched off in this run";
+    btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro, WHDLoad, Redump and the ratings for newer versions and install them" : "Automatic updates are switched off in this run";
+    renderDatabases(u);
 
     const pr = u.progress || {};
     const bar = $("updates-progress-bar");
@@ -704,6 +707,43 @@
     $("updates-note").textContent = note;
     $("updates-note").classList.toggle("hidden", !note);
     $("updates-note").classList.toggle("stale", !!u.scan_stale && !err);
+  }
+
+  /** The "Databases" panel: every database the app uses, one row per DAT, with the installed and the newest known version. */
+  const DB_STATUS = { up_to_date: ["ok", "up to date"], update_available: ["move", "update available"], updating: ["move", "updating"],
+    absent: ["missing", "not installed"], missing: ["missing", "not installed"], unknown: ["skip", "not checked this session"], error: ["conflict", "check failed"] };
+  function renderDatabases(u) {
+    const box = $("databases-panel");
+    if (!box || box.classList.contains("hidden")) return;
+    const rows = [];
+    const status = (st) => { const [cls, text] = DB_STATUS[st] || ["skip", st || "-"]; return el("span", { class: `badge ${cls}`, text }); };
+    const row = (source, name, installed, latest, st, checked) => rows.push(el("tr", {},
+      el("td", { text: source }), el("td", { class: "wrap", text: name }),
+      el("td", { class: "num", text: installed || "not installed" }), el("td", { class: "num", text: latest || "-" }),
+      el("td", {}, status(st)), el("td", { class: "num muted", text: checked ? checkedText(checked) : "never" })));
+    const t = u.tosec || {};
+    row("TOSEC", "Full DAT pack (all TOSEC systems)", t.installed, t.latest, t.status, t.checked_at);
+    for (const [key, label] of [["nointro", "No-Intro"], ["whdload", "WHDLoad"], ["redump", "Redump"]]) {
+      const b = u[key] || {};
+      const dats = b.dats || [];
+      if (!dats.length) row(label, "-", b.installed, b.latest, b.status, b.checked_at);
+      for (const d of dats) row(label, d.name, d.version, d.latest || (d.status === "up_to_date" ? d.version : null), d.status, b.checked_at);
+    }
+    const r = u.ratings || {};
+    row("Ratings", `LaunchBox community ratings${r.games ? ` (${fmt(r.games)} games)` : ""}`, r.installed, r.latest, r.status, r.checked_at);
+    box.replaceChildren(
+      el("div", { class: "table-wrap" }, el("table", {},
+        el("thead", {}, el("tr", {}, ["Source", "Database", "Installed", "Newest known", "Status", "Last checked"].map((h) => el("th", { text: h })))),
+        el("tbody", {}, rows))),
+      el("div", { class: "muted small", text: "Versions are the date in each DAT. \"Newest known\" is what the last check found online; No-Intro and WHDLoad are compared by content, so they show the installed date once they are current." }));
+  }
+
+  function toggleDatabases(open) {
+    const box = $("databases-panel"), btn = $("databases-btn");
+    const show = open === undefined ? box.classList.contains("hidden") : open;
+    box.classList.toggle("hidden", !show);
+    btn.setAttribute("aria-expanded", show ? "true" : "false");
+    if (show && state.updates) renderDatabases(state.updates);
   }
 
   // ------------------------------------------------------------- routing
@@ -4032,6 +4072,7 @@
     $("kick-native-browse-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("kick-dest"), "Choose the RetroArch system / BIOS folder"));
     $("kick-apply-btn").addEventListener("click", applyKick);
     $("quit-btn").addEventListener("click", quit);
+    $("databases-btn").addEventListener("click", () => toggleDatabases());
     document.addEventListener("click", (e) => {
       for (const m of document.querySelectorAll(".col-menu[open]")) if (!m.contains(e.target)) m.open = false;
     });

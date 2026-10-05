@@ -271,7 +271,7 @@ class UpdateManager:
                 st = "updating"
             if not st:
                 st = "unknown" if name in local else "absent"
-            rows.append({"name": name, "version": local.get(name), "status": st})
+            rows.append({"name": name, "version": local.get(name), "status": st, "latest": row.get("latest")})
         statuses = [r["status"] for r in rows]
         latest = max((r["latest"] for r in self._redump_rows.values() if r.get("latest")), default=None)
         if self._updating == "redump":
