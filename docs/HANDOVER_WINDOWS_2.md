@@ -67,3 +67,9 @@ exe untested (no longPathAware manifest); non-ASCII library CHD paths still reac
 Tony Hawk's Pro Skater 4 written by the built-in writer as a DVD CHD, standard and Zstandard presets: both load and run in
 PCSX2 (reported by the user). The rest were also reported working by the user: Dreamcast (DOA2, Alienfront) in Flycast and PS1 (Spider) in PCSX ReARMed,
 all with the built-in writer. The emulator check is complete.
+
+## Final status (2026-10-06)
+
+Closed by decision of the user: long paths (>260) on Windows (enabled or not) and chdman with non-ASCII paths are not
+to be fixed. Everything else is done, merged and pushed. The only open work is the Linux/Deck run: see
+`docs/HANDOVER_DECK.md`.
