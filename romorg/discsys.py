@@ -37,7 +37,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import sqlite3
 import time
@@ -495,37 +494,42 @@ def discover_units(root: Path, files: list[Path], system: Optional["DiscSystem"]
 
 def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
     """The track files of a ``.gdi`` / ``.cue`` in track order (None when they cannot be listed per track);
-    a loose ``.iso`` is its own single track (never read as text)."""
+    a loose ``.iso`` is its own single track (never read as text).
+
+    File names are read with chdman's own tokenizer (:func:`cdimage.tokenize`: ``"`` and ``'`` quote, no escapes,
+    so ``"Tony's Game.bin"`` is one name) and the sheet's encoding rules (:func:`cdimage.read_sheet`), so the files
+    found here are the ones chdman and the built-in writer read. Keywords are matched without regard to case here
+    (identification only needs the file names)."""
     if Path(sheet).suffix.lower() == ISO_EXT:
         return [Path(sheet)]
     try:
-        text = Path(sheet).read_text(encoding="utf-8", errors="replace")
+        text = cdimage.read_sheet(sheet)
     except OSError:
         return None
     base = Path(sheet).parent
     out: list[Path] = []
-    if sheet.suffix.lower() == ".gdi":
-        lines = [ln for ln in text.splitlines() if ln.strip()]
-        try:
-            count = int(lines[0].strip())
-            for ln in lines[1:]:
-                parts = shlex.split(ln)
-                out.append(base / parts[4])
-        except (ValueError, IndexError):
-            return None
-        return out if len(out) == count else None
+    lines = cdimage.sheet_lines(text)
+    if Path(sheet).suffix.lower() == ".gdi":
+        count = cdimage.atoi(lines[0]) if lines else 0
+        for ln in lines[1:]:
+            parts = cdimage.tokenize(ln)
+            if not parts:
+                continue
+            if len(parts) < 6 or not parts[4]:
+                return None
+            out.append(base / parts[4])
+        return out if count > 0 and len(out) == count else None
     files = 0
     tracks = 0
-    for ln in text.splitlines():
-        s = ln.strip()
-        if s.upper().startswith("FILE "):
+    for ln in lines:
+        parts = cdimage.tokenize(ln)
+        word = parts[0].upper() if parts else ""
+        if word == "FILE":
             files += 1
-            try:
-                name = shlex.split(s)[1]
-            except (ValueError, IndexError):
+            if len(parts) < 2 or not parts[1]:
                 return None
-            out.append(base / name)
-        elif s.upper().startswith("TRACK "):
+            out.append(base / parts[1])
+        elif word == "TRACK":
             tracks += 1
     if not out or files != tracks:     # one bin holding several tracks: cannot be matched per file
         return None
@@ -546,7 +550,7 @@ def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
     ``.gdi`` files of Redump sets (see the tests / ``tools/bench_chd.py --check-gdi``) and by a round trip through
     ``chdman createcd`` (identical CHD header SHA-1). Without those markers the layout is unknown: no guess."""
     try:
-        text = Path(cue).read_text(encoding="utf-8", errors="replace")
+        text = cdimage.read_sheet(cue)
     except OSError as exc:
         return None, f"cannot read {Path(cue).name}: {exc}"
     base = Path(cue).parent
@@ -554,30 +558,30 @@ def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
     seen_areas: list[str] = []
     entries: list[dict[str, Any]] = []
     pending: Optional[str] = None
-    for ln in text.splitlines():
-        st = ln.strip()
-        up = st.upper()
-        if up.startswith("REM"):
+    for ln in cdimage.sheet_lines(text):
+        parts = cdimage.tokenize(ln)            # chdman's tokenizer: the same file names chdman would open
+        if not parts:
+            continue
+        word = parts[0].upper()
+        if word == "REM":
+            up = ln.upper()
             if "SINGLE-DENSITY AREA" in up:
                 area = "sd"
                 seen_areas.append(area)
             elif "HIGH-DENSITY AREA" in up:
                 area = "hd"
                 seen_areas.append(area)
-        elif up.startswith("FILE "):
-            try:
-                pending = shlex.split(st)[1]
-            except (ValueError, IndexError):
+        elif word == "FILE":
+            if len(parts) < 2 or not parts[1]:
                 return None, "unreadable FILE line in the .cue"
-        elif up.startswith("TRACK "):
-            parts = st.split()
-            try:
-                num = int(parts[1])
-            except (ValueError, IndexError):
+            pending = parts[1]
+        elif word == "TRACK":
+            num = cdimage.atoi(parts[1]) if len(parts) > 1 else 0          # C atoi, as chdman reads it
+            if num <= 0:
                 return None, "unreadable TRACK line in the .cue"
             if pending is None:
                 return None, "the .cue has several tracks in one file (cannot be split into a GDI)"
-            entries.append({"num": num, "file": pending, "audio": parts[2].upper() == "AUDIO" if len(parts) > 2 else False,
+            entries.append({"num": num, "file": pending, "audio": len(parts) > 2 and parts[2].upper() == "AUDIO",
                             "area": area})
             pending = None
     if not entries:
@@ -604,7 +608,10 @@ def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
             if lba > GD_HD_START:
                 return None, "the single-density tracks are longer than the single-density area"
             lba = GD_HD_START
-        lines.append(f'{e["num"]} {lba} {0 if e["audio"] else 4} {_RAW_SECTOR} "{e["file"]}" 0')
+        quoted = cdimage.sheet_quote(e["file"])
+        if quoted is None:
+            return None, f"{e['file']} cannot be named in a .gdi (it has both kinds of quote in its name)"
+        lines.append(f'{e["num"]} {lba} {0 if e["audio"] else 4} {_RAW_SECTOR} {quoted} 0')
         lba += size // _RAW_SECTOR
     return "\n".join(lines) + "\n", ""
 
@@ -1848,6 +1855,20 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
     return got, "verified independently with the built-in reader" + (f" ({stats['text']})" if stats.get("text") else "")
 
 
+# chdman 0.289 on Windows is not long-path aware: it opens "<folder of the .gdi>\<name>" exactly as joined (the
+# ".." segments are not resolved first), and from 260 characters on that open fails - or chdman spins forever
+# (measured with crafted sheets: 258 characters work, 260 hang). A relative name must keep the joined path below it.
+_CHDMAN_MAX_PATH = 259
+_CHDMAN_PATH_LIMIT = os.name == "nt"
+
+
+def _chdman_reads(work: Path, rel: str) -> bool:
+    """Whether chdman can open the track file named ``rel`` in a ``.gdi`` written to ``work``."""
+    if cdimage.sheet_quote(rel) is None:
+        return False
+    return not _CHDMAN_PATH_LIMIT or len(os.path.abspath(work)) + 1 + len(rel) < _CHDMAN_MAX_PATH
+
+
 def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
     """What the generated ``.gdi`` in ``work`` names for the track file ``src``, without copying it if at all possible.
 
@@ -1856,10 +1877,14 @@ def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
 
     1. a symlink ``work/name`` (POSIX; Windows only with Developer Mode or as administrator - else WinError 1314);
     2. a hard link ``work/name`` (same volume, NTFS; no privilege needed);
-    3. no file at all: a relative path from ``work`` to the original (same drive; chdman 0.289 joins it as is);
-    4. a copy, the last resort (another drive and no links), after checking the free space.
+    3. no file at all: a relative path from ``work`` to the original (same drive; chdman 0.289 joins it as is),
+       when chdman can read it back: a name it can tokenize (:func:`cdimage.sheet_quote` - apostrophes, double
+       spaces and non-ASCII letters are fine, the sheet is written in UTF-8, which chdman reads on every
+       platform) and, on Windows, a joined path under 260 characters (see ``_CHDMAN_MAX_PATH``);
+    4. a copy, the last resort (another drive and no links, or a path chdman could not open), after checking the
+       free space.
 
-    Returns the name to write into the ``.gdi``."""
+    Returns the name to write into the ``.gdi`` (unquoted: :func:`_link_gdi_dir` quotes it)."""
     src = Path(os.path.abspath(src))
     dst = work / name
     try:
@@ -1876,7 +1901,7 @@ def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
         rel = os.path.relpath(src, work)
     except ValueError:                                      # another drive (Windows): no relative path exists
         rel = ""
-    if rel and '"' not in rel:
+    if rel and _chdman_reads(work, rel):
         return rel
     size = src.stat().st_size
     chdtool.check_space(work, size)
@@ -1892,16 +1917,17 @@ def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tupl
         raise chdtool.ChdmanError("the .cue cannot be turned into a .gdi")
     work = chdtool.acquire_workdir(chdman, 0, [root])
     try:
-        lines = op.gdi_text.splitlines()
-        out = [lines[0]]
-        for row, f in zip(lines[1:], files):
-            parts = shlex.split(row)
+        lines = cdimage.sheet_lines(op.gdi_text)
+        out = [lines[0].strip()]
+        rows = [r for r in (cdimage.tokenize(ln) for ln in lines[1:]) if r]
+        for parts, f in zip(rows, files):
             ext = "raw" if parts[2] == "0" else "bin"
             link = _gdi_track_ref(f, work.path, f"track{int(parts[0]):02d}.{ext}")
-            parts[4] = link
-            out.append(f'{parts[0]} {parts[1]} {parts[2]} {parts[3]} "{link}" {parts[5]}')
+            quoted = cdimage.sheet_quote(link)              # never None: plain names, or checked relative paths
+            out.append(f'{parts[0]} {parts[1]} {parts[2]} {parts[3]} {quoted} {parts[5]}')
         sheet = work.path / "disc.gdi"
-        sheet.write_text("\n".join(out) + "\n", encoding="utf-8")
+        # UTF-8, as chdman reads sheets; surrogateescape keeps a POSIX name that is not UTF-8 as its raw bytes
+        sheet.write_text("\n".join(out) + "\n", encoding="utf-8", errors="surrogateescape")
     except BaseException:
         chdtool.remove_workdir(work)
         raise

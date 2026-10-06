@@ -926,3 +926,92 @@ class GdiTrackRefTest(unittest.TestCase):
             with self.assertRaises(chdtool.ChdmanError):
                 self.ref("symlink", "link", "relpath")
         self.assertFalse(link.exists())
+
+    def test_relative_path_only_when_chdman_can_open_it(self) -> None:
+        """chdman 0.289 on Windows opens "<gdi folder>/<name>" as joined and fails (or hangs) from 260 characters
+        on: a relative name that would be that long is copied instead."""
+        from romorg import discsys
+        with mock.patch.object(discsys, "_CHDMAN_PATH_LIMIT", True):
+            self.assertNotEqual(self.ref("symlink", "link"), "track01.bin")          # short enough: relative
+            limit = len(os.path.abspath(self.work)) + 1 + len(os.path.relpath(self.src, self.work))
+            with mock.patch.object(discsys, "_CHDMAN_MAX_PATH", limit):
+                self.assertEqual(self.ref("symlink", "link"), "track01.bin")         # one too long: a copy
+        self.assertFalse(os.path.samefile(self.work / "track01.bin", self.src))
+        self.assertSameBytes("track01.bin")
+
+    def test_generated_gdi_names_odd_folders_so_chdman_reads_them_back(self) -> None:
+        """Apostrophes, double spaces and non-ASCII letters in the library's folder names: the relative names in
+        the generated GDI are quoted for chdman's tokenizer and the sheet is UTF-8, so chdman's reading of it
+        (cdimage.parse_gdi reads it the same way) finds the original files."""
+        import types
+        from romorg import cdimage, discsys
+        folder = self.base / "library" / "Tony's  Pro Skater – Pokémon ゲーム"
+        folder.mkdir(parents=True)
+        tracks = [(folder / f"Tony's  Game (Track {n}).bin", T.make_data_track(n + 2, n)) for n in (1, 2, 3)]
+        for path, data in tracks:
+            path.write_bytes(data)
+        cue = folder / "Tony's  Game.cue"
+        cue.write_text('REM SINGLE-DENSITY AREA\n'
+                       'FILE "Tony\'s  Game (Track 1).bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+                       'FILE "Tony\'s  Game (Track 2).bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 01 00:00:00\n'
+                       'REM HIGH-DENSITY AREA\n'
+                       'FILE "Tony\'s  Game (Track 3).bin" BINARY\n  TRACK 03 MODE1/2352\n    INDEX 01 00:00:00\n',
+                       encoding="utf-8")
+        self.assertEqual(discsys.sheet_track_files(cue), [p for p, _ in tracks])
+        text, why = discsys.gdi_from_cue(cue)
+        self.assertEqual(why, "")
+        self.assertEqual([t.path for t in cdimage.parse_gdi(cue.with_suffix(".gdi"), text=text)], [p for p, _ in tracks])
+        op = types.SimpleNamespace(src=cue, gdi_text=text)
+        work = types.SimpleNamespace(path=self.work)
+        import errno
+        with mock.patch("romorg.chdtool.acquire_workdir", return_value=work), \
+                mock.patch("romorg.discsys.os.symlink", side_effect=OSError(errno.EPERM, "no")), \
+                mock.patch("romorg.discsys.os.link", side_effect=OSError(errno.EXDEV, "no")):
+            _w, sheet = discsys._link_gdi_dir(op, None, self.base / "library")
+        self.assertEqual(os.listdir(self.work), ["disc.gdi"])                     # relative names, no copies
+        got = cdimage.parse_gdi(sheet)
+        self.assertEqual([t.path.read_bytes() for t in got], [data for _, data in tracks])
+        self.assertEqual([t.path.resolve() for t in got], [p.resolve() for p, _ in tracks])
+
+
+class SheetFilesTest(unittest.TestCase):
+    """discsys.sheet_track_files / gdi_from_cue read file names with chdman's tokenizer (not POSIX shlex: an
+    apostrophe inside a quoted name is part of it, and an unquoted one is refused, as chdman refuses it)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def test_gdi_names(self) -> None:
+        from romorg import discsys
+        gdi = self.dir / "x.gdi"
+        gdi.write_bytes(b"\xef\xbb\xbf2\r\n1 0 4 2352 \"Tony's  Game.bin\" 0\r\n2\t600\t0\t2352\t't 2.raw'\t0\r\n")
+        self.assertEqual(discsys.sheet_track_files(gdi), [self.dir / "Tony's  Game.bin", self.dir / "t 2.raw"])
+        gdi.write_text("2\n1 0 4 2352 Tony's.bin 0\n2 600 0 2352 t2.raw 0\n")
+        self.assertIsNone(discsys.sheet_track_files(gdi))                       # chdman cannot read it either
+
+    def test_cue_names(self) -> None:
+        from romorg import discsys
+        cue = self.dir / "x.cue"
+        cue.write_text("REM a\nFILE \"Tony's Game (Track 1).bin\" BINARY\n  TRACK 01 MODE1/2352\n"
+                       "FILE 'b \"2\".bin' BINARY\n  TRACK 02 AUDIO\n")
+        self.assertEqual(discsys.sheet_track_files(cue), [self.dir / "Tony's Game (Track 1).bin",
+                                                          self.dir / 'b "2".bin'])
+
+    def test_generated_gdi_quotes_every_name_readably(self) -> None:
+        from romorg import cdimage, discsys
+        names = ["Tony's Game (Track 1).bin", "Track  2.bin"] + (['Odd "3".bin'] if os.name != "nt" else ["T3.bin"])
+        for n in names:
+            (self.dir / n).write_bytes(bytes(2352 * 10))
+        cue = self.dir / "x.cue"
+        q = [cdimage.sheet_quote(n) for n in names]
+        cue.write_text(f"REM SINGLE-DENSITY AREA\nFILE {q[0]} BINARY\n  TRACK 01 MODE1/2352\n"
+                       f"FILE {q[1]} BINARY\n  TRACK 02 AUDIO\nREM HIGH-DENSITY AREA\nFILE {q[2]} BINARY\n"
+                       f"  TRACK 03 MODE1/2352\n", encoding="utf-8")
+        text, why = discsys.gdi_from_cue(cue)
+        self.assertEqual(why, "")
+        rows = [cdimage.tokenize(ln) for ln in text.splitlines()[1:]]
+        self.assertEqual([r[4] for r in rows], names)
+        self.assertEqual([r[:4] for r in rows], [["1", "0", "4", "2352"], ["2", "10", "0", "2352"],
+                                                 ["3", "45000", "4", "2352"]])

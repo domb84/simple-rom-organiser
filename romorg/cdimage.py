@@ -19,13 +19,12 @@ Anything this module is not sure about raises :class:`ImageError` - a wrong gues
 from __future__ import annotations
 
 import os
-import re
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
-__all__ = ["ImageError", "CdTrack", "CdImage", "DvdImage", "open_image"]
+__all__ = ["ImageError", "CdTrack", "CdImage", "DvdImage", "open_image", "read_sheet", "sheet_lines", "tokenize",
+           "sheet_quote", "atoi"]
 
 FRAME = 2448
 SECTOR = 2352
@@ -66,14 +65,152 @@ class CdTrack:
         return self.type == "AUDIO"
 
 
+# --------------------------------------------------------------------------- reading sheets the way chdman does
+# chdman 0.289 (MAME's chdcd.cpp) reads cue and gdi sheets with its own tokenizer, and the built-in writer must
+# read every sheet exactly like it: a sheet read differently would give a CHD that is not chdman's. What chdman
+# does was established with crafted sheets against chdman 0.289 itself (tests/test_chdwrite.py, SheetSyntaxTest):
+#
+# * a line ends at "\n" only; tokens are separated by ASCII white space (space, tab, CR, VT, FF);
+# * '"' and "'" both quote (the other kind is literal inside), the quote characters are dropped, there are no
+#   escapes: ``FILE "Tony's Game.bin"`` is fine, ``FILE Tony's.bin`` is not (the quote never closes);
+# * keywords are case-sensitive (``file`` / ``pregap`` are not commands) and unknown commands are ignored;
+# * numbers are read with C's ``atoi`` ("01x" is 1) and times with ``sscanf("%d:%d:%d")`` (a single number is
+#   frames, "0:0" is 0, minutes / seconds / frames are not range-checked).
+#
+# Two deliberate differences, both where chdman 0.289 refuses the sheet (so there is no chdman CHD to differ from):
+# a UTF-8 byte order mark is skipped (chdman reads it as part of the first word), and a sheet that is not valid
+# UTF-8 is read in the Windows ANSI code page (chdman cannot open such names on Windows). On POSIX such a sheet's
+# names stay the raw bytes, as chdman uses them there.
+_WS = " \t\n\v\f\r"                 # C isspace() in the "C" locale
+
+
+def read_sheet(path) -> str:
+    """The text of a cue / gdi sheet (see above for the encoding rules). Raises OSError."""
+    raw = Path(path).read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if os.name == "nt":
+            return raw.decode("mbcs", errors="replace")         # the ANSI code page (CP_ACP)
+        return raw.decode("utf-8", errors="surrogateescape")     # = os.fsdecode of the bytes chdman opens
+
+
+def sheet_lines(text: str) -> List[str]:
+    """The lines of a sheet as chdman's ``fgets`` sees them (not :meth:`str.splitlines`, which also breaks at
+    form feeds, U+0085, U+2028 ...)."""
+    return text.split("\n")
+
+
+def _token(line: str, i: int) -> Tuple[str, int]:
+    """chdman's ``tokenize()``: the token starting at ``line[i:]`` (after white space) and where it ends."""
+    n = len(line)
+    while i < n and line[i] in _WS:
+        i += 1
+    out = []
+    single = double = False
+    while i < n:
+        c = line[i]
+        if not single and c == '"':
+            double = not double
+        elif not double and c == "'":
+            single = not single
+        elif not single and not double and c in _WS:
+            break
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out), i
+
+
+def tokenize(line: str) -> List[str]:
+    """All tokens of a sheet line, as chdman splits it (quotes group and are dropped; ``""`` is an empty token)."""
+    out: List[str] = []
+    i, n = 0, len(line)
+    while True:
+        while i < n and line[i] in _WS:
+            i += 1
+        if i >= n:
+            return out
+        tok, i = _token(line, i)
+        out.append(tok)
+
+
+def sheet_quote(name: str) -> Optional[str]:
+    """``name`` as one token of a cue / gdi line for chdman's tokenizer: in double quotes, or in single quotes when
+    the name has a double quote (POSIX allows one; inside ``'...'`` it is literal). None when the name has both
+    kinds of quote (chdman cannot read such a name from a sheet at all) or a line break."""
+    if "\n" in name or "\r" in name:
+        return None
+    if '"' not in name:
+        return f'"{name}"'
+    if "'" not in name:
+        return f"'{name}'"
+    return None
+
+
+def _c_int(text: str, i: int = 0) -> Tuple[Optional[int], int]:
+    """C ``%d`` at ``text[i:]``: white space, a sign, decimal digits. ``(None, i)`` when there is no number."""
+    n = len(text)
+    j = i
+    while j < n and text[j] in _WS:
+        j += 1
+    k = j + 1 if j < n and text[j] in "+-" else j
+    e = k
+    while e < n and "0" <= text[e] <= "9":
+        e += 1
+    if e == k:
+        return None, i
+    return int(text[j:e]), e
+
+
+def atoi(text: str) -> int:
+    """C ``atoi``: the leading number of ``text``, 0 when there is none."""
+    v, _ = _c_int(text)
+    return v or 0
+
+
+def msf_frames(text: str) -> int:
+    """chdman's ``msf_to_frames``: ``sscanf("%d:%d:%d")``; one number alone is frames, missing parts are 0."""
+    vals: List[int] = []
+    i = 0
+    for k in range(3):
+        if k:
+            if i < len(text) and text[i] == ":":
+                i += 1
+            else:
+                break
+        v, i2 = _c_int(text, i)
+        if v is None:
+            break
+        vals.append(v)
+        i = i2
+    if len(vals) == 1:
+        return vals[0]
+    m, s, f = (vals + [0, 0, 0])[:3]
+    return (m * 60 + s) * 75 + f
+
+
 def _msf(text: str) -> int:
-    m = re.fullmatch(r"(\d+):(\d+):(\d+)", text.strip())
-    if not m:
+    frames = msf_frames(text)
+    if frames < 0:
         raise ImageError(f"bad time {text!r}")
-    mm, ss, ff = (int(x) for x in m.groups())
-    if ss >= 60 or ff >= 75:
-        raise ImageError(f"bad time {text!r}")
-    return (mm * 60 + ss) * 75 + ff
+    return frames
+
+
+def gd_area_marker(line: str) -> str:
+    """``"sd"`` / ``"hd"`` when chdman 0.289 reads ``line`` as a Redump GD-ROM area marker (``REM SINGLE-DENSITY
+    AREA`` / ``REM HIGH-DENSITY AREA``: case-sensitive, a prefix of what follows ``REM``), else ``""``."""
+    word, i = _token(line, 0)
+    if word != "REM":
+        return ""
+    rest = line[i:].lstrip(_WS)
+    if rest.startswith("SINGLE-DENSITY AREA"):
+        return "sd"
+    if rest.startswith("HIGH-DENSITY AREA"):
+        return "hd"
+    return ""
 
 
 def _swap16(block: bytes) -> bytes:
@@ -99,63 +236,64 @@ def _size(path: Path) -> int:
 
 
 def parse_cue(path) -> List[CdTrack]:
+    """The tracks of a ``.cue``, read as chdman 0.289 reads it (see :func:`read_sheet` / :func:`tokenize`)."""
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
+        text = read_sheet(path)
     except OSError as exc:
         raise ImageError(f"cannot read {path.name}: {exc}") from exc
     base = path.parent
     tracks: List[CdTrack] = []
     starts: List[Tuple[Path, Optional[int], Optional[int]]] = []      # per track: file, INDEX 00, INDEX 01
     current: Optional[Path] = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
+    for line in sheet_lines(text):
+        parts = tokenize(line)
+        if not parts:
             continue
-        word = line.split(None, 1)[0].upper()
+        word = parts[0]                     # case-sensitive, as in chdman: "file" / "pregap" are not commands
         if word == "FILE":
-            try:
-                parts = shlex.split(line)
-            except ValueError as exc:
-                raise ImageError(f"bad FILE line in {path.name}") from exc
-            if len(parts) < 3 or parts[-1].upper() != "BINARY":
+            kind = parts[2] if len(parts) > 2 else ""
+            if kind != "BINARY":
                 raise ImageError(f"{path.name}: only BINARY track files can be converted "
-                                 f"({parts[-1] if parts else '?'} is not)")
-            current = base / " ".join(parts[1:-1])
+                                 f"({kind or 'no type'} is not)")
+            if not parts[1]:
+                raise ImageError(f"bad FILE line in {path.name}")
+            current = base / parts[1]
         elif word == "TRACK":
-            parts = line.split()
-            if current is None or len(parts) < 3 or not parts[1].isdigit():
+            if current is None or len(parts) < 2:
                 raise ImageError(f"bad TRACK line in {path.name}")
-            mode = CUE_MODES.get(parts[2].upper())
+            mode = CUE_MODES.get(parts[2] if len(parts) > 2 else "")
             if mode is None:
-                raise ImageError(f"{path.name}: track mode {parts[2]} is not supported")
-            if int(parts[1]) != len(tracks) + 1:
+                raise ImageError(f"{path.name}: track mode {parts[2] if len(parts) > 2 else '(none)'} "
+                                 f"is not supported")
+            if atoi(parts[1]) != len(tracks) + 1:
                 raise ImageError(f"{path.name}: tracks are not numbered 1, 2, 3 ...")
             tracks.append(CdTrack(number=len(tracks) + 1, type=mode[0], sector=mode[1], path=current))
             starts.append((current, None, None))
         elif word == "INDEX":
-            parts = line.split()
-            if not tracks or len(parts) < 3 or not parts[1].isdigit():
+            if not tracks or len(parts) < 2:
                 raise ImageError(f"bad INDEX line in {path.name}")
             f, i0, i1 = starts[-1]
             if tracks[-1].path != current:
                 raise ImageError(f"{path.name}: a track that continues in another file is not supported")
-            if int(parts[1]) == 0:
-                starts[-1] = (f, _msf(parts[2]), i1)
-            elif int(parts[1]) == 1:
-                starts[-1] = (f, i0, _msf(parts[2]))
+            num, at = atoi(parts[1]), _msf(parts[2] if len(parts) > 2 else "")
+            if num == 0:
+                starts[-1] = (f, at, i1)
+            elif num == 1:
+                starts[-1] = (f, i0, at)
         elif word in ("PREGAP", "POSTGAP"):
-            parts = line.split()
-            if not tracks or len(parts) < 2:
+            if not tracks:
                 raise ImageError(f"bad {word} line in {path.name}")
             if word == "PREGAP":
-                tracks[-1].pregap = _msf(parts[1])
+                tracks[-1].pregap = _msf(parts[1] if len(parts) > 1 else "")
             else:
-                tracks[-1].postgap = _msf(parts[1])
-        elif word in ("REM", "CATALOG", "FLAGS", "ISRC", "PERFORMER", "TITLE", "SONGWRITER", "CDTEXTFILE"):
-            continue
-        else:
-            raise ImageError(f"{path.name}: unknown cue command {word}")
+                tracks[-1].postgap = _msf(parts[1] if len(parts) > 1 else "")
+        elif word == "REM" and gd_area_marker(line):
+            # chdman 0.289 makes a GD-ROM of a Redump Dreamcast cue, moving each pregap to the end of the track
+            # before it - a layout this module does not reproduce (the app converts such a cue through a .gdi)
+            raise ImageError(f"{path.name} is a GD-ROM cue sheet (REM SINGLE-DENSITY / HIGH-DENSITY AREA); "
+                             f"it needs a .gdi")
+        # anything else (REM, FLAGS, CATALOG, TITLE, lowercase words ...) is ignored, as chdman ignores it
     if not tracks:
         raise ImageError(f"{path.name} lists no tracks")
     for n, (t, (f, i0, i1)) in enumerate(zip(tracks, starts)):
@@ -191,32 +329,37 @@ def parse_cue(path) -> List[CdTrack]:
 
 
 def parse_gdi(path, text: Optional[str] = None, files: Optional[List[Path]] = None) -> List[CdTrack]:
-    """The tracks of a ``.gdi``. ``text``: the sheet's content when it does not exist as a file (generated from a
-    Redump ``.cue``); ``files``: the track files to use instead of the names in the sheet, in track order."""
+    """The tracks of a ``.gdi``, read as chdman 0.289 reads it: the first line's number is the track count, every
+    other non-blank line has exactly six fields (number, LBA, type, sector size, file, offset), and the offset is
+    ignored (chdman reads every track file from its start). Tracks listed out of order are refused (chdman takes
+    them, with a different layout). ``text``: the sheet's content when it does not exist as a file (generated from
+    a Redump ``.cue``); ``files``: the track files to use instead of the names in the sheet, in track order."""
     path = Path(path)
     if text is None:
         try:
-            text = path.read_text(encoding="utf-8-sig", errors="replace")
+            text = read_sheet(path)
         except OSError as exc:
             raise ImageError(f"cannot read {path.name}: {exc}") from exc
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    try:
-        count = int(lines[0].strip())
-        rows = [shlex.split(ln) for ln in lines[1:]]
-    except (ValueError, IndexError) as exc:
-        raise ImageError(f"{path.name} is not a GDI sheet") from exc
-    if count != len(rows) or not rows:
+    lines = sheet_lines(text)
+    count = atoi(lines[0])
+    if count <= 0:
+        raise ImageError(f"{path.name} is not a GDI sheet (no track count on its first line)")
+    rows = [r for r in (tokenize(ln) for ln in lines[1:]) if r]
+    if count != len(rows):
         raise ImageError(f"{path.name}: the track count does not match the tracks listed")
     tracks: List[CdTrack] = []
     lbas: List[int] = []
     for n, row in enumerate(rows, 1):
-        try:
-            num, lba, kind, sector, name, offset = int(row[0]), int(row[1]), int(row[2]), int(row[3]), row[4], int(row[5])
-        except (ValueError, IndexError) as exc:
-            raise ImageError(f"{path.name}: bad track line {n}") from exc
+        if len(row) != 6:
+            raise ImageError(f"{path.name}: track line {n} has {len(row)} fields, not 6 "
+                             f"(a file name with spaces must be in quotes)")
+        num, lba, kind, sector, name = atoi(row[0]), atoi(row[1]), atoi(row[2]), atoi(row[3]), row[4]
         if num != n or kind not in (0, 4) or sector not in ((2352,) if kind == 0 else (2352, 2048)):
             raise ImageError(f"{path.name}: track {n} has a layout that is not supported")
+        if not name and files is None:
+            raise ImageError(f"{path.name}: track {n} names no file")
         f = Path(files[n - 1]) if files is not None and n <= len(files) else path.parent / name
+        offset = 0
         size = _size(f) - offset
         if size <= 0 or size % sector:
             raise ImageError(f"{f.name} is not a whole number of {sector}-byte sectors")

@@ -325,7 +325,6 @@ class ImageErrorTest(unittest.TestCase):
                 (good.replace("    INDEX 01 00:00:00\n", ""), "INDEX 01"),
                 (good + "  TRACK 02 AUDIO\n    INDEX 01 00:00:09\n", "outside"),
                 (good.replace("MODE1/2352", "MODE1/2048"), "sectors"),
-                ("CDTEXT nonsense\n" + good, "unknown"),
                 ("", "no tracks")):
             with self.assertRaises(cdimage.ImageError, msg=text) as cm:
                 cdimage.open_image(self.cue(text))
@@ -344,6 +343,221 @@ class ImageErrorTest(unittest.TestCase):
                 cdimage.open_image(self.dir / "odd.iso", mode)
         with self.assertRaises(cdimage.ImageError):
             cdimage.open_image(self.dir / "t.bin")
+
+
+# --------------------------------------------------------------------------- sheet syntax, as chdman 0.289 reads it
+def sheet_cases() -> dict:
+    """``name -> (sheet path, text, {file: bytes}, options, expected)``. ``expected`` is a key of
+    ``SheetSyntaxTest.CHDMAN`` (chdman 0.289 takes the sheet and writes that SHA-1, and so must the writer),
+    ``"refused"`` (chdman and the writer both refuse it), ``"ours:<key>"`` (chdman 0.289 refuses it, the writer
+    deliberately takes it: a UTF-8 byte order mark, a sheet in the Windows ANSI code page) or ``"chdman"`` (chdman
+    takes it with a layout the writer does not reproduce, so the writer refuses it rather than write another CHD)."""
+    d, a, d3 = T.make_data_track(32, 1), T.make_audio_track(32, 2), T.make_data_track(40, 3)
+    cases: dict = {}
+
+    def case(name, sheet, text, files, expected, enc="utf-8", bom=False, nl="\n"):
+        cases[name] = (sheet, text, files, {"enc": enc, "bom": bom, "nl": nl}, expected)
+
+    t1 = "  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+    for name, line, names, expected in (
+            ("cue_quoted_space", 'FILE "a b.bin" BINARY', ["a b.bin"], "one"),
+            ("cue_unquoted", "FILE ab.bin BINARY", ["ab.bin"], "one"),
+            ("cue_quoted_apostrophe", "FILE \"Tony's Game.bin\" BINARY", ["Tony's Game.bin"], "one"),
+            ("cue_quoted_two_apostrophes", "FILE \"Tony's 'Game.bin\" BINARY", ["Tony's 'Game.bin"], "one"),
+            ("cue_quoted_double_space", 'FILE "a  b.bin" BINARY', ["a  b.bin", "a b.bin"], "one"),
+            ("cue_single_quotes", "FILE 'a b.bin' BINARY", ["a b.bin"], "one"),
+            ("cue_quote_inside_word", 'FILE a"b c".bin BINARY', ["ab c.bin"], "one"),
+            ("cue_utf8_name", 'FILE "Pokémon ü.bin" BINARY', ["Pokémon ü.bin"], "one"),
+            ("cue_cjk_name", 'FILE "ゲーム.bin" BINARY', ["ゲーム.bin"], "one"),
+            ("cue_junk_after_binary", 'FILE "a.bin" BINARY junk', ["a.bin"], "one"),
+            ("cue_quoted_keyword", '"FILE" "a.bin" BINARY', ["a.bin"], "one"),
+            ("cue_unquoted_apostrophe", "FILE Tony's.bin BINARY", ["Tony's.bin"], "refused"),
+            ("cue_unquoted_space", "FILE a b.bin BINARY", ["a b.bin", "a"], "refused"),
+            ("cue_empty_name", 'FILE "" BINARY', ["a.bin"], "refused"),
+            ("cue_no_space_after_quote", 'FILE "a b.bin"BINARY', ["a b.bin"], "refused"),
+            ("cue_lowercase_binary", 'FILE "a b.bin" binary', ["a b.bin"], "refused"),
+            ("cue_lowercase_file", 'file "a b.bin" BINARY', ["a b.bin"], "refused")):
+        case(name, "x.cue", line + "\n" + t1, {n: d for n in names}, expected)
+    ab = {"a b.bin": d}
+    case("cue_tabs", "x.cue", 'FILE\t"a b.bin"\tBINARY\n\tTRACK\t01\tMODE1/2352\n\t\tINDEX\t01\t00:00:00\n', ab, "one")
+    case("cue_trailing_white_space", "x.cue",
+         'FILE "a b.bin" BINARY   \n  TRACK 01 MODE1/2352 \t\n    INDEX 01 00:00:00  \n\n', ab, "one")
+    case("cue_crlf", "x.cue", 'FILE "a b.bin" BINARY\n' + t1, ab, "one", nl="\r\n")
+    case("cue_bom", "x.cue", 'FILE "a b.bin" BINARY\n' + t1, ab, "ours:one", bom=True)
+    case("cue_bom_before_rem", "x.cue", 'REM x\nFILE "a b.bin" BINARY\n' + t1, ab, "one", bom=True)
+    case("cue_rem_catalog_unknown", "x.cue", 'REM GENRE Game\nCATALOG 0000000000000\nREM FILE "zz.bin" BINARY\n'
+         'FILE "a b.bin" BINARY\n  TRACK 01 MODE1/2352\n    FOO bar\n    CDTEXT x\n    INDEX 01 00:00:00\n', ab, "one")
+    case("cue_lowercase_everything", "x.cue", 'file "a b.bin" binary\n  track 01 mode1/2352\n    index 01 00:00:00\n',
+         ab, "refused")
+    case("cue_lowercase_mode", "x.cue", 'FILE "a b.bin" BINARY\n  TRACK 01 mode1/2352\n    INDEX 01 00:00:00\n', ab,
+         "refused")
+    case("cue_lowercase_index", "x.cue", 'FILE "a b.bin" BINARY\n  TRACK 01 MODE1/2352\n    index 01 00:00:00\n', ab,
+         "refused")
+    case("cue_track_and_index_garbage", "x.cue", 'FILE "a.bin" BINARY\n  TRACK 01x MODE1/2352\n    INDEX 01 00:00:00x\n'
+         '    INDEX 02 00:00:05\n', {"a.bin": d}, "one")
+    case("cue_subfolder_slash", "x.cue", 'FILE "sub/a.bin" BINARY\n' + t1, {"sub/a.bin": d}, "one")
+    if os.name == "nt":
+        case("cue_subfolder_backslash", "x.cue", 'FILE "sub\\a.bin" BINARY\n' + t1, {"sub/a.bin": d}, "one")
+        case("cue_trailing_space_in_quotes", "x.cue", 'FILE "a.bin " BINARY\n' + t1, {"a.bin": d}, "one")
+    case("cue_iso", "x.cue", 'FILE "a.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n',
+         {"a.iso": T.make_iso(32, 5)}, "iso")
+    gaps = ('REM GENRE Game\nFILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+            'FILE "a.bin" BINARY\n  TRACK 02 AUDIO\n    FLAGS DCP\n    INDEX 00 00:00:00\n    INDEX 01 00:00:05\n'
+            'FILE "a2.bin" BINARY\n  TRACK 03 AUDIO\n    PREGAP 00:02:00\n    INDEX 01 00:00:00\n    POSTGAP 00:01:00\n')
+    three = {"d.bin": d, "a.bin": a, "a2.bin": T.make_audio_track(20, 4)}
+    case("cue_flags_pregap_postgap_index00", "x.cue", gaps, three, "gaps")
+    case("cue_lowercase_gap_commands", "x.cue", gaps.replace("PREGAP", "pregap").replace("POSTGAP", "postgap")
+         .replace("FLAGS", "flags"), three, "nogaps")                # not commands in lowercase: ignored
+    two = 'FILE "a.bin" BINARY\n  TRACK %s MODE1/2352\n    INDEX 01 %s\n  TRACK %s AUDIO\n    INDEX 01 %s\n'
+    for name, args, expected in (("cue_two_tracks", ("01", "00:00:00", "02", "00:00:32"), "two"),
+                                 ("cue_time_as_frames", ("01", "0", "02", "32"), "two"),
+                                 ("cue_time_two_parts", ("01", "0:0", "02", "0:0:32"), "two"),
+                                 ("cue_time_spaces_and_sign", ("01", "00:00:00", "02", '"00: 00:+32"'), "two"),
+                                 ("cue_numbered_from_2", ("02", "00:00:00", "03", "00:00:32"), "refused"),
+                                 ("cue_numbers_skip", ("01", "00:00:00", "03", "00:00:32"), "refused"),
+                                 ("cue_numbers_descend", ("02", "00:00:00", "01", "00:00:32"), "chdman")):
+        case(name, "x.cue", two % args, {"a.bin": d + a}, expected)
+    gd = ('REM SINGLE-DENSITY AREA\nFILE "t1.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+          'FILE "t2.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:00:02\n'
+          'REM HIGH-DENSITY AREA\nFILE "t3.bin" BINARY\n  TRACK 03 MODE1/2352\n    INDEX 01 00:00:00\n')
+    case("cue_gd_rom_markers", "x.cue", gd, {"t1.bin": d, "t2.bin": a, "t3.bin": d3}, "chdman")
+    # ---- gdi: track 1 data (32 frames) at 0, track 2 audio (32) at 40, track 3 data (40) at 80
+    g = {"t1.bin": d, "t2.raw": a, "t3.bin": d3}
+
+    def gdi(n1, n2="t2.raw", n3="t3.bin", sep=" "):
+        return "3\n" + "\n".join(sep.join(r) for r in (
+            ["1", "0", "4", "2352", n1, "0"], ["2", "40", "0", "2352", n2, "0"], ["3", "80", "4", "2352", n3, "0"])) + "\n"
+
+    def first(name, data=d):
+        return {name: data, "t2.raw": a, "t3.bin": d3}
+
+    plain = gdi("t1.bin")
+    case("gdi_plain", "x.gdi", plain, g, "gdi")
+    case("gdi_quoted", "x.gdi", gdi('"t1.bin"', '"t2.raw"', '"t3.bin"'), g, "gdi")
+    case("gdi_quoted_space", "x.gdi", gdi('"a b.bin"'), first("a b.bin"), "gdi")
+    case("gdi_quoted_double_space", "x.gdi", gdi('"a  b.bin"'), {**first("a  b.bin"), "a b.bin": d3}, "gdi")
+    case("gdi_quoted_apostrophe", "x.gdi", gdi('"Tony\'s Game.bin"'), first("Tony's Game.bin"), "gdi")
+    case("gdi_single_quotes", "x.gdi", gdi("'a b.bin'"), first("a b.bin"), "gdi")
+    case("gdi_quote_inside_word", "x.gdi", gdi('a"b c".bin'), first("ab c.bin"), "gdi")
+    case("gdi_leading_space_in_quotes", "x.gdi", gdi('" lead.bin"'), first(" lead.bin"), "gdi")
+    case("gdi_tabs", "x.gdi", gdi("t1.bin", sep="\t"), g, "gdi")
+    case("gdi_many_spaces", "x.gdi", gdi("t1.bin", sep="   "), g, "gdi")
+    case("gdi_crlf", "x.gdi", plain, g, "gdi", nl="\r\n")
+    case("gdi_trailing_white_space", "x.gdi", plain.replace("\n", "  \n") + "\n\n", g, "gdi")
+    case("gdi_leading_white_space", "x.gdi", "".join("  " + ln + "\n" for ln in plain.splitlines()), g, "gdi")
+    case("gdi_blank_line_inside", "x.gdi", plain.replace("\n2 ", "\n\n2 "), g, "gdi")
+    case("gdi_bom", "x.gdi", plain, g, "ours:gdi", bom=True)
+    case("gdi_relative_up", "sheet/x.gdi", gdi("../data/t1.bin"),
+         {"data/t1.bin": d, "sheet/t2.raw": a, "sheet/t3.bin": d3}, "gdi")
+    case("gdi_relative_quoted_odd_folders", "sheet/x.gdi", gdi('"../my  data/Tony\'s Pokémon/t1.bin"'),
+         {"my  data/Tony's Pokémon/t1.bin": d, "sheet/t2.raw": a, "sheet/t3.bin": d3}, "gdi")
+    case("gdi_utf8_name", "x.gdi", gdi('"Pokémon ü.bin"'), first("Pokémon ü.bin"), "gdi")
+    case("gdi_cjk_name", "x.gdi", gdi('"ゲーム.bin"'), first("ゲーム.bin"), "gdi")
+    case("gdi_numbers_read_with_atoi", "x.gdi", "3 tracks\n" + plain[2:].replace("2 40 0 2352", "2 040x 0x 2352")
+         .replace("t1.bin 0", "t1.bin 0x0"), g, "gdi")
+    case("gdi_lba_moves_the_tracks", "x.gdi", plain.replace("2 40 0", "2 32 0"), g, "gdi32")
+    for name, off in (("gdi_offset_ignored_hex", "0x930"), ("gdi_offset_ignored", "2352")):
+        case(name, "x.gdi", plain.replace("t1.bin 0", "t1.bin " + off), first("t1.bin", bytes(2352) + d), "gdipad")
+    case("gdi_unquoted_apostrophe", "x.gdi", gdi("Tony's.bin"), first("Tony's.bin"), "refused")
+    case("gdi_unquoted_space", "x.gdi", gdi("a b.bin"), first("a b.bin"), "refused")
+    case("gdi_count_too_high", "x.gdi", plain.replace("3\n", "4\n", 1), g, "refused")
+    case("gdi_count_too_low", "x.gdi", plain.replace("3\n", "2\n", 1), g, "refused")
+    case("gdi_empty_name", "x.gdi", gdi('""'), g, "refused")
+    case("gdi_sector_2336", "x.gdi", plain.replace("1 0 4 2352", "1 0 4 2336"), g, "refused")
+    case("gdi_blank_first_line", "x.gdi", "\n" + plain, g, "refused")
+    case("gdi_text_after_tracks", "x.gdi", plain + "junk line here\n", g, "refused")
+    case("gdi_out_of_order", "x.gdi", "3\n3 80 4 2352 t3.bin 0\n1 0 4 2352 t1.bin 0\n2 40 0 2352 t2.raw 0\n", g,
+         "chdman")
+    if os.name == "nt" and "é".encode("mbcs", "replace") == b"\xe9":
+        # a sheet in the ANSI code page (Western European here): chdman 0.289 cannot open the names it reads from it
+        case("cue_ansi_name", "x.cue", 'FILE "Pokémon ü.bin" BINARY\n' + t1, {"Pokémon ü.bin": d}, "ours:one",
+             enc="cp1252")
+        case("gdi_ansi_name", "x.gdi", gdi('"Pokémon ü.bin"'), first("Pokémon ü.bin"), "ours:gdi", enc="cp1252")
+    elif os.name != "nt":
+        # on POSIX the bytes of a name that is not UTF-8 are the file name, as chdman opens it
+        case("cue_ansi_name", "x.cue", 'FILE "Pokémon.bin" BINARY\n' + t1, {os.fsdecode(b"Pok\xe9mon.bin"): d}, "one",
+             enc="cp1252")
+    return cases
+
+
+class SheetSyntaxTest(unittest.TestCase):
+    """Cue and gdi sheets are read exactly as chdman 0.289 reads them (``cdimage.tokenize`` & co): ``"`` and ``'``
+    quoting, apostrophes inside quotes, double spaces, tabs, CR LF, trailing white space, case-sensitive keywords,
+    REM / FLAGS / PREGAP / POSTGAP / INDEX 00, C ``atoi`` numbers, the GDI offset column that chdman ignores.
+
+    ``CHDMAN`` is the header SHA-1 chdman 0.289 ``createcd`` wrote for each kind of accepted case (recorded on
+    Windows with the real chdman; the tracks are generated, so the numbers are stable). With ``ROMORG_CHDMAN_ORACLE``
+    set to a chdman executable, every case also goes through that chdman and its verdict is compared."""
+
+    CHDMAN = {"one": "2431ddbbcbb7fd3ba1545b5624935217a28b6903", "two": "f9177f2adc2e06e0548a7fefee35c9e2eb2a87b8",
+              "iso": "168e277ba33ed33bf93d3ac52375e5e9b91de85b", "gaps": "459df75fa1849c338d26c18f9da75320b0694a7c",
+              "nogaps": "b6fed3c2c06ee8ae9af9186c2f3405d1c818d799", "gdi": "df9508cdefa3329189c0f510023d6d5218a366a0",
+              "gdi32": "78443f68bf842368addc0707c18ebb6fcefaef42", "gdipad": "29ff949b678ba0d09e5bddbb085d3fb941d80d62"}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.dir = Path(cls._tmp.name)
+        cls.cases = sheet_cases()
+        cls.sheets = {name: cls.build(name) for name in cls.cases}
+
+    @classmethod
+    def build(cls, name: str) -> Path:
+        sheet, text, files, opt, _ = cls.cases[name]
+        d = cls.dir / name
+        for fn, data in files.items():
+            (d / fn).parent.mkdir(parents=True, exist_ok=True)
+            (d / fn).write_bytes(data)
+        raw = text.replace("\n", opt["nl"]).encode(opt["enc"])
+        (d / sheet).parent.mkdir(parents=True, exist_ok=True)
+        (d / sheet).write_bytes((b"\xef\xbb\xbf" if opt["bom"] else b"") + raw)
+        return d / sheet
+
+    def test_the_writer_reads_every_sheet_as_chdman_does(self) -> None:
+        for name, (*_, expected) in self.cases.items():
+            with self.subTest(name):
+                sheet = self.sheets[name]
+                try:
+                    image = cdimage.open_image(sheet)
+                except cdimage.ImageError:
+                    got = "refused"
+                else:
+                    got = chdwrite.write_chd(sheet.parent / "ours.chd", image, processes=False)["sha1"]
+                if expected in ("refused", "chdman"):
+                    self.assertEqual(got, "refused")
+                else:
+                    self.assertEqual(got, self.CHDMAN[expected.split(":")[-1]])
+
+    @unittest.skipUnless(os.environ.get("ROMORG_CHDMAN_ORACLE"), "set ROMORG_CHDMAN_ORACLE to a chdman executable")
+    def test_chdman_agrees(self) -> None:
+        import subprocess
+        exe = os.path.abspath(os.environ["ROMORG_CHDMAN_ORACLE"])
+        seen = {}
+        for name, (*_, expected) in self.cases.items():
+            with self.subTest(name):
+                sheet = self.sheets[name]
+                out = sheet.parent / "chdman.chd"
+                try:          # relative paths from the temporary folder: chdman is not long-path aware
+                    p = subprocess.run([exe, "createcd", "-i", os.path.relpath(sheet, self.dir), "-o",
+                                        os.path.relpath(out, self.dir), "-f"], cwd=self.dir, capture_output=True,
+                                       timeout=60)
+                    ok = p.returncode == 0 and out.exists()
+                except subprocess.TimeoutExpired:
+                    ok = False
+                got = "refused"
+                if ok:
+                    with chd.Chd(out) as c:
+                        got = c.sha1
+                seen.setdefault(expected, set()).add(got)
+                if expected == "refused" or expected.startswith("ours:"):
+                    self.assertEqual(got, "refused")
+                elif expected == "chdman":
+                    self.assertNotEqual(got, "refused")
+                else:
+                    self.assertEqual(got, self.CHDMAN.get(expected, got))
+        if os.environ.get("ROMORG_CHDMAN_ORACLE_PRINT"):
+            print({k: sorted(v) for k, v in seen.items()})
 
 
 @unittest.skipUnless(flacenc.available(), "no libFLAC")
