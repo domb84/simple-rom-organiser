@@ -515,7 +515,7 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
         for p, why in unmatched_archives:
             others.append(planner.unmatched(p, why))
         for p in result.unsupported:
-            others.append(planner.unmatched(_abs(Path(p), root), "unsupported archive (7z not found)"))
+            others.append(planner.unmatched(_abs(Path(p), root), ("unsupported disc image" if str(p).lower().endswith(".rvz") else "unsupported archive (7z not found)")))
         for p, msg in result.errors:
             ap = _abs(Path(p), root)
             others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))

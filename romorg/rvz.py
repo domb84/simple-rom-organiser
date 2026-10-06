@@ -41,6 +41,8 @@ MAGIC = b"RVZ\x01"
 HEAD_BYTES = 0x48
 DISC_BYTES = 0xDC
 SEED_BYTES = 68
+MAX_CHUNK = 32 << 20     # Dolphin offers at most 32 MiB
+MAX_ISO = 4 << 30         # a GameCube disc is 1.46 GB
 JUNK_BLOCK = 0x8000
 RAW_ENTRY = 24                  # wia_raw_data_t: u64 offset, u64 size, u32 first group, u32 groups
 GROUP_ENTRY = 12                # rvz_group_t: u32 data_off4, u32 data_size, u32 rvz_packed_size
@@ -248,6 +250,10 @@ class Rvz:
             raise RvzError("bad chunk size")
         if n_raw == 0 or n_groups == 0 or n_raw > 1 << 16 or n_groups > 1 << 24:
             raise RvzError("bad table sizes")
+        # Refuse claims no real GameCube image makes, before anything is decompressed or allocated: a crafted file
+        # (its checksums are plain SHA-1s) could otherwise cost gigabytes and many seconds.
+        if self.chunk_size > MAX_CHUNK or self.iso_size > MAX_ISO or n_groups > -(-self.iso_size // self.chunk_size) + n_raw:
+            raise RvzError("the sizes in the RVZ header are not plausible")
         self.raws = self._table(raw_off, raw_size, n_raw * RAW_ENTRY, ">QQII", RAW_ENTRY, n_raw)
         self.groups = self._table(group_off, group_size, n_groups * GROUP_ENTRY, ">III", GROUP_ENTRY, n_groups)
         self.layout: List[Tuple[int, int, int]] = []

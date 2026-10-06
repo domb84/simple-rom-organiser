@@ -894,6 +894,9 @@ class HashCache:
             self.conn = None
 
 
+CONTAINER_KEY_SUFFIX = "#rvz"
+
+
 def _cache_key(path: Path) -> Optional[str]:
     """Cache key for a path; None for names sqlite can't store (undecodable bytes)."""
     key = str(path)
@@ -1383,6 +1386,8 @@ def scan(
             errors.append((path, f"RvzError: {exc}"))
             return True
         key = _cache_key(path)
+        if key is not None:
+            key += CONTAINER_KEY_SUFFIX      # not the hash of the file's own bytes, which scan_loose caches
         hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
         if hit is None:
             try:

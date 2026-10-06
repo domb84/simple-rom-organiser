@@ -126,6 +126,8 @@ class NoIntroParseTest(unittest.TestCase):
         self.assertEqual(tags.flag_kind("Wii Virtual Console"), "distribution")
         self.assertEqual(tags.flag_kind("Alt 2"), "alt")
         self.assertEqual(tags.flag_kind("Tengen"), "other")
+        self.assertEqual(tags.flag_kind("Rumble Version"), "hardware")
+        self.assertEqual(tags.flag_kind("Rumble, Frank"), "other")        # a TOSEC author, not a feature
 
 
 class TosecParseTest(unittest.TestCase):

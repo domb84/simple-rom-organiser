@@ -1913,7 +1913,7 @@
       case "unsupported":
         return {
           fetch: fetchKind, emptyText: "None.",
-          columns: [{ label: "Archive (install 7-Zip to read .7z / .rar)", cls: "wrap", render: (i) => fileCell(i.file) }],
+          columns: [{ label: "File (install 7-Zip to read .7z / .rar; Wii and WIA .rvz files are not read)", cls: "wrap", render: (i) => fileCell(i.file) }],
         };
       default:
         return {

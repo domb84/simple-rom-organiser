@@ -2129,7 +2129,7 @@ Why no header handling, checked on the libretro DATs of 2026.08.01: every rom is
 | Sega - 32X | 207 | 207 | 0 |
 | Atari - Lynx | 681 | 364 | 235 |
 
-Region tags are recognised on every name of these DATs (one name with a stray full stop has none). LaunchBox's platform names (read from `Platforms.xml` inside `Metadata.zip`, 2026-10-06) are the same as ours except the Mega Drive, which LaunchBox calls `Sega Genesis`. Startup update now downloads twelve No-Intro DATs, about 15 MB the first time (the eight new ones about 6 MB), then only changed files by ETag.
+Region tags are recognised on every name of these DATs (a full stop after a closing bracket, as in "(Unl).", is ignored; the same rule gives ten TOSEC names ending "(AU)." a region and so a different identity key). LaunchBox's platform names (read from `Platforms.xml` inside `Metadata.zip`, 2026-10-06) are the same as ours except the Mega Drive, which LaunchBox calls `Sega Genesis`. Startup update now downloads twelve No-Intro DATs, about 15 MB the first time (the eight new ones about 6 MB), then only changed files by ETag.
 
 Tests: `tests/test_platforms.py::test_every_nointro_platform_is_wired_up` (DAT listed, folder name known, rating name set, no two systems share a folder), `tests/test_integration.py::PlainSystemsIntegrationTest` (synthetic scan -> plan -> apply -> settled -> undo for each, including a Lynx game with a headered and a raw rom), `tests/test_datfile.py::RealNoIntroTest` (the counts above on the real DATs).
 

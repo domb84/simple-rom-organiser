@@ -776,7 +776,7 @@ _FLAG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     # Mini / 4 compilations). They stay "hardware", not "distribution": the latter is skipped when variants are grouped,
     # and "Foo (SGB Enhanced)" must remain a different game key from "Foo".
     ("hardware", re.compile(r"ROM$|^72 pin|^(?:CGB\+)?(?:SGB|GB|NDSi|DSi)(?:, (?:SGB|GB))?.*(?:Enhanced|Compatible)|"
-                            r"^CGB\+SGB|Rumble|^DS Broadcast$|^Sega Channel$|^Mega Drive (?:Mini|4)|Genesis Mini|"
+                            r"^CGB\+SGB|^Rumble Version$|^DS Broadcast$|^Sega Channel$|^Mega Drive (?:Mini|4)|Genesis Mini|"
                             r"ModRetro|^NINA|^Rainbow$|^AGA$|^OCS$|^ECS$|^A\d{3,4}|"
                             r"Mapper|pin cart|^Dev$|^CD32$|^CDTV$|^MT32$|"
                             r"^\d+(?:\.\d+)?\s?(?:KB|MB|k)(?: Chip)?$|^(?:Low|Fast|Slow|Chip) Mem$",
