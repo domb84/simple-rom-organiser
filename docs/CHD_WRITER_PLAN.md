@@ -76,7 +76,7 @@ New modules (stdlib only; C libraries loaded through ctypes, never required - th
   out: audio byte-swapped to big-endian, cooked sectors at the start of the frame, zeroed subcode, every track
   padded to a multiple of 4 frames, GD-ROM pad frames. It also produces the metadata text (`CHT2` / `CHGD` /
   `DVD `). `discsys.py` already has Redump cue and GDI knowledge to reuse.
-- `romorg/chdcomp.py` - one compressor per codec, the inverse of the reader: `cdlz`, `cdzl`, `cdzs`, `cdfl`,
+- `romorg/chdcomp.py` (as built: the compressors are in `romorg/chdwrite.py`) - one compressor per codec, the inverse of the reader: `cdlz`, `cdzl`, `cdzs`, `cdfl`,
   `lzma`, `zlib`, `zstd`, `flac`, `huff` (and `avhu` in tier 3). Each returns bytes or "not smaller". The `huff`
   encoder moves here from `tests/chdtestlib.py` and needs MAME's exact tree limits (16 bits).
 - `romorg/flacenc.py` - FLAC frames through libFLAC's stream encoder (ctypes), configured like MAME's

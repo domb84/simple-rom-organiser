@@ -26,9 +26,9 @@ from pathlib import Path
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    if len(argv) != 2 or argv[1].startswith("-"):
         print(__doc__)
-        return 2
+        return 0 if argv[1:] in (["-h"], ["--help"]) else 2
     target = Path(argv[1]).absolute()
     data = target / "datadir"
     os.environ["ROMORG_DATA_DIR"] = str(data)

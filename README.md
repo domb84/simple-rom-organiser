@@ -48,10 +48,10 @@ What it does:
 
 1. Keeps the DATs current **automatically**. At every start it checks, in the background,
    the newest TOSEC release (<https://www.tosecdev.org/downloads>, ~100 MB, Amiga; downloaded
-   only when its release date differs from the installed one), the four No-Intro DATs in the
+   only when its release date differs from the installed one), the twelve No-Intro DATs in the
    [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro)
-   mirror on GitHub (a few MB, consoles; only changed files are fetched) and the Redump
-   Dreamcast / PlayStation / PlayStation 2 DATs (one HEAD request per DAT; the 0.7 / 4 / 1.3 MB zips only when their date is newer). Nothing to download by hand.
+   mirror on GitHub (a few MB each, consoles; only changed files are fetched) and the Redump
+   Dreamcast / PlayStation / PlayStation 2 / GameCube DATs (one HEAD request per DAT; the zips only when their date is newer). Nothing to download by hand.
 2. **Systems & folders**: one row per system with its DAT status and folder (native dialog,
    or the built-in folder browser with shortcuts for Home and SD cards / USB drives under
    `/run/media`). Each folder is remembered.
@@ -878,7 +878,7 @@ DATs are fetched from
   stored in its own folder and never touched by TOSEC / No-Intro updates. **That repository
   states no licence: this app downloads only the DAT (a list of names and hashes), never any
   game file.** The DAT is Windows-1252 encoded; it is read as such.
-- **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2)**: `http://redump.org/datfile/dc/`, `.../psx/` and `.../ps2/` over **plain HTTP** (HTTPS is refused by
+- **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2, Nintendo GameCube)**: `http://redump.org/datfile/dc/`, `.../psx/`, `.../ps2/` and `.../gc/` over **plain HTTP** (HTTPS is refused by
   the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
   (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the
   old DAT atomically; it is stored in its own `redump/` folder. Offline, the installed DAT keeps working.

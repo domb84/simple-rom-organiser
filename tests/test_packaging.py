@@ -420,3 +420,35 @@ class BuiltArtifactTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeveloperToolArgumentTests(unittest.TestCase):
+    """Bad arguments to the developer tools and the self-check are refused, not acted on."""
+
+    def test_selfcheck_rejects_unknown_arguments(self) -> None:
+        import contextlib
+        import io
+
+        from romorg import selfcheck
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(selfcheck.main(["--require-nativ"]), 2)
+        self.assertIn("--require-nativ", err.getvalue())
+
+    def test_fetch_real_dats_does_not_treat_options_as_a_folder(self) -> None:
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as cwd:
+            for arg, rc in (("--help", 0), ("--bogus", 2)):
+                r = subprocess.run([sys.executable, str(ROOT / "tools" / "fetch_real_dats.py"), arg], cwd=cwd,
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, rc, r.stderr)
+                self.assertEqual(os.listdir(cwd), [])          # nothing created, nothing downloaded
+
+    def test_bench_chdwrite_bad_preset_is_a_usage_error(self) -> None:
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, str(ROOT / "tools" / "bench_chdwrite.py"), "--preset", "bogus", "x.cue"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
