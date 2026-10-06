@@ -151,7 +151,7 @@ class LongPathHintTest(unittest.TestCase):
 
     def test_no_hint_for_a_short_path_other_error_or_other_system(self) -> None:
         with mock.patch.object(winproc, "IS_WINDOWS", True):
-            self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(3), "C:\short"))
+            self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(3), r"C:\short"))
             self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(5), self.long))
         with mock.patch.object(winproc, "IS_WINDOWS", False):
             self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(3), self.long))

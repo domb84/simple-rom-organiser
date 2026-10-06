@@ -872,8 +872,6 @@ class IndexTest(unittest.TestCase):
         self.assertIs(dreamcast.get_index(w.dat), idx)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class GdiTrackRefTest(unittest.TestCase):
@@ -1023,3 +1021,7 @@ class SheetFilesTest(unittest.TestCase):
         self.assertEqual([r[4] for r in rows], names)
         self.assertEqual([r[:4] for r in rows], [["1", "0", "4", "2352"], ["2", "10", "0", "2352"],
                                                  ["3", "45000", "4", "2352"]])
+
+
+if __name__ == "__main__":
+    unittest.main()

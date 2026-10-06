@@ -324,8 +324,6 @@ class RunTest(ChdtoolBase):
             chdtool.parse_gdi(bad)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class NonAsciiInputTests(unittest.TestCase):
@@ -382,3 +380,7 @@ class NonAsciiInputTests(unittest.TestCase):
                     self.assertEqual(got[i]["sha1"], h["sha1"])
             finally:
                 info.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
