@@ -22,6 +22,10 @@ all-processes peak on Windows only), ``size`` and ``x ref`` against the referenc
 ``engine`` / ``workers`` / ``fallbacks`` as reported by the writer. ``--verify`` also times what a Convert does next:
 hashing every track of the new CHD with the app's scheduler (``verify s``).
 
+chdman always runs its default preset (here and in the table), so with ``--preset zstd`` the ``x ref`` of the
+built-in zstd rows compares against default-preset chdman output: not like-for-like (``sha1`` is still valid, the
+header SHA-1 covers the raw data).
+
 chdman on Windows: some builds fail on absolute paths, so it is started in the folder that holds both the input
 and ``--out``, with relative paths (both must be on one drive).
 """

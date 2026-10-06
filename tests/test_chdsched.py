@@ -351,6 +351,57 @@ class WorkerProcessTest(Base):
             self.assertTrue(s.release(moved))
         os.remove(moved)
 
+    def test_restart_workers_during_a_live_run_loses_no_chunk(self) -> None:
+        ref = reference(self.path)
+        real_read = chdsched._Worker._read_reply
+        requeued: list = []
+        with chdsched.Scheduler(3, chunk_bytes=1500) as s:
+            real_requeue = s._requeue
+
+            def requeue(chunks):
+                requeued.extend(chunks)
+                real_requeue(chunks)
+
+            def slow_read(w, item):                       # replies are slow: chunks are in flight when we restart
+                time.sleep(0.2)
+                return real_read(w, item)
+
+            s._requeue = requeue
+            with mock.patch.object(chdsched._Worker, "_read_reply", slow_read),                     chd.Chd(self.path, load_map=False) as c:
+                out: dict = {}
+                t = threading.Thread(target=lambda: out.update(s.hash_tracks(c, range(len(c.tracks)))))
+                t.start()
+                time.sleep(0.15)
+                s.restart_workers()
+                t.join(60)
+                self.assertFalse(t.is_alive())
+            self.assertTrue(requeued)                     # the killed workers did have chunks in flight
+            self.assertEqual(out, ref)
+            self.assertEqual(s._reserved, 0)
+            self.assertFalse(s._retry)
+
+    def test_a_worker_that_will_not_exit_keeps_its_releases_pending(self) -> None:
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            w = s._workers[0]
+            rel = chdsched._Release(self.path)
+            w.releases.append(rel)
+            with mock.patch.object(w.proc, "wait", side_effect=subprocess.TimeoutExpired("x", 5)),                     mock.patch.object(w.proc, "poll", return_value=None):
+                w.kill()
+            self.assertFalse(w.reaped.is_set())
+            self.assertFalse(rel.done.is_set())           # not reported as freed
+
+    def test_gone_is_pruned_when_workers_fail_or_restart(self) -> None:
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            for _ in range(4):
+                s.restart_workers()
+                with chd.Chd(self.path, load_map=False) as c:
+                    s.hash_tracks(c, range(len(c.tracks)))
+            self.assertLessEqual(len(s._gone), 2)
+
     def test_killing_workers_needs_no_taskkill_unless_frozen(self) -> None:
         with mock.patch("romorg.winproc.kill_tree") as tree:
             live = chdsched.spawn_worker()

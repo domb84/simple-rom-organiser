@@ -169,7 +169,9 @@ class _Release:
 def _worker_popen_kwargs() -> dict:
     """POSIX: its own session (killed as a group). Windows: no console at all (``DETACHED_PROCESS``): a worker
     talks only through its pipes, and a hidden console (``CREATE_NO_WINDOW``) costs a conhost process per worker,
-    which made starting a dozen of them about a third slower."""
+    which made starting a dozen of them about a third slower. (Consequence: a console-subsystem helper started by a
+    worker would get a console window of its own; the worker starts none. Keep it that way, or pass
+    ``CREATE_NO_WINDOW`` to that helper.)"""
     if winproc.IS_WINDOWS:
         return {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0x00000008)}
     return winproc.popen_kwargs(new_session=True)
@@ -341,8 +343,8 @@ class _Worker:
             pass
         if self.proc.poll() is not None:
             self.reaped.set()
-        for r in pending:
-            r.done.set()
+            for r in pending:                         # only an exited process holds no file: otherwise they stay
+                r.done.set()                          # undone and release() times out (False), never lies
 
 
 # --------------------------------------------------------------------------- the scheduler
@@ -471,7 +473,7 @@ class Scheduler:
         flight go to them). Frees every file the workers had open, whatever state they were in."""
         with self._cv:
             workers, self._workers = list(self._workers), []
-            self._gone += workers
+            self._gone = [g for g in self._gone if not g.reaped.is_set()] + workers
         for w in workers:
             w.kill()
         me = threading.current_thread()
@@ -570,7 +572,7 @@ class Scheduler:
         with self._cv:
             if w in self._workers:
                 self._workers.remove(w)
-                self._gone.append(w)
+                self._gone = [g for g in self._gone if not g.reaped.is_set()] + [w]
             for c in reversed(chunks):
                 c.tries += 1
                 if c.tries > 2:
