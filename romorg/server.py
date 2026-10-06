@@ -3289,6 +3289,7 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("GET")
 
     def do_POST(self) -> None:  # noqa: N802
+        self._body_read = False
         self._dispatch("POST")
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -3341,6 +3342,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Bad Content-Length") from None
         if length > MAX_BODY:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
+        self._body_read = True
         try:
             raw = self.rfile.read(length) if length > 0 else b""
         except OSError:  # incl. socket timeout: the client never sent the whole body
@@ -3376,7 +3378,23 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, data: Any) -> None:
         self._send(status, dumps(data), "application/json; charset=utf-8")
 
+    def _drain_body(self) -> None:
+        """Read a POST body that was refused unread (bad Host or token, unknown route). Windows answers a close with
+        unread data in the socket by a reset, which can abort the client before it reads the error response."""
+        self._body_read = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if 0 < length <= MAX_BODY:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                self.close_connection = True
+
     def _send(self, status: int, data: bytes, content_type: str) -> None:
+        if self.command == "POST" and not getattr(self, "_body_read", True):
+            self._drain_body()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
