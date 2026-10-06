@@ -199,7 +199,15 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   limited by the free memory. Loose files are hashed and archives listed by a small thread pool
   (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
 - External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
-- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting.
+- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting. Tested from Python (a Convert
+  job placing a CHD at over 260 characters, `.chd.romorg.part` included); not yet checked from the PyInstaller exe,
+  whose manifest must be `longPathAware` (inspect the built exe's manifest before promising it).
+- **Real-data tests** skip unless their data exists. Overrides (the Steam Deck paths stay the defaults):
+  `ROMORG_REAL_SCRATCH` (folder with `dats/TOSEC`, `nointro`, `dom`; test_datfile, test_kickstart, test_m3u,
+  test_platforms), `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT, a path or glob), `ROMORG_REAL_DC_DIR` (the Dreamcast
+  CHD folder), `ROMORG_REAL_CHD_FULL=1` (slow, every track), `ROMORG_REAL_SONY_DATS` (test_playstation),
+  `ROMORG_REAL_SETS` / `ROMORG_REAL_CHDMAN_CHDS` (test_chdwrite: source sets and chdman-made CHDs),
+  `ROMORG_CHDMAN_ORACLE` (a real chdman for the oracle tests), `ROMORG_LIBFLAC` (libFLAC dll/so).
 - **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
   used only for a codec name the reader does not know (a format newer than chdman 0.289) and when forced with
   `engine = "chdman"`. Creating a CHD is the built-in writer (`romorg/chdwrite.py`, settings `chd_writer` =

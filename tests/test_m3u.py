@@ -15,10 +15,11 @@ from romorg.m3u import (
 )
 from romorg.scanner import Entry, Match, ScanResult
 
+# ROMORG_REAL_SCRATCH: folder holding dats/TOSEC (default: the Steam Deck scratch folder)
 REAL_DAT = Path(
-    "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/cfc5ea37-4261-428c-9422-29acd65cac97/"
-    "scratchpad/dats/TOSEC/Commodore Amiga - Games - [ADF] (TOSEC-v2025-01-30_CM).dat"
-)
+    os.environ.get("ROMORG_REAL_SCRATCH") or
+    "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad"
+) / "dats/TOSEC/Commodore Amiga - Games - [ADF] (TOSEC-v2025-01-30_CM).dat"
 
 
 def _rom(name: str) -> Rom:

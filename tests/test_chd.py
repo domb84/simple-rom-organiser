@@ -30,8 +30,9 @@ from romorg import cdecc, chd, datfile, flacdec  # noqa: E402
 # e.g. in a Windows cmd: set ROMORG_REAL_DC_DIR=F:\Emulation\roms\dreamcast
 SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
                "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
-REAL_DAT = next(iter(sorted(glob.glob(os.environ.get("ROMORG_REAL_DC_DAT")
-                                      or str(SCRATCH / "redump" / "Sega - Dreamcast*.dat")))), "")
+_DAT_SPEC = os.environ.get("ROMORG_REAL_DC_DAT") or str(SCRATCH / "redump" / "Sega - Dreamcast*.dat")
+# an existing file is taken literally (a folder named "[x]" is not a glob class); otherwise a glob pattern
+REAL_DAT = _DAT_SPEC if os.path.isfile(_DAT_SPEC) else next(iter(sorted(glob.glob(_DAT_SPEC))), "")
 REAL_DIR = Path(os.environ.get("ROMORG_REAL_DC_DIR") or "/home/deck/MEGA/Emulation/roms/dreamcast")
 REAL_TITLES = ["De La Jet Set Radio (Japan) (En,Ja,Fr,De,Es)",
                "Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A)",

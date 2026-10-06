@@ -498,8 +498,8 @@ def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
 
     File names are read with chdman's own tokenizer (:func:`cdimage.tokenize`: ``"`` and ``'`` quote, no escapes,
     so ``"Tony's Game.bin"`` is one name) and the sheet's encoding rules (:func:`cdimage.read_sheet`), so the files
-    found here are the ones chdman and the built-in writer read. Keywords are matched without regard to case here
-    (identification only needs the file names)."""
+    found here are the ones chdman and the built-in writer read. Keywords are case-sensitive, as in chdman (a
+    lowercase ``file`` line is not a track file to it, so the set is not listed here either)."""
     if Path(sheet).suffix.lower() == ISO_EXT:
         return [Path(sheet)]
     try:
@@ -523,7 +523,7 @@ def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
     tracks = 0
     for ln in lines:
         parts = cdimage.tokenize(ln)
-        word = parts[0].upper() if parts else ""
+        word = parts[0] if parts else ""
         if word == "FILE":
             files += 1
             if len(parts) < 2 or not parts[1]:
@@ -562,15 +562,11 @@ def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
         parts = cdimage.tokenize(ln)            # chdman's tokenizer: the same file names chdman would open
         if not parts:
             continue
-        word = parts[0].upper()
-        if word == "REM":
-            up = ln.upper()
-            if "SINGLE-DENSITY AREA" in up:
-                area = "sd"
-                seen_areas.append(area)
-            elif "HIGH-DENSITY AREA" in up:
-                area = "hd"
-                seen_areas.append(area)
+        word = parts[0]                         # chdman's keywords are case-sensitive
+        marker = cdimage.gd_area_marker(ln)
+        if marker:
+            area = marker
+            seen_areas.append(area)
         elif word == "FILE":
             if len(parts) < 2 or not parts[1]:
                 return None, "unreadable FILE line in the .cue"
@@ -581,7 +577,7 @@ def gdi_from_cue(cue: Path) -> tuple[Optional[str], str]:
                 return None, "unreadable TRACK line in the .cue"
             if pending is None:
                 return None, "the .cue has several tracks in one file (cannot be split into a GDI)"
-            entries.append({"num": num, "file": pending, "audio": len(parts) > 2 and parts[2].upper() == "AUDIO",
+            entries.append({"num": num, "file": pending, "audio": len(parts) > 2 and parts[2] == "AUDIO",
                             "area": area})
             pending = None
     if not entries:

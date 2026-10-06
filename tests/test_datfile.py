@@ -11,8 +11,10 @@ from xml.sax.saxutils import quoteattr
 from romorg.datfile import (DatFile, Rom, archive_stem, detect_format, parse_clrmamepro, parse_dat,
                             unit_key)
 
-SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-               "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
+# Real-data tests skip when their DATs are absent. Override the Steam Deck defaults with environment variables:
+#   ROMORG_REAL_SCRATCH  folder holding dats/TOSEC, nointro and dom (default: the Deck scratch folder)
+SCRATCH = Path(os.environ.get("ROMORG_REAL_SCRATCH") or
+               "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
 REAL_DAT = SCRATCH / "dats/TOSEC/Commodore Amiga - Games - [ADF] (TOSEC-v2025-01-30_CM).dat"
 NOINTRO = SCRATCH / "nointro"
 DOM_GBA = SCRATCH / "dom/Nintendo - Game Boy Advance (20260929-130236).dat"

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
 from romorg import chd as chdlib  # noqa: E402
-from romorg import chdtool, datfile, dreamcast, library, organiser, platforms  # noqa: E402
+from romorg import chdtool, datfile, discsys, dreamcast, library, organiser, platforms  # noqa: E402
 
 DAT = "Sega - Dreamcast"
 
@@ -781,6 +781,14 @@ class GdiFromCueTest(unittest.TestCase):
         text = 'REM SINGLE-DENSITY AREA\nFILE "t1.bin" BINARY\n  TRACK 01 MODE1/2352\n  TRACK 02 AUDIO\n'
         self.assertIn("several tracks", dreamcast.gdi_from_cue(self.cue(text, (1,)))[1])
         self.assertIn("longer", dreamcast.gdi_from_cue(self.cue(self.SD_HD, (30000, 20000, 1, 1)))[1])
+
+    def test_keywords_are_case_sensitive_like_chdman(self) -> None:
+        """chdman reads ``rem ... single-density area`` as a plain CD cue, so no GDI is made from it, and a
+        lowercase ``file`` line is not a track file."""
+        low = self.SD_HD.replace("REM ", "rem ")
+        self.assertIn("markers", dreamcast.gdi_from_cue(self.cue(low, (1, 1, 1, 1)))[1])
+        cue = self.cue(self.SD_HD.replace("FILE ", "file "), (1, 1, 1, 1))
+        self.assertIsNone(discsys.sheet_track_files(cue))
 
     def _odd(self) -> Path:
         p = self.cue(self.SD_HD, (1, 1, 1, 1))
