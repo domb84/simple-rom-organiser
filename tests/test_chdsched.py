@@ -300,6 +300,57 @@ class WorkerProcessTest(Base):
             os.remove(moved)
         self.assertEqual(first, ref)
 
+    def test_release_on_a_broken_pool_kills_the_survivors_so_the_file_can_move(self) -> None:
+        moved = self.dir / "moved.chd"
+        with chdsched.Scheduler(3, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            procs = [w.proc for w in s._workers]
+            threads = [w.thread for w in s._workers]
+            s.broken = True                               # as after a worker failed for good
+            self.assertTrue(s.release(self.path))
+            os.replace(self.path, moved)                  # WinError 32 if a survivor still had it open
+            self.assertTrue(all(p.poll() is not None for p in procs))
+            for t in threads:
+                t.join(5)
+                self.assertFalse(t.is_alive())            # no worker thread spins on the broken pool
+        os.remove(moved)
+
+    def test_release_waits_for_a_failed_worker_to_exit(self) -> None:
+        moved = self.dir / "moved.chd"
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            w = s._workers[0]
+            with s._cv:                                   # failed and taken out of the pool, process not reaped yet
+                s._workers.remove(w)
+                s._gone.append(w)
+            killer = threading.Timer(0.3, w.kill)
+            killer.start()
+            t0 = time.monotonic()
+            self.assertTrue(s.release(self.path))
+            self.assertGreaterEqual(time.monotonic() - t0, 0.2)   # it waited for that process ...
+            self.assertIsNotNone(w.proc.poll())
+            killer.join()
+            os.replace(self.path, moved)                  # ... so nothing holds the file any more
+        os.remove(moved)
+
+    def test_restart_workers_frees_every_file_and_the_pool_goes_on(self) -> None:
+        moved = self.dir / "moved.chd"
+        ref = reference(self.path)
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            old = [w.proc for w in s._workers]
+            s.restart_workers()
+            self.assertTrue(all(p.poll() is not None for p in old))
+            os.replace(self.path, moved)
+            with chd.Chd(moved, load_map=False) as c:
+                self.assertEqual(s.hash_tracks(c, range(len(c.tracks))), ref)
+            self.assertTrue(s.pooled)
+            self.assertTrue(s.release(moved))
+        os.remove(moved)
+
     def test_killing_workers_needs_no_taskkill_unless_frozen(self) -> None:
         with mock.patch("romorg.winproc.kill_tree") as tree:
             live = chdsched.spawn_worker()
