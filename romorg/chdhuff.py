@@ -319,8 +319,13 @@ def _inflate_codes(lengths: bytes, comp: bytes, pos: int, size: int):
     head = _DEFLATE_HEAD + "".join(map(_NIB.__getitem__, dl)) + _NIB[lmax + 1] + "0000"
     hbits = len(head)
     hint = int(head, 2)
+    # MAME reads zero bits past the end of the data (``bitstream_in``), and so must zlib: when the hunk's last code
+    # is x, the data ends inside x's lengthened deflate code and zlib would wait for one bit more. One byte of
+    # zeros (ones on the complemented stream) is appended; whether a code really reached into it is decided on the
+    # bit count at the end, as MAME's ``overflow()`` does.
     nbits = len(comp) * 8
-    stream = int.from_bytes(comp, "big") ^ ((1 << nbits) - 1)
+    sbits = nbits + 8
+    stream = int.from_bytes(comp + bytes(1), "big") ^ ((1 << sbits) - 1)
     xb = bytes([x])
     parts = []
     need = size
@@ -336,9 +341,9 @@ def _inflate_codes(lengths: bytes, comp: bytes, pos: int, size: int):
                 raise HuffError("truncated Huffman data")
             return b"".join(parts).translate(perm) + bytes(tail)
         restarts += 1
-        rem = nbits - pos
-        if rem <= 0:
+        if pos >= nbits:                # every code has at least one bit: the next one lies wholly past the data
             raise HuffError("truncated Huffman data")
+        rem = sbits - pos
         total = hbits + rem
         pad = -total % 8
         blob = (((hint << rem) | (stream & ((1 << rem) - 1))) << pad).to_bytes((total + pad) >> 3, "big")
@@ -351,6 +356,8 @@ def _inflate_codes(lengths: bytes, comp: bytes, pos: int, size: int):
         if i < 0:
             if len(raw) == need:
                 parts.append(raw)
+                took = raw.translate(lengths)
+                pos += sum(ln * took.count(ln) for ln in used_lengths)
                 break
             if not d.eof:
                 raise HuffError("truncated Huffman data")
@@ -360,6 +367,8 @@ def _inflate_codes(lengths: bytes, comp: bytes, pos: int, size: int):
         need -= i + 1
         took = pre.translate(lengths)       # the code length of every symbol decoded so far
         pos += sum(ln * took.count(ln) for ln in used_lengths) + lmax
+    if pos > nbits:                     # the last codes took bits past the end (bitstream_in::overflow)
+        raise HuffError("truncated Huffman data")
     return b"".join(parts).translate(perm)
 
 

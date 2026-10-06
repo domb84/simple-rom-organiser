@@ -874,6 +874,11 @@ def _bits_to_bytes(bits: str) -> bytes:
 def huff_compress(data: bytes, lengths: Optional[Sequence[int]] = None, rle: bool = True) -> bytes:
     """A ``huff`` hunk as chdman writes it: the 24 lengths of a small tree, the 256 code lengths coded with it
     (symbol 0 = repeat the last length), then one code per byte."""
+    return _bits_to_bytes(huff_bits(data, lengths, rle))
+
+
+def huff_bits(data: bytes, lengths: Optional[Sequence[int]] = None, rle: bool = True) -> str:
+    """:func:`huff_compress` as a bit string, before the zero padding to whole bytes."""
     if lengths is None:
         counts = [0] * 256
         for b in data:
@@ -911,7 +916,7 @@ def huff_compress(data: bytes, lengths: Optional[Sequence[int]] = None, rle: boo
             bits += codes[0] + (format(v - 2, "03b") if v - 2 < 7 else "111" + format(v - 9, "08b"))
     data_codes = mame_codes(lengths)
     bits += "".join(data_codes[b] for b in data)
-    return _bits_to_bytes(bits)
+    return bits
 
 
 def _tree_rle(lengths: Sequence[int], numbits: int) -> str:
