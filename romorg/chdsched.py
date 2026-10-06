@@ -164,6 +164,15 @@ class _Release:
     done: threading.Event = field(default_factory=threading.Event)
 
 
+def _worker_popen_kwargs() -> dict:
+    """POSIX: its own session (killed as a group). Windows: no console at all (``DETACHED_PROCESS``): a worker
+    talks only through its pipes, and a hidden console (``CREATE_NO_WINDOW``) costs a conhost process per worker,
+    which made starting a dozen of them about a third slower."""
+    if winproc.IS_WINDOWS:
+        return {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0x00000008)}
+    return winproc.popen_kwargs(new_session=True)
+
+
 def spawn_worker() -> "subprocess.Popen":
     """Start one ``romorg.chdworker`` process (binary pipes on stdin / stdout); :class:`PoolError` when it cannot."""
     env = dict(os.environ)
@@ -178,7 +187,7 @@ def spawn_worker() -> "subprocess.Popen":
             cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
         proc = subprocess.Popen(cmd, env=env,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                bufsize=0, **winproc.popen_kwargs(new_session=True))
+                                bufsize=0, **_worker_popen_kwargs())
     except OSError as exc:
         raise PoolError(f"cannot start a worker: {exc}") from exc
     if fcntl is not None:

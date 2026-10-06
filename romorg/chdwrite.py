@@ -38,7 +38,6 @@ import threading
 import zlib
 from array import array
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from itertools import compress, repeat
 from operator import lshift as _shl, or_ as _or
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -318,6 +317,7 @@ class _Pool:
         self.lock = threading.Lock()
         self.processes = processes and self.workers > 1
         self.fallbacks = 0
+        from concurrent.futures import ThreadPoolExecutor     # (not needed by the worker processes)
         self.pool = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="chd-write") \
             if self.workers > 1 else None
 

@@ -250,7 +250,7 @@ class WorkerProcessTest(Base):
             self.assertEqual((kw["bufsize"], kw.get("text"), kw.get("universal_newlines")), (0, None, None))
             self.assertEqual((kw["stdin"], kw["stdout"]), (subprocess.PIPE, subprocess.PIPE))
             if winproc.IS_WINDOWS:
-                self.assertTrue(kw["creationflags"] & subprocess.CREATE_NO_WINDOW)
+                self.assertTrue(kw["creationflags"] & subprocess.DETACHED_PROCESS)    # no console, no window
                 self.assertNotEqual(kw.get("close_fds"), False)       # only the pipes are inherited
             else:
                 self.assertTrue(kw["start_new_session"])
