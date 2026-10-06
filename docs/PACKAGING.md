@@ -166,6 +166,9 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
   (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
   startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
+  Windows prerequisites: the `py` launcher with Python 3.14 installed (`py -3.14 --version`), or `-Python <python.exe>`.
+  Plain `python` on PATH is never used (it may be an old install) and `python3` is often the Microsoft Store
+  stub; `fetch_sndfile.ps1` and `build_pyz.sh` also go through `py` / skip interpreters that do not run.
   The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs the pinned PyInstaller
   (`-PyInstallerVersion`, default 6.22.3) into a build venv (`packaging\.cache\venv-pyinstaller-3.14`), bundles
   libFLAC (`-NoFlac` leaves it out), then runs the finished exe's import check, its CHD engine self-check and checks

@@ -20,7 +20,7 @@ from pathlib import Path
 from types import ModuleType
 
 sys.path.insert(0, os.path.dirname(__file__))
-from chdtestlib import find_bash  # noqa: E402
+from chdtestlib import bash_env, find_bash  # noqa: E402
 
 BASH = find_bash()
 ROOT = Path(__file__).resolve().parent.parent
@@ -118,8 +118,8 @@ class SourceFileTests(unittest.TestCase):
             script = PKG / name
             with self.subTest(script=name):
                 self.assertIn("set -euo pipefail", script.read_text(encoding="utf-8"))
-                subprocess.run([BASH, "-n", script.as_posix()], check=True)
-        subprocess.run([BASH, "-n", (PKG / "AppRun").as_posix()], check=True)
+                subprocess.run([BASH, "-n", script.as_posix()], check=True, env=bash_env(BASH))
+        subprocess.run([BASH, "-n", (PKG / "AppRun").as_posix()], check=True, env=bash_env(BASH))
 
     def test_build_self_check_imports_new_modules(self) -> None:
         text = (PKG / "build_appimage.sh").read_text(encoding="utf-8")

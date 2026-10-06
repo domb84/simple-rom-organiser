@@ -183,6 +183,13 @@ Stop it with **Ctrl+C**, or with the **Quit** button in the page.
 
 Tests: `python3 -m unittest discover -s tests -v`
 
+On Windows use the `py` launcher with Python 3.14 (the version the Windows builds ship) instead of
+`python3` / `python`: `python3` is often only the Microsoft Store stub and plain `python` can be an old
+install. So `py -3.14 -m romorg` and `py -3.14 -m unittest discover -s tests -v`, the same from PowerShell
+and Git Bash. The shell-script tests use Git for Windows' bash (they skip when none is found; WSL's
+`bash.exe` is only a last resort). For the native FLAC tests set `ROMORG_LIBFLAC` to a libFLAC.dll (the
+Windows build scripts fetch one into `packaging\.cache\native`).
+
 ## Using it
 
 The app has a **global header** on every screen: the title (click it to go home), the **updates

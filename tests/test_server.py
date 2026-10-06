@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from chdtestlib import find_bash  # noqa: E402
+from chdtestlib import bash_env, find_bash  # noqa: E402
 from romorg import server  # noqa: E402
 # Import the real library module before any test swaps fakes into sys.modules (it is not faked here:
 # it only holds the profile data classes), so the server always finds it.
@@ -2541,7 +2541,7 @@ class ZipappTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="romorg-pyz-test-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         pyz = tmp / "app.pyz"
-        subprocess.run([BASH, (ROOT / "packaging" / "build_pyz.sh").as_posix(), pyz.as_posix()], check=True,
+        subprocess.run([BASH, (ROOT / "packaging" / "build_pyz.sh").as_posix(), pyz.as_posix()], check=True, env=bash_env(BASH),
                        capture_output=True, timeout=60)
         self.assertTrue(pyz.is_file())
         port = free_port()
