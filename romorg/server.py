@@ -3341,6 +3341,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Bad Content-Length") from None
         if length > MAX_BODY:
+            self._body_read = True
+            self.close_connection = True  # the oversized body stays unread
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
         self._body_read = True
         try:
@@ -3385,8 +3387,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            self.close_connection = True
             return
-        if 0 < length <= MAX_BODY:
+        if length > MAX_BODY:
+            self.close_connection = True  # not worth reading; never reuse the connection with an unread body
+        elif length > 0:
             try:
                 self.rfile.read(length)
             except OSError:

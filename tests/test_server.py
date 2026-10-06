@@ -1159,6 +1159,30 @@ class ReviewFixTests(ServerTestCase):
                     pass
                 self.assertLess(time.time() - t, 4)
 
+    def _raw_post(self, head: str, body: bytes = b"") -> bytes:
+        request = "POST /api/job/cancel HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n%s\r\n" % (self.port, head)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            sock.sendall(request.encode() + body)
+            data = b""
+            while True:  # the server must close: an unread body may not be parsed as the next request
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return data
+                data += chunk
+
+    def test_refused_post_with_body_gets_its_response_and_closes(self) -> None:
+        body = b'{"x": "' + b"a" * 5000 + b'"}'
+        resp = self._raw_post("Content-Length: %d\r\n" % len(body), body)  # no token: refused unread
+        self.assertIn(b" 403 ", resp.split(b"\r\n")[0], resp[:80])
+        self.assertEqual(resp.count(b"HTTP/1."), 1)
+
+    def test_oversize_or_bad_content_length_closes_connection(self) -> None:
+        pipelined = b"GET /api/status HTTP/1.1\r\n\r\n"
+        for length in (str(server.MAX_BODY + 1), "abc"):
+            for token in ("X-Romorg-Token: test-token\r\n", ""):
+                resp = self._raw_post(f"{token}Content-Length: {length}\r\n", pipelined)
+                self.assertEqual(resp.count(b"HTTP/1."), 1, (length, token, resp[:200]))
+
     def test_stop_jobs_waits_for_running_job(self) -> None:
         app = self.srv.app
         stopped = threading.Event()
