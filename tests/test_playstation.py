@@ -108,7 +108,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(platforms.get_platform("Sony PlayStation 2").dats, (PS2_DAT,))
         self.assertEqual(redump.dat_url(PSX_DAT), "http://redump.org/datfile/psx/")
         self.assertEqual(redump.dat_url(PS2_DAT), "http://redump.org/datfile/ps2/")
-        self.assertEqual(set(redump.REDUMP_DATS), {"Sega - Dreamcast", PSX_DAT, PS2_DAT})
+        self.assertEqual(set(redump.REDUMP_DATS), {"Sega - Dreamcast", PSX_DAT, PS2_DAT, "Nintendo - GameCube"})
         self.assertIn(PS2_DAT, tags.REDUMP_DAT_NAMES)
 
     def test_disc_letters_count_as_disc_numbers(self) -> None:

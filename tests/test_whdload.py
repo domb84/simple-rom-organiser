@@ -807,7 +807,7 @@ class FolderPersistenceTest(ServerCase):
             d.mkdir(parents=True)
             dirs[p["name"]] = str(d.resolve())
             self.call("/api/folders", {"platform": p["name"], "path": str(d)})
-        self.assertEqual(len(dirs), 9)
+        self.assertEqual(len(dirs), len(platforms.list_platforms()))
         # a profile save, a kickstart dest and a scan-time update later, nothing is forgotten
         self.call("/api/library/profile", {"platform": "Nintendo 64", "languages": ["En", "De"]})
         self.call("/api/platforms/options", {"platform": "Nintendo 64", "latest_only": False})

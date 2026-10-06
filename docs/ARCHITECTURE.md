@@ -2112,3 +2112,42 @@ Measured on that machine (phase-1 profile, 12 workers, libFLAC, chdman 0.289 on 
 
 With both fixes patched in, the same runs took 6.3-6.7 / 13.5-16.3 / 13.8 / 35.4 / 28.3-36.6 s (standard). Reading (the scheduler, verify path) was 4-8x faster than `chdman verify` once workers close promptly. The worker count is flat from 8 to 16 for writing, so `WINDOWS_MAX_AUTO = 12` stays.
 
+# Amendment 23 - Eight more No-Intro systems
+
+Added to `platforms.PLATFORMS` / `nointro.NOINTRO_DATS` / `ratings.LB_PLATFORMS`: Game Boy, Game Boy Color, Nintendo DS, Sega Mega Drive - Genesis, Master System, Game Gear, 32X and Atari Lynx. Each is one `_nointro(...)` entry: no alternate-hash strategy, not convertible, folder names `gb gbc nds megadrive mastersystem gamegear sega32x atarilynx` (all already in `server.OTHER_SYSTEM_DIRS`).
+
+Why no header handling, checked on the libretro DATs of 2026.08.01: every rom is hashed as it is. The Lynx DAT carries the headered `.lnx` (size % 1024 == 64) and the headerless `.lyx` / `.bll` as separate roms of one game (235 of 364 sets have alternates), so both kinds of dump match raw; the 7800 and Famicom Disk System DATs do the same (not added yet). `.smd` Mega Drive dumps (512-byte header, interleaved) are not in the DAT and stay unmatched; `.smd` is therefore not in the extension hints.
+
+| DAT | rom blocks | sets | alternates |
+|---|---|---|---|
+| Nintendo - Game Boy | 2254 | 2254 | 0 |
+| Nintendo - Game Boy Color | 2566 | 2566 | 0 |
+| Nintendo - Nintendo DS | 7701 | 7693 | 8 |
+| Sega - Mega Drive - Genesis | 3365 | 3365 | 0 |
+| Sega - Master System - Mark III | 1163 | 1163 | 0 |
+| Sega - Game Gear | 915 | 915 | 0 |
+| Sega - 32X | 207 | 207 | 0 |
+| Atari - Lynx | 681 | 364 | 235 |
+
+Region tags are recognised on every name of these DATs (one name with a stray full stop has none). LaunchBox's platform names (read from `Platforms.xml` inside `Metadata.zip`, 2026-10-06) are the same as ours except the Mega Drive, which LaunchBox calls `Sega Genesis`. Startup update now downloads twelve No-Intro DATs, about 15 MB the first time (the eight new ones about 6 MB), then only changed files by ETag.
+
+Tests: `tests/test_platforms.py::test_every_nointro_platform_is_wired_up` (DAT listed, folder name known, rating name set, no two systems share a folder), `tests/test_integration.py::PlainSystemsIntegrationTest` (synthetic scan -> plan -> apply -> settled -> undo for each, including a Lynx game with a headered and a raw rom), `tests/test_datfile.py::RealNoIntroTest` (the counts above on the real DATs).
+
+Not done: no real ROM set was scanned (the checks are the real DATs plus generated files); a Game Boy and Game Boy Color folder are two separate systems here, so a mixed `gb` folder needs scanning once per system.
+
+# Amendment 24 - Nintendo GameCube (ISO and RVZ)
+
+`Nintendo GameCube` is a flat platform (`layout flat`, `source redump`, `convertible False`, folder `gc`) whose DAT is the Redump DAT "Nintendo - GameCube" (`redump.SYSTEMS["Nintendo - GameCube"] = "gc"`; 2,019 games, one `.iso` rom each with CRC / MD5 / SHA-1, size 1,459,978,240 except two entries of 115,898,368 bytes; parsed by `parse_redump`, so the Library rules use the Redump name style). It does not go through `discsys`: the ordinary scanner hashes each file, and `Platform.containers = ("rvz",)` makes it hash an `.rvz` as the ISO it stands for.
+
+**`romorg/rvz.py`.** Dolphin's RVZ (`docs/WiaAndRvz.md` in the Dolphin repository): a 0x48-byte head and a 0xDC-byte disc struct (both SHA-1 checked), a table of raw data ranges and a table of groups (`rvz_group_t`: offset / 4, size with the "compressed" flag in the top bit, packed size), groups of `chunk_size` (128 KiB in the files seen) compressed one by one with Zstandard (also bzip2, LZMA, LZMA2 or none), the first 0x80 bytes of the disc in the disc struct, an empty group = zeros, and *RVZ packing* for padding: a packed group is a list of literal runs and padding seeds, each seed starting a Lagged Fibonacci generator (j = 32, k = 521, restarted for every 32 KiB block, started at `offset % 0x8000`). Wii (`disc_type 2`) and WIA (other magic) raise `RvzUnsupported`; damage raises `RvzError`.
+
+**The generator is the cost.** The first version (a Python loop per word) took 106 s for a 1.4 GB disc. `_forward` now advances the 521-word state in 16 big-integer XORs (the recurrence `b[i] ^= b[i - 32]` is done 32 words at a time) and `_words` extracts the output bytes with byte slices and two masked shifts: about 58 MB/s per core against 3.3 MB/s for the loop written from the spec (`tests/rvztestlib.reference_junk`, which the tests compare it with on random seeds and offsets). Sequential decode of the 1.4 GB Super Mario Sunshine image: 10 s; with worker processes (`op: "rvz"` of `chdworker`, started by `chdsched.spawn_worker`, 4 MiB of decoded image per request, hashing in order in the caller, a worker that fails hands its slice to the caller): 3.4 s with 4 workers (8 workers: 3.8 s; the caller's crc32 + SHA-1 and the pipes are then the limit).
+
+**Checked against reality.** The three real GameCube RVZs on the Steam Deck (Super Mario Sunshine (USA, Canada), Super Monkey Ball (USA), Super Monkey Ball 2 (USA)) rebuild to ISOs whose CRC32 and SHA-1 equal the Redump entries, through the app's own DAT download and `scanner.scan`: 3 of 3 matched, 14 s cold for the three, 0.03 s with the hash cache. Synthetic RVZs from `tests/rvztestlib.build_rvz` cover zero groups, packed groups with padding at several offsets, uncompressed and Zstandard groups and tables, several chunk sizes, the worker path, a dying worker, cancel and damage.
+
+**Scanner and naming.** `scanner.scan(..., containers=("rvz",))`: a `.rvz` with the RVZ magic gets `Entry.size = the disc size`, its decoded `crc` / `sha1` (cached under the file's own size and mtime), and `Match.matched_via = "container"` (`container = "rvz"`); a Wii or WIA file goes to `ScanResult.unsupported`, a damaged one to `errors`, a `.rvz` without the magic is hashed as a plain file. `organiser.target_filename` gives a container match the stem of the Redump name and its own extension (like the honest `.smc` / `.v64`), so `Game (USA).rvz` stays an `.rvz`; the UI chip is "rvz".
+
+**Self-check and packaging.** `selfcheck.check_rvz` rebuilds an embedded 1.4 KB RVZ (Zstandard, a seeded padding group) and compares CRC32 and SHA-1; it runs with libzstd and with the pure-Python decoder. `romorg.rvz` is in the AppImage import check.
+
+**Not done:** Wii (partition data is stored decrypted without hashes: rebuilding it means recomputing the H0-H3 hash tree and AES-encrypting with the partition key, which needs OpenSSL's libcrypto through ctypes), WIA, GCZ, CISO, NKit; matching a GameCube game by the ID in the RVZ header (Redump's DAT has no serials).
+

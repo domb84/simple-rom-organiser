@@ -165,7 +165,7 @@ class NoIntroTest(unittest.TestCase):
         self.assertEqual(by[GBA]["status"], "downloaded")
         self.assertEqual(by["Nintendo - Nintendo 64"]["status"], "error")
         self.assertIn("could not download", by["Nintendo - Nintendo 64"]["error"])
-        self.assertEqual((res["failed"], res["count"]), (2, 2))
+        self.assertEqual((res["failed"], res["count"]), (len(nointro.NOINTRO_DATS) - 2, 2))
 
     def test_offline(self) -> None:
         self.server.fail = {GBA, NES}

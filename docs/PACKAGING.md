@@ -113,7 +113,7 @@ You can also just download the AppImage, `chmod +x` it, and double-click it in D
   which swaps `dats/` as a whole, never removes them).
 - **Network access** is only used to keep the DATs current, automatically and in the background at
   every start: the TOSEC pack from `www.tosecdev.org` (about 100 MB, downloaded only when the newest
-  release date differs from the installed one) and the four No-Intro DATs (GBA, N64, NES, SNES) from
+  release date differs from the installed one) and the twelve No-Intro DATs (GBA, GB, GBC, DS, N64, NES, SNES, Mega Drive, Master System, Game Gear, 32X, Lynx; about 15 MB the first time) from
   `raw.githubusercontent.com` (the libretro-database mirror, `metadat/no-intro/`; only changed files, via
   ETag). No GitHub API calls are made. Offline, scanning and organising work with the DATs already
   installed. `--no-update` (or `ROMORG_OFFLINE=1`) switches the automatic update off; the
@@ -217,7 +217,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   setting in its error text (`winproc.long_path_hint`) instead of just "cannot find the path".
 - **Real-data tests** skip unless their data exists. Overrides (the Steam Deck paths stay the defaults):
   `ROMORG_REAL_SCRATCH` (folder with `dats/TOSEC`, `nointro`, `dom`; test_datfile, test_kickstart, test_m3u,
-  test_platforms), `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT, a path or glob), `ROMORG_REAL_DC_DIR` (the Dreamcast
+  test_platforms), `ROMORG_REAL_GC_DIR` (a folder holding the Super Mario Sunshine RVZ, for tests/test_rvz.py), `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT, a path or glob), `ROMORG_REAL_DC_DIR` (the Dreamcast
   CHD folder), `ROMORG_REAL_CHD_FULL=1` (slow, every track), `ROMORG_REAL_SONY_DATS` (test_playstation),
   `ROMORG_REAL_SETS` / `ROMORG_REAL_CHDMAN_CHDS` (test_chdwrite: source sets and chdman-made CHDs),
   `ROMORG_CHDMAN_ORACLE` (a real chdman for the oracle tests), `ROMORG_LIBFLAC` (libFLAC dll/so).

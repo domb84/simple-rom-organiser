@@ -12,6 +12,12 @@ The CHD writer (:mod:`romorg.chdwrite`) uses the same processes to compress::
               "hints": ["data", "audio", ...], "n": <bytes that follow: the hunks, one after the other>}
     reply    {"id": 7, "n": <bytes that follow>, "items": [[slot, length, crc16], ...]}\n<the compressed hunks>
 
+The GameCube image reader (:mod:`romorg.rvz`) decodes in the same processes::
+
+    request  {"id": 7, "op": "rvz", "path": "...", "sig": [size, mtime_ns], "first": 128, "count": 32}
+    reply    {"id": 7, "n": <bytes that follow: pieces first .. first + count - 1 of the ISO>}\n<bytes>
+    or       {"id": 7, "err": {"kind": "corrupt" | "unsupported" | "other", "msg": "..."}}
+
 ``first`` / ``count`` are frames of the track (2048-byte units for a DVD CHD) and the reply is exactly what
 ``chdman extractcd`` / ``extractdvd`` would write for them. The worker keeps its opened CHDs (and their parsed hunk
 maps) between requests, so a file's map is parsed once per worker, not once per chunk. It exits at EOF of stdin.
@@ -48,10 +54,12 @@ def serve(stdin=None, stdout=None) -> None:
     # The reader and the writer are imported on the first request that needs them: a worker that only compresses
     # (the writer's) or only decodes (the scheduler's) starts sooner - a dozen of them start at once per job.
     chdlib = None
+    rvzlib = None
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     cache: "OrderedDict[str, tuple]" = OrderedDict()
     compressors: dict = {}
+    images: "OrderedDict[str, tuple]" = OrderedDict()      # path -> (signature, rvz.Rvz)
     jitter = float(os.environ.get(ENV_JITTER) or 0) / 1000.0
     crash = os.environ.get(ENV_CRASH, "")
 
@@ -99,8 +107,26 @@ def serve(stdin=None, stdout=None) -> None:
                 items, blob = chdwrite.compress_many(compressors[key], data, req["hints"])
                 reply({"id": rid, "n": len(blob), "items": items}, blob)
                 continue
+            if req.get("op") == "rvz":
+                if rvzlib is None:
+                    from . import rvz as rvzlib
+                path = req["path"]
+                sig = tuple(req.get("sig") or ())
+                hit = images.get(path)
+                if hit is not None and hit[0] != sig:
+                    images.pop(path)[1].close()
+                    hit = None
+                if hit is None:
+                    while len(images) >= MAX_OPEN:
+                        images.popitem(last=False)[1][1].close()
+                    hit = images[path] = (sig, rvzlib.Rvz(path))
+                data = hit[1].read_pieces(int(req["first"]), int(req["count"]))
+                reply({"id": rid, "n": len(data)}, data)
+                continue
             if req.get("op") == "release":
                 want = _same(req["path"])
+                for key in [k for k in images if _same(k) == want]:
+                    images.pop(key)[1].close()
                 for key in [k for k in cache if _same(k) == want]:
                     cache.pop(key)[1].close()
                 reply({"id": rid, "n": 0})
@@ -132,6 +158,10 @@ def serve(stdin=None, stdout=None) -> None:
             if chdlib is not None and isinstance(exc, chdlib.ChdUnsupported):
                 kind = "unsupported"
             elif chdlib is not None and isinstance(exc, chdlib.ChdError):
+                kind = "corrupt"
+            elif rvzlib is not None and isinstance(exc, rvzlib.RvzUnsupported):
+                kind = "unsupported"
+            elif rvzlib is not None and isinstance(exc, rvzlib.RvzError):
                 kind = "corrupt"
             try:
                 reply(_err(rid, kind, exc))

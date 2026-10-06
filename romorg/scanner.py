@@ -62,6 +62,8 @@ ALT_N64_BYTEORDER = "n64_byteorder"
 VIA_RAW = "raw"
 VIA_HEADERLESS = "headerless"
 VIA_BYTESWAPPED = "byteswapped"
+VIA_CONTAINER = "container"      # the disc image inside a compressed container (.rvz): hashed as the ISO it stands for
+CONTAINER_EXTS = {"rvz": ".rvz"}  # Platform.containers name -> file extension
 SNES_HEADER_SIZE = 512
 NES_HEADER_SIZE = 16
 NES_MAGIC = b"NES\x1a"
@@ -113,9 +115,10 @@ class Match:
 
     entry: Entry
     roms: list["Rom"]
-    matched_via: str = VIA_RAW   # "raw" | "headerless" | "byteswapped"
+    matched_via: str = VIA_RAW   # "raw" | "headerless" | "byteswapped" | "container"
     header: int = 0              # bytes skipped (512 SNES, 16 NES)
     byte_order: str = ""         # "v64" | "n64" when byteswapped
+    container: str = ""          # "rvz" when matched_via is "container"
     alt_crc: str = ""            # hashes of the normalised content (alternate matches)
     alt_sha1: str = ""
 
@@ -476,6 +479,8 @@ def _target_filename(rom: "Rom", src_name: str, archive_ext: Optional[str] = Non
     stem = getattr(rom, "set_name", "") or rom_stem
     if matched_via == VIA_BYTESWAPPED:
         return organiser.safe_filename(stem + (".n64" if byte_order == "n64" else ".v64"))
+    if matched_via == VIA_CONTAINER:
+        return organiser.safe_filename(stem + (_split_suffix(src_name)[1] or rom_ext))
     ext = _split_suffix(src_name)[1]
     if not ext:
         ext = rom_ext
@@ -1214,6 +1219,7 @@ def scan(
     alt_hashes: Sequence[str] = (),
     layout: str = LAYOUT_PER_DAT,
     protected_dirs: Sequence[str] = (),
+    containers: Sequence[str] = (),
 ) -> ScanResult:
     """Scan ``root`` (recursively, incl. DAT folders and the reserved ``_unmatched/``,
     ``_excluded/`` ... folders) against ``dats``.
@@ -1227,6 +1233,9 @@ def scan(
     one that matches wins (``Match.matched_via`` etc.). ``layout`` is stored on the
     result (``per_dat`` | ``flat``) for the placement counts.
 
+    ``containers``: compressed disc-image formats to read through (``rvz``): such a file is hashed as the ISO it
+    stands for (:mod:`romorg.rvz`) and matches with ``matched_via == "container"``.
+
     ``progress(done_files, total_files, current_name)``; ``cancel`` is a callable
     returning True or a ``threading.Event`` — raises :class:`ScanCancelled`.
     ``cache_path`` overrides the default ``cache_dir()/hashes.sqlite``. ``protected_dirs``: top-level
@@ -1239,6 +1248,7 @@ def scan(
     dat_list = _normalise_dats(dats)
     index = _Index(dat_list)
     exe = find_7z()
+    container_exts = {CONTAINER_EXTS[c] for c in containers if c in CONTAINER_EXTS}
     strategies = [a for a in dict.fromkeys(alt_hashes or ()) if a in STRATEGY_VARIANTS]
     # rom sizes that are not a multiple of 1 KiB (SNES copier-header rule, see variant_for)
     odd_sizes = ({r.size for d in dat_list for r in d.roms if r.size and r.size % 1024}
@@ -1357,7 +1367,49 @@ def scan(
                     return hash_7z_member(path, member, exe, size, usable, sizes=odd_sizes)
             add_member(path, member, size, crc, st, compute)
 
+    def scan_container(path: Path) -> bool:
+        """An ``.rvz``: hash the ISO it stands for. False = not a container after all (hash it as a plain file)."""
+        from . import rvz
+        if not rvz.is_rvz(path):
+            return False
+        st = path.stat()
+        try:
+            with rvz.Rvz(path) as r:
+                disc_size = r.iso_size
+        except rvz.RvzUnsupported:
+            unsupported.append(path)          # a Wii disc, a WIA: not read
+            return True
+        except rvz.RvzError as exc:
+            errors.append((path, f"RvzError: {exc}"))
+            return True
+        key = _cache_key(path)
+        hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
+        if hit is None:
+            try:
+                crc, sha1, _n = rvz.hash_image(path, cancel=lambda: _is_cancelled(cancel))
+            except InterruptedError:
+                raise ScanCancelled() from None
+            except rvz.RvzUnsupported:
+                unsupported.append(path)
+                return True
+            except rvz.RvzError as exc:
+                errors.append((path, f"RvzError: {exc}"))
+                return True
+            if key is not None:
+                cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1)
+        else:
+            crc, sha1 = hit
+        e = Entry(path, None, disc_size, crc, sha1, root)
+        roms = index.loose(disc_size, crc, sha1)
+        if roms:
+            matched.append(Match(e, roms, matched_via=VIA_CONTAINER, container="rvz", alt_crc=crc, alt_sha1=sha1))
+        else:
+            unmatched.append(e)
+        return True
+
     def scan_loose(path: Path) -> None:
+        if container_exts and path.suffix.lower() in container_exts and scan_container(path):
+            return
         st = path.stat()
         key = _cache_key(path)
         hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
@@ -1431,7 +1483,7 @@ def scan(
             try:
                 if ext in SEVENZIP_EXTS:
                     pre_list[path] = pool.submit(list_archive, path)
-                elif ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS:
+                elif ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS and ext not in container_exts:
                     st0 = path.stat()
                     key0 = _cache_key(path)
                     if key0 is None or cache.get(key0, st0.st_size, st0.st_mtime_ns) is None:

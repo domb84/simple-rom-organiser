@@ -24,7 +24,18 @@ REAL_NOINTRO = {
     "Nintendo - Nintendo 64": (1435, 1241, 1257, 178),
     "Nintendo - Nintendo Entertainment System": (14132, 7053, 7070, 7062),
     "Nintendo - Super Nintendo Entertainment System": (4268, 4267, 4268, 0),
+    "Nintendo - Game Boy": (2254, 2238, 2254, 0),
+    "Nintendo - Game Boy Color": (2566, 2535, 2566, 0),
+    "Nintendo - Nintendo DS": (7701, 7656, 7693, 8),
+    "Sega - Mega Drive - Genesis": (3365, 3365, 3365, 0),
+    "Sega - Master System - Mark III": (1163, 1163, 1163, 0),
+    "Sega - Game Gear": (915, 915, 915, 0),
+    "Sega - 32X": (207, 207, 207, 0),
+    # the DAT lists a game's headered .lnx and its raw .lyx / .bll as separate roms of one set
+    "Atari - Lynx": (681, 354, 364, 235),
 }
+SNES_STYLE = ("Nintendo - Game Boy Advance", "Nintendo - Nintendo 64", "Nintendo - Nintendo Entertainment System",
+              "Nintendo - Super Nintendo Entertainment System")
 
 CMP_HEADER = ('clrmamepro (\n\tname "Nintendo - Test"\n\tdescription "Nintendo - Test"\n'
               '\tversion "2026.08.01"\n\thomepage "http://example.invalid"\n)\n\n')
@@ -246,8 +257,9 @@ class RealNoIntroTest(unittest.TestCase):
                 self.assertEqual(len(dat.sets()), sets)
                 self.assertEqual(sum(1 for v in dat.sets().values() if len(v) > 1), alts)
                 self.assertTrue(all(r.sha1 and len(r.crc) == 8 for r in dat.roms))
-                self.assertFalse(any(r.size % 1024 == 512 for r in dat.roms))
-                self.assertLess(elapsed, 1.5 if "Entertainment" in name else 1.0)
+                if name in SNES_STYLE:
+                    self.assertFalse(any(r.size % 1024 == 512 for r in dat.roms))
+                self.assertLess(elapsed, 1.5 if ("Entertainment" in name or name.endswith("DS")) else 1.0)
 
     @unittest.skipUnless(DOM_GBA.is_file(), "DAT-o-MATIC GBA DAT not available")
     def test_dat_o_matic_matches_libretro(self) -> None:

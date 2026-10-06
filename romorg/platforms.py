@@ -52,6 +52,8 @@ class Platform:
     kickstart_folder: str = ""
     # Top-level folders of the platform folder the app never scans, moves or sets aside.
     protected_dirs: tuple[str, ...] = ()
+    # Compressed disc-image formats read through (hashed as the ISO they stand for): "rvz"
+    containers: tuple[str, ...] = ()
 
 
 def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple[str, ...],
@@ -115,6 +117,27 @@ PLATFORMS: dict[str, Platform] = {
     "Super Nintendo Entertainment System": _nointro(
         "Super Nintendo Entertainment System", "Nintendo - Super Nintendo Entertainment System",
         (".sfc", ".smc", ".swc", ".fig", ".zip", ".7z"), (ALT_SNES_HEADER,), True, "snes"),
+    # Systems whose DAT hashes are those of the files as they are (checked against the libretro DATs: one rom per
+    # entry, no header the hash leaves out - the Lynx DAT lists the headered .lnx and the raw .lyx / .bll as
+    # separate roms): nothing to do but name them.
+    "Nintendo Game Boy": _nointro(
+        "Nintendo Game Boy", "Nintendo - Game Boy", (".gb", ".zip", ".7z"), (), False, "gb"),
+    "Nintendo Game Boy Color": _nointro(
+        "Nintendo Game Boy Color", "Nintendo - Game Boy Color", (".gbc", ".zip", ".7z"), (), False, "gbc"),
+    "Nintendo DS": _nointro(
+        "Nintendo DS", "Nintendo - Nintendo DS", (".nds", ".dsi", ".zip", ".7z"), (), False, "nds"),
+    # .smd (512-byte header, interleaved) dumps are not in the DAT: they stay unmatched
+    "Sega Mega Drive - Genesis": _nointro(
+        "Sega Mega Drive - Genesis", "Sega - Mega Drive - Genesis",
+        (".md", ".gen", ".bin", ".zip", ".7z"), (), False, "megadrive"),
+    "Sega Master System": _nointro(
+        "Sega Master System", "Sega - Master System - Mark III", (".sms", ".zip", ".7z"), (), False, "mastersystem"),
+    "Sega Game Gear": _nointro(
+        "Sega Game Gear", "Sega - Game Gear", (".gg", ".zip", ".7z"), (), False, "gamegear"),
+    "Sega 32X": _nointro(
+        "Sega 32X", "Sega - 32X", (".32x", ".zip", ".7z"), (), False, "sega32x"),
+    "Atari Lynx": _nointro(
+        "Atari Lynx", "Atari - Lynx", (".lnx", ".lyx", ".bll", ".zip", ".7z"), (), False, "atarilynx"),
 }
 
 REDUMP_DC_DAT = "Sega - Dreamcast"           # == redump.DAT_NAME
@@ -133,6 +156,27 @@ PLATFORMS[DREAMCAST_PLATFORM] = Platform(
     latest_dats=(REDUMP_DC_DAT,),
     language_dats=(REDUMP_DC_DAT,),
     region_dats=(REDUMP_DC_DAT,),
+)
+
+REDUMP_GC_DAT = "Nintendo - GameCube"
+GAMECUBE_PLATFORM = "Nintendo GameCube"
+
+# One file per disc, flat folder (like the cartridge systems), Redump hashes of the ISO. A Dolphin .rvz is hashed as
+# the ISO it stands for (romorg.rvz) and keeps its extension when renamed; there is nothing to convert.
+PLATFORMS[GAMECUBE_PLATFORM] = Platform(
+    name=GAMECUBE_PLATFORM,
+    dats=(REDUMP_GC_DAT,),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_FLAT,
+    extensions=(".rvz", ".iso", ".gcm"),
+    convertible=False,
+    folder_hint="gc",
+    latest_dats=(REDUMP_GC_DAT,),
+    language_dats=(REDUMP_GC_DAT,),
+    region_dats=(REDUMP_GC_DAT,),
+    containers=("rvz",),
 )
 
 REDUMP_PSX_DAT = "Sony - PlayStation"

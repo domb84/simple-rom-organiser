@@ -358,6 +358,72 @@ def ines(prg: bytes, flags: bytes = b"\x01\x01") -> bytes:
     return b"NES\x1a" + flags + b"\x00" * 10 + prg
 
 
+PLAIN_SYSTEMS = (
+    # platform, the DAT's rom extension, how the DAT's rom is zipped / misnamed by a user
+    ("Nintendo Game Boy", ".gb"), ("Nintendo Game Boy Color", ".gbc"), ("Nintendo DS", ".nds"),
+    ("Sega Mega Drive - Genesis", ".md"), ("Sega Master System", ".sms"), ("Sega Game Gear", ".gg"),
+    ("Sega 32X", ".32x"), ("Atari Lynx", ".lnx"),
+)
+
+
+class PlainSystemsIntegrationTest(unittest.TestCase):
+    """The systems whose DAT hashes are those of the files as they are: scan -> plan -> apply -> settled -> undo."""
+
+    def test_flow_of_every_plain_system(self) -> None:
+        for name, ext in PLAIN_SYSTEMS:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                with mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(base / "data")}):
+                    self.flow(name, ext, base)
+
+    def flow(self, name: str, ext: str, base: Path) -> None:
+        plat = platforms.get_platform(name)
+        dat = plat.dats[0]
+        root = base / "roms"
+        (root / "sub").mkdir(parents=True)
+        (root / "zips").mkdir()
+        d = {k: blob(3000) for k in ("alpha", "bravo", "charlie", "delta")}
+        games = [("Alpha (USA)", f"Alpha (USA){ext}", d["alpha"]),
+                 ("Bravo (Europe)", f"Bravo (Europe){ext}", d["bravo"]),
+                 ("Charlie (Japan)", f"Charlie (Japan){ext}", d["charlie"]),
+                 ("Delta (USA)", f"Delta (USA){ext}", d["delta"])]
+        if name == "Atari Lynx":     # the libretro DAT lists a game's headered .lnx and raw .lyx as separate roms
+            raw = blob(2000)
+            games.append(("Alpha (USA)", "Alpha (USA).lyx", raw))
+            (root / "alpha raw.lyx").write_bytes(raw)
+        write_cmp_dat(paths.nointro_dir(), dat, games)
+        (root / f"Alpha (USA){ext}").write_bytes(d["alpha"])                  # right name, right place
+        (root / "sub" / f"bravo{ext}").write_bytes(d["bravo"])                # misnamed, in a subfolder
+        with zipfile.ZipFile(root / "zips" / "c.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"c{ext}", d["charlie"])                              # zipped
+        (root / f"mystery{ext}").write_bytes(blob(1500))                       # in no DAT
+        before = snapshot(root)
+
+        dats, missing = platforms.load_platform_dats(plat)
+        self.assertEqual((missing, [x.name for x in dats]), ([], [dat]))
+        res = scanner.scan(root, dats, use_cache=False, alt_hashes=plat.alt_hashes, layout=plat.layout)
+        s = res.summary()
+        self.assertEqual((s["games_total"], s["games_have"], s["games_missing"]), (4, 3, 1), name)
+        self.assertEqual({r.name for r in res.missing}, {f"Delta (USA){ext}"})
+        self.assertEqual(snapshot(root), before)                               # a scan changes nothing
+
+        ops = organiser.plan_renames(res, latest_only=True)
+        dst = {op.src.relative_to(root).as_posix(): op.dst.relative_to(root).as_posix() for op in ops}
+        self.assertEqual(dst[f"Alpha (USA){ext}"], f"Alpha (USA){ext}")
+        self.assertEqual(dst[f"sub/bravo{ext}"], f"Bravo (Europe){ext}")
+        self.assertEqual(dst["zips/c.zip"], "Charlie (Japan).zip")
+        self.assertEqual(dst[f"mystery{ext}"], f"_unmatched/mystery{ext}")
+        if name == "Atari Lynx":
+            self.assertEqual(dst["alpha raw.lyx"].rsplit(".", 1)[-1], "lyx")  # an honest extension, not a rename
+        out = organiser.apply_renames(ops, root, dat_names=[dat])
+        self.assertEqual(out["failed"], [])
+        res2 = scanner.scan(root, dats, use_cache=False, alt_hashes=plat.alt_hashes, layout=plat.layout)
+        again = [o for o in organiser.plan_renames(res2, latest_only=True) if o.status not in ("ok", "skip")]
+        self.assertEqual(again, [], name)
+        organiser.undo(Path(out["undo_log"]))
+        self.assertEqual({k: v for k, v in snapshot(root).items() if not k.startswith("_")}, before)
+
+
 class NoIntroIntegrationTest(unittest.TestCase):
     """Console flow: scan -> per-game counts -> plan (latest only) -> apply -> rescan ->
     convert -> undo convert -> undo organise (byte-exact)."""

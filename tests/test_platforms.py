@@ -22,6 +22,14 @@ CONSOLES = {
     "Nintendo Entertainment System": ("Nintendo - Nintendo Entertainment System", ("nes_header",), False, "nes"),
     "Super Nintendo Entertainment System": ("Nintendo - Super Nintendo Entertainment System",
                                             ("snes_header",), True, "snes"),
+    "Nintendo Game Boy": ("Nintendo - Game Boy", (), False, "gb"),
+    "Nintendo Game Boy Color": ("Nintendo - Game Boy Color", (), False, "gbc"),
+    "Nintendo DS": ("Nintendo - Nintendo DS", (), False, "nds"),
+    "Sega Mega Drive - Genesis": ("Sega - Mega Drive - Genesis", (), False, "megadrive"),
+    "Sega Master System": ("Sega - Master System - Mark III", (), False, "mastersystem"),
+    "Sega Game Gear": ("Sega - Game Gear", (), False, "gamegear"),
+    "Sega 32X": ("Sega - 32X", (), False, "sega32x"),
+    "Atari Lynx": ("Atari - Lynx", (), False, "atarilynx"),
 }
 
 
@@ -63,7 +71,8 @@ class PlatformTests(unittest.TestCase):
                 self.assertEqual(platforms.source_of(p), "whdload")
                 self.assertEqual((p.latest_dats, p.best_variant_dats), (p.dats, p.dats))
                 continue
-            if p.name in (platforms.DREAMCAST_PLATFORM, platforms.PSX_PLATFORM, platforms.PS2_PLATFORM):   # its own source: checked in test_dreamcast.py
+            if p.name in (platforms.DREAMCAST_PLATFORM, platforms.PSX_PLATFORM, platforms.PS2_PLATFORM,
+                          platforms.GAMECUBE_PLATFORM):   # its own source: checked in test_dreamcast.py / test_rvz.py
                 self.assertEqual(platforms.source_of(p), "redump")
                 self.assertEqual((p.latest_dats, p.best_variant_dats), (p.dats, ()))
                 continue
@@ -117,12 +126,35 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(DatSource.NOINTRO, "nointro")
         names = [p.name for p in list_platforms()]
         self.assertEqual(names, sorted(names, key=str.lower))
-        self.assertEqual(len(names), 9)   # Amiga, Amiga - WHDLoad, GBA, N64, NES, Sega Dreamcast, Sony PlayStation (2), SNES
+        # Amiga, Amiga - WHDLoad, Dreamcast, PlayStation (2), GameCube and the cartridge systems of CONSOLES
+        self.assertEqual(len(names), 6 + len(CONSOLES))
         self.assertEqual(platforms.DEFAULT_PLATFORM, "Commodore Amiga")
         self.assertIn("Nintendo - Nintendo 64", platforms.all_dat_names())
         # positional construction (old signature) still works with the defaults
         p = platforms.Platform("X", ("A",), (), None)
         self.assertEqual((p.source, p.layout, p.extensions), ("tosec", "per_dat", ()))
+
+    def test_every_nointro_platform_is_wired_up(self) -> None:
+        """A typo in a DAT name, folder name or LaunchBox name would fail silently in the app, so check them all."""
+        from romorg import nointro, ratings
+        from romorg.server import OTHER_SYSTEM_DIRS
+        plats = [p for p in list_platforms() if p.source == DatSource.NOINTRO]
+        self.assertEqual(len(plats), len(CONSOLES))
+        hints = [p.folder_hint for p in plats]
+        self.assertEqual(len(set(hints)), len(hints), "two systems share a folder name")
+        self.assertEqual(len({p.name for p in plats}), len(plats))
+        self.assertEqual(sorted(d for p in plats for d in p.dats), sorted(nointro.NOINTRO_DATS))
+        for p in plats:
+            with self.subTest(p.name):
+                self.assertIn(p.folder_hint, OTHER_SYSTEM_DIRS)          # the "this is the whole roms folder" check
+                self.assertIn(p.name, ratings.LB_PLATFORMS)
+                self.assertEqual(p.latest_dats, p.dats)
+                self.assertEqual(p.language_dats, p.dats)
+                self.assertEqual(p.region_dats, p.dats)
+                self.assertEqual(p.extensions[-2:], (".zip", ".7z"))
+        # LaunchBox's own platform names (Platforms.xml of Metadata.zip, read 2026-10-06)
+        self.assertEqual(ratings.LB_PLATFORMS["Sega Mega Drive - Genesis"], "Sega Genesis")
+        self.assertEqual(len(set(ratings.LB_PLATFORMS.values())), len(set(ratings.LB_PLATFORMS.values())))
 
     def test_nointro_dats_separate_dir(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -178,6 +178,48 @@ def check_scheduler() -> Tuple[bool, str]:
     return True, f"the scheduler hashed a tiny GD image with {workers} worker processes (identical to sequential)"
 
 
+# A 256 KiB GameCube image as an RVZ (Zstandard, 1.4 KB): header + 1 KB of data, a zero group, a group of padding
+# regenerated from a seed (the generator is the part that must work), zeros. Made by tests/rvztestlib.build_rvz.
+_TINY_RVZ = (
+    "UlZaAQEAAAAAAwAAAAAA3ID93XfihbGG/0b1ntpxLq+Au7etAAAAAAAEAAAAAAAAAAAFZHgkMX4T9yV2kKQwcEF1gmXKKBG7"
+    "AAAAAQAAAAUAAAADAAIAAEdUU1QwMQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVGVzdCBEaXNjAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAUoAAAAGwAAAAIAAAAAAAAFQwAAACEAAAAA"
+    "AAAAACi1L/2gAAACAI0cAFQ4AAD1OlkcEJOISa1FF9E66RkZUpQcc5nu8AKWSZTQBzIW5GHUZ693boN9EW/srQ6VcVCASNE1"
+    "LQqwZbwpY0DJGgBZCInb+gmDuP8MveftEoBMW+BiHc7KHFhgq3bp/2ji9741eXqDjHNBo3KziRPZ3R25VRkkV4FI9BYPFLWO"
+    "HJy+icB/yErcR6BJg0wbdVhCESQkp2Dgu0kRpbW9N7QQ/2a3cATSkx2KGk+WUFUGiQsJ2eAS+7WSmWxenRoRXULZCHYpchZs"
+    "chQ3FycCFmbNhhbkUZrxlSVf8I2YwJp/4XkC3kyIzx1m2ulsBbqggQDec826ngnAYaPj3fBtpJk+aBzgTTC0feQN7WWbbrDq"
+    "86NPhqZ0NkLxsC/YyeaCa+NPYpAWnR3tD551+58xrHo/p1CDtc+ahNnTH878DH8GQAhVkyN2ejm1MQ3EnhEGIb0ccdGG54MM"
+    "myl19lTFZLTghPGFxPAG4w7HpKseckIaT3ehtyuwT59qyO1tFJBUeDwmdSTGw2t7SuNh4jn6mjpZRYHZk7vL4rJCPB9pem2g"
+    "HI5hs/Wa8HTfIZ+sa/4qePX/6rbaZfHtX8qp9WfRuvwsAJf6Zo6ui+71QUBPy06PV7zuZlf+dKtqKov/VKnATl92U4zs0r/M"
+    "29CYpTB+fIAjVcWyrLmYeoeNDc5KUmviJxHmZth33W4IGNkzlRpcS+6Y89QTit9EfPhfAlXZeQjqKFwmUTPYp+h7zeG35eaY"
+    "cozu9fRkTnWIQLXNaArchbgZTe1XBVF9rsEkXKkP6OsWjigzUJqWQv9fUbFIQk58VcZ2dyNh4oKMq0bEcxuA05awRX9Ea9bO"
+    "8akpb7B4zo58MPWpfZlC6CNRmwh40tbU5PhBSqdwEFF56ih11iu06mTD2M+pCS8Zz1M+cNsieLDDwG23VkT7yAAGVPZaZuKD"
+    "JcJCQmqc8nOxQwbsNdEb98FJ3C6C3J738LD/bAgiqtdch1y6FlSper7erPCwpXUQ80EHpvMfN0TqSTznpoCYf2DCwF504L4Y"
+    "nG3QMeKFX7+SlEzb1qpLaSTDdyXciQtztXqe6h2jlwMGXZgX0AUOAJbUg3Oc0qSUZVvti049o+4IXhvW78hDFTC5MZzqjDTL"
+    "TAPkMiZJcj/8/O0e2r/+nvPGbgvUkXnAfw7ki+x11PTOzb5EIlEhqysZ9sFqIaqiGMd0WwAAAAIAg/X3QZ52CtoAAAAotS/9"
+    "oEyQAQCtAgDEBIAAcAA905LMAtCyQN+VblMGMYMyrPuQPbL6cDFqBZPSL7KN8By9dB28z9VKI6fqeeio+vNdMNKO7j/s/+NS"
+    "gJyMJuE8MJ49JQABkAABAEz/Yw6iAAAAKLUv/SAYlQAASAAAgAAD/wAAAgNAAisD4gIBKLUv/SAYwQAAAAAASYAAA50AAAAA"
+    "AAABMYAAAGEAAZBM"
+)
+_TINY_RVZ_SHA1 = "8e7dedcbe0c3b2f022991e89e4cf40ee435784b9"
+_TINY_RVZ_CRC32 = "312c288f"
+
+
+def check_rvz() -> Tuple[bool, str]:
+    """The GameCube reader rebuilds a tiny RVZ (Zstandard + regenerated padding) into the exact image."""
+    import base64
+    import io
+    from . import rvz, zstdnative
+    blob = base64.b64decode("".join(_TINY_RVZ))
+    with rvz.Rvz("selfcheck.rvz", fileobj=io.BytesIO(blob)) as r:
+        image = b"".join(r.iter_image())
+    if hashlib.sha1(image).hexdigest() != _TINY_RVZ_SHA1 or "%08x" % (zlib.crc32(image) & 0xFFFFFFFF) != _TINY_RVZ_CRC32:
+        return False, "the RVZ reader did not rebuild the test image exactly"
+    how = "libzstd" if zstdnative.native() else "the built-in Python Zstandard decoder"
+    return True, f"the RVZ reader rebuilt a test GameCube image exactly (Zstandard through {how})"
+
+
 def check_writer(require_native: bool = False) -> Tuple[bool, str]:
     """The writer makes a CHD of a tiny data + audio disc (in worker processes), the reader reads it back.
 
@@ -327,14 +369,14 @@ def main(argv: List[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         status, text = "WARN", f"Zstandard check: {type(exc).__name__}: {exc}"
     lines.append(("FAIL" if require_native and status != "OK" else status, text))
-    for fn in (check_flac, check_scheduler, check_writer):
+    for fn in (check_flac, check_scheduler, check_writer, check_rvz):
         try:
             ok, text = check_writer(require_native) if fn is check_writer else fn()
         except Exception as exc:  # noqa: BLE001
             ok, text = False, f"{type(exc).__name__}: {exc}"
         # inside the bundle (or a package: --require-native) libFLAC is REQUIRED; elsewhere its absence only means
         # slower decoding (libsndfile or the pure-Python decoder) and audio stored without FLAC
-        required = fn is check_scheduler or root is not None or require_native
+        required = fn in (check_scheduler, check_rvz) or root is not None or require_native
         lines.append(("OK" if ok else ("FAIL" if required else "WARN"), text))
     for status, text in lines:
         print(f"{status:5} {text}")

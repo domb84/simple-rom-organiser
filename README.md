@@ -11,9 +11,13 @@ Supported systems:
 | Nintendo 64 | *Nintendo - Nintendo 64* | No-Intro, via libretro-database |
 | Nintendo Entertainment System | *Nintendo - Nintendo Entertainment System* | No-Intro, via libretro-database |
 | Super Nintendo Entertainment System | *Nintendo - Super Nintendo Entertainment System* | No-Intro, via libretro-database |
+| Nintendo Game Boy, Game Boy Color, Nintendo DS | *Nintendo - Game Boy*, *Nintendo - Game Boy Color*, *Nintendo - Nintendo DS* | No-Intro, via libretro-database |
+| Sega Mega Drive - Genesis, Master System, Game Gear, 32X | *Sega - Mega Drive - Genesis*, *Sega - Master System - Mark III*, *Sega - Game Gear*, *Sega - 32X* | No-Intro, via libretro-database |
+| Atari Lynx | *Atari - Lynx* (the DAT lists the headered `.lnx` and the raw `.lyx` / `.bll` dumps as separate roms of one game: both match) | No-Intro, via libretro-database |
 | Sega Dreamcast | *Sega - Dreamcast* (1516 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Sony PlayStation | *Sony - PlayStation* (10,914 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Sony PlayStation 2 | *Sony - PlayStation 2* (11,774 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
+| Nintendo GameCube | *Nintendo - GameCube* (2,019 discs, Redump); files are `.iso`, `.gcm` or Dolphin `.rvz` | [redump.org](http://redump.org/) (plain HTTP only) |
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
 every file against the system's DATs, shows what you have and what is missing, renames
@@ -463,7 +467,7 @@ rules** undoes it; press Recalculate to see the result). The **Columns** menu hi
 remembered per system. `tools/bench_server.py` times the scan, lists and planner on a real folder; `python3 -m unittest tests.test_browser` clicks through the UI in a real browser.
 
 **Ratings (optional filter).** The rules panel has a **Ratings** group for every system with a LaunchBox
-platform (Amiga, WHDLoad, GBA, N64, NES, SNES, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
+platform (Amiga, WHDLoad, GBA, GB, GBC, DS, N64, NES, SNES, Mega Drive, Master System, Game Gear, 32X, Lynx, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
 rating data is needed**. Set a **Minimum rating** (0-10, shown as LaunchBox stars x 2 with the vote count, e.g.
 `8.4 · 123 votes`), a **Top N games** limit, or both; **Minimum votes** (default 5: a game with fewer votes counts as
 *unrated*); **Keep unrated games** (off: while a rating filter is set, games with no usable rating are left out - tick it to keep
@@ -496,6 +500,19 @@ playlists it deleted.
 With the rules off (or in *Advanced: tidy only*) the older behaviour remains: **Latest
 version only** moves older versions to `_superseded/` using the same ranking as
 above for consoles.
+
+## Nintendo GameCube: ISO and Dolphin RVZ
+
+A flat folder with one file per disc (`.iso`, `.gcm` or `.rvz`), matched against the Redump DAT *Nintendo - GameCube*
+(2,019 games). Redump hashes the ISO, so a `.rvz` (Dolphin's lossless compressed format) is **rebuilt in memory while it
+is read** and hashed: the same CRC32 / SHA-1 as the ISO it was made from, which the app compares with Redump (checked on
+real Dolphin files: the rebuilt images equal the Redump entries). Nothing is written, and a matched `.rvz` keeps its
+extension when it is renamed to the Redump name (the Matched list shows an **rvz** chip). Decoding runs on all cores
+(about 4 s for a 1.4 GB disc on a Steam Deck; the result is cached, so a rescan takes a fraction of a second).
+
+Not read: **Wii** discs (the same container, but the partitions are encrypted; they are listed as unsupported), the
+older `.wia` format, NKit images (they drop data the hash needs) and compressed ISOs such as `.gcz` / `.ciso`.
+There is nothing to convert on this system.
 
 ## Sega Dreamcast: CHD + Redump
 

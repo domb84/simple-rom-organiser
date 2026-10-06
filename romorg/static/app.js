@@ -375,7 +375,7 @@
   const badge = (status, text = status) => el("span", { class: `badge ${status}`, text });
 
   // Small coloured chips for a row's name tags (regions, languages, status, bad dump, how it matched).
-  const VIA_LABEL = { headerless: "copier header", byteswapped: "byte-swapped" };
+  const VIA_LABEL = { headerless: "copier header", byteswapped: "byte-swapped", container: "rvz" };
   // Header sizes skipped by the scanner: 512 = SNES copier header, 16 = NES iNES header.
   const HEADER_LABEL = { 512: "copier header", 16: "iNES header skipped" };
   // Short names of the library exclusion rules (the long ones live in /api/library/profile).

@@ -1404,7 +1404,8 @@ class App:
             result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=job.report,
                            cancel=job.cancel if cancellable else None,
                            alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=layout,
-                           protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
+                           protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()),
+                           containers=tuple(getattr(platform, "containers", ()) or ()))
         if cancellable and job.cancel.is_set():
             return None
         dat_names = list(getattr(result, "dat_names", None) or [getattr(d, "name", "") for d in dats])
@@ -2373,7 +2374,9 @@ class App:
                 f"{header}-byte {'SNES copier' if header == 512 else 'iNES' if header == 16 else ''} header skipped before hashing"
                 .replace("  ", " ") if via == "headerless"
                 else f"{order + ' ' if order else ''}byte order swapped to the DAT's before hashing"
-                if via == "byteswapped" else via)
+                if via == "byteswapped"
+                else f"the disc image inside the .{getattr(match, 'container', '') or 'rvz'} file was rebuilt and hashed"
+                if via == "container" else via)
             out["normalised"] = {"crc32": getattr(match, "alt_crc", "") or None, "md5": None,
                                  "sha1": getattr(match, "alt_sha1", "") or None,
                                  "size": getattr(dat_rom, "size", None)}

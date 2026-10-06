@@ -1,4 +1,5 @@
-"""The Redump DATs (``http://redump.org/datfile/<system>/``): Sega Dreamcast, Sony PlayStation, Sony PlayStation 2.
+"""The Redump DATs (``http://redump.org/datfile/<system>/``): Sega Dreamcast, Sony PlayStation, Sony PlayStation 2,
+Nintendo GameCube.
 
 Redump serves one zip per system (``Sega - Dreamcast - Datfile (1516) (2026-06-14 18-25-41).zip``
 holding a single Logiqx ``.dat``) over plain **HTTP only** (the HTTPS port refuses connections).
@@ -33,10 +34,11 @@ from .tosec import Cancelled, CancelToken, DatInfo
 DAT_NAME = "Sega - Dreamcast"            # header name == file stem == the platform's DAT name (the default DAT)
 PSX_DAT_NAME = "Sony - PlayStation"
 PS2_DAT_NAME = "Sony - PlayStation 2"
-SYSTEMS = {DAT_NAME: "dc", PSX_DAT_NAME: "psx", PS2_DAT_NAME: "ps2"}   # DAT name -> redump.org system slug
+GC_DAT_NAME = "Nintendo - GameCube"
+SYSTEMS = {DAT_NAME: "dc", PSX_DAT_NAME: "psx", PS2_DAT_NAME: "ps2", GC_DAT_NAME: "gc"}   # DAT name -> redump.org system slug
 BASE_URL = "http://redump.org/datfile/"  # HTTP only: https://redump.org refuses the connection
 USER_AGENT = f"simple-rom-organiser/{__version__}"
-REDUMP_DATS = (DAT_NAME, PSX_DAT_NAME, PS2_DAT_NAME)
+REDUMP_DATS = (DAT_NAME, PSX_DAT_NAME, PS2_DAT_NAME, GC_DAT_NAME)
 MANIFEST = "manifest.json"               # {name: {"version", "sha1", "size", "url", "filename", "downloaded_at"}}
 MAX_DAT_BYTES = 256 * 1024 * 1024        # sanity limit for the extracted DAT
 

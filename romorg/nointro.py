@@ -34,6 +34,14 @@ NOINTRO_DATS = (
     "Nintendo - Nintendo 64",
     "Nintendo - Nintendo Entertainment System",
     "Nintendo - Super Nintendo Entertainment System",
+    "Nintendo - Game Boy",
+    "Nintendo - Game Boy Color",
+    "Nintendo - Nintendo DS",
+    "Sega - Mega Drive - Genesis",
+    "Sega - Master System - Mark III",
+    "Sega - Game Gear",
+    "Sega - 32X",
+    "Atari - Lynx",
 )
 MANIFEST = "manifest.json"   # {name: {"version", "etag", "sha1", "size", "url", "downloaded_at"}}
 

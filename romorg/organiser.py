@@ -217,7 +217,9 @@ def _target_name(rom: "Rom", src_name: str, archive_ext: Optional[str] = None,
     stem = _rom_stem(rom)
     _, rom_ext = _split_ext(rom.name)
     _, src_ext = _split_ext(src_name)
-    if matched_via == "byteswapped":
+    if matched_via == "container":
+        ext = src_ext or rom_ext            # a compressed image keeps its own extension (.rvz)
+    elif matched_via == "byteswapped":
         ext = BYTE_ORDER_EXT.get(byte_order) or src_ext or rom_ext
     elif not src_ext or src_ext.casefold() == rom_ext.casefold():
         # Claims to be clean (or has no extension): the headered variant of the rom's ext.
@@ -421,6 +423,8 @@ def _matched_op(src: Path, root: Path, roms: Sequence["Rom"], archive_ext: Optio
         reasons.append("sanitised for filesystem")
     if matched_via == "headerless":
         reasons.append("matched with its header skipped (file kept as is)")
+    elif matched_via == "container":
+        reasons.append("matched through its compressed disc image (file kept as is)")
     elif matched_via == "byteswapped":
         reasons.append(f"matched byte-swapped{f' ({byte_order})' if byte_order else ''} (file kept as is)")
     if alts:
