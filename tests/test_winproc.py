@@ -135,5 +135,27 @@ class AppDirsTest(unittest.TestCase):
             self.assertEqual(winproc.program_dirs(), [])
 
 
+class LongPathHintTest(unittest.TestCase):
+    long = "C:\\" + "x" * 300
+
+    def exc(self, winerror: int) -> OSError:
+        e = OSError(2, "The system cannot find the path specified")
+        e.winerror = winerror
+        return e
+
+    def test_hint_on_windows_for_a_long_path(self) -> None:
+        with mock.patch.object(winproc, "IS_WINDOWS", True):
+            msg = winproc.long_path_hint(self.exc(3), self.long)
+            self.assertIn("LongPathsEnabled", msg)
+            self.assertIn("cannot find the path", msg)
+
+    def test_no_hint_for_a_short_path_other_error_or_other_system(self) -> None:
+        with mock.patch.object(winproc, "IS_WINDOWS", True):
+            self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(3), "C:\short"))
+            self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(5), self.long))
+        with mock.patch.object(winproc, "IS_WINDOWS", False):
+            self.assertNotIn("LongPathsEnabled", winproc.long_path_hint(self.exc(3), self.long))
+
+
 if __name__ == "__main__":
     unittest.main()

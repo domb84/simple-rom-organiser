@@ -205,9 +205,13 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   7-Zip). Auto worker count on Windows: one per CPU thread minus one, at most 12, limited by the free memory. Loose files are hashed and archives listed by a small thread pool
   (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
 - External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
-- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting. Tested from Python (a Convert
-  job placing a CHD at over 260 characters, `.chd.romorg.part` included); not yet checked from the PyInstaller exe,
-  whose manifest must be `longPathAware` (inspect the built exe's manifest before promising it).
+- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting (a registry value; it is
+  per machine and takes a restart). Both the PyInstaller exe (PyInstaller's default manifest has `longPathAware`;
+  `build_windows_exe.ps1` fails the build if it ever stops) and the embeddable `python.exe` / `pythonw.exe` of the zip
+  (checked in 3.14.8) carry a `longPathAware` manifest, so no `\\?\` prefixes are used. Tested from Python and from
+  the built exe (`/api/convert` of a set in a 359-character folder, CHD placed at 391 characters, with the setting
+  on). With the setting off, Windows fails those paths (WinError 2/3/206); a failed Convert item then names the
+  setting in its error text (`winproc.long_path_hint`) instead of just "cannot find the path".
 - **Real-data tests** skip unless their data exists. Overrides (the Steam Deck paths stay the defaults):
   `ROMORG_REAL_SCRATCH` (folder with `dats/TOSEC`, `nointro`, `dom`; test_datfile, test_kickstart, test_m3u,
   test_platforms), `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT, a path or glob), `ROMORG_REAL_DC_DIR` (the Dreamcast

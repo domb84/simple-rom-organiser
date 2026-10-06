@@ -155,3 +155,22 @@ def kill_tree(proc: "subprocess.Popen") -> None:
         proc.kill()
     except OSError:
         pass
+
+
+LONG_PATH_LIMIT = 260
+_LONG_PATH_WINERRORS = (2, 3, 206)      # file / path not found, filename or extension too long
+
+
+def long_path_hint(exc: BaseException, *paths: object) -> str:
+    """``str(exc)``; on Windows, when a path of 260 characters or more is involved and the error is the kind the old
+    MAX_PATH limit causes, plus a sentence on how to enable long paths."""
+    text = str(exc)
+    if not IS_WINDOWS or not isinstance(exc, OSError):
+        return text
+    paths = paths + tuple(p for p in (getattr(exc, "filename", None), getattr(exc, "filename2", None)) if p)
+    if getattr(exc, "winerror", None) in _LONG_PATH_WINERRORS and any(
+            len(str(p)) >= LONG_PATH_LIMIT for p in paths):
+        return (f"{text} (a path here is {LONG_PATH_LIMIT} characters or longer: turn on Windows long paths "
+                "[HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem, LongPathsEnabled = 1, then restart] "
+                "or move the library to a folder with a shorter path)")
+    return text

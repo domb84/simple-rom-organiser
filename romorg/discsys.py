@@ -50,6 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
 from . import cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
+from . import winproc
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -2177,7 +2178,8 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
                     break
                 failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
             except (OSError, ValueError, chdlib.ChdError) as exc:
-                failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
+                failed.append({"src": str(op.src), "dst": str(op.dst),
+                               "error": winproc.long_path_hint(exc, op.src, op.dst)})
         protected = organiser.protected_dirs(root, [], set())
         sources = [Path(s).parent for op in converted for s, _d in op.moves] + [Path(c) for c in created]
         mine = set(created)

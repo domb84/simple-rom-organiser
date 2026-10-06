@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterable, Optional
 
-from . import folders, organiser, scanner
+from . import folders, organiser, scanner, winproc
 from .datfile import archive_stem
 
 if TYPE_CHECKING:
@@ -418,7 +418,8 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
                 raise
             except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile,
                     EOFError, zlib.error) as exc:
-                failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
+                failed.append({"src": str(op.src), "dst": str(op.dst),
+                               "error": winproc.long_path_hint(exc, op.src, op.dst)})
         if progress is not None and not cancelled:
             progress(total, total, "")
 
