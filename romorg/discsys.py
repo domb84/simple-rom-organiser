@@ -800,6 +800,7 @@ def hash_all_chdman(path: Path, info: chdlib.Chd, chdman: chdtool.Chdman, root: 
                     prog: Optional[_Progress] = None) -> dict[int, dict]:
     """Every track via ``chdman extractcd`` into scratch space (RAM when safe, else the app's cache folder, NEVER the
     ROM folder ``root``; deleted afterwards). Raises :class:`chdtool.NoTempSpace` when neither has room."""
+    chdtool.chdman_input(path)          # a non-ASCII Windows path chdman cannot open: ChdmanError before any scratch use
     need = sum(t.size for t in info.tracks)
     work = chdtool.acquire_workdir(chdman, need, [root])
     where = " (in RAM)" if work.where == "ram" else " (on disk)"
@@ -1833,9 +1834,19 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
             report(f"{exc} - verifying with the built-in reader")
             return hash_tracks_python(info, range(len(info.tracks)), prog, sched), "verified with the built-in reader"
 
-    if chdman is not None and engine == "chdman" and not _chdman_input_problem(Path(os.path.abspath(path))):
-        report("verifying with chdman extract")
-        return by_chdman("engine chdman")
+    if chdman is not None and engine == "chdman":
+        try:
+            chdtool.chdman_input(path)
+        except chdtool.ChdmanError:
+            pass                                    # chdman cannot be given this path: the built-in reader below
+        else:
+            report("verifying with chdman extract")
+            try:
+                return by_chdman("engine chdman")
+            except chdtool.ChdmanError as exc:
+                if exc.cancelled:
+                    raise
+                report(f"chdman extract failed ({str(exc).splitlines()[0]}) - verifying with the built-in reader")
     report("verifying the new CHD with the built-in reader (independent of chdman)")
     if progress:
         prog.report = lambda d, t, m: progress(d, t, f"{label}: {m}")

@@ -492,6 +492,22 @@ def _terminate(proc: "subprocess.Popen[bytes]") -> None:
 
 # --------------------------------------------------------------------------- extractcd / createcd
 
+def chdman_input(path: Path) -> str:
+    """``path`` as chdman may be given it for ``-i``. chdman 0.289 on Windows cannot open an input file whose path has
+    a non-ASCII character, but opens its 8.3 short path; with none (8.3 names off) this raises :class:`ChdmanError`
+    (callers fall back to the built-in reader or report it per file). Everywhere else the path is passed as is."""
+    if not winproc.IS_WINDOWS:
+        return str(path)
+    p = os.path.abspath(str(path))
+    if p.isascii():
+        return str(path)
+    short = winproc.short_path(p)
+    if short and short.isascii():
+        return short
+    raise ChdmanError(f"chdman cannot open {Path(path).name}: a non-ASCII character in its path (Windows) and no "
+                      "8.3 short name for it - the built-in reader handles such files")
+
+
 @dataclass
 class ExtractedTrack:
     number: int
@@ -534,9 +550,10 @@ def extract_cd(chdman: Chdman, chd: Path, workdir: Path, kind: str, track_sizes:
     ``disc.cue`` + ``disc.bin`` (split with ``track_sizes`` = bytes of each track, in order)."""
     check_access(chdman, Path(chd).parent)
     check_access(chdman, workdir)
+    chd_arg = chdman_input(chd)
     if kind == "gdrom":
         sheet = workdir / "disc.gdi"
-        run(chdman, ["extractcd", "-i", str(chd), "-o", str(sheet)], progress, "Extracting", cancel)
+        run(chdman, ["extractcd", "-i", chd_arg, "-o", str(sheet)], progress, "Extracting", cancel)
         tracks = []
         for row in parse_gdi(sheet):
             f = workdir / row["file"]
@@ -546,7 +563,7 @@ def extract_cd(chdman: Chdman, chd: Path, workdir: Path, kind: str, track_sizes:
                                          audio=row["type"] == 0))
         return Extraction(sheet, tracks)
     sheet, binf = workdir / "disc.cue", workdir / "disc.bin"
-    run(chdman, ["extractcd", "-i", str(chd), "-o", str(sheet), "-ob", str(binf)], progress, "Extracting", cancel)
+    run(chdman, ["extractcd", "-i", chd_arg, "-o", str(sheet), "-ob", str(binf)], progress, "Extracting", cancel)
     if not binf.is_file():
         raise ChdmanError("chdman did not write disc.bin")
     tracks = []
@@ -577,7 +594,7 @@ def extract_dvd(chdman: Chdman, chd: Path, workdir: Path, size: int = 0,
     check_access(chdman, Path(chd).parent)
     check_access(chdman, workdir)
     iso = workdir / "disc.iso"
-    run(chdman, ["extractdvd", "-i", str(chd), "-o", str(iso)], progress, "Extracting", cancel)
+    run(chdman, ["extractdvd", "-i", chdman_input(chd), "-o", str(iso)], progress, "Extracting", cancel)
     if not iso.is_file():
         raise ChdmanError("chdman did not write disc.iso")
     got = iso.stat().st_size

@@ -16,6 +16,31 @@ IS_WINDOWS = sys.platform.startswith("win")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
 
 
+def short_path(path: "str | os.PathLike[str]") -> str:
+    """The 8.3 short form of an existing ``path`` on Windows (``GetShortPathNameW``), or ``""`` when there is none
+    (not Windows, the file is missing, or the volume has 8.3 names turned off)."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        import ctypes
+        fn = ctypes.windll.kernel32.GetShortPathNameW            # type: ignore[attr-defined]
+        fn.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        fn.restype = ctypes.c_uint
+        src = os.path.abspath(os.fspath(path))
+        size = 1024
+        for _ in range(2):
+            buf = ctypes.create_unicode_buffer(size)
+            n = fn(src, buf, size)
+            if n == 0:
+                return ""
+            if n < size:
+                return buf.value
+            size = n + 1
+    except (OSError, AttributeError, ValueError, ImportError):
+        pass
+    return ""
+
+
 def popen_kwargs(new_session: bool = False) -> dict:
     """Extra ``Popen`` / ``run`` keywords: no console window on Windows; own session on POSIX when asked."""
     if IS_WINDOWS:
