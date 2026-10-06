@@ -577,6 +577,33 @@ class ConvertTest(unittest.TestCase):
                 self.assertEqual(c.verify()["overall"], True)
                 self.assertEqual(c.is_dvd, op.mode == "createdvd")
 
+    def test_the_writer_uses_the_jobs_worker_count(self) -> None:
+        from romorg import chdwrite
+        real = chdwrite.write_chd
+        seen = []
+
+        def spy(*a, **kw):
+            seen.append(kw.get("threads"))
+            return real(*a, **kw)
+        r = self.w.scan()
+        ops = discsys.plan_convert(r, False)
+        with mock.patch.dict(os.environ, {chdwrite.ENV_THREADS: ""}), \
+                mock.patch("romorg.chdwrite.write_chd", side_effect=spy):
+            res = discsys.apply_conversions(ops, self.w.root, None, r.index, workers=3)
+        self.assertEqual(res["converted"], len(ops))
+        self.assertEqual(seen, [3] * len(ops))                    # the chd_workers setting, not the CPU count
+
+    def test_a_release_that_times_out_restarts_the_workers_before_the_rename(self) -> None:
+        from romorg import chdsched
+        r = self.w.scan()
+        ops = discsys.plan_convert(r, False)
+        real = chdsched.Scheduler.restart_workers
+        with mock.patch.object(chdsched.Scheduler, "release", return_value=False), \
+                mock.patch.object(chdsched.Scheduler, "restart_workers", autospec=True, side_effect=real) as restart:
+            res = discsys.apply_conversions(ops, self.w.root, None, r.index, workers=2)
+        self.assertEqual((res["converted"], res["failed"]), (len(ops), []))
+        self.assertEqual(restart.call_count, len(ops))
+
     def test_zstandard_preset(self) -> None:
         from romorg import chdwrite
         if not chdwrite.zstd_available():

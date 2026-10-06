@@ -366,7 +366,8 @@ class _Pool:
                 raise ValueError("garbled worker reply")
             except (OSError, ValueError, KeyError, TypeError):
                 self.local.proc = None          # this thread compresses by itself from now on
-                self.fallbacks += 1
+                with self.lock:                 # (several threads may fail at once)
+                    self.fallbacks += 1
         return compress_many(self.comp, data, hints)
 
     def submit(self, jobs: list) -> list:
