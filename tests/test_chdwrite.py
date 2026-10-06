@@ -291,6 +291,36 @@ class MapTest(unittest.TestCase):
             mixed.append(text[i % 40] if i % 3 else noise[i % 6] if i % 2 else zero)
         self.roundtrip(mixed + text * 3)            # copies that follow each other: SELF_1 runs
 
+    def test_the_map_is_byte_for_byte_the_per_entry_reference(self) -> None:
+        """``_build_map`` works on whole arrays at once; it must give exactly what the plain per-entry loop gives
+        (kept here as the reference) for every mix of kinds, runs and copies."""
+        import random
+        from array import array
+        rnd = random.Random(2026)
+        cases = [([], [], [], []), ([0], [100], [124], [7]), ([4], [4096], [124], [9]), ([5, 5], [0, 0], [0, 0], [0, 0])]
+        for n in (5, 19, 23, 300, 4000):
+            for style in ("random", "runs", "copies", "copies of zero"):
+                types, lens, offs, crcs = array("B"), array("I"), array("Q"), array("H")
+                pos, t = 124, 0
+                for i in range(n):
+                    if style == "runs" and rnd.random() < 0.1 or style != "runs":
+                        t = rnd.choice((0, 0, 1, 2, 3, 4, 5, 5)) if style != "random" else rnd.choice((0, 1, 4, 5))
+                    if t == 5 and i:
+                        o = 0 if style == "copies of zero" else rnd.choice((rnd.randrange(i), i - 1, offs[-1] + 1,
+                                                                            offs[-1]))
+                        types.append(5), lens.append(0), offs.append(min(o, i - 1)), crcs.append(0)
+                        continue
+                    t = t if t != 5 else 0
+                    ln = 4096 if t == 4 else rnd.randint(1, 70000)
+                    types.append(t), lens.append(ln), offs.append(pos), crcs.append(rnd.randrange(65536))
+                    pos += ln
+                cases.append((types, lens, offs, crcs))
+                cases.append((list(types), list(lens), list(offs), list(crcs)))
+        for types, lens, offs, crcs in cases:
+            first = rnd.randrange(1 << 40)
+            self.assertEqual(chdwrite._build_map(types, lens, offs, crcs, first),
+                             _reference_map(types, lens, offs, crcs, first), (len(types), list(types)[:30]))
+
     def test_huffman_lengths_stay_within_8_bits(self) -> None:
         fib = [1, 1]
         while len(fib) < 16:
@@ -299,6 +329,73 @@ class MapTest(unittest.TestCase):
         self.assertLessEqual(max(lengths), 8)
         self.assertEqual(sum(1 << (8 - ln) for ln in lengths if ln), 256)       # a complete tree
         self.assertEqual(sorted(chdwrite._huffman_lengths([0, 5] + [0] * 14, 8)), [0] * 14 + [1, 1])
+
+
+def _reference_map(types, lens, offs, crcs, first_offset) -> bytes:
+    """The v5 map built entry by entry: how ``chdwrite._build_map`` was first written (checked against chdman)."""
+    import binascii
+    W = chdwrite
+    n = len(types)
+    kinds = []
+    last_self = -2
+    for i in range(n):
+        t = types[i]
+        if t == W._T_SELF:
+            o = offs[i]
+            if o == last_self:
+                t = W._T_SELF0
+            elif o == last_self + 1:
+                t = W._T_SELF1
+            last_self = o
+        kinds.append(t)
+    symbols = []
+    i = 0
+    while i < n:
+        t = kinds[i]
+        run = 1
+        while i + run < n and kinds[i + run] == t:
+            run += 1
+        symbols.append(t)
+        rest = run - 1
+        while rest >= 3:
+            if rest >= 19:
+                k = min(rest - 19, 255)
+                symbols += (W._T_RLE_LARGE, k >> 4, k & 15)
+                rest -= 19 + k
+            else:
+                symbols += (W._T_RLE_SMALL, rest - 3)
+                rest = 0
+        symbols += [t] * rest
+        i += run
+    counts = [0] * 16
+    for s in symbols:
+        counts[s] += 1
+    lengths = W._huffman_lengths(counts, 8)
+    codes = W._canonical(lengths)
+    bits = ["".join("00010001" if ln == 1 else format(ln, "04b") for ln in lengths)]
+    bits.append("".join([codes[s] for s in symbols]))
+    lengthbits = max((lens[i] for i in range(n) if types[i] <= 3), default=0).bit_length()
+    selfbits = max((offs[i] for i in range(n) if types[i] == W._T_SELF), default=0).bit_length()
+    fields = []
+    raw = bytearray()
+    for i in range(n):
+        t, ln, off, crc = types[i], lens[i], offs[i], crcs[i]
+        if t <= 3:
+            fields.append(format((ln << 16) | crc, f"0{lengthbits + 16}b"))
+        elif t == W._T_NONE:
+            fields.append(format(crc, "016b"))
+        elif kinds[i] == W._T_SELF and selfbits:
+            fields.append(format(off, f"0{selfbits}b"))
+        if t == W._T_SELF:
+            ln = crc = 0
+        raw += struct.pack(">BBHHIH", t, ln >> 16, ln & 0xFFFF, off >> 32, off & 0xFFFFFFFF, crc)
+    bits.append("".join(fields))
+    stream = "".join(bits)
+    stream += "0" * (-len(stream) % 8)
+    body = int(stream, 2).to_bytes(len(stream) // 8, "big") if stream else b""
+    head = struct.pack(">I", len(body)) + first_offset.to_bytes(6, "big") + struct.pack(
+        ">H", binascii.crc_hqx(bytes(raw), 0xFFFF)) + bytes([lengthbits, selfbits, 0, 0])
+    return head + body
 
 
 class ImageErrorTest(unittest.TestCase):

@@ -25,7 +25,7 @@ import argparse
 import hashlib
 import json
 import os
-import resource
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +33,11 @@ import threading
 import time
 import zlib
 from pathlib import Path
+
+try:                    # POSIX: CPU time of the reaped children
+    import resource
+except ImportError:     # Windows: measured with a job object instead (tools/benchproc.py)
+    resource = None  # type: ignore[assignment]
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -106,7 +111,7 @@ def _job_disc(spec: dict) -> dict:
                 off += blob_sizes[i]
                 out[i] = {"size": n, "crc32": "%08x" % (crc & 0xFFFFFFFF), "md5": md5.hexdigest(), "sha1": sha1.hexdigest()}
         finally:
-            subprocess.run(["rm", "-rf", str(work)])
+            shutil.rmtree(work, ignore_errors=True)
     else:
         raise SystemExit(f"unknown strategy {strategy}")
     wall = time.perf_counter() - t0
@@ -192,10 +197,14 @@ JOBS = {"disc": _job_disc, "scan": _job_scan, "hash": _job_hash, "small": _job_s
 
 # ------------------------------------------------------------------ parent side: run a job in a child, sample CPU / RSS
 def _tree_rss_kb(root_pid: int) -> int:
-    """VmRSS of the process and all its descendants (kB)."""
+    """VmRSS of the process and all its descendants (kB); 0 without /proc."""
     kids: dict[int, list[int]] = {}
     rss: dict[int, int] = {}
-    for d in os.listdir("/proc"):
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return 0
+    for d in entries:
         if not d.isdigit():
             continue
         try:
@@ -218,10 +227,21 @@ def _tree_rss_kb(root_pid: int) -> int:
 def run_child(kind: str, spec: dict, env_extra: dict | None = None) -> dict:
     env = dict(os.environ)
     env.update(env_extra or {})
+    cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "--child", kind, json.dumps(spec)]
+    if resource is None:                    # Windows: CPU and peak memory of the whole process tree
+        sys.path.insert(0, str(HERE))
+        import benchproc
+        m = benchproc.run(cmd, env=env)
+        if m.returncode != 0:
+            raise SystemExit(f"job failed ({kind}): {m.stderr[-800:]}")
+        res = json.loads(m.stdout.strip().splitlines()[-1])
+        res["_cpu"] = m.cpu or 0.0
+        res["_wall_total"] = m.wall
+        res["_rss_mb"] = m.peak_mb or 0.0
+        return res
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.perf_counter()
-    proc = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--child", kind, json.dumps(spec)],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
     peak = 0
     stop = threading.Event()
 
@@ -292,7 +312,7 @@ def cmd_scan(a: argparse.Namespace) -> None:
             spec = {"root": a.folder, "dat": a.dat, "data_dir": data, "workers": workers, "engine": engine, "tree": tree}
             r = run_child("scan", spec, env)
         finally:
-            subprocess.run(["rm", "-rf", data])
+            shutil.rmtree(data, ignore_errors=True)
         if ref is None:
             ref = r
         same = "yes" if (r["names"] == ref["names"] and r["levels"] == ref["levels"]) else "NO"

@@ -250,7 +250,7 @@ class WorkerProcessTest(Base):
             self.assertEqual((kw["bufsize"], kw.get("text"), kw.get("universal_newlines")), (0, None, None))
             self.assertEqual((kw["stdin"], kw["stdout"]), (subprocess.PIPE, subprocess.PIPE))
             if winproc.IS_WINDOWS:
-                self.assertTrue(kw["creationflags"] & subprocess.CREATE_NO_WINDOW)
+                self.assertTrue(kw["creationflags"] & subprocess.DETACHED_PROCESS)    # no console, no window
                 self.assertNotEqual(kw.get("close_fds"), False)       # only the pipes are inherited
             else:
                 self.assertTrue(kw["start_new_session"])
@@ -299,6 +299,108 @@ class WorkerProcessTest(Base):
             self.assertTrue(s.release(moved))
             os.remove(moved)
         self.assertEqual(first, ref)
+
+    def test_release_on_a_broken_pool_kills_the_survivors_so_the_file_can_move(self) -> None:
+        moved = self.dir / "moved.chd"
+        with chdsched.Scheduler(3, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            procs = [w.proc for w in s._workers]
+            threads = [w.thread for w in s._workers]
+            s.broken = True                               # as after a worker failed for good
+            self.assertTrue(s.release(self.path))
+            os.replace(self.path, moved)                  # WinError 32 if a survivor still had it open
+            self.assertTrue(all(p.poll() is not None for p in procs))
+            for t in threads:
+                t.join(5)
+                self.assertFalse(t.is_alive())            # no worker thread spins on the broken pool
+        os.remove(moved)
+
+    def test_release_waits_for_a_failed_worker_to_exit(self) -> None:
+        moved = self.dir / "moved.chd"
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            w = s._workers[0]
+            with s._cv:                                   # failed and taken out of the pool, process not reaped yet
+                s._workers.remove(w)
+                s._gone.append(w)
+            killer = threading.Timer(0.3, w.kill)
+            killer.start()
+            t0 = time.monotonic()
+            self.assertTrue(s.release(self.path))
+            self.assertGreaterEqual(time.monotonic() - t0, 0.2)   # it waited for that process ...
+            self.assertIsNotNone(w.proc.poll())
+            killer.join()
+            os.replace(self.path, moved)                  # ... so nothing holds the file any more
+        os.remove(moved)
+
+    def test_restart_workers_frees_every_file_and_the_pool_goes_on(self) -> None:
+        moved = self.dir / "moved.chd"
+        ref = reference(self.path)
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            old = [w.proc for w in s._workers]
+            s.restart_workers()
+            self.assertTrue(all(p.poll() is not None for p in old))
+            os.replace(self.path, moved)
+            with chd.Chd(moved, load_map=False) as c:
+                self.assertEqual(s.hash_tracks(c, range(len(c.tracks))), ref)
+            self.assertTrue(s.pooled)
+            self.assertTrue(s.release(moved))
+        os.remove(moved)
+
+    def test_restart_workers_during_a_live_run_loses_no_chunk(self) -> None:
+        ref = reference(self.path)
+        real_read = chdsched._Worker._read_reply
+        requeued: list = []
+        with chdsched.Scheduler(3, chunk_bytes=1500) as s:
+            real_requeue = s._requeue
+
+            def requeue(chunks):
+                requeued.extend(chunks)
+                real_requeue(chunks)
+
+            def slow_read(w, item):                       # replies are slow: chunks are in flight when we restart
+                time.sleep(0.2)
+                return real_read(w, item)
+
+            s._requeue = requeue
+            with mock.patch.object(chdsched._Worker, "_read_reply", slow_read),                     chd.Chd(self.path, load_map=False) as c:
+                out: dict = {}
+                t = threading.Thread(target=lambda: out.update(s.hash_tracks(c, range(len(c.tracks)))))
+                t.start()
+                time.sleep(0.15)
+                s.restart_workers()
+                t.join(60)
+                self.assertFalse(t.is_alive())
+            self.assertTrue(requeued)                     # the killed workers did have chunks in flight
+            self.assertEqual(out, ref)
+            self.assertEqual(s._reserved, 0)
+            self.assertFalse(s._retry)
+
+    def test_a_worker_that_will_not_exit_keeps_its_releases_pending(self) -> None:
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            w = s._workers[0]
+            rel = chdsched._Release(self.path)
+            w.releases.append(rel)
+            with mock.patch.object(w.proc, "wait", side_effect=subprocess.TimeoutExpired("x", 5)),                     mock.patch.object(w.proc, "poll", return_value=None):
+                w.kill()
+            self.assertFalse(w.reaped.is_set())
+            self.assertFalse(rel.done.is_set())           # not reported as freed
+
+    def test_gone_is_pruned_when_workers_fail_or_restart(self) -> None:
+        with chdsched.Scheduler(2, chunk_bytes=4000) as s:
+            with chd.Chd(self.path, load_map=False) as c:
+                s.hash_tracks(c, range(len(c.tracks)))
+            for _ in range(4):
+                s.restart_workers()
+                with chd.Chd(self.path, load_map=False) as c:
+                    s.hash_tracks(c, range(len(c.tracks)))
+            self.assertLessEqual(len(s._gone), 2)
 
     def test_killing_workers_needs_no_taskkill_unless_frozen(self) -> None:
         with mock.patch("romorg.winproc.kill_tree") as tree:

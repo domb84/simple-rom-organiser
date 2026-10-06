@@ -54,7 +54,9 @@ CHUNK_BYTES = 4 << 20            # extracted bytes per work unit (2-8 MB measure
 MAX_BUDGET = 256 << 20           # hunks handed out but not yet hashed
 PER_WORKER_BYTES = 80 << 20      # what one worker process costs in RAM (python + a chunk + temporaries)
 MAX_WORKERS = 32
-WINDOWS_MAX_AUTO = 12            # automatic worker count on Windows (not measured there beyond 8)
+# automatic worker count on Windows. Measured on 16 threads for reading (hashing) and writing (built-in writer,
+# PS1 / Dreamcast sets): 8 is clearly slower, 12 / 14 / 16 are equal within noise, and 12 leaves the UI some room
+WINDOWS_MAX_AUTO = 12
 INFLIGHT = 2                     # requests in flight per worker (hides the pipe / hashing latency)
 MAX_RESPAWNS = 3
 _F_SETPIPE_SZ = 1031
@@ -164,6 +166,17 @@ class _Release:
     done: threading.Event = field(default_factory=threading.Event)
 
 
+def _worker_popen_kwargs() -> dict:
+    """POSIX: its own session (killed as a group). Windows: no console at all (``DETACHED_PROCESS``): a worker
+    talks only through its pipes, and a hidden console (``CREATE_NO_WINDOW``) costs a conhost process per worker,
+    which made starting a dozen of them about a third slower. (Consequence: a console-subsystem helper started by a
+    worker would get a console window of its own; the worker starts none. Keep it that way, or pass
+    ``CREATE_NO_WINDOW`` to that helper.)"""
+    if winproc.IS_WINDOWS:
+        return {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0x00000008)}
+    return winproc.popen_kwargs(new_session=True)
+
+
 def spawn_worker() -> "subprocess.Popen":
     """Start one ``romorg.chdworker`` process (binary pipes on stdin / stdout); :class:`PoolError` when it cannot."""
     env = dict(os.environ)
@@ -178,7 +191,7 @@ def spawn_worker() -> "subprocess.Popen":
             cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
         proc = subprocess.Popen(cmd, env=env,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                bufsize=0, **winproc.popen_kwargs(new_session=True))
+                                bufsize=0, **_worker_popen_kwargs())
     except OSError as exc:
         raise PoolError(f"cannot start a worker: {exc}") from exc
     if fcntl is not None:
@@ -235,7 +248,8 @@ class _Worker:
         self.sched, self.wid = sched, wid
         self.proc = spawn_worker()
         self.rd = io.BufferedReader(self.proc.stdout, buffer_size=1 << 16)
-        self.dead = False
+        self.dead = False                             # set (under the scheduler's lock) once it is being killed
+        self.reaped = threading.Event()               # its process has exited: it holds no file open any more
         self.releases: Deque[_Release] = deque()      # guarded by the scheduler's lock
         self.thread = threading.Thread(target=self._loop, name=f"chd-worker-{wid}", daemon=True)
 
@@ -252,8 +266,8 @@ class _Worker:
                     outstanding.append(item)          # before sending: a failed send must hand the chunk back
                     self._send(item)
                 if not outstanding:
-                    if sched._closed:
-                        return
+                    if sched._closed or sched.broken or self.dead:
+                        return                        # (a broken pool hands out nothing: no busy loop)
                     continue
                 item = outstanding[0]
                 reply = self._read_reply(item)
@@ -263,11 +277,17 @@ class _Worker:
                 else:
                     sched._deliver(item, reply)
         except BaseException as exc:  # noqa: BLE001 - crash / broken pipe: the scheduler decides what happens
+            chunks = [c for c in outstanding if isinstance(c, _Chunk)]
+            if sched._closed:
+                pass
+            elif self.dead:                           # killed on purpose (restart_workers): others redo its chunks
+                sched._requeue(chunks)
+            else:
+                sched._worker_failed(self, chunks, exc)
+            self.kill()                               # idempotent; the process is gone once it returns ...
             for item in outstanding:
                 if isinstance(item, _Release):
-                    item.done.set()                   # a dead worker holds no file open
-            if not sched._closed:
-                sched._worker_failed(self, [c for c in outstanding if isinstance(c, _Chunk)], exc)
+                    item.done.set()                   # ... so it holds no file open
 
     def _send(self, chunk: Any) -> None:
         if isinstance(chunk, _Release):
@@ -304,11 +324,12 @@ class _Worker:
         return ("ok", buf)
 
     def kill(self) -> None:
-        self.dead = True
+        """Kill the process and wait for it to exit (idempotent, any thread). Releases addressed to it count as
+        done only then: Windows keeps a file locked until the process holding it is gone."""
         with self.sched._cv:
+            self.dead = True
             pending, self.releases = list(self.releases), deque()
-        for r in pending:
-            r.done.set()                              # the process goes away: nothing of it stays open
+            self.sched._cv.notify_all()               # its thread, if waiting for work, returns
         _terminate(self.proc)
         for f in (self.proc.stdin, self.rd):
             try:
@@ -320,6 +341,10 @@ class _Worker:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:  # pragma: no cover
             pass
+        if self.proc.poll() is not None:
+            self.reaped.set()
+            for r in pending:                         # only an exited process holds no file: otherwise they stay
+                r.done.set()                          # undone and release() times out (False), never lies
 
 
 # --------------------------------------------------------------------------- the scheduler
@@ -342,6 +367,7 @@ class Scheduler:
         self._active: set = set()
         self._retry: Deque[_Chunk] = deque()
         self._workers: List[_Worker] = []
+        self._gone: List[_Worker] = []          # taken out of _workers, maybe not reaped yet (see release)
         self._reserved = 0
         self._respawns = 0
         self._closed = False
@@ -416,29 +442,56 @@ class Scheduler:
         A worker keeps its last CHDs open between chunks (their hunk maps are parsed once). On POSIX that never
         matters, but Windows refuses to rename or delete a file another process has open (WinError 32), so a
         caller that is about to move a file it hashed here - the new CHD of a conversion - releases it first.
-        Chunks already sent for the file are decoded first (a later request simply reopens it). False when a
-        worker did not answer within ``timeout`` seconds."""
-        if not self.pooled:
+        Chunks already sent for the file are decoded first (a later request simply reopens it). A worker that
+        failed or is being killed counts once its process has exited; a broken pool (which hands out no more work)
+        has its remaining workers killed. False when a worker did not answer within ``timeout`` seconds: the
+        caller can :meth:`restart_workers`, which always frees the file."""
+        if self.workers <= 1:
             return True
         key = os.fspath(path)
         with self._cv:
-            if self._closed:
-                return True
-            pending = []
+            stop: List[_Worker] = []
+            if self.broken or self._closed:
+                stop, self._workers = list(self._workers), []
+                self._gone += stop
+            waits: List[threading.Event] = []
             for w in self._workers:
                 if not w.dead:
                     r = _Release(key)
                     w.releases.append(r)
-                    pending.append(r)
+                    waits.append(r.done)
+            self._gone = [w for w in self._gone if not w.reaped.is_set()]
+            waits += [w.reaped for w in self._gone]
             self._cv.notify_all()
+        for w in stop:
+            w.kill()
         deadline = time.monotonic() + timeout
-        return all(r.done.wait(max(0.0, deadline - time.monotonic())) for r in pending)
+        return all(e.wait(max(0.0, deadline - time.monotonic())) for e in waits)
+
+    def restart_workers(self) -> None:
+        """Kill every worker and wait for their processes to exit; the next request starts new ones (chunks in
+        flight go to them). Frees every file the workers had open, whatever state they were in."""
+        with self._cv:
+            workers, self._workers = list(self._workers), []
+            self._gone = [g for g in self._gone if not g.reaped.is_set()] + workers
+        for w in workers:
+            w.kill()
+        me = threading.current_thread()
+        for w in workers:
+            if w.thread is not me and w.thread.is_alive():
+                w.thread.join(timeout=5)
+        with self._cv:
+            pending = bool(self._retry or self._active) and not (self._closed or self.broken)
+        if pending:
+            self._ensure_workers(self.workers)
 
     def close(self) -> None:
         """Kill and reap the workers (idempotent)."""
         with self._cv:
             self._closed = True
             workers, self._workers = list(self._workers), []
+            workers += [w for w in self._gone if w not in workers]
+            self._gone = []
             for run in list(self._active):
                 run.done.set()
             self._cv.notify_all()
@@ -500,11 +553,26 @@ class Scheduler:
                 self._workers.append(w)
                 w.thread.start()
 
+    def _requeue(self, chunks: List[_Chunk]) -> None:
+        """The chunks of a worker that was killed on purpose: retried by the others (no try is counted)."""
+        with self._cv:
+            for c in reversed(chunks):
+                c.run.outstanding -= 1
+                self._reserved -= c.size
+                if c.run.failed or self.broken:
+                    self._finish_failed_locked(c.run)
+                else:
+                    self._retry.appendleft(c)
+            self._cv.notify_all()
+
     def _worker_failed(self, w: _Worker, chunks: List[_Chunk], exc: BaseException) -> None:
-        """A worker died / garbled its pipe: retry its chunks elsewhere, respawn it (a few times), else give up."""
+        """A worker died / garbled its pipe: retry its chunks elsewhere, respawn it (a few times), else give up.
+        When the pool breaks, the surviving workers are killed too: they would get no more work, and on Windows
+        they would keep the files they had open locked."""
         with self._cv:
             if w in self._workers:
                 self._workers.remove(w)
+                self._gone = [g for g in self._gone if not g.reaped.is_set()] + [w]
             for c in reversed(chunks):
                 c.tries += 1
                 if c.tries > 2:
@@ -518,26 +586,31 @@ class Scheduler:
                         self._retry.appendleft(c)
             self._cv.notify_all()
         w.kill()
+        survivors: List[_Worker] = []
         with self._cv:
             if self._closed or self.broken:
                 self.broken = True
                 self._fail_all_locked(f"a worker failed ({exc})")
-                return
-            if self._respawns >= MAX_RESPAWNS:
+            elif self._respawns >= MAX_RESPAWNS:
                 if not self._workers:
                     self.broken = True
                     self._fail_all_locked(f"the workers keep failing ({exc})")
-                return
-            self._respawns += 1
-            try:
-                nw = _Worker(self, 100 + self._respawns)
-            except PoolError as err:
-                if not self._workers:
-                    self.broken = True
-                    self._fail_all_locked(str(err))
-                return
-            self._workers.append(nw)
-            nw.thread.start()
+            else:
+                self._respawns += 1
+                try:
+                    nw = _Worker(self, 100 + self._respawns)
+                except PoolError as err:
+                    if not self._workers:
+                        self.broken = True
+                        self._fail_all_locked(str(err))
+                else:
+                    self._workers.append(nw)
+                    nw.thread.start()
+            if self.broken and not self._closed:
+                survivors, self._workers = list(self._workers), []
+                self._gone += survivors
+        for other in survivors:
+            other.kill()
 
     def _fail_all_locked(self, why: str) -> None:
         for run in list(self._active):
@@ -567,7 +640,7 @@ class Scheduler:
         """The next :class:`_Chunk` (or a :class:`_Release` addressed to ``worker``); None = nothing now."""
         with self._cv:
             while True:
-                if self._closed or self.broken:
+                if self._closed or self.broken or (worker is not None and worker.dead):
                     return None
                 if worker is not None and worker.releases:
                     return worker.releases.popleft()

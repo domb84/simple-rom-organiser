@@ -1909,9 +1909,10 @@ def _link_gdi_dir(op: "DcConvertOp", chdman: chdtool.Chdman, root: Path) -> tupl
 
 
 def write_builtin(op: DcConvertOp, new: Path, preset: str, progress: Optional[ProgressFn], cancel: Any,
-                  label: str) -> dict:
-    """Create ``new`` from the set of ``op`` with the built-in writer. :class:`cdimage.ImageError` = this set has a
-    layout the writer does not take (nothing was written); other failures are :class:`chdtool.ChdmanError`."""
+                  label: str, workers: Optional[int] = None) -> dict:
+    """Create ``new`` from the set of ``op`` with the built-in writer, compressing in ``workers`` processes (the
+    ``chd_workers`` setting; None = the writer's default). :class:`cdimage.ImageError` = this set has a layout the
+    writer does not take (nothing was written); other failures are :class:`chdtool.ChdmanError`."""
     files = sheet_track_files(op.src) if op.gdi_text is not None else None
     if op.gdi_text is not None and not files:
         raise cdimage.ImageError("the .cue cannot be turned into a .gdi")
@@ -1921,7 +1922,9 @@ def write_builtin(op: DcConvertOp, new: Path, preset: str, progress: Optional[Pr
         if progress:
             progress(done, total, f"{label}: Compressing, {100 * done // max(1, total)}% complete")
     try:
-        return chdwrite.write_chd(new, image, preset=preset, progress=report,
+        if os.environ.get(chdwrite.ENV_THREADS, "").strip().isdigit():
+            workers = None                          # the writer's own override wins
+        return chdwrite.write_chd(new, image, preset=preset, progress=report, threads=workers,
                                   cancel=lambda: organiser._is_cancelled(cancel))
     except chdwrite.Cancelled:
         raise chdtool.ChdmanError("cancelled", cancelled=True) from None
@@ -1960,7 +1963,8 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         use_chdman = chdman is not None and writer == "chdman"
         if not use_chdman:
             try:
-                write_builtin(op, new, preset, progress, cancel, label)
+                write_builtin(op, new, preset, progress, cancel, label,
+                              workers=sched.workers if sched is not None else None)
                 op.via = "builtin"
             except cdimage.ImageError as exc:
                 if chdman is None:
@@ -1995,8 +1999,10 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 verify_notes.append(how)
         finally:
             info.close()
-            if sched is not None:
-                sched.release(new)      # the workers close it: Windows renames / deletes no file that is open
+            if sched is not None and not sched.release(new):
+                # the workers close it: Windows renames / deletes no file that is open. One that did not answer
+                # in time is killed with the others (the next request starts new ones).
+                sched.restart_workers()
         bad = [str(i + 1) for i, t in enumerate(game.tracks) if not _rom_ok(t, got.get(i, {}))]
         if bad:
             raise chdtool.ChdmanError(f"verification failed: track {', '.join(bad)} of the new CHD does not "

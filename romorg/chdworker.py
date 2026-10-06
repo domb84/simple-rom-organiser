@@ -45,8 +45,9 @@ def _err(rid, kind: str, exc: BaseException) -> dict:
 
 
 def serve(stdin=None, stdout=None) -> None:
-    from . import chd as chdlib
-    chdlib.Chd.threads = 1          # the worker processes are the parallelism: no decode threads inside them
+    # The reader and the writer are imported on the first request that needs them: a worker that only compresses
+    # (the writer's) or only decodes (the scheduler's) starts sooner - a dozen of them start at once per job.
+    chdlib = None
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     cache: "OrderedDict[str, tuple]" = OrderedDict()
@@ -104,6 +105,9 @@ def serve(stdin=None, stdout=None) -> None:
                     cache.pop(key)[1].close()
                 reply({"id": rid, "n": 0})
                 continue
+            if chdlib is None:
+                from . import chd as chdlib
+                chdlib.Chd.threads = 1  # the worker processes are the parallelism: no decode threads inside them
             path = req["path"]
             sig = tuple(req.get("sig") or ())
             hit = cache.get(path)
@@ -121,15 +125,16 @@ def serve(stdin=None, stdout=None) -> None:
             info = hit[1]
             data = info.read_track_range(info.tracks[int(req["track"])], int(req["first"]), int(req["count"]))
             reply({"id": rid, "n": len(data)}, data)
-        except chdlib.ChdUnsupported as exc:
-            reply(_err(rid, "unsupported", exc))
-        except chdlib.ChdError as exc:
-            reply(_err(rid, "corrupt", exc))
         except (BrokenPipeError, KeyboardInterrupt):
             return
         except Exception as exc:  # noqa: BLE001 - reported to the parent
+            kind = "other"
+            if chdlib is not None and isinstance(exc, chdlib.ChdUnsupported):
+                kind = "unsupported"
+            elif chdlib is not None and isinstance(exc, chdlib.ChdError):
+                kind = "corrupt"
             try:
-                reply(_err(rid, "other", exc))
+                reply(_err(rid, kind, exc))
             except OSError:
                 return
 
