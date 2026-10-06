@@ -592,6 +592,23 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(tree(self.w.root), before)
         self.assertFalse([p for p in os.listdir(self.w.root) if p.startswith(".romorg-chd-")])
 
+    def test_a_failed_later_move_removes_the_new_chd_too(self) -> None:
+        before = tree(self.w.root)
+        real = organiser.rename_no_overwrite
+        calls = []
+
+        def flaky(src, dst, *a, **kw):
+            calls.append(src)
+            if len(calls) == 2:
+                raise PermissionError("locked")
+            return real(src, dst, *a, **kw)
+
+        with mock.patch("romorg.organiser.rename_no_overwrite", flaky):
+            res = self.run_convert()
+        self.assertEqual(res["converted"], 0)
+        self.assertGreaterEqual(len(calls), 3)                      # move 1, the failing move 2, the rollback of 1
+        self.assertEqual(tree(self.w.root), before)                 # originals back AND no leftover CHD
+
     def test_without_chdman_the_builtin_writer_converts(self) -> None:
         r, ops = self.plan(found=False)
         self.assertEqual([o.status for o in ops], ["convert"])
@@ -916,6 +933,15 @@ class GdiTrackRefTest(unittest.TestCase):
         self.assertFalse(link.is_symlink())
         self.assertTrue(os.path.samefile(link, self.src))                         # no copy: the same file
         self.assertSameBytes("track01.bin")
+
+    @unittest.skipUnless(os.name == "nt", "Windows: a hard link shares the read-only attribute, so it cannot be deleted")
+    def test_no_hard_link_to_a_read_only_track_on_windows(self) -> None:
+        import stat
+        os.chmod(self.src, stat.S_IREAD)
+        self.addCleanup(os.chmod, self.src, stat.S_IWRITE | stat.S_IREAD)
+        name = self.ref("symlink")
+        self.assertEqual(os.listdir(self.work), [])                               # no link that rmtree would keep
+        self.assertTrue(os.path.samefile(os.path.join(self.work, name), self.src))
 
     def test_relative_path_when_no_link_can_be_made(self) -> None:
         name = self.ref("symlink", "link")

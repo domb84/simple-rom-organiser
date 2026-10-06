@@ -318,6 +318,20 @@ class PlatformTest(unittest.TestCase):
         return scanner.scan(self.root, dats, alt_hashes=self.plat.alt_hashes, layout=self.plat.layout,
                             containers=self.plat.containers, **kw)
 
+    def test_container_and_plain_hashes_do_not_share_cache_rows(self) -> None:
+        dats, _ = platforms.load_platform_dats(self.plat)
+        cache = self.base / "hashes.sqlite"
+
+        def run(containers):
+            return scanner.scan(self.root, dats, alt_hashes=self.plat.alt_hashes, layout=self.plat.layout,
+                                containers=containers, use_cache=True, cache_path=cache)
+        run(())                                                     # e.g. the folder was scanned under another system
+        r = run(("rvz",))
+        self.assertIn("a.rvz", [m.unit.rel if hasattr(m, "unit") else Path(m.entry.path).name for m in r.matched]
+                      + [Path(m.entry.path).name for m in r.matched])
+        r = run(())
+        self.assertNotIn("a.rvz", [Path(m.entry.path).name for m in r.matched])
+
     def test_the_platform(self) -> None:
         p = self.plat
         self.assertEqual((p.source, p.layout, p.convertible, p.folder_hint, p.containers),

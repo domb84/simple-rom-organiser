@@ -460,6 +460,8 @@ class ErrorsTest(Base):
                 self.assertEqual(chdsched.default_workers(999), chdsched.MAX_WORKERS)
             with mock.patch("romorg.chdsched.mem_available", return_value=300 << 20):   # little RAM: fewer processes
                 self.assertLessEqual(chdsched.default_workers(0), 2)
+        with mock.patch.dict(os.environ, env, clear=True):          # a hand-edited config.json: Infinity / 1e999
+            self.assertGreaterEqual(chdsched.default_workers(float("inf")), 1)
         with mock.patch.dict(os.environ, {chdsched.ENV_WORKERS: "5"}):
             self.assertEqual(chdsched.default_workers(0), 5)
             self.assertEqual(chdsched.default_workers(2), 5)               # the environment wins

@@ -106,7 +106,7 @@ def default_workers(configured: Any = 0) -> int:
     limited by the memory that is available (a worker costs ~80 MB). 1 = no pool (sequential, in-process)."""
     try:
         n = int(os.environ.get(ENV_WORKERS) or configured or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         n = 0
     if n > 0:
         return max(1, min(n, MAX_WORKERS))

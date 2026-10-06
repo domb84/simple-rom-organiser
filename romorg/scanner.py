@@ -1383,6 +1383,8 @@ def scan(
             errors.append((path, f"RvzError: {exc}"))
             return True
         key = _cache_key(path)
+        if key is not None:
+            key += "\x00rvz"                  # the disc's hash, not the hash of the file's own bytes (scan_loose)
         hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
         if hit is None:
             try:
