@@ -493,6 +493,28 @@ class StaticAndSecurityTests(ServerTestCase):
         status, body, _ = self.request("POST", "/api/job/cancel")
         self.assertEqual((status, body), (200, {"cancelled": False}))
 
+    def test_rejected_post_body_is_read(self) -> None:
+        # Windows resets a socket closed with unread data, which can destroy the 403 before the client reads it
+        import io
+
+        def handler(headers: dict[str, str], body: bytes) -> Any:
+            h = server.Handler.__new__(server.Handler)
+            h.headers, h.rfile, h.close_connection = headers, io.BytesIO(body), False
+            return h
+
+        h = handler({"Content-Length": "5"}, b"{...}rest")
+        h._discard_body()
+        self.assertEqual((h.rfile.read(), h.close_connection), (b"rest", False))
+        h = handler({}, b"x")
+        h._discard_body()
+        self.assertEqual((h.rfile.read(), h.close_connection), (b"x", False))
+        for length in ("nope", str(server.MAX_BODY + 1)):
+            h = handler({"Content-Length": length}, b"x")
+            h._discard_body()
+            self.assertEqual((h.rfile.read(), h.close_connection), (b"x", True))
+        status, body, _ = self.request("POST", "/api/quit", body={"pad": "x" * 4096}, token="wrong")
+        self.assertEqual((status, body["error"]), (403, "Missing or invalid token"))
+
     def test_wrong_method(self) -> None:
         for path in ("/api/scan", "/api/kickstart/plan"):
             status, _, _ = self.request("GET", path)

@@ -3314,6 +3314,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         host = (self.headers.get("Host") or "").strip().lower()
         if host not in self.server.allowed_hosts():
+            self._discard_body()
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid Host header"})
             return
         url = urlsplit(self.path)
@@ -3322,6 +3323,7 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "GET":
             self._static(url.path)
         else:
+            self._discard_body()
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def _api(self, method: str, path: str, query: dict[str, str]) -> None:
@@ -3330,6 +3332,7 @@ class Handler(BaseHTTPRequestHandler):
         if handler is None:
             exists = any(p == path for _, p in ROUTES)
             status = HTTPStatus.METHOD_NOT_ALLOWED if exists else HTTPStatus.NOT_FOUND
+            self._discard_body()
             self._send_json(status, {"error": status.phrase})
             return
         try:
@@ -3337,6 +3340,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 token = self.headers.get(TOKEN_HEADER, "")
                 if not secrets.compare_digest(token.encode(), app.token.encode()):
+                    self._discard_body()
                     raise ApiError(HTTPStatus.FORBIDDEN, "Missing or invalid token")
                 body = self._read_json()
             data = handler(app, query, body)
@@ -3346,6 +3350,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             traceback.print_exc()
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _discard_body(self) -> None:
+        """Read and drop the request body of a request answered without it (403, 404, 405). Windows resets a socket
+        closed with unread data (RST), which can destroy the response before the client reads it (WinError 10053
+        on the client). A body larger than ``MAX_BODY`` or one that does not arrive just ends the connection."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            if length < 0:
+                self.close_connection = True
+            return
+        if length > MAX_BODY:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
 
     def _read_json(self) -> dict[str, Any]:
         try:
@@ -3475,13 +3499,8 @@ def running_instance() -> str | None:
         return None
     if pid == os.getpid():
         return None
-    if pid and os.name == "posix":
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return None
-        except OSError:
-            pass  # exists but belongs to someone else: let the probe decide
+    if pid and not _mod("winproc").pid_alive(pid):
+        return None  # owner gone (never a signal on Windows; someone else's process counts as alive)
     shown = f"[{host}]" if ":" in host else host
     url = f"http://{shown}:{port}/"
     try:
