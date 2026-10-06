@@ -36,3 +36,28 @@ POST". Keep one. `romorg/discsys.py` is touched by p2-writer (worker plumbing) a
 - chdman 0.289 on this machine (16 threads, idle): spider 8.76 s, doa2 22.73, alienfront 21.34, thps4 as CD 85.41, thps4 as DVD 110.17. SHA-1s: spider e332ae9c..., doa2 16ba675c..., alienfront 24a58e6a..., thps4 CD 381bc185..., thps4 DVD 20ba764e....
 - Phase-1 profiler (built-in, with taskkill + readline fixes, loaded machine): spider ~6.5 s, doa2 ~14, alienfront ~13.8, thps4 CD ~35, thps4 DVD ~28-36; zstd faster still; sizes within 0.1-0.8% of chdman. Reader via scheduler 4-8x faster than `chdman verify`.
 - Open items not yet done anywhere: emulator load test of written CHDs; clicking the Convert dropdowns in a browser.
+
+## Update 2026-10-06 (evening): phases 2 and 3 finished
+
+All four p2 branches were reviewed, fixed and merged into `windows-parity` (p2-reader's `server.py` POST-body fix was
+dropped in favour of p2-ui's equivalent). Merged suite: 1060 tests, OK, 46 skipped (real DATs / Linux-only / env-gated).
+
+Measured on this machine (Windows 11, 16 threads, idle, libFLAC 1.5.0, 12 workers, median of 2; `tools/bench_chdwrite.py`).
+chdman 0.289 numbers are from the earlier idle run. Every output has chdman's header SHA-1.
+
+| Disc | chdman 0.289 | built-in default | built-in Zstandard | size vs chdman (default) | scheduler verify |
+|---|---|---|---|---|---|
+| Spider (PS1 CD) | 8.76 s | 5.0 s | 3.5 s | 1.0013 | 2.2 s |
+| Dead or Alive 2 (GD) | 22.73 s | 13.7 s | 7.7 s | 1.0032 | 4.5 s |
+| Alienfront (GD) | 21.34 s | 11.8 s | 7.6 s | 1.0063 | 3.6 s |
+| THPS4 as CD | 85.41 s | 31.5 s | 23.5 s | 1.0059 | 7.9 s |
+| THPS4 as DVD | 110.17 s | 27.9 s | 22.1 s | 1.0084 | 8.1 s |
+
+`chdman verify` (0.289) reports raw and overall SHA-1 verified for all 8 built-in outputs (4 discs x default and zstd).
+Both packages built (`dist\*-win64.zip` 14.3 MB, `.exe` 12.3 MB); `--require-native` self-check passes inside each
+(libFLAC from the package, compression.zstd, worker processes, cdfl hunks).
+
+Still open: not pushed, not merged to `main`; no emulator load test of written CHDs; Convert dropdowns not clicked in a
+browser; RealDatTest (Sony DATs) and the other real-DAT tests never ran here (DATs absent); long paths from the frozen
+exe untested (no longPathAware manifest); non-ASCII library CHD paths still reach chdman in `hash_all_chdman` /
+`chdtool` extract+verify when chdman is the engine.
