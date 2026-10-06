@@ -216,7 +216,8 @@ def check_rvz() -> Tuple[bool, str]:
         image = b"".join(r.iter_image())
     if hashlib.sha1(image).hexdigest() != _TINY_RVZ_SHA1 or "%08x" % (zlib.crc32(image) & 0xFFFFFFFF) != _TINY_RVZ_CRC32:
         return False, "the RVZ reader did not rebuild the test image exactly"
-    how = "libzstd" if zstdnative.native() else "the built-in Python Zstandard decoder"
+    st = zstdnative.status()
+    how = st["library"] if zstdnative.native() else "the built-in Python Zstandard decoder"
     return True, f"the RVZ reader rebuilt a test GameCube image exactly (Zstandard through {how})"
 
 
