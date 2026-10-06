@@ -398,6 +398,26 @@ class DcEndpointTests(DcServerCase):
             self.assertEqual(self.call("/api/chdman")["preset"], "default")     # saved, but not usable here
         self.assertEqual(self.call("/api/chdman", {"preset": "default"})["preset"], "default")
 
+    def test_flac_encoder_and_platform_facts(self) -> None:
+        # without libFLAC the writer stores audio tracks with LZMA; the Convert step says so
+        with mock.patch("romorg.flacenc.available", return_value=False):
+            self.assertIs(self.call("/api/chdman")["flac_encoder"], False)
+        with mock.patch("romorg.flacenc.available", return_value=True):
+            self.assertIs(self.call("/api/chdman")["flac_encoder"], True)
+        want = "windows" if sys.platform.startswith("win") else ("linux" if sys.platform.startswith("linux")
+                                                                  else sys.platform)
+        self.assertEqual(self.call("/api/chdman")["os"], want)          # which install steps / path examples to show
+        self.assertEqual(self.call("/api/status")["os"], want)
+
+    def test_libsndfile_decoding_is_named(self) -> None:
+        sndfile = {"native": True, "library": "libsndfile", "note": "libFLAC not found"}
+        with mock.patch("romorg.flacnative.status", return_value=sndfile):
+            self.assertEqual(self.call("/api/chdman")["flac"]["library"], "libsndfile")
+        js = server.read_static("app.js").decode()
+        self.assertIn('flac.library === "libsndfile"', js)              # the UI says libsndfile, not libFLAC
+        self.assertIn("chd-flac-note", js)
+        self.assertIn('id="chd-flac-note"', server.read_static("index.html").decode())
+
     def test_startup_sweeps_stale_temp_folders(self) -> None:
         self.call("/api/folders", {"platform": PLAT, "path": str(self.roms)})
         dead = self.roms / ".romorg-chd-dead"

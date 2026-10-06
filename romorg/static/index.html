@@ -254,7 +254,7 @@
             <div class="chdman-line" id="chdman-line"></div>
             <ol class="chdman-steps hidden" id="chdman-steps"></ol>
             <div class="row">
-              <input type="text" id="chdman-path" class="input grow mono" placeholder="/path/to/chdman (optional override)"
+              <input type="text" id="chdman-path" class="input grow mono" placeholder="path to chdman (optional override)"
                      spellcheck="false" autocomplete="off" aria-label="chdman path">
               <button class="btn btn-small" id="chdman-save">Save path</button>
               <button class="btn btn-small" id="chdman-refresh">Look again</button>
@@ -281,6 +281,7 @@
                 <option value="zstd">Zstandard - converts about 3x faster and loads faster, but needs an emulator from 2024 or later</option>
               </select>
             </div>
+            <div class="muted hidden" id="chd-flac-note">libFLAC was not found, so the built-in writer stores audio tracks with LZMA instead of FLAC: the CHDs are valid and verified, but discs with audio tracks come out larger than chdman's.</div>
             <div class="muted hidden" id="chd-preset-note">Zstandard CHDs are not read by older emulators and some RetroArch cores. Convert one game and load it in your emulators before converting a collection.</div>
           </div>
           <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a

@@ -170,8 +170,22 @@ class DetectTest(ChdtoolBase):
             info = chdtool.info({})
         self.assertFalse(info["found"])
         self.assertIn("MAME", info["hint"])
-        self.assertIn("org.mamedev.MAME", info["hint"])
+        self.assertIn("mamedev.org" if sys.platform.startswith("win") else "org.mamedev.MAME", info["hint"])
         self.assertTrue(info["steps"])
+
+    def test_install_hint_per_platform(self) -> None:
+        win, other = chdtool.install_hint(windows=True), chdtool.install_hint(windows=False)
+        self.assertIn("chdman.exe", win)
+        self.assertIn("https://www.mamedev.org/", win)
+        self.assertIn("next to the app", win)
+        self.assertNotIn("Discover", win)                               # no Steam Deck steps on Windows
+        self.assertIn("org.mamedev.MAME", other)                        # the Steam Deck keeps its Discover step
+        self.assertIn("Discover", " ".join(chdtool.install_steps(windows=False)))
+        self.assertIn("chdman.exe", " ".join(chdtool.install_steps(windows=True)))
+        for text in (win, other, *chdtool.install_steps(windows=True), *chdtool.install_steps(windows=False)):
+            self.assertNotIn("needs chdman", text)                      # nothing needs it any more
+            self.assertNotIn("only converting", text)
+        self.assertEqual(chdtool.INSTALL_HINT, chdtool.install_hint())
 
     def test_a_program_that_is_not_chdman_is_rejected(self) -> None:
         notit = self.bin / "other"

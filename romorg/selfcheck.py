@@ -12,6 +12,10 @@ against the built AppImage. It checks (and prints one line each)
 
 and exits 1 when a required check fails. Outside an AppImage the bundle checks are skipped.
 
+Inside a Windows package (the single-file exe, or the .zip whose ``app\\native`` folder holds the DLLs) the package
+check (:func:`check_windows_package`) replaces the AppImage one: a libFLAC that ships must be the one loaded and must
+encode, Zstandard must come from ``compression.zstd`` (or another library), and a libsndfile that ships must load.
+
 ``--require-native`` (the Windows builds, ``packaging/build_windows*.ps1``) makes what a shipped package must bring
 REQUIRED: libFLAC must load, Zstandard must come from a library (``compression.zstd`` / libzstd), and the writer must
 run in worker processes and store the audio track as FLAC (``cdfl``).
@@ -114,12 +118,19 @@ def write_tiny_chd(path: Path, data_frames: int = 40, audio_frames: int = 40, gd
 
 
 def check_flac() -> Tuple[bool, str]:
-    from . import flacdec, flacnative
+    from . import flacdec, flacnative, nativeflac
     st = flacnative.status()
     if not st["native"]:
-        return False, f"libFLAC not available ({st['note']}) - the slow pure-Python FLAC decoder is used"
+        return False, (f"no libFLAC and no libsndfile ({st['note']}) - CD audio is decoded by the slow pure-Python "
+                       "FLAC decoder")
     pcm = _synthetic_pcm(588 * 8)
     stream = flac_verbatim_frames(pcm) + b"\x78" * 20          # + trailing "subcode" bytes
+    if st["library"] == "libsndfile":       # libFLAC missing; libsndfile decodes hunks whose subcode is not wanted
+        got = nativeflac.decode_frames(flac_verbatim_frames(pcm), 588 * 8)
+        if got != flacdec.decode_frames(stream, 0, 588 * 8)[0]:
+            return False, "libFLAC not available, and libsndfile's output differs from the pure-Python decoder"
+        return False, ("libFLAC not available: CD audio is decoded through libsndfile (checked bit-identical); "
+                       "hunks with subcode use the slow pure-Python decoder and the writer stores audio without FLAC")
     got, end = flacnative.decode_frames(stream, 0, 588 * 8)
     ref, end2 = flacdec.decode_frames(stream, 0, 588 * 8)
     if got != ref or end != end2 or got.tobytes() != pcm:
@@ -200,6 +211,83 @@ def check_writer(require_native: bool = False) -> Tuple[bool, str]:
                   + ("; " + "; ".join(extra) if extra else ""))
 
 
+def windows_package_dirs() -> List[Path]:
+    """The folders of the Windows package this runs from, or ``[]`` (a source tree, Linux, the AppImage).
+
+    The single-file exe: its bundle (``sys._MEIPASS``) and the exe's folder. The .zip (``<top>\\python``,
+    ``<top>\\app\\romorg``, ``<top>\\app\\native``, see ``packaging/build_windows.ps1``): the ``app`` folder."""
+    if not sys.platform.startswith("win"):
+        return []
+    if getattr(sys, "frozen", False):
+        dirs = [Path(sys._MEIPASS)] if getattr(sys, "_MEIPASS", None) else []
+        return dirs + [Path(sys.executable).resolve().parent]
+    app = Path(__file__).resolve().parent.parent
+    if app.name.lower() == "app" and (app / "native").is_dir():
+        return [app]
+    return []
+
+
+def _shipped(dirs: List[Path], pattern: str) -> List[Path]:
+    out: List[Path] = []
+    for d in dirs:
+        for sub in (d, d / "native"):
+            try:
+                out += sorted(p for p in sub.glob(pattern) if p.is_file())
+            except OSError:
+                pass
+    return out
+
+
+def _inside(path: str, dirs: List[Path]) -> bool:
+    try:
+        p = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    return any(p.is_relative_to(d.resolve()) for d in dirs)
+
+
+def check_windows_package(dirs: List[Path], require_native: bool = False) -> List[Tuple[str, str]]:
+    """What a Windows package brings, one ``(status, text)`` per library (the Windows counterpart of the AppImage's
+    bundle check): libFLAC loaded from the package and encoding, ``compression.zstd``, libsndfile."""
+    from . import flacenc, flacnative, nativeflac, zstdnative
+    out: List[Tuple[str, str]] = []
+    where = ", ".join(str(d) for d in dirs)
+    flac_dlls = _shipped(dirs, "*FLAC*.dll")
+    lib = flacnative.library_path()
+    if lib and _inside(lib, dirs):
+        pcm = _synthetic_pcm(588 * 4)
+        try:
+            frames = flacenc.encode(pcm, big_endian=False)
+            back, _end = flacnative.decode_frames(frames, 0, 588 * 4)
+            why = "" if back.tobytes() == pcm else "the frames do not decode to the test block"
+        except Exception as exc:  # noqa: BLE001 - reported
+            frames, why = b"", f"{type(exc).__name__}: {exc}"
+        if why:
+            out.append(("FAIL", f"package libFLAC {lib} loads but cannot encode: {why}"))
+        else:
+            out.append(("OK", f"package libFLAC {lib} encodes and decodes a test block ({len(frames)} bytes)"))
+    elif flac_dlls:
+        why = (f"libFLAC {lib} from outside the package was loaded" if lib
+               else f"it does not load ({flacnative.status()['note']})")
+        out.append(("FAIL", f"the package ships {flac_dlls[0]} but {why}"))
+    else:
+        out.append(("FAIL" if require_native else "WARN",
+                    f"no libFLAC in the package ({where}): audio tracks are stored with LZMA (larger files)"))
+    st = zstdnative.status()
+    if st["native"]:
+        out.append(("OK", f"package Zstandard: {st['library']}"))
+    else:
+        out.append(("FAIL", f"no Zstandard library in the package ({st['note']}): built with a Python before 3.14?"))
+    snd = _shipped(dirs, "libsndfile*.dll")
+    if not snd:
+        out.append(("SKIP", "no libsndfile in this package (optional: libFLAC decodes the audio)"))
+    elif nativeflac.available():
+        out.append(("OK", f"package libsndfile loads ({snd[0]})"))
+    else:
+        out.append(("FAIL", f"the package ships {snd[0]} but it does not load"))
+    return out
+
+
 def check_chdman() -> Tuple[str, str]:
     """``("OK" | "WARN" | "SKIP", text)``"""
     from . import bundle, chdtool
@@ -227,7 +315,11 @@ def main(argv: List[str] | None = None) -> int:
         else:
             lines.append(("OK", f"bundle at {root}: tools/lib/libFLAC, licenses/THIRD_PARTY.md"))
     else:
-        lines.append(("SKIP", "not running from an AppImage (no bundle)"))
+        package = windows_package_dirs()
+        if package:
+            lines += check_windows_package(package, require_native)
+        else:
+            lines.append(("SKIP", "not running from an AppImage or a Windows package (no bundle)"))
     status, text = check_chdman()
     lines.append((status, text))
     try:
@@ -241,7 +333,7 @@ def main(argv: List[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             ok, text = False, f"{type(exc).__name__}: {exc}"
         # inside the bundle (or a package: --require-native) libFLAC is REQUIRED; elsewhere its absence only means
-        # the slow decoder
+        # slower decoding (libsndfile or the pure-Python decoder) and audio stored without FLAC
         required = fn is check_scheduler or root is not None or require_native
         lines.append(("OK" if ok else ("FAIL" if required else "WARN"), text))
     for status, text in lines:

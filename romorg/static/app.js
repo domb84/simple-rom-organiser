@@ -928,6 +928,17 @@
   }
 
   // ----------------------------------------------- system page header + folder field
+  /** The platform the server runs on ("windows", "linux", "darwin", ...), from /api/status. */
+  function serverOs() { return (state.status && state.status.os) || ""; }
+
+  /** An example ROM folder in the form this platform uses (a Steam Deck SD card on Linux). */
+  function folderExample(hint) {
+    const os = serverOs();
+    if (os === "windows") return `D:\\Emulation\\roms\\${hint}`;
+    if (os === "darwin") return `/Volumes/<drive>/roms/${hint}`;
+    return `/run/media/deck/<SD>/roms/${hint}`;
+  }
+
   function renderSystemHead() {
     const p = currentPlatform();
     if (!p) return;
@@ -935,8 +946,9 @@
     $("sys-source").textContent = sourceLabel(p.source);
     $("sys-source").className = `badge src-${p.source}`;
     $("sys-sub").textContent = p.extensions && p.extensions.length ? p.extensions.join(" ") : "";
-    $("folder-example").textContent = `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`;
-    $("folder-input").placeholder = `/run/media/deck/<SD>/roms/${p.folder_hint || "..."}`;
+    const example = folderExample(p.folder_hint || "...");
+    $("folder-example").textContent = example;
+    $("folder-input").placeholder = example;
     $("folder-input").setAttribute("aria-label", `${p.name} folder`);
     if (document.activeElement !== $("folder-input")) $("folder-input").value = folderOf(p);
     paintFolder();
@@ -1583,7 +1595,7 @@
       el("p", { text: `Decode every track - audio included - of ${fmt(s.identified)} CHD${s.identified === 1 ? "" : "s"} and compare it with Redump?` }),
       el("ul", {},
         el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
-        el("li", { text: "The built-in reader decodes with every CPU core at once (and the system\u2019s libFLAC for audio): typically 100-250 MB/s on a Steam Deck, so a 1 GB disc takes seconds and an 8 GB PlayStation 2 DVD well under a minute or two. Nothing is written to disk." }),
+        el("li", { text: "The built-in reader decodes with every CPU core at once (and libFLAC for audio when it is available): typically 100-250 MB/s on a 4-core / 8-thread machine such as a Steam Deck, more with more cores, so a 1 GB disc takes seconds and an 8 GB PlayStation 2 DVD well under a minute or two. Nothing is written to disk." }),
         el("li", { text: "The built-in reader reads every CHD chdman 0.289 can (all versions and compressions, parent files next to their child). chdman is only used for a CHD in a format newer than that, or when you chose \"always chdman\": it extracts the disc to scratch space (in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder) and deletes it again. You can cancel at any time." })));
     if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
     Jobs.start("/api/dc/verify", {});
@@ -3589,6 +3601,14 @@
     renderChdman();
   }
 
+  /** How CD audio is decoded: libFLAC, libsndfile standing in for it, or the slow built-in decoder. */
+  function flacDecodingText(flac) {
+    if (!flac) return "";
+    if (flac.native && flac.library === "libsndfile") return " Audio decoding: libsndfile (libFLAC was not found).";
+    if (flac.native) return " Audio decoding: native libFLAC.";
+    return " Audio decoding: built-in Python FLAC (slow) - libFLAC was not found.";
+  }
+
   function renderChdman() {
     const box = $("chdman-box");
     const dc = isGameFolder(currentPlatform());
@@ -3600,13 +3620,16 @@
     $("chdman-line").textContent = (found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.bundled ? " - shipped with the app" : ""} (optional: the app reads and writes CHDs by itself).`
       : "chdman not found - it is not needed: the app reads and writes CHDs by itself.")
       + (notes ? ` (${notes})` : "")
-      + (chdmanInfo.flac ? (chdmanInfo.flac.native ? " Audio decoding: native libFLAC." : " Audio decoding: built-in Python FLAC (slow) - libFLAC was not found.") : "")
+      + flacDecodingText(chdmanInfo.flac)
       + (chdmanInfo.workers ? ` Decode processes: ${chdmanInfo.workers}.` : "");
     const steps = $("chdman-steps");
     const wantsChdman = chdmanInfo.writer === "chdman" || chdmanInfo.engine === "chdman";
     steps.classList.toggle("hidden", found || !wantsChdman);       // how to install it: only when it was asked for
     steps.replaceChildren(...(found || !wantsChdman ? [] : (chdmanInfo.steps || []).map((t) => el("li", { text: t }))));
     if (document.activeElement !== $("chdman-path")) $("chdman-path").value = chdmanInfo.override || "";
+    $("chdman-path").placeholder = chdmanInfo.os === "windows" ? "C:\\...\\chdman.exe (optional override)" : "/path/to/chdman (optional override)";
+    // without libFLAC the built-in writer stores audio tracks with LZMA: valid and verified, but larger
+    $("chd-flac-note").classList.toggle("hidden", chdmanInfo.flac_encoder !== false || chdmanInfo.writer === "chdman");
     $("chdman-engine").value = chdmanInfo.engine || "auto";
     $("chd-writer").value = chdmanInfo.writer || "auto";
     const zstdOption = $("chd-preset").querySelector('option[value="zstd"]');

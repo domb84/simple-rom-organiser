@@ -583,6 +583,15 @@ def _which_7z() -> str | None:
     return None
 
 
+def _os_name() -> str:
+    """``windows``, ``linux``, ``darwin`` or ``sys.platform``: for UI text that differs per platform."""
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return sys.platform
+
+
 def _in_game_mode() -> bool:
     """True under SteamOS Game Mode (gamescope), where native dialogs may never show."""
     env = os.environ
@@ -1220,12 +1229,8 @@ class App:
                 info["hint"] = ""
             else:
                 info = {"found": False, "kind": "", "label": "",
-                        "hint": (notes[0] + ". " if notes else "") + chdtool.INSTALL_HINT}
-                info["steps"] = [
-                    "Open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
-                    "or install any chdman and put it on PATH",
-                    f"or save the path of a chdman binary below (config key \"{chdtool.CONFIG_KEY}\", "
-                    f"environment {chdtool.ENV_VAR})"]
+                        "hint": (notes[0] + ". " if notes else "") + chdtool.install_hint(),
+                        "steps": chdtool.install_steps()}         # Windows: chdman.exe from mamedev.org; else MAME
             info["override"] = str(cfg.get(chdtool.CONFIG_KEY) or "")
             info["notes"] = notes
             state = (time.monotonic(), found, info)
@@ -1870,7 +1875,7 @@ class App:
             "last_platform": None, "last_dir": None, "folders": {}, "kickstart_dest": None,
             "kickstart_dests": {},
             "has_7z": _which_7z() is not None, "dialog_available": _dialog_command() is not None,
-            "data_dir": None, "scan": None,
+            "data_dir": None, "scan": None, "os": _os_name(),
             "nointro": {"dir": None, "count": 0, "dats": []}, "redump": {"dir": None, "count": 0, "dats": []},
             "updates": None,
         }
@@ -3077,13 +3082,21 @@ class App:
         return "default"
 
     def _writer_facts(self, info: dict[str, Any]) -> None:
+        """The writer settings and what this installation can do: ``zstd_writer`` (a Zstandard library compresses),
+        ``flac_encoder`` (libFLAC encodes; without it audio tracks are stored with LZMA, larger than chdman's) and
+        ``os`` (``windows`` / ``linux`` / ``darwin`` / ...: which install steps and path examples the UI shows)."""
         cfg = self._config()
         info["writer"] = self._chd_writer(cfg)
         info["preset"] = self._chd_preset(cfg)
+        info["os"] = _os_name()
         try:
             info["zstd_writer"] = bool(_mod("chdwrite").zstd_available())
         except Exception:  # noqa: BLE001 - informational only
             info["zstd_writer"] = False
+        try:
+            info["flac_encoder"] = bool(_mod("flacenc").available())
+        except Exception:  # noqa: BLE001 - informational only
+            info["flac_encoder"] = False
 
     def chdman_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """chdman detection result (``?refresh=1`` forces a new look)."""
@@ -3301,6 +3314,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         host = (self.headers.get("Host") or "").strip().lower()
         if host not in self.server.allowed_hosts():
+            self._discard_body()
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid Host header"})
             return
         url = urlsplit(self.path)
@@ -3309,6 +3323,7 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "GET":
             self._static(url.path)
         else:
+            self._discard_body()
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def _api(self, method: str, path: str, query: dict[str, str]) -> None:
@@ -3317,6 +3332,7 @@ class Handler(BaseHTTPRequestHandler):
         if handler is None:
             exists = any(p == path for _, p in ROUTES)
             status = HTTPStatus.METHOD_NOT_ALLOWED if exists else HTTPStatus.NOT_FOUND
+            self._discard_body()
             self._send_json(status, {"error": status.phrase})
             return
         try:
@@ -3324,6 +3340,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 token = self.headers.get(TOKEN_HEADER, "")
                 if not secrets.compare_digest(token.encode(), app.token.encode()):
+                    self._discard_body()
                     raise ApiError(HTTPStatus.FORBIDDEN, "Missing or invalid token")
                 body = self._read_json()
             data = handler(app, query, body)
@@ -3333,6 +3350,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             traceback.print_exc()
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _discard_body(self) -> None:
+        """Read and drop the request body of a request answered without it (403, 404, 405). Windows resets a socket
+        closed with unread data (RST), which can destroy the response before the client reads it (WinError 10053
+        on the client). A body larger than ``MAX_BODY`` or one that does not arrive just ends the connection."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            if length < 0:
+                self.close_connection = True
+            return
+        if length > MAX_BODY:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
 
     def _read_json(self) -> dict[str, Any]:
         try:
@@ -3377,6 +3414,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, dumps(data), "application/json; charset=utf-8")
 
     def _send(self, status: int, data: bytes, content_type: str) -> None:
+        """Send one response. A browser that went away meanwhile (a closed tab, a cancelled fetch: WinError 10053
+        ``ConnectionAbortedError`` on Windows, ``BrokenPipeError`` / ``ConnectionResetError``) only ends this
+        connection: no traceback, and :meth:`_api` never tries a 500 on the dead socket."""
+        try:
+            self._write_response(status, data, content_type)
+        except ConnectionError:
+            self.close_connection = True
+
+    def _write_response(self, status: int, data: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -3453,13 +3499,8 @@ def running_instance() -> str | None:
         return None
     if pid == os.getpid():
         return None
-    if pid and os.name == "posix":
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return None
-        except OSError:
-            pass  # exists but belongs to someone else: let the probe decide
+    if pid and not _mod("winproc").pid_alive(pid):
+        return None  # owner gone (never a signal on Windows; someone else's process counts as alive)
     shown = f"[{host}]" if ":" in host else host
     url = f"http://{shown}:{port}/"
     try:
