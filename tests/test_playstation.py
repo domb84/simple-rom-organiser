@@ -20,8 +20,12 @@ import chdtestlib as T  # noqa: E402
 from romorg import cdecc, chd as chdlib, chdtool, datfile, discsys, library, organiser, platforms, redump, tags  # noqa: E402
 
 PSX_DAT, PS2_DAT = "Sony - PlayStation", "Sony - PlayStation 2"
-SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-               "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/redump_sony")
+# Real data (read-only; RealDatTest is skipped without it): the folder holding the Redump "Sony - PlayStation - *.dat"
+# and "Sony - PlayStation 2 - *.dat" DATs. The default is where they live on the Steam Deck; set ROMORG_REAL_SONY_DATS
+# to use another folder. The game counts the test expects are those of the DAT versions it was written against.
+SCRATCH = Path(os.environ.get("ROMORG_REAL_SONY_DATS")
+               or "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
+                  "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/redump_sony")
 
 
 def tree(root: Path) -> dict:

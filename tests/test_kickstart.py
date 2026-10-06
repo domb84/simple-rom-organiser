@@ -20,9 +20,10 @@ from romorg.kickstart import PUAE_BIOS, apply_kickstarts, detect_system_dirs, pl
 
 FW = "Commodore Amiga - Firmware"
 GAMES = "Commodore Amiga - Games - [ADF]"
-REAL_FW_DAT = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-                   "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/dats/TOSEC/"
-                   "Commodore Amiga - Firmware (TOSEC-v2025-01-03_CM).dat")
+# ROMORG_REAL_SCRATCH: folder holding dats/TOSEC (default: the Steam Deck scratch folder)
+REAL_FW_DAT = Path(os.environ.get("ROMORG_REAL_SCRATCH") or
+                   "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad"
+                   ) / "dats/TOSEC/Commodore Amiga - Firmware (TOSEC-v2025-01-03_CM).dat"
 
 
 def _rom(name: str, data: bytes, dat: str) -> Rom:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,11 @@ from romorg import platforms
 from romorg.platforms import (DatSource, get_platform, list_platforms, load_platform_dats, locate_dats,
                               platform_dat_status)
 
-REAL_DATS = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-                 "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/dats/TOSEC")
-REAL_NOINTRO = REAL_DATS.parent.parent / "nointro"
+# ROMORG_REAL_SCRATCH: folder holding dats/TOSEC and nointro (default: the Steam Deck scratch folder)
+_SCRATCH = Path(os.environ.get("ROMORG_REAL_SCRATCH") or
+                "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
+REAL_DATS = _SCRATCH / "dats" / "TOSEC"
+REAL_NOINTRO = _SCRATCH / "nointro"
 CONSOLES = {
     "Nintendo Game Boy Advance": ("Nintendo - Game Boy Advance", (), False, "gba"),
     "Nintendo 64": ("Nintendo - Nintendo 64", ("n64_byteorder",), True, "n64"),
