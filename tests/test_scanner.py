@@ -485,8 +485,9 @@ class SevenZipIntegrationTest(unittest.TestCase):
 
 # --------------------------------------------------------------------------- No-Intro (AMENDMENT 4)
 
-SCRATCH_NOINTRO = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-                       "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/nointro")
+# ROMORG_REAL_SCRATCH: folder holding nointro (default: the Steam Deck scratch folder)
+SCRATCH_NOINTRO = Path(os.environ.get("ROMORG_REAL_SCRATCH") or "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
+                       "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad") / "nointro"
 
 
 def swap16(data: bytes) -> bytes:

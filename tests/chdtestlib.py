@@ -798,11 +798,17 @@ def find_bash():
     """A bash that really runs (not Windows' WSL stub): PATH first, then the one bundled with Git for Windows."""
     import shutil
     import subprocess
+    import sys
     cands = [shutil.which("bash")]
     git = shutil.which("git")
     if git:
         root = Path(git).resolve().parent.parent
-        cands += [str(root / "usr" / "bin" / "bash.exe"), str(root / "bin" / "bash.exe")]
+        cands += [str(root / "bin" / "bash.exe"), str(root / "usr" / "bin" / "bash.exe")]
+    if sys.platform == "win32":
+        # "bash" on a Windows PATH is often the WSL launcher stub: it answers "exit 0" but cannot run a script from a
+        # Windows path (rc 127), so the bash bundled with Git for Windows goes first (its bin\bash.exe wrapper, not
+        # usr\bin\bash.exe, which has no coreutils on its PATH).
+        cands = cands[1:] + cands[:1]
     for c in cands:
         if not c or not os.path.exists(c):
             continue
