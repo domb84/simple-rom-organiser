@@ -804,7 +804,7 @@ def find_bash():
     git = shutil.which("git")
     if git:
         root = Path(git).resolve().parent.parent
-        git_bash = [str(root / "usr" / "bin" / "bash.exe"), str(root / "bin" / "bash.exe")]
+        git_bash = [str(root / "bin" / "bash.exe"), str(root / "usr" / "bin" / "bash.exe")]   # bin\ first: its wrapper has coreutils on PATH
     parts = os.path.normcase(found or "").replace("/", "\\").split("\\")
     if os.name == "nt" and "system32" in parts:          # WSL launcher (or the Store stub)
         cands = git_bash + [found]

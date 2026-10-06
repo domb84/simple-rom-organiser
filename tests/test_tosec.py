@@ -13,8 +13,9 @@ from unittest import mock
 from romorg import tosec
 
 FIXTURES = Path(__file__).parent / "fixtures"
-REAL_PACK = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
-                 "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/pack.zip")
+# ROMORG_REAL_SCRATCH: folder holding pack.zip, the TOSEC DAT pack (default: the Steam Deck scratch folder)
+REAL_PACK = Path(os.environ.get("ROMORG_REAL_SCRATCH") or "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
+                 "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad") / "pack.zip"
 CAT_URL = "https://www.tosecdev.org/downloads/category/59-2025-03-13"
 PACK_URL = CAT_URL + "?download=117:tosec-dat-pack-complete-4743-tosec-v2025-03-13"
 PACK_NAME = "TOSEC - DAT Pack - Complete (4743) (TOSEC-v2025-03-13).zip"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
 from collections import Counter
@@ -10,7 +11,8 @@ from pathlib import Path
 from romorg import tags
 from romorg.tags import parse_name, superseded, supersede_key, to_json, version_key
 
-SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
+# ROMORG_REAL_SCRATCH: folder holding dats/TOSEC and nointro (default: the Steam Deck scratch folder)
+SCRATCH = Path(os.environ.get("ROMORG_REAL_SCRATCH") or "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
                "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
 NOINTRO = SCRATCH / "nointro"
 TOSEC_GAMES = SCRATCH / "dats/TOSEC/Commodore Amiga - Games - [ADF] (TOSEC-v2025-01-30_CM).dat"
