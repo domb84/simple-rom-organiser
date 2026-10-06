@@ -54,7 +54,9 @@ CHUNK_BYTES = 4 << 20            # extracted bytes per work unit (2-8 MB measure
 MAX_BUDGET = 256 << 20           # hunks handed out but not yet hashed
 PER_WORKER_BYTES = 80 << 20      # what one worker process costs in RAM (python + a chunk + temporaries)
 MAX_WORKERS = 32
-WINDOWS_MAX_AUTO = 12            # automatic worker count on Windows (not measured there beyond 8)
+# automatic worker count on Windows. Measured on 16 threads for reading (hashing) and writing (built-in writer,
+# PS1 / Dreamcast sets): 8 is clearly slower, 12 / 14 / 16 are equal within noise, and 12 leaves the UI some room
+WINDOWS_MAX_AUTO = 12
 INFLIGHT = 2                     # requests in flight per worker (hides the pipe / hashing latency)
 MAX_RESPAWNS = 3
 _F_SETPIPE_SZ = 1031
