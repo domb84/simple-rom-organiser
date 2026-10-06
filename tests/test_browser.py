@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -310,6 +311,98 @@ class BrowseListTests(UiTestCase):
         self.page.wait("document.querySelector('#tab-browse th[aria-sort=ascending]')")
         names = self.page.eval("[...document.querySelectorAll('#tab-browse tbody tr:not(.detail-row) td:first-child div:first-child')].map(e => e.textContent.trim())")
         self.assertEqual(names, sorted(names, key=str.casefold))
+        self.no_js_errors()
+
+
+class ConvertDropdownTests(UiTestCase):
+    """The Convert step of a disc system: the writer / compression dropdowns and plan -> apply -> undo with the
+    built-in writer (a one-track synthetic PlayStation disc, no chdman, no audio so no libFLAC is needed)."""
+
+    SLUG, PLATFORM = "sony-playstation", "Sony PlayStation"
+
+    def setUp(self) -> None:
+        super().setUp()
+        import chdtestlib as T
+        from romorg import paths
+        patch = mock.patch.dict(os.environ, {"ROMORG_CHDMAN": os.path.join(self.fx.tmp, "no-such-chdman")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        track = T.make_data_track(12, 5)
+        T.write_dat(paths.redump_dir() / "Sony - PlayStation.dat", [("Solo (USA)", "Games", [track])],
+                    name="Sony - PlayStation")
+        self.psx = self.fx.tmp / "psx"
+        (self.psx / "raw").mkdir(parents=True)
+        (self.psx / "raw" / "t.bin").write_bytes(track)
+        (self.psx / "raw" / "t.cue").write_text('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+
+    def tools(self) -> None:
+        self.open()
+        self.scan(self.PLATFORM, str(self.psx))
+        self.page.goto(self.fx.url + f"#/system/{self.SLUG}/tools")
+        self.page.wait("!!document.querySelector('#chdman-box:not(.hidden)') && "
+                       "document.getElementById('chdman-line').textContent.length > 5")
+
+    def select(self, selector: str, value: str) -> None:
+        self.page.eval(f"""(() => {{ const s = document.querySelector({selector!r}); s.value = {value!r};
+            s.dispatchEvent(new Event('change', {{bubbles: true}})); }})()""")
+
+    def confirm_dialog(self) -> str:
+        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
+        text = self.page.eval("document.getElementById('confirm-body').innerText")
+        self.page.eval("document.getElementById('confirm-yes').click()")
+        return text
+
+    def idle(self) -> None:
+        self.page.wait("(async () => { const j = await fetch('/api/job').then(r => r.json()); "
+                       "return !j || j.status !== 'running'; })()", timeout=120)
+
+    def test_writer_and_compression_dropdowns_are_saved_and_explained(self) -> None:
+        from romorg import chdwrite
+        self.tools()
+        self.assertEqual(self.page.eval("[document.getElementById('chd-writer').value, document.getElementById('chd-preset').value]"),
+                         ["auto", "default"])
+        self.assertEqual(self.page.eval("document.getElementById('chd-preset-note').classList.contains('hidden')"), True)
+        zstd_option = "document.querySelector('#chd-preset option[value=zstd]').disabled"
+        if chdwrite.zstd_available():
+            self.assertFalse(self.page.eval(zstd_option))
+            self.select("#chd-preset", "zstd")
+            self.page.wait("!document.getElementById('chd-preset-note').classList.contains('hidden')")
+            self.assertIn("older emulators", self.page.eval("document.getElementById('chd-preset-note').textContent"))
+            self.page.goto(self.fx.url + f"#/system/{self.SLUG}/tools")        # saved on the server: survives a reload
+            self.page.wait("document.getElementById('chdman-line').textContent.length > 5")
+            self.page.wait("document.getElementById('chd-preset').value === 'zstd'")
+        else:
+            self.assertTrue(self.page.eval(zstd_option))                       # no Zstandard library: not offered
+        self.select("#chd-writer", "chdman")
+        self.page.wait("document.getElementById('chd-writer').value === 'chdman'")
+        self.page.wait(f"{zstd_option} === true")
+        self.assertTrue(self.page.eval(zstd_option))                            # chdman writes no Zstandard
+        self.assertEqual(self.page.eval("document.getElementById('chd-preset').value"), "default")
+        self.select("#chd-writer", "auto")
+        self.page.wait("document.getElementById('chd-writer').value === 'auto'")
+        self.no_js_errors()
+
+    def test_plan_apply_and_undo_with_the_built_in_writer(self) -> None:
+        self.tools()
+        self.click("#convert-plan-btn")
+        self.page.wait("document.querySelectorAll('#convert-table tbody tr').length === 1")
+        self.assertIn("Solo (USA).chd", self.page.eval("document.querySelector('#convert-table tbody tr').innerText"))
+        self.click("#convert-apply-btn")
+        self.assertIn("Convert 1 raw set", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Converted 1 file')", timeout=120)
+        self.idle()
+        chd = self.psx / "Solo (USA)" / "Solo (USA).chd"
+        self.assertTrue(chd.is_file())
+        self.assertTrue((self.psx / "_converted_originals" / "raw" / "t.bin").is_file())
+        self.assertFalse((self.psx / "raw" / "t.bin").exists())
+        self.page.wait("document.getElementById('convert-undo-btn').dataset.blocked !== '1'")
+        self.click("#convert-undo-btn")
+        self.confirm_dialog()
+        self.page.wait("(async () => { const j = await fetch('/api/job').then(r => r.json()); "
+                       "return j && j.status === 'done' && !!j.result; })()")
+        self.idle()
+        self.assertFalse(chd.exists())
+        self.assertTrue((self.psx / "raw" / "t.bin").is_file())
         self.no_js_errors()
 
 
