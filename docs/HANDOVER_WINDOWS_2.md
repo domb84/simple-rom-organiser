@@ -61,3 +61,8 @@ Still open: not pushed, not merged to `main`; no emulator load test of written C
 browser; RealDatTest (Sony DATs) and the other real-DAT tests never ran here (DATs absent); long paths from the frozen
 exe untested (no longPathAware manifest); non-ASCII library CHD paths still reach chdman in `hash_all_chdman` /
 `chdtool` extract+verify when chdman is the engine.
+
+## Emulator check (2026-10-06)
+
+Tony Hawk's Pro Skater 4 written by the built-in writer as a DVD CHD, standard and Zstandard presets: both load and run in
+PCSX2 (reported by the user). Still untested in an emulator: CD CHDs with audio (PS1 in DuckStation, Dreamcast in Flycast).
