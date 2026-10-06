@@ -212,6 +212,31 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('"--report"', entry)
         self.assertIn('"--chd-worker"', entry)
 
+    def test_shipped_bytecode_does_not_record_the_builders_path(self) -> None:
+        # compileall stores the source path it was given in every .pyc (tracebacks): -d replaces the build directory
+        self.assertRegex(self.zip_ps1, r'compileall [^\n]*-d "app\\romorg"')
+        appimage = (PKG / "build_appimage.sh").read_text(encoding="utf-8")
+        self.assertRegex(appimage, r'compileall [^\n]*-d "/usr/lib/python\$PYVER"')
+
+    def test_downloads_are_pinned_by_sha256(self) -> None:
+        sndfile = (PKG / "fetch_sndfile.ps1").read_text(encoding="utf-8")
+        self.assertIn('soundfile==$SoundfileVersion', sndfile)
+        self.assertRegex(_ps1_value(sndfile, "WheelSha256").lower(), r"^[0-9a-f]{64}$")
+        self.assertIn("Get-FileHash", sndfile)
+        self.assertIn("Get-FileHash", self.zip_ps1)
+        self.assertRegex(self.zip_ps1, r'"3\.14\.\d+" = "[0-9a-f]{64}"')
+
+    def test_self_check_with_an_unwritable_report_exits_instead_of_raising(self) -> None:
+        # in the windowed exe an uncaught exception is a blocking message box
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "no_such_folder", "report.txt")
+            r = subprocess.run([sys.executable, str(PKG / "windows_entry.py"), "--self-check", "--report", bad],
+                               cwd=ROOT, capture_output=True, text=True, timeout=120,
+                               env={**os.environ, "ROMORG_DATA_DIR": tmp})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_no_chdman_in_the_windows_packages(self) -> None:
         for text in (self.zip_ps1, self.exe_ps1):
             self.assertNotIn("chdman.exe", text)

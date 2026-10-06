@@ -44,7 +44,7 @@ cannot be loaded. If the file is absent or cannot be loaded the program still wo
   * It contains libFLAC and other libraries (Ogg, Vorbis, Opus, LAME, mpg123 ...) under their own licences; their
     copyrights and source locations are listed in licenses\libsndfile-license_notes.md.
   * Source code: https://github.com/libsndfile/libsndfile  (the DLL is the unmodified build distributed in the
-    "soundfile" wheel on PyPI, https://github.com/bastibe/python-soundfile).
+    "soundfile" 0.14.0 wheel on PyPI, https://github.com/bastibe/python-soundfile, pinned by SHA-256).
   * It is loaded dynamically (ctypes) and is NOT linked into the program. You may replace
     native\libsndfile-1.dll with your own build of libsndfile, or delete it, and the program keeps working.
     (The single-file .exe, if built with -BundleSndfile, carries the DLL inside; use the .zip package to replace it.)
