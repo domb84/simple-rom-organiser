@@ -3,3 +3,4 @@ build/
 packaging/.cache/
 __pycache__/
 *.py[co]
+.claude/worktrees/
