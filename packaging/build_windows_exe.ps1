@@ -89,6 +89,10 @@ foreach ($v in "ROMORG_LIBFLAC", "ROMORG_SNDFILE", "ROMORG_LIBZSTD", "ROMORG_NO_
 }
 # Smoke test the real exe.
 $exe = "$root\dist\Simple_ROM_Organiser-$version-win64.exe"
+# Paths over 260 characters need the exe's manifest to say longPathAware (PyInstaller's default manifest does; the
+# build must notice if a new release stops doing so). Windows then honours the LongPathsEnabled setting for the exe.
+$manifest = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($exe))
+if ($manifest -notmatch '<longPathAware[^>]*>\s*true\s*</longPathAware>') { throw "the exe's manifest lacks longPathAware" }
 $mods = (Get-ChildItem "$root\romorg\*.py" | Where-Object { $_.BaseName -ne "__init__" } | ForEach-Object { $_.BaseName }) -join ","
 $st = Start-Process $exe "--selftest $mods" -Wait -PassThru
 if ($st.ExitCode -ne 0) { throw "self-test failed: $($st.ExitCode) romorg module(s) are missing from the exe" }
