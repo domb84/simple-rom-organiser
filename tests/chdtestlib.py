@@ -795,14 +795,21 @@ def make_symlink(link, target) -> None:
 
 
 def find_bash():
-    """A bash that really runs (not Windows' WSL stub): PATH first, then the one bundled with Git for Windows."""
+    """A bash that really runs. On Windows Git for Windows' bash comes first: PATH can hold WSL's System32
+    bash.exe ahead of it (it sees Linux paths, not ours), which is kept only as a last resort. Elsewhere: PATH."""
     import shutil
     import subprocess
-    cands = [shutil.which("bash")]
+    found = shutil.which("bash")
+    git_bash = []
     git = shutil.which("git")
     if git:
         root = Path(git).resolve().parent.parent
-        cands += [str(root / "usr" / "bin" / "bash.exe"), str(root / "bin" / "bash.exe")]
+        git_bash = [str(root / "usr" / "bin" / "bash.exe"), str(root / "bin" / "bash.exe")]
+    parts = os.path.normcase(found or "").replace("/", "\\").split("\\")
+    if os.name == "nt" and "system32" in parts:          # WSL launcher (or the Store stub)
+        cands = git_bash + [found]
+    else:
+        cands = [found] + git_bash
     for c in cands:
         if not c or not os.path.exists(c):
             continue
@@ -1141,3 +1148,14 @@ def old_cd_metadata(tracks: Sequence[tuple], order: str = "<") -> bytes:
     for ttype, frames in tracks:
         body += struct.pack(order + "6I", ttype, 0, 2352 if ttype in (1, 6, 7) else 2048, 0, frames, (-frames) % 4)
     return body + bytes(4 + 24 * 99 - len(body))
+
+
+def bash_env(bash: str) -> dict:
+    """The environment to run `bash` scripts in. Git for Windows' bash.exe started from PowerShell / cmd has no
+    coreutils (dirname, mktemp ...) on PATH unless its own usr\bin is added; harmless elsewhere."""
+    env = dict(os.environ)
+    if os.name == "nt":
+        d = Path(bash).resolve().parent
+        extra = [str(d)] + ([str(d.parent / "usr" / "bin")] if d.name == "bin" else [])
+        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    return env
