@@ -464,5 +464,70 @@ class LongPathConvertTest(DcServerCase):
         self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {"builtin": 1}))
 
 
+ODD_NAME = "Tony's  Café Ünï 日本 (USA)"      # apostrophe, double space, accents, Japanese
+
+
+@unittest.skipUnless(os.environ.get("ROMORG_CHDMAN_ORACLE"), "set ROMORG_CHDMAN_ORACLE to a chdman executable")
+class OddNamesConvertTest(DcServerCase):
+    """Names with an apostrophe, a double space and non-ASCII letters, as track files, sheet and game: the built-in
+    writer and the real chdman (chosen as the writer; for a cue-only set it gets the generated GDI) must produce the
+    same CHD (equal header SHA-1) from a ``.gdi`` set and from a ``.cue`` set, with the same files moved aside.
+
+    chdman 0.289 on Windows cannot open an input file whose path has a non-ASCII character (measured), so there a
+    ``.gdi`` set - and a ``.cue`` set whose scratch folder is not ASCII - goes to the built-in writer instead."""
+
+    def raw_set(self, folder: Path, gdi_style: bool) -> None:
+        disc = self.discs[ODD_NAME]
+        folder.mkdir(parents=True)
+        names = [f"{ODD_NAME} (Track {i}).{'raw' if i == 2 else 'bin'}" for i in (1, 2, 3)]
+        for n, data in zip(names, disc.bins):
+            (folder / n).write_bytes(data)
+        if gdi_style:
+            lba, rows = 0, ["3"]
+            for i, (n, data) in enumerate(zip(names, disc.bins), 1):
+                rows.append(f'{i} {lba} {0 if i == 2 else 4} 2352 "{n}" 0')
+                lba += len(data) // 2352
+            (folder / f"{ODD_NAME}.gdi").write_text("\n".join(rows) + "\n", encoding="utf-8")
+        else:
+            rows = []
+            for i, n in enumerate(names, 1):
+                if i in (1, 3):                    # the Redump markers of a GD-ROM cue
+                    rows.append("REM SINGLE-DENSITY AREA" if i == 1 else "REM HIGH-DENSITY AREA")
+                rows += [f'FILE "{n}" BINARY', f"  TRACK {i:02d} {'AUDIO' if i == 2 else 'MODE1/2352'}",
+                         "    INDEX 01 00:00:00"]
+            (folder / f"{ODD_NAME}.cue").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    def test_both_writers_agree(self) -> None:
+        from romorg import chd
+        self.discs[ODD_NAME] = T.Disc("odd", 11)
+        T.write_dat(paths.redump_dir() / f"{DAT}.dat", [(n, "Games", d.bins) for n, d in self.discs.items()])
+        os.environ["ROMORG_CHDMAN"] = os.path.abspath(os.environ["ROMORG_CHDMAN_ORACLE"])
+        got = {}
+        for writer in ("auto", "chdman"):
+            for gdi_style in (True, False):
+                with self.subTest(writer=writer, gdi=gdi_style):
+                    lib = self.base / f"roms-{writer}-{int(gdi_style)}"
+                    self.raw_set(lib / "my  set", gdi_style)
+                    self.call("/api/chdman", {"writer": writer, "engine": "python"})
+                    self.call("/api/chdman?refresh=1")
+                    s = self.run_job("/api/scan", {"path": str(lib), "platform": PLAT})
+                    self.assertEqual((s["raw"], s["convertible"]), (1, 1), s)
+                    res = self.run_job("/api/convert/apply", {})
+                    via = "chdman" if writer == "chdman" else "builtin"
+                    if os.name == "nt" and (gdi_style or not tempfile.gettempdir().isascii()):
+                        via = "builtin"
+                    self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {via: 1}), res)
+                    placed = lib / ODD_NAME / f"{ODD_NAME}.chd"
+                    self.assertTrue(placed.is_file(), [str(p) for p in lib.rglob("*")])
+                    with chd.Chd(placed, load_map=False) as c:
+                        got[writer, gdi_style] = (c.sha1, c.raw_sha1)
+                    aside = lib / "_converted_originals" / "my  set"
+                    self.assertEqual(len(list(aside.iterdir())), 4)
+                    self.assertFalse([p for p in lib.rglob("*") if p.name.endswith(".part")])
+        self.assertEqual(len(got), 4, got)
+        self.assertEqual(got["auto", True], got["chdman", True])
+        self.assertEqual(got["auto", False], got["chdman", False])
+
+
 if __name__ == "__main__":
     unittest.main()

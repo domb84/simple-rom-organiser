@@ -1837,7 +1837,7 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
             report(f"{exc} - verifying with the built-in reader")
             return hash_tracks_python(info, range(len(info.tracks)), prog, sched), "verified with the built-in reader"
 
-    if chdman is not None and engine == "chdman":
+    if chdman is not None and engine == "chdman" and not _chdman_input_problem(Path(os.path.abspath(path))):
         report("verifying with chdman extract")
         return by_chdman("engine chdman")
     report("verifying the new CHD with the built-in reader (independent of chdman)")
@@ -1869,12 +1869,27 @@ def _chdman_reads(work: Path, rel: str) -> bool:
     return not _CHDMAN_PATH_LIMIT or len(os.path.abspath(work)) + 1 + len(rel) < _CHDMAN_MAX_PATH
 
 
+def _chdman_input_problem(path: Path) -> str:
+    """Why chdman cannot be given ``path`` as its ``-i`` file on this system ("" = it can): chdman 0.289 on Windows
+    cannot open an input file whose path has a non-ASCII character in it (measured: ``createcd``, ``createdvd`` and
+    ``extractcd`` fail with "No such file or directory"; non-ASCII names *inside* a UTF-8 sheet, and a non-ASCII
+    ``-o`` path, are fine). Linux / macOS take any name."""
+    if _CHDMAN_PATH_LIMIT and not str(path).isascii():
+        return "chdman cannot open a file with a non-ASCII character in its path on Windows"
+    return ""
+
+
 def _chdman_path_problem(op: "DcConvertOp", new: Path) -> str:
     """Why chdman cannot convert ``op`` into ``new`` on this system ("" = it can): on Windows a path chdman opens
     (the sheet, its track files as the sheet names them, the new CHD) of 260 characters or more fails - or, for a
-    track file, makes chdman spin forever (see ``_CHDMAN_MAX_PATH``). The built-in writer has no such limit."""
+    track file, makes chdman spin forever (see ``_CHDMAN_MAX_PATH``) - and so does a sheet or ISO whose path has a
+    non-ASCII character (:func:`_chdman_input_problem`). The built-in writer has neither limit."""
     if not _CHDMAN_PATH_LIMIT:
         return ""
+    if op.gdi_text is None:                 # a generated GDI lives in a scratch folder, see _convert_one
+        why = _chdman_input_problem(Path(os.path.abspath(op.src)))
+        if why:
+            return why
     paths = [new]
     if op.gdi_text is None:                 # a generated GDI's own names are checked by _gdi_track_ref
         paths += [op.src] + (sheet_track_files(op.src) or [])
@@ -2004,30 +2019,43 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         use_chdman = chdman is not None and writer == "chdman" and not too_long
         if too_long and writer == "chdman" and progress:
             progress(0, 1, f"{label}: {too_long} - converting with the built-in writer")
-        if not use_chdman:
+        def builtin() -> bool:
+            """Write with the built-in writer; False = this set has a layout it does not take (nothing written)."""
             try:
                 write_builtin(op, new, preset, progress, cancel, label)
                 op.via = "builtin"
+                return True
             except cdimage.ImageError as exc:
                 if chdman is None or too_long:
                     raise chdtool.ChdmanError(f"this set cannot be converted: {exc}"
                                               + (f"; {too_long}" if too_long else "")) from exc
                 if progress:
                     progress(0, 1, f"{label}: {exc} - converting with chdman")
-                use_chdman = True
+                return False
+        if not use_chdman:
+            use_chdman = not builtin()
         if use_chdman:
             make = chdtool.create_dvd if op.mode == "createdvd" else chdtool.create_cd
             source = op.src
             if op.gdi_text is not None:
                 chdtool.check_access(chdman, Path(op.src).parent)
                 gdi_work, source = _link_gdi_dir(op, chdman, root)
-            make(chdman, source, new,
-                 progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
-                 cancel=cancel)
-            op.via = "chdman"
-            if gdi_work is not None:
-                chdtool.remove_workdir(gdi_work)
-                gdi_work = None
+                too_long = _chdman_input_problem(Path(os.path.abspath(source)))
+                if too_long:                    # the scratch folder's path: the built-in writer takes the set
+                    chdtool.remove_workdir(gdi_work)
+                    gdi_work = None
+                    if progress:
+                        progress(0, 1, f"{label}: {too_long} - converting with the built-in writer")
+                    if builtin():
+                        use_chdman = False
+            if use_chdman:
+                make(chdman, source, new,
+                     progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
+                     cancel=cancel)
+                op.via = "chdman"
+                if gdi_work is not None:
+                    chdtool.remove_workdir(gdi_work)
+                    gdi_work = None
         # verify the new CHD against Redump before anything of the original is touched
         info = chdlib.Chd(new, load_map=False)
         try:
