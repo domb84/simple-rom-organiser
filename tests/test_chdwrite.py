@@ -114,6 +114,47 @@ class SameAsChdmanTest(Inputs):
             self.assertEqual((c.sha1, c.is_gd), (REF["gd"]["sha1"], True))
 
 
+# Real sets (optional, read-only): the writer on real discs against chdman's own CHDs of them.
+#   ROMORG_REAL_SETS          a folder with one subfolder per set holding its .gdi / .cue (and / or .iso)
+#   ROMORG_REAL_CHDMAN_CHDS   a folder with chdman 0.289's CHDs of those sets: "<set>.chd" or "<set>_cd.chd" =
+#                             createcd of the set's .gdi / .cue (else its .iso), "<set>_dvd.chd" = createdvd of its .iso
+# Every pair is written to a temporary folder (a CD takes seconds, a full DVD about half a minute here).
+REAL_SETS = os.environ.get("ROMORG_REAL_SETS", "")
+REAL_CHDMAN_CHDS = os.environ.get("ROMORG_REAL_CHDMAN_CHDS", "")
+
+
+@unittest.skipUnless(REAL_SETS and REAL_CHDMAN_CHDS, "set ROMORG_REAL_SETS and ROMORG_REAL_CHDMAN_CHDS (real sets)")
+class RealSetTest(unittest.TestCase):
+    def pairs(self):
+        for ref in sorted(Path(REAL_CHDMAN_CHDS).glob("*.chd")):
+            stem, mode = ref.stem, "createcd"
+            if stem.endswith("_dvd"):
+                stem, mode = stem[:-4], "createdvd"
+            elif stem.endswith("_cd"):
+                stem = stem[:-3]
+            folder = Path(REAL_SETS) / stem
+            kinds = ("*.iso",) if mode == "createdvd" else ("*.gdi", "*.cue", "*.iso")
+            src = next((p for k in kinds for p in sorted(folder.glob(k))), None)
+            if src is not None:
+                yield ref, src, mode
+
+    def test_the_writer_writes_chdmans_sha1(self) -> None:
+        pairs = list(self.pairs())
+        if not pairs:
+            self.skipTest("no set of ROMORG_REAL_SETS has a CHD in ROMORG_REAL_CHDMAN_CHDS")
+        with tempfile.TemporaryDirectory() as tmp:
+            for ref, src, mode in pairs:
+                with self.subTest(ref.name):
+                    with chd.Chd(ref, load_map=False) as c:
+                        want = (c.sha1, c.raw_sha1, c.logical_bytes)
+                    target = Path(tmp) / ref.name
+                    info = chdwrite.write_chd(target, cdimage.open_image(src, mode))
+                    with chd.Chd(target, load_map=False) as c:
+                        self.assertEqual((c.sha1, c.raw_sha1, c.logical_bytes), want)
+                    self.assertEqual(info["sha1"], want[0])
+                    target.unlink()
+
+
 class LongPathTest(unittest.TestCase):
     def test_sets_deeper_than_260_characters(self) -> None:
         """Windows' old MAX_PATH: sheets and track files in a folder whose path is over 260 characters long are

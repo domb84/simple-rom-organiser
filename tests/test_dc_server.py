@@ -409,5 +409,60 @@ class DcEndpointTests(DcServerCase):
         self.assertFalse(dead.exists())
 
 
+class LongPathConvertTest(DcServerCase):
+    """Convert through the HTTP API in a library whose paths run past Windows' old 260-character MAX_PATH (works
+    with the LongPathsEnabled setting; skipped where such a folder cannot be made): the built-in writer's
+    ``.chd.romorg.part`` file, the generated GDI of a cue-only Redump set, the placed CHD and the originals moved to
+    ``_converted_originals`` all live there. The folder names have apostrophes and double spaces on purpose."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        deep = self.base / "roms"
+        n = 0
+        while len(str(deep)) < 250:
+            n += 1
+            deep = deep / f"Tony's  long folder name number {n}"
+        try:
+            deep.mkdir(parents=True)
+            probe = deep / ("p" * 40) / "probe.bin"
+            probe.parent.mkdir()
+            probe.write_bytes(b"x")
+        except OSError as exc:
+            self.skipTest(f"this system cannot make paths over 260 characters ({exc})")
+        self.roms = deep
+
+    def test_convert_sets_deeper_than_260_characters(self) -> None:
+        self.discs["Epsilon (USA)"].write_raw(self.roms / "gdi set", "e")
+        self.discs["Gamma (Japan)"].write_raw(self.roms / "cue only set", "g", gdi_style=False, markers=True)
+        with mock.patch("romorg.chdtool.detect", return_value=None):
+            self.call("/api/chdman?refresh=1")
+            s = self.scan()
+            self.assertEqual((s["raw"], s["convertible"]), (2, 2))
+            plan = self.call("/api/convert/plan", {})
+            self.assertEqual(sorted(i["status"] for i in plan["items"]), ["convert", "convert"])
+            res = self.run_job("/api/convert/apply", {})
+        self.assertEqual((res["converted"], res["failed"], res["written_by"], res["generated_gdi"]),
+                         (2, [], {"builtin": 2}, 1))
+        for game in ("Epsilon (USA)", "Gamma (Japan)"):
+            placed = self.roms / game / f"{game}.chd"
+            self.assertGreater(len(str(placed)), 260)
+            self.assertTrue(placed.is_file(), placed)
+        self.assertTrue((self.roms / "_converted_originals" / "gdi set" / "e.gdi").is_file())
+        self.assertTrue((self.roms / "_converted_originals" / "cue only set" / "g.cue").is_file())
+        self.assertFalse([p for p in self.roms.rglob("*") if p.name.endswith(".romorg.part")])
+
+    def test_chdman_is_not_given_paths_it_cannot_open(self) -> None:
+        """chdman 0.289 on Windows fails on paths of 260 characters or more (and spins forever on a track file
+        that long): with chdman chosen as the writer, such a set is written by the built-in writer instead."""
+        self.discs["Epsilon (USA)"].write_raw(self.roms / "gdi set", "e")
+        self.use_fake_chdman()
+        self.call("/api/chdman", {"writer": "chdman", "engine": "python"})
+        self.scan()
+        with mock.patch("romorg.discsys._CHDMAN_PATH_LIMIT", True), \
+                mock.patch("romorg.chdtool.create_cd", side_effect=AssertionError("chdman was run")):
+            res = self.run_job("/api/convert/apply", {})
+        self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {"builtin": 1}))
+
+
 if __name__ == "__main__":
     unittest.main()

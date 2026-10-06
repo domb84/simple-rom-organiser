@@ -1869,6 +1869,22 @@ def _chdman_reads(work: Path, rel: str) -> bool:
     return not _CHDMAN_PATH_LIMIT or len(os.path.abspath(work)) + 1 + len(rel) < _CHDMAN_MAX_PATH
 
 
+def _chdman_path_problem(op: "DcConvertOp", new: Path) -> str:
+    """Why chdman cannot convert ``op`` into ``new`` on this system ("" = it can): on Windows a path chdman opens
+    (the sheet, its track files as the sheet names them, the new CHD) of 260 characters or more fails - or, for a
+    track file, makes chdman spin forever (see ``_CHDMAN_MAX_PATH``). The built-in writer has no such limit."""
+    if not _CHDMAN_PATH_LIMIT:
+        return ""
+    paths = [new]
+    if op.gdi_text is None:                 # a generated GDI's own names are checked by _gdi_track_ref
+        paths += [op.src] + (sheet_track_files(op.src) or [])
+    for p in paths:
+        full = str(p) if Path(p).is_absolute() else os.path.join(os.getcwd(), str(p))
+        if len(full) >= _CHDMAN_MAX_PATH:
+            return f"chdman cannot open paths of 260 characters or more on Windows ({Path(p).name})"
+    return ""
+
+
 def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
     """What the generated ``.gdi`` in ``work`` names for the track file ``src``, without copying it if at all possible.
 
@@ -1983,14 +1999,19 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         label = op.rom_name
         # Who writes: the built-in writer, unless chdman was chosen and is there. A set whose layout the built-in
         # writer does not take goes to chdman when there is one.
-        use_chdman = chdman is not None and writer == "chdman"
+        # chdman cannot open long paths on Windows: the built-in writer takes such a set, whatever was chosen.
+        too_long = _chdman_path_problem(op, new) if chdman is not None else ""
+        use_chdman = chdman is not None and writer == "chdman" and not too_long
+        if too_long and writer == "chdman" and progress:
+            progress(0, 1, f"{label}: {too_long} - converting with the built-in writer")
         if not use_chdman:
             try:
                 write_builtin(op, new, preset, progress, cancel, label)
                 op.via = "builtin"
             except cdimage.ImageError as exc:
-                if chdman is None:
-                    raise chdtool.ChdmanError(f"this set cannot be converted: {exc}") from exc
+                if chdman is None or too_long:
+                    raise chdtool.ChdmanError(f"this set cannot be converted: {exc}"
+                                              + (f"; {too_long}" if too_long else "")) from exc
                 if progress:
                     progress(0, 1, f"{label}: {exc} - converting with chdman")
                 use_chdman = True
