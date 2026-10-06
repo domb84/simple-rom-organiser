@@ -387,10 +387,14 @@ def _parse_tosec(name: str) -> Tags:
         publisher=publisher)
 
 
+_TRAILING_DOT_RE = re.compile(r"(?<=[)\]])\.+$")
+
+
 @functools.lru_cache(maxsize=65536)
 def parse_name(name: str, style: str = STYLE_NOINTRO) -> Tags:
     """Parse a rom/set name (a trailing short extension is ignored)."""
     base = _EXT_RE.sub("", name.strip())
+    base = _TRAILING_DOT_RE.sub("", base)     # a DAT entry such as "Rex Run (World) (Aftermarket) (Unl)." (No-Intro Game Boy)
     if style == STYLE_TOSEC:
         return _parse_tosec(base)
     if style == STYLE_WHDLOAD:
@@ -767,8 +771,13 @@ _FLAG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
         r"Possible|Unknown", re.IGNORECASE)),
     # homebrew competitions
     ("event", re.compile(r"Jam|Compo|Byte-Off|NESDev|SNESDEV|Contest|Competition", re.IGNORECASE)),
-    # cartridge boards / mappers / hardware
-    ("hardware", re.compile(r"ROM$|^72 pin|^NINA|^Rainbow$|^AGA$|^OCS$|^ECS$|^A\d{3,4}|"
+    # cartridge boards / mappers / hardware. Also the console-feature flags of the Game Boy, DS and Mega Drive DATs
+    # ("SGB Enhanced", "GB Compatible", "NDSi Enhanced", "Rumble Version", "DS Broadcast", "Sega Channel", Mega Drive
+    # Mini / 4 compilations). They stay "hardware", not "distribution": the latter is skipped when variants are grouped,
+    # and "Foo (SGB Enhanced)" must remain a different game key from "Foo".
+    ("hardware", re.compile(r"ROM$|^72 pin|^(?:CGB\+)?(?:SGB|GB|NDSi|DSi)(?:, (?:SGB|GB))?.*(?:Enhanced|Compatible)|"
+                            r"^CGB\+SGB|Rumble|^DS Broadcast$|^Sega Channel$|^Mega Drive (?:Mini|4)|Genesis Mini|"
+                            r"ModRetro|^NINA|^Rainbow$|^AGA$|^OCS$|^ECS$|^A\d{3,4}|"
                             r"Mapper|pin cart|^Dev$|^CD32$|^CDTV$|^MT32$|"
                             r"^\d+(?:\.\d+)?\s?(?:KB|MB|k)(?: Chip)?$|^(?:Low|Fast|Slow|Chip) Mem$",
                             re.IGNORECASE)),

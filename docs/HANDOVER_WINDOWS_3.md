@@ -101,3 +101,15 @@ differs from the DAT's. The Organise plan would move those into `_unmatched/` (u
 - Windows run of any of this (steps 1-5).
 - No emulator was started on anything new; GameCube matching is verified by SHA-1 against Redump only.
 - A mixed Game Boy / Game Boy Color folder is scanned once per system (two separate platforms).
+
+## Windows results (2026-10-06)
+
+All five steps were run on Windows (Python 3.14, 16 threads) against the same three RVZs and the real DATs fetched by the app's own downloaders.
+
+- Suite: 1098 tests OK, 34 skipped (symlinks, POSIX-only, AppImage, no libsndfile); with every real-data variable set (`ROMORG_REAL_SCRATCH`, `ROMORG_REAL_GC_DIR`, `ROMORG_REAL_DC_*`, `ROMORG_REAL_SONY_DATS`, `WHD_REAL_DAT`, `ROMORG_REAL_CHD_FULL=1`) the real-data tests run with no skips and pass (141 tests in test_chd, test_playstation, test_whdload, test_rvz).
+- Self-check `--require-native`: the RVZ line is OK in the dev tree, the zip and the exe, naming `compression.zstd`; `ROMORG_NO_ZSTD=1` is OK through the Python decoder. Both packages built.
+- Real GameCube files: Super Mario Sunshine rebuilds to Redump (SHA-1 `8d094f2c...`); scan of the folder: 3 of 3 matched, `correctly_named` 3. Timings are in Amendment 24 (2.35 s with workers, 7.9 s in one process, scan 8.8 s cold, 0.03 s cached).
+- Frozen exe worker answers `op: "rvz"` correctly; cancel stops promptly; no leftover processes. Rename after a scan passes (`test_rename_keeps_the_extension_and_undo_restores_everything`).
+- **Found and fixed (not Windows-specific, found only because all 12 No-Intro DATs are now loaded):** `tests/test_tags.py::RealDatCoverageTest` failed. (1) One Game Boy DAT entry ends "(Unl)." with a trailing period and parsed as a title without a region: `tags.parse_name` now ignores a period after a closing bracket. (2) The 6 % free-text-flag limit was fitted to four systems; the new DATs carry console-feature flags ("SGB Enhanced", "GB Compatible", "NDSi Enhanced", "DS Broadcast", "Sega Channel", "Rumble Version", Mega Drive Mini / 4) that are now `hardware` in `tags.flag_kind` (not `distribution`, which would merge variants in the game key). Free-text flags: 8.8 % to 3.5 %. The limit is unchanged.
+- The cartridge folders the user named (`master system`, `lynx`; there is `megadrive`, not `mega drive`) hold only empty subfolders on this machine, so no cartridge scan could be compared with the Deck's match counts. The DAT-count tests in `test_datfile` pass with all 12 No-Intro DATs.
+- A `ResourceWarning: subprocess N is still running` is printed at the very end of a full run (a Popen that is never waited for in one of the tests); no process is left running afterwards. Not chased.

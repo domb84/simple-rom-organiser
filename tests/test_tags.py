@@ -62,6 +62,12 @@ class NoIntroParseTest(unittest.TestCase):
         self.assertEqual(supersede_key(parse_name("[BIOS] X (World)")),
                          supersede_key(parse_name("[BIOS] X (World) (Rev 1)")))
 
+    def test_a_trailing_dot_after_the_last_tag_is_ignored(self) -> None:
+        # the current No-Intro Game Boy DAT has one entry like this; without the fix it parsed as a title with no region
+        t = parse_name("Rex Run (World) (Aftermarket) (Unl).")
+        self.assertEqual((t.title, t.regions, t.flags), ("Rex Run", ("World",), ("Aftermarket", "Unl")))
+        self.assertEqual(parse_name("Dr. Mario (World)").title, "Dr. Mario")
+
     def test_mpal_is_60hz_video(self) -> None:
         t = parse_name("Pyoro 64 (Unknown) (MPAL) (Aftermarket) (Unl).z64")
         self.assertEqual(t.video, ("NTSC",))
@@ -255,7 +261,7 @@ class RealDatCoverageTest(unittest.TestCase):
                 t = parse_name(set_name)
                 total += 1
                 self.assertTrue(t.regions, set_name)  # every No-Intro name has a region
-                tail = set_name[len(t.title):]
+                tail = set_name[len(t.title):].rstrip(".")      # one Game Boy entry ends "(Unl)."
                 self.assertEqual(re.sub(r"\s*(\([^()]*\)|\[[^\[\]]*\])", "", tail).strip(), "", set_name)
                 odd = [f for f in t.flags if tags.flag_kind(f) == "other"]
                 with_other += bool(odd)
