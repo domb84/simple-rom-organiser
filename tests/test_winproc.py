@@ -52,6 +52,36 @@ class PidAliveTest(unittest.TestCase):
     def test_windows_access_denied_counts_as_alive(self) -> None:
         self.assertTrue(winproc.pid_alive(4))                            # "System": may not be opened, always runs
 
+    @unittest.skipUnless(WINDOWS, "Windows liveness check")
+    def test_windows_open_failure_branches(self) -> None:
+        # OpenProcess fails: ERROR_ACCESS_DENIED (5) means the process exists; ERROR_INVALID_PARAMETER (87) means none
+        k32 = mock.MagicMock()
+        k32.OpenProcess.return_value = 0
+        with mock.patch("ctypes.WinDLL", return_value=k32):
+            with mock.patch("ctypes.get_last_error", return_value=5):
+                self.assertTrue(winproc.pid_alive(1234))
+            with mock.patch("ctypes.get_last_error", return_value=87):
+                self.assertFalse(winproc.pid_alive(1234))
+        k32.OpenProcess.assert_called_with(0x1000, False, 1234)
+
+    @unittest.skipUnless(WINDOWS, "Windows liveness check")
+    def test_windows_failed_probe_counts_as_alive(self) -> None:
+        # the callers sweep a dead owner's scratch folder: a probe that cannot run must not declare the owner dead
+        import ctypes
+
+        for exc in (OSError("no kernel32"), AttributeError("x"), ctypes.ArgumentError("bad arg")):
+            with mock.patch.object(winproc, "_win_pid_alive", side_effect=exc):
+                self.assertTrue(winproc.pid_alive(1234))
+                self.assertTrue(tempspace._pid_alive(1234))
+                self.assertTrue(chdtool._pid_alive(1234))
+
+    @unittest.skipUnless(WINDOWS, "Windows liveness check")
+    def test_windows_pid_beyond_32_bits_is_dead(self) -> None:
+        # a DWORD argument would truncate 2**32 + 4 to pid 4 (System, always alive)
+        with mock.patch.object(winproc, "_win_pid_alive", side_effect=AssertionError("must not probe")):
+            self.assertFalse(winproc.pid_alive(2**32 + 4))
+        self.assertTrue(winproc.pid_alive(4))
+
     @unittest.skipIf(WINDOWS, "POSIX liveness check")
     def test_posix_uses_signal_zero(self) -> None:
         with mock.patch("os.kill", side_effect=PermissionError) as kill:
@@ -59,6 +89,10 @@ class PidAliveTest(unittest.TestCase):
         kill.assert_called_once_with(12345, 0)
         with mock.patch("os.kill", side_effect=ProcessLookupError):
             self.assertFalse(winproc.pid_alive(12345))
+        with mock.patch("os.kill", side_effect=OSError(22, "unexpected")):
+            self.assertTrue(winproc.pid_alive(12345))                   # unknown: keep the owner's files
+        with mock.patch("os.kill", side_effect=OverflowError):
+            self.assertFalse(winproc.pid_alive(2**70))                  # beyond pid_t: no such process
 
 
 class AppDirsTest(unittest.TestCase):

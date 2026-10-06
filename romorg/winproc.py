@@ -117,22 +117,28 @@ def pid_alive(pid: int) -> bool:
 
     POSIX: ``os.kill(pid, 0)`` (``EPERM`` = exists, someone else's). Windows: ``os.kill(pid, 0)`` would send
     ``CTRL_C_EVENT`` to the console instead of probing, so the process is opened and its exit code read instead
-    (a process that exited but whose handle someone still holds reports its real exit code, so it counts as dead)."""
+    (a process that exited but whose handle someone still holds reports its real exit code, so it counts as dead).
+
+    Only a definite "no such process" answer counts as dead: the callers sweep a dead owner's scratch folder or
+    replace its instance file, so a probe that fails for any other reason (ctypes unavailable, an unexpected errno)
+    counts as alive. Windows process ids are 32-bit; a larger value (a corrupted marker) names no process."""
     if pid <= 0:
         return False
     if IS_WINDOWS:
+        if pid > 0xFFFFFFFF:
+            return False    # not a Windows pid; the DWORD argument would silently truncate it to another one
         try:
             return _win_pid_alive(pid)
-        except (OSError, AttributeError, ValueError):
-            return False
+        except Exception:   # OSError, AttributeError, ctypes.ArgumentError, ...: unknown, so keep the owner's files
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
+    except OverflowError:
+        return False        # larger than pid_t: names no process
     except OSError:
-        return False
+        return True         # EPERM (someone else's process) or an unexpected errno: let the caller keep it
     return True
 
 
