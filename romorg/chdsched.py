@@ -569,13 +569,14 @@ class Scheduler:
         """A worker died / garbled its pipe: retry its chunks elsewhere, respawn it (a few times), else give up.
         When the pool breaks, the surviving workers are killed too: they would get no more work, and on Windows
         they would keep the files they had open locked."""
+        burst = max(0, self.workers - 1)        # every worker can die at once (OOM killer): a chunk may meet that many dead ones
         with self._cv:
             if w in self._workers:
                 self._workers.remove(w)
                 self._gone = [g for g in self._gone if not g.reaped.is_set()] + [w]
             for c in reversed(chunks):
                 c.tries += 1
-                if c.tries > 2:
+                if c.tries > 2 + burst:
                     self.broken = True
                 else:
                     c.run.outstanding -= 1
@@ -591,7 +592,7 @@ class Scheduler:
             if self._closed or self.broken:
                 self.broken = True
                 self._fail_all_locked(f"a worker failed ({exc})")
-            elif self._respawns >= MAX_RESPAWNS:
+            elif self._respawns >= MAX_RESPAWNS + burst:
                 if not self._workers:
                     self.broken = True
                     self._fail_all_locked(f"the workers keep failing ({exc})")

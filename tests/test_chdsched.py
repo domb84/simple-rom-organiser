@@ -213,6 +213,19 @@ class CancelAndCrashTest(Base):
         ref = reference(self.path)
         self.assertEqual({i: g["sha1"] for i, g in got.items()}, {i: r["sha1"] for i, r in ref.items()})
 
+    def test_every_worker_dying_at_once_does_not_break_the_pool(self) -> None:
+        """An OOM kill takes several workers together: one chunk then meets that many dead workers in a row, which
+        is one kill event, not a chunk that keeps crashing."""
+        with chdsched.Scheduler(4) as s:
+            s._ensure_workers(4)
+            run = chdsched._Run(str(self.path), (0, 0), 0, [(0, 1, 1)], outstanding=3)
+            chunk = chdsched._Chunk(run, 0, 0, 1, 1)
+            s._reserved = 3
+            for w in list(s._workers)[:3]:
+                s._worker_failed(w, [chunk], chdsched.PoolError("killed"))
+            self.assertFalse(s.broken)
+            self.assertEqual(chunk.tries, 3)
+
     def test_unstartable_worker_means_fallback(self) -> None:
         with mock.patch("romorg.chdsched.subprocess.Popen", side_effect=OSError("no exec")):
             with chd.Chd(self.path, load_map=False) as c, chdsched.Scheduler(2) as s:

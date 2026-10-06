@@ -342,6 +342,18 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual([r.name for r in res.missing], ["Gamma (Japan).iso"])
         self.assertEqual(scanner.count_convertible(res), 0)
 
+    def test_the_cache_keeps_the_file_hash_and_the_iso_hash_apart(self) -> None:
+        """The same .rvz scanned as a plain file and as a container (any order) must not share one cache row."""
+        def names(res):
+            return sorted(m.entry.path.name for m in res.matched)
+        dats, _ = platforms.load_platform_dats(self.plat)
+        for n, order in enumerate((((), ("rvz",)), (("rvz",), ()))):
+            for kind in order:
+                res = scanner.scan(self.root, dats, alt_hashes=self.plat.alt_hashes, layout=self.plat.layout,
+                                   containers=kind, use_cache=True,
+                                   cache_path=self.base / f"h{n}.sqlite")
+                self.assertEqual(names(res), ["a.rvz", "b.iso"] if kind else ["b.iso"], (order, kind))
+
     def test_a_cached_scan_does_not_decode_again(self) -> None:
         cache = self.base / "hashes.sqlite"
         self.scan(use_cache=True, cache_path=cache)

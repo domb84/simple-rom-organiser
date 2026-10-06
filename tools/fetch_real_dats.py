@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    if len(argv) != 2 or argv[1].startswith("-"):
         print(__doc__)
         return 2
     target = Path(argv[1]).absolute()

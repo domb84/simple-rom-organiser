@@ -88,6 +88,11 @@ def setUpModule() -> None:
 def tearDownModule() -> None:
     if _proc is not None:
         _proc.terminate()
+        try:
+            _proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _proc.kill()
+            _proc.wait()
 
 
 class UiTestCase(unittest.TestCase):

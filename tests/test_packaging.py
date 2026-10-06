@@ -418,5 +418,16 @@ class BuiltArtifactTests(unittest.TestCase):
                 self.assertTrue(any((APPDIR / "licenses" / pkg).iterdir()), f"licence text of {pkg}")
 
 
+class DevToolsTest(unittest.TestCase):
+    def test_fetch_real_dats_help_does_not_touch_the_disk_or_the_network(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run([sys.executable, str(ROOT / "tools" / "fetch_real_dats.py"), "--help"],
+                               cwd=d, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Usage", r.stdout)
+            self.assertEqual(os.listdir(d), [])
+
+
 if __name__ == "__main__":
     unittest.main()
