@@ -162,6 +162,8 @@ def _c_int(text: str, i: int = 0) -> Tuple[Optional[int], int]:
         e += 1
     if e == k:
         return None, i
+    if e - j > 18:                      # int() refuses 4300+ digits with ValueError; no cue sheet needs more than 18
+        raise ImageError("a number in the cue sheet is too long")
     return int(text[j:e]), e
 
 
@@ -231,7 +233,7 @@ def _as_frames(block: bytes, sector: int, swap: bool) -> bytes:
 def _size(path: Path) -> int:
     try:
         return os.stat(path).st_size
-    except OSError as exc:
+    except (OSError, ValueError) as exc:         # ValueError: a NUL in the name
         raise ImageError(f"cannot read {Path(path).name}: {exc}") from exc
 
 

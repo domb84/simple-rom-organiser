@@ -228,12 +228,15 @@ def parse_track_metadata(tag: bytes, text: str) -> Track:
         num = int(kv["TRACK"])
         ttype = kv["TYPE"]
         frames = int(kv["FRAMES"])
+        pad = int(kv.get("PAD", 0) or 0)
+        pregap = int(kv.get("PREGAP", 0) or 0)
+        postgap = int(kv.get("POSTGAP", 0) or 0)
     except (KeyError, ValueError) as exc:
         raise ChdError(f"unparseable track metadata: {text!r}") from exc
     return Track(number=num, type=ttype, subtype=kv.get("SUBTYPE", "NONE"), frames=frames,
-                 pad=int(kv.get("PAD", 0) or 0), pregap=int(kv.get("PREGAP", 0) or 0),
+                 pad=pad, pregap=pregap,
                  pgtype=kv.get("PGTYPE", ""), pgsub=kv.get("PGSUB", ""),
-                 postgap=int(kv.get("POSTGAP", 0) or 0), gd=tag in (b"CHGD", b"CHGT"))
+                 postgap=postgap, gd=tag in (b"CHGD", b"CHGT"))
 
 
 def parse_old_cd_metadata(body: bytes) -> List[Track]:
@@ -448,6 +451,7 @@ class Chd:
         self._parent: Optional["Chd"] = parent if isinstance(parent, Chd) else None
         self._parent_path = None if parent is None or isinstance(parent, Chd) else str(parent)
         self._own_parent = False
+        self._depth = 0                              # how many parents down this CHD was opened (see _parent_chd)
         try:
             self._read_header()
             self._read_metadata()
@@ -484,6 +488,8 @@ class Chd:
         self.md5, self.parent_md5 = d["md5"], d["parent_md5"]
         self.has_parent = d["has_parent"]
         self.compressed = d["compressed"]
+        self._f.seek(0, 2)
+        self._fsize = self._f.tell()
         if self.hunk_bytes == 0 or (self.version == 5 and self.unit_bytes == 0):
             raise ChdError("bad CHD geometry")
         self.hunk_count = (self.logical_bytes + self.hunk_bytes - 1) // self.hunk_bytes
@@ -492,6 +498,12 @@ class Chd:
                 raise ChdError("the CHD's hunk count does not cover its size")
             self.hunk_count = d["hunk_count"]
 
+    def _seek(self, off: int) -> None:
+        """Seek to an offset taken from the file: past the end is a damaged file, not a ValueError / OSError."""
+        if off > self._fsize:
+            raise ChdError("the CHD points past the end of the file (damaged?)")
+        self._f.seek(off)
+
     # -- parent
     def _has_parent(self) -> bool:
         """The header names a parent, or the caller gave one (the only way for a parent without checksums)."""
@@ -499,6 +511,8 @@ class Chd:
 
     def _parent_chd(self) -> "Chd":
         if self._parent is None:
+            if self._depth >= 8:                     # two CHDs naming each other as parent would recurse forever
+                raise ChdError("the chain of parent CHDs is too deep (a loop?)")
             found = self._parent_path or find_parent(self.path, self.parent_sha1, self.parent_md5)
             if not found:
                 ident = self.parent_sha1 if self.parent_sha1 != _ZERO20 else self.parent_md5
@@ -512,6 +526,7 @@ class Chd:
             if not ok:
                 p.close()
                 raise ChdError(f"{found} is not the parent of this CHD (its SHA-1 differs)")
+            p._depth = self._depth + 1
             self._parent, self._own_parent = p, True
         return self._parent
 
@@ -532,7 +547,9 @@ class Chd:
         n = self.hunk_count
         hb = self.hunk_bytes
         size = 8 if self.version <= 2 else 16
-        f.seek(self.map_offset)
+        if size * n > self._fsize - self.map_offset:        # the header's hunk count is a claim: the map must fit
+            raise ChdError("map is truncated")
+        self._seek(self.map_offset)
         raw = f.read(size * n)
         if len(raw) < size * n:
             raise ChdError("map is truncated")
@@ -560,7 +577,9 @@ class Chd:
         f = self._f
         n = self.hunk_count
         if not self.compressed:
-            f.seek(self.map_offset)
+            if 4 * n > self._fsize - self.map_offset:
+                raise ChdError("map is truncated")
+            self._seek(self.map_offset)
             raw = f.read(4 * n)
             if len(raw) < 4 * n:
                 raise ChdError("map is truncated")
@@ -573,7 +592,7 @@ class Chd:
             self._coff = array("Q", [o * hb if o else i * hb for i, o in enumerate(offs)])
             self._ccrc = array("H", bytes(2 * n))
             return
-        f.seek(self.map_offset)
+        self._seek(self.map_offset)
         head = f.read(16)
         if len(head) < 16:
             raise ChdError("map is truncated")
@@ -581,6 +600,10 @@ class Chd:
         firstoffs = int.from_bytes(head[4:10], "big")
         mapcrc = struct.unpack(">H", head[10:12])[0]
         lengthbits, selfbits, parentbits = head[12], head[13], head[14]
+        # a symbol costs at least one bit and covers at most 274 hunks (an RLE run): a header that claims more
+        # hunks than the map could describe is damaged, and must not allocate lists of that size
+        if mapbytes > self._fsize or n > (mapbytes * 8 + 64) * 274:
+            raise ChdError("compressed map is truncated")
         data = f.read(mapbytes)
         if len(data) < mapbytes:
             raise ChdError("map is truncated")
@@ -674,7 +697,7 @@ class Chd:
             lens[i] = ln
             offs[i] = off
             crcs[i] = crc
-            rawmap += pack(t, ln >> 16, ln & 0xFFFF, off >> 32, off & 0xFFFFFFFF, crc)
+            rawmap += pack(t, (ln >> 16) & 0xFF, ln & 0xFFFF, (off >> 32) & 0xFFFF, off & 0xFFFFFFFF, crc)
         if pos > total_bits:
             raise ChdError("compressed map is truncated")
         if crc16(bytes(rawmap)) != mapcrc:
@@ -694,7 +717,7 @@ class Chd:
             if off in seen:
                 raise ChdError("metadata loop")
             seen.add(off)
-            f.seek(off)
+            self._seek(off)
             m = f.read(16)
             if len(m) < 16:
                 raise ChdError("metadata is truncated")
@@ -775,7 +798,7 @@ class Chd:
         off = self._coff[index]
         if ctype <= 3 or ctype == _T_NONE:
             f = self._f
-            f.seek(off)
+            self._seek(off)
             comp = f.read(self._clen[index])
             if len(comp) < self._clen[index]:
                 raise ChdError("file is truncated (hunk %d)" % index)
@@ -972,6 +995,8 @@ class Chd:
         got = self._cache.get(index)
         if got is not None and self._cache_le == audio_le:
             return got
+        if not 0 <= index < self.hunk_count:         # a track whose FRAMES the hunks do not hold
+            raise ChdError("the track runs past the end of the CHD (damaged metadata?)")
         self._cache = {}
         threads = self._threads()
         # with decode threads a group per thread is read at once: each thread gets a run worth its hand-over

@@ -143,6 +143,8 @@ def unpack(data: bytes, offset: int, want: int) -> bytes:
         pos += 4
         if size & 0x80000000:
             size &= 0x7FFFFFFF
+            if have + size > want:              # before junk() builds the run: a 4-byte field must not cost GiB
+                raise RvzError(f"a packed group decodes to more than the {want} bytes expected")
             if pos + SEED_BYTES > n:
                 raise RvzError("truncated padding seed")
             out.append(junk(data[pos:pos + SEED_BYTES], offset + have, size))
@@ -220,6 +222,8 @@ class Rvz:
 
     def _read(self) -> None:
         f = self._f
+        f.seek(0, 2)
+        self._fsize = f.tell()
         f.seek(0)
         h = f.read(HEAD_BYTES + DISC_BYTES)
         if h[:4] == b"WIA\x01":
@@ -272,11 +276,18 @@ class Rvz:
         if pos != self.iso_size:
             raise RvzError("the data ranges do not add up to the size of the disc")
 
-    def _table(self, off: int, stored: int, size: int, fmt: str, entry: int, count: int) -> list:
+    def _blob(self, off: int, n: int, what: str) -> bytes:
+        """``n`` bytes at ``off``; the numbers come from the file, so they are checked against its size first."""
+        if off < 0 or n < 0 or off + n > self._fsize:
+            raise RvzError(what)
         self._f.seek(off)
-        blob = self._f.read(stored)
-        if len(blob) != stored:
-            raise RvzError("truncated RVZ table")
+        blob = self._f.read(n)
+        if len(blob) != n:
+            raise RvzError(what)
+        return blob
+
+    def _table(self, off: int, stored: int, size: int, fmt: str, entry: int, count: int) -> list:
+        blob = self._blob(off, stored, "truncated RVZ table")
         raw = _decompress(self.compression, blob, size, self.props)
         return [struct.unpack_from(fmt, raw, i * entry) for i in range(count)]
 
@@ -293,11 +304,10 @@ class Rvz:
         if n == 0:
             block = bytes(length)
         else:
-            self._f.seek(data_off4 * 4)
-            blob = self._f.read(n)
-            if len(blob) != n:
-                raise RvzError("the RVZ file is truncated")
+            blob = self._blob(data_off4 * 4, n, "the RVZ file is truncated")
             if data_size & 0x80000000:
+                if packed > length + 72 * (length // 4 + 1):     # records of 4 bytes + a 68-byte seed at most
+                    raise RvzError("a group claims an impossible packed size")
                 blob = _decompress(self.compression, blob, packed or length, self.props)
             block = unpack(blob, disc_off, length) if packed else blob
             if len(block) != length:
