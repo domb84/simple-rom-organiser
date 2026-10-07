@@ -231,7 +231,10 @@ class WindowsPackagingTests(unittest.TestCase):
             with mock.patch.object(sys, "platform", "win32"), \
                     mock.patch.object(sys, "frozen", True, create=True), \
                     mock.patch.object(sys, "_MEIPASS", tmp, create=True), \
+                    mock.patch("ctypes.util.find_library", return_value=None), \
                     mock.patch.dict(os.environ, {}, clear=False):
+                # find_library is patched out: with sys.platform faked to "win32" on Linux, Python 3.13's
+                # shutil.which (used by ctypes.util) takes a Windows-only branch and fails on the missing _winapi
                 os.environ.pop(flacnative.ENV_LIB, None)
                 self.assertIn(str(dll), flacnative._candidates())
 

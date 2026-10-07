@@ -201,7 +201,11 @@ class IndexTests(TmpDirCase):
         self.build()
         self.assertTrue(st.available())
         self.assertEqual(st.lookup(G, "Alpha Quest"), (9.0, 100))
+        index = self.dir / "ratings.sqlite"
+        before = index.stat().st_mtime_ns
         self.build(XML.replace("<CommunityRating>4.5</CommunityRating>", "<CommunityRating>2.0</CommunityRating>", 1))
+        if index.stat().st_mtime_ns == before:      # a coarse file system clock (tmpfs: a few ms) and an equally big file
+            os.utime(index, ns=(before + 10_000_000, before + 10_000_000))
         self.assertEqual(st.lookup(G, "Alpha Quest"), (4.0, 100))      # new file -> caches dropped
 
     def test_default_store_follows_the_data_dir(self) -> None:
