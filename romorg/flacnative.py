@@ -225,6 +225,9 @@ class _Decoder:
             return 0
 
         def write_cb(_d, frame, bufs, _cd):
+            if frame[2] != 2 or frame[4] != 16:      # header.channels, header.bits_per_sample: CD audio only; a mono
+                self._err = -1                       # frame has no second buffer (a NULL read killed the process)
+                return 1                             # ABORT
             bs = frame[0]                      # FLAC__Frame.header.blocksize is its first field
             got = self._got
             if got + bs > self._lcap:
