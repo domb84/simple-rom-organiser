@@ -1382,6 +1382,82 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.call("POST", "/api/collection/undo", {})
         self.assertTrue((self.root / "incoming" / "game_d1.adf").is_file())
 
+    def test_collection_can_just_reorganise_the_folders_where_they_are(self) -> None:
+        roms = self.tmp / "roms-inplace"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
+        self.call("POST", "/api/collection/detect", {"root": str(roms)})
+        info = self.call("POST", "/api/collection/save", {"place": "inplace"})
+        self.assertEqual(info["place"], "inplace")                                     # no destination needed
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
+        plan = self.job("/api/collection/plan", {})["result"]
+        row = plan["systems"][0]
+        self.assertEqual((plan["place"], row["status"]), ("inplace", "ok"))
+        self.assertGreater(row["counts"]["kept"], 2)
+        self.assertGreater(row["actionable"], 0)
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file()), before)  # a preview moves nothing
+        res = self.job("/api/collection/apply", {})["result"]
+        self.assertFalse(res["systems"][0]["failed"], res)
+        self.assertTrue((self.root / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
+        self.assertFalse((self.root / "incoming" / "game_d1.adf").exists())
+        again = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(again["systems"][0]["actionable"], 0)                         # tidy now
+        undone = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(undone["errors"], [])
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")
+                                if p.is_file() and not p.name.startswith(".romorg-undo")), before)
+
+    def test_collection_sorts_a_mixed_folder_and_sweeps_what_a_build_sets_aside(self) -> None:
+        # a second system: a No-Intro GBA DAT with two games
+        gba_dat = "Nintendo - Game Boy Advance"
+        rng = random.Random(99)
+        games = {}
+        lines = [f'clrmamepro (\n\tname "{gba_dat}"\n\tdescription "{gba_dat}"\n\tversion "20250101-000000"\n)\n']
+        for name in ("Alpha Run (USA)", "Beta Bash (USA)"):
+            data = bytes(rng.getrandbits(8) for _ in range(2048))
+            games[name] = data
+            lines.append(f'game (\n\tname "{name}"\n\tdescription "{name}"\n\trom ( name "{name}.gba" size {len(data)} '
+                         f'crc {zlib.crc32(data):08x} md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} )\n)\n')
+        (self.tmp / "data" / "nointro").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "data" / "nointro" / f"{gba_dat}.dat").write_text("\n".join(lines))
+        mixed = self.tmp / "mixed"
+        (mixed / "Dump" / "More").mkdir(parents=True)
+        (mixed / "Dump" / "Alpha.bin").write_bytes(games["Alpha Run (USA)"])             # a GBA ROM with a wrong name
+        (mixed / "Dump" / "More" / "b.gba").write_bytes(games["Beta Bash (USA)"])
+        (mixed / "Dump" / "wb13.adf").write_bytes(self.files["incoming/deep/wb.adf"])    # an Amiga disk
+        (mixed / "Dump" / "game1.adf").write_bytes(self.files["incoming/game_d1.adf"])
+        (mixed / "Dump" / "mystery.gba").write_bytes(b"not in any DAT")
+        (mixed / "Dump" / "notes.txt").write_text("hello")
+        info = self.call("POST", "/api/collection/detect", {"root": str(mixed)})
+        systems = {n: {"enabled": True} for n in ("Commodore Amiga", "Nintendo Game Boy Advance")}
+        self.call("POST", "/api/collection/save", {"systems": systems, "place": "inplace"})
+        plan = self.job("/api/collection/sort/plan", {})["result"]
+        self.assertEqual(plan["counts"], {"Commodore Amiga": 2, "Nintendo Game Boy Advance": 2, "_unmatched": 1, "_other": 1})
+        self.assertEqual(plan["aside"], str(self.tmp / "mixed-aside"))
+        self.assertTrue((mixed / "Dump" / "notes.txt").exists())                           # a preview moves nothing
+        res = self.job("/api/collection/sort/apply", {})["result"]
+        self.assertEqual((res["result"]["moved"], res["result"]["failed"]), (6, []))
+        self.assertTrue((mixed / "gba" / "Alpha.bin").is_file() and (mixed / "gba" / "b.gba").is_file())
+        self.assertTrue((mixed / "amiga" / "wb13.adf").is_file())
+        self.assertTrue((self.tmp / "mixed-aside" / "_unmatched" / "Dump" / "mystery.gba").is_file())
+        self.assertTrue((self.tmp / "mixed-aside" / "_other" / "Dump" / "notes.txt").is_file())
+        self.assertFalse((mixed / "Dump").exists())                                        # emptied
+        # now reorganise the systems in place: the games are renamed, and what is set aside leaves the ROM folders
+        built = self.job("/api/collection/apply", {})["result"]
+        self.assertFalse([r for r in built["systems"] if r["status"] != "ok"], built)
+        self.assertTrue((mixed / "Nintendo - Game Boy Advance" / "Alpha Run (USA).gba").is_file()
+                        or (mixed / "gba" / "Alpha Run (USA).gba").is_file())
+        self.assertFalse(list((mixed / "gba").glob("_*")))
+        self.assertFalse(list((mixed / "amiga").glob("_*")))                                 # nothing is set aside inside the ROM folders
+        aside_files = [str(p.relative_to(self.tmp / "mixed-aside")) for p in (self.tmp / "mixed-aside" / "amiga").rglob("*") if p.is_file()]
+        self.assertTrue(aside_files, "an incomplete disk set should have been moved out of the ROM folder")
+        back = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(back["errors"], [])
+        undone = self.call("POST", "/api/collection/sort/undo", {})
+        self.assertEqual(undone["skipped"], [])
+        self.assertTrue((mixed / "Dump" / "More" / "b.gba").is_file())
+        self.assertTrue((mixed / "Dump" / "notes.txt").is_file())
+
     def test_library_export_refuses_bad_destinations(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         for bad in (str(self.root), str(self.root / "sub")):

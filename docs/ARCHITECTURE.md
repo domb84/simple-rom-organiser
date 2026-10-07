@@ -2194,3 +2194,11 @@ matches a renamed game, keeping each core folder; the journal (`kind: follow`, `
 `core_infos` / `cores_for_platform` / `check_bios` / `apply_bios` read the cores' `.info` firmware lists (`firmwareN_path`, `_opt`,
 md5 from `notes`) and fill the system folder from the system's ROM folder. Endpoints `/api/retroarch/follow`, `/bios`, `/bios/apply`.
 
+
+# Amendment 29 - Sort a mixed folder (v0.2)
+
+`romorg/sortroot.py`: `plan_sort` (identified files to their system's folder; loose unmatched files to `<aside>/_unmatched`; non-ROM
+files to `<aside>/_other`; sidecars follow their ROM), `plan_sweep` / `plan_restore` (the reserved folders of a library build to and
+from `<aside>/<system folder>/`), `apply_moves` / `undo_moves` (journal, never overwrite, emptied folders removed). Server:
+`/api/collection/sort/plan|apply|undo`, `/api/collection/aside/restore`; in place collection builds sweep after applying.
+

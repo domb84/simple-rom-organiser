@@ -3333,13 +3333,24 @@ class App:
         mode = raw.get("mode")
         return {"root": str(raw.get("root") or ""), "dest": str(raw.get("dest") or ""),
                 "mode": _mod("libexport").normalize_mode(mode), "sidecars": bool(raw.get("sidecars")),
-                "sync": bool(raw.get("sync")), "systems": systems, "global": _mod("collection").clean_global(raw.get("global") or {}),
+                "sync": bool(raw.get("sync")), "place": "inplace" if raw.get("place") == "inplace" else "elsewhere",
+                "aside": str(raw.get("aside") or ""), "sweep": raw.get("sweep", True) is not False,
+                "last_sort": raw.get("last_sort") if isinstance(raw.get("last_sort"), dict) else {}, "systems": systems, "global": _mod("collection").clean_global(raw.get("global") or {}),
                 "last": raw.get("last") if isinstance(raw.get("last"), dict) else {}}
 
     def _collection_save(self, **changes: Any) -> dict[str, Any]:
+        patch = changes.pop("systems_patch", None)
+
         def mutate(cfg: dict[str, Any]) -> None:
             cur = cfg.get("collection") if isinstance(cfg.get("collection"), dict) else {}
             cur.update(changes)
+            if patch:                      # merged under the config lock: two quick edits never lose each other
+                systems = cur.get("systems") if isinstance(cur.get("systems"), dict) else {}
+                for name, fields in patch.items():
+                    merged = {**{"path": "", "enabled": True, "own_rules": False}, **(systems.get(name) or {}), **fields}
+                    systems[name] = {"path": str(merged["path"]).strip(), "enabled": bool(merged["enabled"]),
+                                     "own_rules": bool(merged["own_rules"])}
+                cur["systems"] = systems
             cfg["collection"] = cur
         try:
             _mod("paths").update_config(mutate)
@@ -3353,6 +3364,7 @@ class App:
         tags = getattr(library, "tags", None) or _optional_mod("tags")
         cfg = self._collection_cfg()
         shown = library.LibraryProfile.from_dict(cfg["global"], library.LibraryProfile())
+        cfg = {**cfg, "aside_default": str(_mod("sortroot").default_aside(Path(cfg["root"]))) if cfg["root"] else ""}
         return {**cfg, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
                 "rules": [{"key": k, "label": labels.get(k, k)} for k in self._rule_keys()],
                 "languages": dict(getattr(tags, "LANGUAGES", {}) or {}),
@@ -3391,6 +3403,12 @@ class App:
             changes["sidecars"] = _bool_arg(body.get("sidecars"))
         if "sync" in body:
             changes["sync"] = _bool_arg(body.get("sync"))
+        if "place" in body:
+            changes["place"] = "inplace" if _str_arg(body.get("place")) == "inplace" else "elsewhere"
+        if "aside" in body:
+            changes["aside"] = _str_arg(body.get("aside"))
+        if "sweep" in body:
+            changes["sweep"] = _bool_arg(body.get("sweep"), True)
         current = self._collection_cfg()
         if changes.get("mode", current["mode"]) == "move":
             if changes.get("sync"):
@@ -3404,16 +3422,12 @@ class App:
             known = {p.name for p in _mod("platforms").list_platforms()}
             if not isinstance(body["systems"], dict) or not set(body["systems"]) <= known:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "systems must map known system names to settings")
-            current = self._collection_cfg()["systems"]
+            patch: dict[str, dict[str, Any]] = {}
             for name, entry in body["systems"].items():
                 if not isinstance(entry, dict):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "each system needs an object")
-                merged = {**current.get(name, {"path": "", "enabled": True, "own_rules": False}),
-                          **{k: entry[k] for k in ("path", "enabled", "own_rules") if k in entry}}
-                merged["path"], merged["enabled"], merged["own_rules"] = (
-                    _str_arg(merged["path"]), bool(merged["enabled"]), bool(merged["own_rules"]))
-                current[name] = merged
-            changes["systems"] = current
+                patch[name] = {k: entry[k] for k in ("path", "enabled", "own_rules") if k in entry}
+            changes["systems_patch"] = patch
         if "root" in body:
             changes["root"] = _str_arg(body.get("root"))
         self._collection_save(**changes)
@@ -3422,15 +3436,18 @@ class App:
     def _collection_targets(self, cfg: dict[str, Any]) -> tuple[Path, Path, list[tuple[Any, dict[str, Any], str]]]:
         """``(root, dest, [(platform, system settings, destination folder name)])`` of the enabled systems; raises a 400
         when the settings cannot be used."""
-        if not cfg["root"]:
+        inplace = cfg["place"] == "inplace"
+        if not cfg["root"] and not inplace:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
-        root = self._validate_dir(cfg["root"])
-        if not cfg["dest"].strip():
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
-        dest = Path(os.path.abspath(os.path.expanduser(cfg["dest"])))
-        problem = _mod("collection").check_folders(root, dest)
-        if problem:
-            raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
+        root = self._validate_dir(cfg["root"]) if cfg["root"] else Path(".")
+        dest = Path(".")
+        if not inplace:
+            if not cfg["dest"].strip():
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
+            dest = Path(os.path.abspath(os.path.expanduser(cfg["dest"])))
+            problem = _mod("collection").check_folders(root, dest)
+            if problem:
+                raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
         picked: list[tuple[Any, dict[str, Any], str]] = []
         used: set[str] = set()
         for plat in _mod("platforms").list_platforms():
@@ -3452,6 +3469,8 @@ class App:
         others go on."""
         cfg = self._collection_cfg()
         root, dest, picked = self._collection_targets(cfg)
+        if cfg["place"] == "inplace":
+            return self._collection_run_inplace(job, cfg, picked, apply)
         libexport, collection = _mod("libexport"), _mod("collection")
         rows: list[dict[str, Any]] = []
         runs: dict[str, dict[str, Any]] = {}
@@ -3529,6 +3548,250 @@ class App:
             out["runs"] = runs or previous
         return out
 
+
+    def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], picked: list[Any], apply: bool) -> dict[str, Any]:
+        """Reorganise every enabled system's own folder with the collection's rules (the classic Build library, per
+        system). A failing system is reported and the others go on."""
+        organiser, collection = _mod("organiser"), _mod("collection")
+        rows: list[dict[str, Any]] = []
+        runs: dict[str, dict[str, Any]] = {}
+        for i, (plat, entry, _name) in enumerate(picked):
+            if job.cancel.is_set():
+                break
+            row: dict[str, Any] = {"platform": plat.name, "path": entry["path"], "own_rules": entry["own_rules"], "status": "ok"}
+            rows.append(row)
+            job.report(i, len(picked), f"{plat.name}: scanning")
+            folder = Path(entry["path"])
+            if not folder.is_dir():
+                row.update(status="missing", error="The folder does not exist.")
+                continue
+            try:
+                state = self._run_scan(job, folder.resolve(), plat, cancellable=True, keep=False)
+                if state is None:
+                    break
+                job.report(i, len(picked), f"{plat.name}: choosing what to keep")
+                prof = self._profile(plat) if entry["own_rules"] else collection.effective_profile(plat, cfg["global"])
+                plan = self._make_library_plan(state, prof, False, not self._is_dc(state))
+                counts = dict(organiser.reason_counts(plan))
+                actionable = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
+                    1 for p in plan.playlists if p.status == "write")
+                row.update(counts={k: counts.get(k, 0) for k in ("kept", "renamed", "moved", "excluded", "superseded",
+                                                                 "incomplete", "duplicates", "unmatched", "conflict",
+                                                                 "playlists_write")},
+                           actionable=actionable, files=len(plan.ops))
+                if apply and actionable:
+                    job.report(i, len(picked), f"{plat.name}: reorganising")
+                    fn = _mod("discsys").apply_plan if self._is_dc(state) else organiser.apply_renames
+                    res = dict(_call(fn, plan.ops, state.root, progress=job.report, cancel=job.cancel,
+                                     playlists=list(plan.playlists)))
+                    moved = res.get("moved")
+                    row["result"] = {"moved": len(moved) if isinstance(moved, (list, tuple)) else (moved or 0),
+                                     "playlists": res.get("playlists_written", 0)}
+                    row["failed"] = list(res.get("failed") or [])[:20]
+                    follow = self._ra_follow(self._moved_pairs(plan.ops), "move", {"library_log": res.get("undo_log") or ""})
+                    if follow:
+                        row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
+                    if res.get("undo_log"):
+                        runs[plat.name] = {"log": res["undo_log"], "root": str(state.root)}
+            except ApiError as exc:
+                row.update(status="error", error=exc.message)
+            except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
+                traceback.print_exc()
+                row.update(status="error", error=str(exc) or type(exc).__name__)
+            finally:
+                state = None
+        total = {k: sum((r.get("counts") or {}).get(k, 0) for r in rows)
+                 for k in ("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates", "unmatched",
+                           "conflict")}
+        total["actionable"] = sum(r.get("actionable", 0) for r in rows)
+        out = {"action": "collection_apply" if apply else "collection_plan", "place": "inplace", "systems": rows,
+               "totals": total, "cancelled": job.cancel.is_set()}
+        sweep_journal = ""
+        if cfg["sweep"] and not job.cancel.is_set():
+            sortroot = _mod("sortroot")
+            root = self._validate_dir(cfg["root"]) if cfg["root"] else Path(picked[0][1]["path"]).parent
+            aside = self._collection_aside(cfg, root)
+            folders = self._collection_sys_folders(cfg, picked, root)
+            moves = sortroot.plan_sweep(folders, aside)
+            out["aside"] = {"path": str(aside), "files": len(moves), "bytes": sum(m.size for m in moves)}
+            if apply and moves:
+                job.report(0, len(moves), "Moving the set-aside files out of the ROM folders...")
+                res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "sweep",
+                                           keep=[root, aside, *folders.values()], progress=lambda d, t, n: job.report(d, t, n))
+                out["aside"]["moved"], out["aside"]["failed"] = res["moved"], res["failed"][:20]
+                sweep_journal = res["journal"] or ""
+        if apply:
+            if runs or sweep_journal:
+                self._collection_save(last={"place": "inplace", "runs": runs, "sweep": sweep_journal})
+            out["runs"] = runs
+        return out
+
+    # ---- sort a mixed folder into systems; keep the ROM folders clean
+    def _collection_aside(self, cfg: dict[str, Any], root: Path) -> Path:
+        sortroot = _mod("sortroot")
+        aside = Path(os.path.abspath(os.path.expanduser(cfg["aside"]))) if cfg["aside"].strip() else sortroot.default_aside(root)
+        problem = _mod("collection").check_folders(root, aside)
+        if problem:
+            raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "set-aside folder"), "bad_aside")
+        return aside
+
+    def _collection_sys_folders(self, cfg: dict[str, Any], picked: list[Any], root: Path) -> dict[str, Path]:
+        """System name -> its folder, for every ticked system (the folder is created by a sort when it is missing)."""
+        out: dict[str, Path] = {}
+        for plat, entry, _name in picked:
+            out[plat.name] = Path(entry["path"]) if entry["path"].strip() else root / (plat.folder_hint or plat.name)
+        return out
+
+    def _collection_identify(self, job: Job, root: Path, picked: list[Any]) -> dict[str, Any]:
+        """Read every file under ``root`` once and find the system of each: ROM files against all the ticked cartridge /
+        flat systems' DATs in one scan, discs per disc system. Returns what ``sortroot.plan_sort`` takes."""
+        sortroot, scanner, discsys = _mod("sortroot"), _mod("scanner"), _mod("discsys")
+        cfg = self._config()
+        flat_dats: list[Any] = []
+        dat_owner: dict[str, str] = {}
+        alt: list[str] = []
+        containers: list[str] = []
+        extensions: set[str] = set()
+        notes: list[str] = []
+        disc_platforms: list[Any] = []
+        for plat, _entry, _n in picked:
+            extensions.update(getattr(plat, "extensions", ()) or ())
+            try:
+                self.updates.ensure(plat, progress=job.report, cancel=job.cancel)
+            except Exception as exc:  # noqa: BLE001 - offline and not installed: that system cannot be told apart
+                if job.cancel.is_set():
+                    return {}
+                if type(exc).__name__ != "UpdateError":
+                    raise
+            dats, missing = self._platform_dats(plat)
+            if not dats:
+                notes.append(f"{plat.name}: no DATs installed, so its games cannot be recognised.")
+                continue
+            if missing:
+                notes.append(f"{plat.name}: {len(missing)} DAT(s) not installed.")
+            if _layout(plat) == LAYOUT_GAME_FOLDER:
+                disc_platforms.append((plat, list(dats)))
+                continue
+            for d in dats:
+                if d.name not in dat_owner:
+                    flat_dats.append(d)
+                    dat_owner[d.name] = plat.name
+            alt += [a for a in (getattr(plat, "alt_hashes", ()) or ()) if a not in alt]
+            containers += [c for c in (getattr(plat, "containers", ()) or ()) if c not in containers]
+        flat: dict[Path, str | None] = {}
+        unmatched: set[Path] = set()
+        other: set[Path] = set()
+        if flat_dats:
+            job.report(0, 0, "Reading every file...")
+            res = scanner.scan(root, flat_dats, recursive=True, progress=job.report, cancel=job.cancel,
+                               alt_hashes=tuple(alt), containers=tuple(containers))
+            owners: dict[Path, set[str]] = {}
+            for m in res.matched:
+                for r in m.primary:
+                    owners.setdefault(m.entry.path, set()).add(dat_owner.get(r.dat, ""))
+            for path, plats in owners.items():
+                plats.discard("")
+                flat[path] = next(iter(plats)) if len(plats) == 1 else None
+            for e in res.unmatched:
+                if e.path not in flat:
+                    (unmatched if sortroot.rom_like(e.path, extensions) else other).add(e.path)
+            for path in res.unsupported:
+                if path not in flat:
+                    (unmatched if sortroot.rom_like(path, extensions) else other).add(path)
+        discs: list[dict[str, Any]] = []
+        claimed: set[Path] = set()
+        loose_units: list[Path] = []
+        cfgd = self._config()
+        for plat, dats in disc_platforms:
+            if job.cancel.is_set():
+                return {}
+            job.report(0, 0, f"Looking for {plat.name} discs...")
+            self._configure_temp(cfgd)
+            res = discsys.scan(root, dats, progress=job.report, cancel=job.cancel, chdman=self._chdman(),
+                               engine=str(cfgd.get("chd_engine") or "auto"),
+                               workers=_mod("chdsched").default_workers(cfgd.get("chd_workers")))
+            for u in res.units:
+                files = [Path(f) for f in u.files]
+                if u.game is not None:
+                    if not any(f in claimed for f in files):
+                        discs.append({"platform": plat.name, "top": Path(u.top), "folder": u.folder is not None, "files": files})
+                        claimed.update(files)
+                else:
+                    loose_units.extend(files)
+        for f in loose_units:
+            if f not in claimed:
+                unmatched.add(f)
+        for coll in (flat, unmatched, other):
+            for f in list(coll):
+                if f in claimed:
+                    (coll.pop(f) if isinstance(coll, dict) else coll.discard(f))
+        return {"flat": flat, "discs": discs, "unmatched": unmatched, "other": other, "notes": notes}
+
+    def _collection_sort(self, job: Job, apply: bool) -> dict[str, Any]:
+        sortroot = _mod("sortroot")
+        cfg = self._collection_cfg()
+        root, _dest, picked = self._collection_targets({**cfg, "place": "inplace"})      # a sort needs no destination
+        aside = self._collection_aside(cfg, root)
+        folders = self._collection_sys_folders(cfg, picked, root)
+        found = self._collection_identify(job, root, picked)
+        if not found:
+            return {"action": "collection_sort_plan", "place": "sort", "cancelled": True, "items": [], "counts": {}}
+        moves = sortroot.plan_sort(root, aside, folders, found["flat"], found["discs"], found["unmatched"], found["other"])
+        counts: dict[str, int] = {}
+        for m in moves:
+            counts[m.bucket] = counts.get(m.bucket, 0) + 1
+        out: dict[str, Any] = {"action": "collection_sort_apply" if apply else "collection_sort_plan", "place": "sort",
+                               "root": str(root), "aside": str(aside), "counts": counts, "total": len(moves),
+                               "bytes": sum(m.size for m in moves), "notes": found["notes"],
+                               "recognised": len(found["flat"]) + len(found["discs"]),
+                               "items": [{"from": str(m.src), "to": str(m.dst), "bucket": m.bucket, "kind": m.kind}
+                                         for m in moves[:400]]}
+        if apply and moves:
+            job.report(0, len(moves), "Sorting...")
+            journal_dir = _mod("paths").data_dir() / "collection-undo"
+            res = sortroot.apply_moves(moves, journal_dir, "sort", keep=[root, aside, *folders.values()],
+                                       progress=lambda d, t, n: job.report(d, t, n), cancel=job.cancel)
+            out["result"] = {"moved": res["moved"], "failed": res["failed"][:30]}
+            if res["journal"]:
+                self._collection_save(last_sort={"journal": res["journal"], "root": str(root), "aside": str(aside)})
+        return out
+
+    def collection_sort_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        cfg = self._collection_cfg()
+        if not cfg["root"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
+        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
+        self._collection_aside(cfg, root)
+        return {"job": self.jobs.start("collection", lambda job: self._collection_sort(job, False)).to_dict()}
+
+    def collection_sort_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        cfg = self._collection_cfg()
+        if not cfg["root"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
+        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
+        self._collection_aside(cfg, root)
+        return {"job": self.jobs.start("collection", lambda job: self._collection_sort(job, True), cancellable=True).to_dict()}
+
+    def collection_sort_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        cfg = self._collection_cfg()
+        last = cfg["last_sort"]
+        if not last.get("journal") or not Path(last["journal"]).is_file():
+            raise ApiError(HTTPStatus.CONFLICT, "There is no sort to undo.", "nothing_to_undo")
+        res = _mod("sortroot").undo_moves(Path(last["journal"]), keep=[Path(last["root"])])
+        self._collection_save(last_sort={})
+        return res
+
+    def collection_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/aside/restore``: bring the set-aside files back into the systems' folders."""
+        sortroot = _mod("sortroot")
+        cfg = self._collection_cfg()
+        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
+        aside = self._collection_aside(cfg, root)
+        folders = self._collection_sys_folders(cfg, picked, root)
+        moves = sortroot.plan_restore(folders, aside)
+        res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "restore", keep=[aside, root])
+        return {"moved": res["moved"], "failed": res["failed"][:30]}
+
     def collection_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         self._collection_targets(self._collection_cfg())                  # a 400 before the job starts
         return {"job": self.jobs.start("collection", lambda job: self._collection_run(job, False)).to_dict()}
@@ -3541,11 +3804,27 @@ class App:
     def collection_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/collection/undo``: take back the last collection build (the run each system got in it)."""
         libexport = _mod("libexport")
-        runs = (self._collection_cfg()["last"].get("runs") or {})
+        last = self._collection_cfg()["last"]
+        runs = (last.get("runs") or {})
         if not runs:
             raise ApiError(HTTPStatus.CONFLICT, "There is no collection build to undo.", "nothing_to_undo")
         removed, restored, left, errors = 0, 0, [], []
+        if last.get("sweep") and Path(last["sweep"]).is_file():          # the set-aside files come back first
+            back = _mod("sortroot").undo_moves(Path(last["sweep"]))
+            restored += back["restored"]
+            left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
         for name, rec in runs.items():
+            if rec.get("log"):                                  # a build in place: the system's own undo log
+                try:
+                    res = dict(_mod("organiser").undo(Path(rec["log"]), root=Path(rec["root"])))
+                    restored += len(res.get("restored") or []) if isinstance(res.get("restored"), (list, tuple)) else int(res.get("restored") or 0)
+                    left += [{"system": name, **x} for x in (res.get("skipped") or []) if isinstance(x, dict)
+                             and x.get("reason") != "already back in place"]
+                    self._ra_undo_follow(rec["log"])
+                except Exception as exc:  # noqa: BLE001
+                    traceback.print_exc()
+                    errors.append({"system": name, "error": str(exc)})
+                continue
             try:
                 res = libexport.undo_run(Path(rec["dest"]), int(rec["run"]))
                 if rec.get("follow") and Path(rec["follow"]).is_file():
@@ -3914,6 +4193,10 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/collection/save"): App.collection_save,
     ("POST", "/api/collection/plan"): App.collection_plan,
     ("POST", "/api/collection/apply"): App.collection_apply,
+    ("POST", "/api/collection/sort/plan"): App.collection_sort_plan,
+    ("POST", "/api/collection/sort/apply"): App.collection_sort_apply,
+    ("POST", "/api/collection/sort/undo"): App.collection_sort_undo,
+    ("POST", "/api/collection/aside/restore"): App.collection_restore,
     ("POST", "/api/collection/undo"): App.collection_undo,
     ("POST", "/api/library/export/settings"): App.library_export_settings,
     ("POST", "/api/library/export/undo"): App.library_export_undo,

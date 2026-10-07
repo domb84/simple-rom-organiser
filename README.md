@@ -756,6 +756,30 @@ In the list on the left, **Collection** (`#/collection`) builds the clean librar
    A system that fails (folder missing, no DATs) is reported and the others go on.
    **Undo last build** removes what the last build added in every system.
 
+**Sort a mixed folder, keep the ROM folders clean.** The *Sort and tidy* panel works on whatever is under the ROM root:
+
+- **Sort into systems:** reads every file once (hashes are remembered, so a second run is fast), finds its system by checksum
+  against the DATs of every ticked system, and moves it into that system's folder (`snes`, `gba`, `psx` ... - the folder names
+  found by *Find the systems*, or the usual short names such as `snes` where a folder does not exist yet). A file in the wrong
+  system's folder moves to the right one; one already at home stays. Discs (CHD, cue/bin sets) move as a whole game folder. A
+  save or note named like a ROM goes with it. Preview shows every move first, **Undo sort** moves it all back.
+- **Set-aside folder** (default: next to the ROM root, named like it with `-aside`): files that match no system go to
+  `_unmatched/` and files that are not ROMs (pictures, text, playlists ...) to `_other/` there, keeping their folders. Loose
+  unmatched files only: one that sits inside a system's folder is dealt with by that system's library build.
+- **After a reorganise** (next), what the rules set aside (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`,
+  `_unmatched`) moves out of the system folders to `<set-aside>/<system folder>/<same folder>/`, so the ROM folders hold only what
+  you keep (tick or untick *After a reorganise, move what the rules set aside ...*). The converted-originals folder is never swept.
+  **Undo last build** brings it all back first. **Bring set-aside files back** returns everything to the systems' folders (a later
+  reorganise decides again).
+- Nothing is deleted or overwritten; a name that is taken gets ` (2)`.
+
+**Just reorganise what is there:** instead of building in another folder, choose *Just reorganise the ROM folders where they
+are*. No destination is needed. Every ticked system gets the classic Build library with the shared rules (or its own): files
+are renamed and sorted inside the system's own folder, what the rules leave out is set aside in `_excluded/`, `_superseded/`
+and the like, files that match nothing go to `_unmatched/`, and nothing is deleted. Preview shows the counts per system,
+Reorganise collection does it, and **Undo last build** uses each system's own undo log. Saves follow the renames if RetroArch is
+set up (see below).
+
 With Copy the ROM folders keep their files; with Move they give them up. Building again later adds only what is missing.
 
 ## RetroArch: saves, states and the config (v0.2)

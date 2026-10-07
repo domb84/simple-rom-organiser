@@ -4383,6 +4383,12 @@
         $("col-mode").value = this.info.mode;
         $("col-sidecars").checked = !!this.info.sidecars;
         $("col-sync").checked = !!this.info.sync;
+        $("col-aside").value = this.info.aside || "";
+        $("col-aside").placeholder = this.info.aside_default ? `Default: ${this.info.aside_default}` : $("col-aside").placeholder;
+        $("col-sweep").checked = this.info.sweep !== false;
+        $("col-aside-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
+        $("col-place-inplace").checked = this.info.place === "inplace";
+        $("col-place-elsewhere").checked = this.info.place !== "inplace";
         this.syncAllowed();
         $("col-root-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
         $("col-dest-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
@@ -4390,7 +4396,16 @@
       this.render();
     },
 
-    adopt(info) { this.info = info; this.render(); this.syncAllowed(); },
+    adopt(info) { this.info = info; this.render(); this.syncAllowed(); this.placeChanged(); },
+
+    inplace() { return $("col-place-inplace").checked; },
+
+    placeChanged() {
+      const inp = this.inplace();
+      $("col-elsewhere").classList.toggle("hidden", inp);
+      $("col-inplace-note").classList.toggle("hidden", !inp);
+      $("col-apply-btn").textContent = inp ? "Reorganise collection" : "Build collection";
+    },
 
     /** Keeping in sync needs the originals to stay: not with Move. */
     syncAllowed() {
@@ -4399,8 +4414,13 @@
       $("col-sync").disabled = move;
     },
 
+    saveSeq: 0,
     async save(changes) {
-      try { this.adopt(await post("/api/collection/save", changes)); } catch (err) { toast(err.message, "error"); }
+      const n = ++this.saveSeq;               // answers can arrive out of order: only the newest one is shown
+      try {
+        const info = await post("/api/collection/save", changes);
+        if (n === this.saveSeq) this.adopt(info);
+      } catch (err) { toast(err.message, "error"); }
     },
 
     async detect() {
@@ -4433,6 +4453,7 @@
       if (!known.length) $("col-systems").replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "Choose the ROM root and press \"Find the systems\"." })));
       this.renderRules();
       $("col-undo-btn").dataset.blocked = info.last && info.last.runs && Object.keys(info.last.runs).length ? "0" : "1";
+      $("col-sort-undo").dataset.blocked = info.last_sort && info.last_sort.journal ? "0" : "1";
       Jobs.setRunning(Jobs.running);
     },
 
@@ -4491,13 +4512,34 @@
     },
 
     async run(path, body = {}) {
+      if (this.inplace()) {
+        if (!Object.values(this.info.systems).some((e) => e.enabled)) { toast("Find the systems first and tick the ones to reorganise.", "error"); return false; }
+        await this.save({ place: "inplace" });
+        Jobs.start(path, body);
+        return true;
+      }
       if (!$("col-root").value.trim() || !$("col-dest").value.trim()) { toast("Choose the ROM root and the destination folder first.", "error"); return false; }
-      await this.save({ dest: $("col-dest").value.trim(), mode: $("col-mode").value, sidecars: $("col-sidecars").checked, sync: $("col-sync").checked });
+      await this.save({ place: "elsewhere", dest: $("col-dest").value.trim(), mode: $("col-mode").value, sidecars: $("col-sidecars").checked, sync: $("col-sync").checked });
       Jobs.start(path, body);
       return true;
     },
 
+    async applyInplace() {
+      const n = Object.values(this.info.systems).filter((e) => e.enabled).length;
+      const sure = await confirmDialog({
+        title: "Reorganise the collection", danger: true, okText: "Reorganise",
+        body: el("div", {},
+          el("p", { text: `Reorganise ${n} system folder(s) where they are.` }),
+          el("ul", {},
+            el("li", { text: "Files are renamed and moved inside each system's own folder." }),
+            el("li", { text: $("col-sweep").checked ? `What the rules leave out (excluded, superseded, incomplete, duplicates, unmatched) is moved out of the ROM folders into ${$("col-aside").value.trim() || this.info.aside_default}. Nothing is deleted.` : "What the rules leave out is set aside in _excluded, _superseded and similar folders inside each system's folder. Nothing is deleted." }),
+            el("li", { text: "Each system is scanned again first. Preview shows the counts per system." }),
+            el("li", { text: "\"Undo last build\" puts everything back (every system has its own undo log)." }))) });
+      if (sure) this.run("/api/collection/apply");
+    },
+
     async apply() {
+      if (this.inplace()) return this.applyInplace();
       const sure = await confirmDialog({
         title: "Build the collection",
         body: el("div", {},
@@ -4520,18 +4562,113 @@
       const runs = (this.info.last || {}).runs || {};
       const n = Object.keys(runs).length;
       if (!n) { toast("There is no collection build to undo.", "info"); return; }
-      if (!(await confirmDialog({ title: "Undo last build", body: `Remove what the last build added to ${(this.info.last || {}).dest} (${n} system${n === 1 ? "" : "s"})? Files you changed since are left in place. The ROM folders are not touched.`, okText: "Undo", danger: true }))) return;
+      if (!(await confirmDialog({ title: "Undo last build", body: this.info.last && this.info.last.place === "inplace" ? `Put the files of ${n} system${n === 1 ? "" : "s"} back where they were before the last reorganise? Files moved since are left.` : `Remove what the last build added to ${(this.info.last || {}).dest} (${n} system${n === 1 ? "" : "s"})? Files you changed since are left in place.`, okText: "Undo", danger: true }))) return;
       try {
         const r = await post("/api/collection/undo", {});
-        toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length || r.errors.length ? "error" : "ok", 8000);
+        toast(`${r.removed || !r.restored ? `Removed ${fmt(r.removed)} file(s)` : `Put back ${fmt(r.restored)} file(s)`}${r.removed && r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length || r.errors.length ? "error" : "ok", 8000);
         this.adopt(await get("/api/collection"));
         this.last = null;
         $("col-output").classList.add("hidden");
       } catch (err) { toast(err.message, "error"); }
     },
 
+    async sortRun(path) {
+      if (!$("col-root").value.trim()) { toast("Choose the ROM root first.", "error"); return false; }
+      await this.save({ aside: $("col-aside").value.trim(), sweep: $("col-sweep").checked });
+      if (!Object.values(this.info.systems).some((e) => e.enabled)) { toast("Find the systems first and tick the ones to sort into.", "error"); return false; }
+      Jobs.start(path, {});
+      return true;
+    },
+
+    async sortApply() {
+      const r = this.sortLast;
+      if (!r) { toast("Press Preview sort first to see what would move.", "info"); return; }
+      if (!r.total) { toast("Nothing to sort: every file is already where it belongs.", "ok"); return; }
+      if (!(await confirmDialog({ title: "Sort into systems", okText: `Move ${fmt(r.total)} file(s)`, danger: true,
+        body: el("div", {}, el("p", { text: `Move ${fmt(r.total)} file(s) (${fmtBytes(r.bytes)}) under ${r.root}:` }),
+          el("ul", {}, ...Object.entries(r.counts).map(([k, n]) => el("li", { text: `${fmt(n)} to ${k === "_unmatched" || k === "_other" ? `${r.aside}/${k}/` : k === "sidecar" ? "go with their ROM" : `the ${k} folder`}` })),
+            el("li", { text: "Nothing is deleted or overwritten; Undo sort moves everything back." }))) }))) return;
+      this.sortRun("/api/collection/sort/apply");
+    },
+
+    showSort(r) {
+      this.sortLast = r;
+      const apply = r.action === "collection_sort_apply";
+      $("col-sort-output").classList.remove("hidden");
+      $("col-sort-cards").replaceChildren(
+        card(fmt(r.recognised || 0), "Games recognised", "info"),
+        ...Object.entries(r.counts || {}).map(([k, n]) => card(fmt(n), k === "_unmatched" ? "Unmatched, set aside" : k === "_other" ? "Not ROMs, set aside" : k === "sidecar" ? "Saves / notes going along" : `To ${k}`, k.startsWith("_") ? "warn" : "info")),
+        card(fmtBytes(r.bytes || 0), "Size", ""),
+        ...(apply && r.result ? [card(fmt(r.result.moved), "Moved now", "ok")] : []));
+      const notes = r.notes || [];
+      $("col-sort-notes").classList.toggle("hidden", !notes.length);
+      $("col-sort-notes").replaceChildren(...notes.map((n) => el("div", { text: n })));
+      $("col-sort-table").replaceChildren(...(r.items || []).map((i) => el("tr", {},
+        el("td", { text: i.bucket }), el("td", { class: "mono small", text: i.from }), el("td", { class: "mono small", text: i.to }))));
+      if (apply && r.result) {
+        toast(`Sorted: ${fmt(r.result.moved)} file(s) moved${r.result.failed.length ? `, ${fmt(r.result.failed.length)} failed` : ""}`, r.result.failed.length ? "error" : "ok", 9000);
+        showFailures("col-failures", "Could not move:", r.result.failed, (f) => `${f.path}: ${f.error}`);
+      }
+    },
+
+    async sortUndo() {
+      if (!(await confirmDialog({ title: "Undo sort", body: "Move every file of the last sort back to where it was? Files you moved since are left.", okText: "Undo", danger: true }))) return;
+      try {
+        const r = await post("/api/collection/sort/undo", {});
+        toast(`Moved ${fmt(r.restored)} file(s) back${r.skipped.length ? `, ${fmt(r.skipped.length)} left` : ""}`, r.skipped.length ? "error" : "ok", 8000);
+        $("col-sort-output").classList.add("hidden");
+        this.sortLast = null;
+        this.adopt(await get("/api/collection"));
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    async restoreAside() {
+      if (!(await confirmDialog({ title: "Bring set-aside files back", body: "Move everything in the set-aside folder back into each system's folder (_excluded, _superseded ...)? The next reorganise decides again.", okText: "Bring back" }))) return;
+      try {
+        const r = await post("/api/collection/aside/restore", {});
+        toast(`Moved ${fmt(r.moved)} file(s) back${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}`, r.failed.length ? "error" : "ok", 8000);
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    head(cols) {
+      $("col-thead").replaceChildren(el("tr", {}, ...cols.map(([text, num]) => el("th", { class: num ? "num" : "", text }))));
+    },
+
+    showInplace(r) {
+      const t = r.totals, apply = r.action === "collection_apply";
+      const moved = r.systems.reduce((n, x) => n + ((x.result || {}).moved || 0), 0);
+      const aside = t.excluded + t.superseded + t.incomplete + t.duplicates;
+      $("col-output").classList.remove("hidden");
+      $("col-cards").replaceChildren(
+        card(fmt(r.systems.length), "Systems", "info"), card(fmt(t.kept), "Kept", "ok"),
+        card(fmt(t.renamed + t.moved), "Renamed / moved", t.renamed + t.moved ? "info" : "ok"),
+        card(fmt(aside), "Set aside (excluded, superseded ...)", aside ? "warn" : ""),
+        ...(t.unmatched ? [card(fmt(t.unmatched), "Unmatched", "warn")] : []),
+        ...(t.conflict ? [card(fmt(t.conflict), "Conflicts (left alone)", "bad")] : []),
+        ...(r.aside ? [card(fmt(r.aside.moved !== undefined ? r.aside.moved : r.aside.files), r.aside.moved !== undefined ? "Moved out of the ROM folders" : "Set-aside files to move out", "info")] : []),
+        ...(apply ? [card(fmt(moved), "Files moved now", "ok")] : [card(fmt(t.actionable), "Changes to make", t.actionable ? "info" : "ok")]));
+      this.head([["System"], ["Result"], ["Kept", 1], ["Renamed / moved", 1], ["Set aside", 1], ["Unmatched", 1], ["Notes"]]);
+      $("col-table").replaceChildren(...r.systems.map((x) => {
+        const c = x.counts || {}, res = x.result;
+        const text = x.status !== "ok" ? x.error || x.status : res ? `moved ${fmt(res.moved)}` : x.actionable ? `${fmt(x.actionable)} changes` : "already tidy";
+        return el("tr", {},
+          el("td", { text: x.platform }), el("td", {}, badge(x.status === "ok" ? "ok" : "bad", text)),
+          el("td", { class: "num", text: fmt(c.kept || 0) }), el("td", { class: "num", text: fmt((c.renamed || 0) + (c.moved || 0)) }),
+          el("td", { class: "num", text: fmt((c.excluded || 0) + (c.superseded || 0) + (c.incomplete || 0) + (c.duplicates || 0)) }),
+          el("td", { class: "num", text: fmt(c.unmatched || 0) }),
+          el("td", { class: "notes small", text: [...(x.failed || []).slice(0, 3).map((f) => `${f.src || f.path || ""}: ${f.error || "failed"}`),
+            ...(x.saves && x.saves.followed ? [`${fmt(x.saves.followed)} save file(s) renamed`] : [])].join(" \u00B7 ") }));
+      }));
+      showFailures("col-failures", "Problems:", r.systems.filter((x) => x.status !== "ok"), (x) => `${x.platform}: ${x.error || x.status}`);
+      if (apply) toast(`Reorganised: ${fmt(moved)} file(s) moved${r.systems.some((x) => x.status !== "ok" || (x.failed || []).length) ? " (with problems)" : ""}`,
+        r.systems.some((x) => x.status !== "ok" || (x.failed || []).length) ? "error" : "ok", 9000);
+    },
+
     showResult(r) {
+      if (r.place === "sort") { this.showSort(r); return; }
       this.last = r;
+      if (r.place === "inplace") { this.showInplace(r); return; }
+      this.head([["System"], ["Result"], ["Files kept", 1], ["To copy", 1], ["To move", 1], ["Already there", 1], ["Notes"]]);
       const t = r.totals;
       const apply = r.action === "collection_apply";
       const built = r.systems.reduce((n, x) => n + ((x.result || {}).created || 0), 0);
@@ -4578,10 +4715,21 @@
       $("col-sidecars").addEventListener("change", () => this.save({ sidecars: $("col-sidecars").checked }));
       $("col-sync").addEventListener("change", () => this.save({ sync: $("col-sync").checked }));
       $("col-mode").addEventListener("change", () => this.syncAllowed());
+      for (const id of ["col-place-elsewhere", "col-place-inplace"]) {
+        $(id).addEventListener("change", () => { this.placeChanged(); this.save({ place: this.inplace() ? "inplace" : "elsewhere" }); $("col-output").classList.add("hidden"); });
+      }
       $("col-rules-reset").addEventListener("click", () => this.save({ global: {} }));
       $("col-plan-btn").addEventListener("click", () => this.run("/api/collection/plan"));
       $("col-apply-btn").addEventListener("click", () => this.apply());
       $("col-undo-btn").addEventListener("click", () => this.undo());
+      $("col-sort-plan").addEventListener("click", () => this.sortRun("/api/collection/sort/plan"));
+      $("col-sort-apply").addEventListener("click", () => this.sortApply());
+      $("col-sort-undo").addEventListener("click", () => this.sortUndo());
+      $("col-restore").addEventListener("click", () => this.restoreAside());
+      $("col-aside").addEventListener("change", () => this.save({ aside: $("col-aside").value.trim() }));
+      $("col-sweep").addEventListener("change", () => this.save({ sweep: $("col-sweep").checked }));
+      $("col-aside-browse").addEventListener("click", () => FolderBrowser.open($("col-aside"), "Choose the set-aside folder"));
+      $("col-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-aside"), "Choose the set-aside folder"));
     },
   };
 

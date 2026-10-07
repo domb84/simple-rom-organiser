@@ -79,6 +79,12 @@
           <button class="btn" id="col-root-browse">Folders...</button>
           <button class="btn btn-primary" id="col-detect">Find the systems</button>
         </div>
+        <div class="row">
+          <label class="check"><input type="radio" name="col-place" id="col-place-elsewhere" checked> Build the clean library in another folder</label>
+          <label class="check"><input type="radio" name="col-place" id="col-place-inplace"> Just reorganise the ROM folders where they are</label>
+        </div>
+        <p class="muted small hidden" id="col-inplace-note">The files stay in their folders but are renamed and sorted the way a single system's Build library does: what the rules leave out goes to <code>_excluded/</code>, <code>_superseded/</code> and so on, files that match nothing go to <code>_unmatched/</code>. Nothing is deleted, and Undo last build puts everything back.</p>
+        <div id="col-elsewhere">
         <label class="small" for="col-dest">Build the library in</label>
         <div class="row">
           <input type="text" id="col-dest" class="input grow mono" placeholder="~/Emulation/library" spellcheck="false" autocomplete="off">
@@ -94,6 +100,7 @@
           <label class="check"><input type="checkbox" id="col-sidecars"> Also copy save files and other files next to discs</label>
         </div>
         <label class="check" title="Files this app built earlier that the rules no longer keep (or whose source is gone) are removed from the destination; changed source files are copied again. Your own files and files you edited there are never touched."><input type="checkbox" id="col-sync"> Keep the destination in sync: also remove what the rules no longer keep</label>
+        </div>
       </div>
       <div class="panel">
         <h2>2. Systems</h2>
@@ -102,6 +109,33 @@
           <thead><tr><th>Build</th><th>System</th><th>Folder</th><th>Own rules</th></tr></thead>
           <tbody id="col-systems"><tr><td colspan="4" class="muted">Choose the ROM root and press "Find the systems".</td></tr></tbody>
         </table></div>
+      </div>
+      <div class="panel" id="col-sort-panel">
+        <h2>Sort and tidy</h2>
+        <p class="muted small">Keep the ROM folders clean: only games you keep stay in them. Everything else goes to a folder next to them.</p>
+        <label class="small" for="col-aside">Set-aside folder (outside the ROM folders)</label>
+        <div class="row">
+          <input type="text" id="col-aside" class="input grow mono" placeholder="Default: next to the ROM root, named like it with -aside" spellcheck="false" autocomplete="off">
+          <button class="btn hidden" id="col-aside-native">Browse...</button>
+          <button class="btn" id="col-aside-browse">Folders...</button>
+        </div>
+        <label class="check"><input type="checkbox" id="col-sweep" checked> After a reorganise, move what the rules set aside (<code>_excluded</code>, <code>_superseded</code>, <code>_incomplete</code>, <code>_duplicates</code>, <code>_unmatched</code>) into the set-aside folder</label>
+        <p class="muted small"><b>Sort a mixed folder:</b> reads every file under the ROM root once, finds its system by checksum, and moves it into that system's folder (the ticked systems below). Files that match nothing go to <code>_unmatched/</code> and files that are not ROMs (pictures, text ...) to <code>_other/</code> in the set-aside folder, with their folders kept. Nothing is deleted or overwritten.</p>
+        <div class="row">
+          <button class="btn" id="col-sort-plan" data-needs-idle>Preview sort</button>
+          <button class="btn btn-primary" id="col-sort-apply" data-needs-idle>Sort into systems</button>
+          <button class="btn" id="col-sort-undo" data-needs-idle>Undo sort</button>
+          <button class="btn" id="col-restore" data-needs-idle title="Move everything in the set-aside folder back into the systems' folders">Bring set-aside files back</button>
+          <div class="grow"></div>
+        </div>
+        <div id="col-sort-output" class="hidden">
+          <div class="cards" id="col-sort-cards"></div>
+          <div id="col-sort-notes" class="notice notice-warn hidden"></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Goes to</th><th>From</th><th>To</th></tr></thead>
+            <tbody id="col-sort-table"></tbody>
+          </table></div>
+        </div>
       </div>
       <details class="rules-panel" id="col-rules-box" open>
         <summary><span class="rules-title">3. Rules for every system</span><span class="rules-summary" id="col-rules-summary"></span><span class="edit-hint" aria-hidden="true"></span></summary>
@@ -121,7 +155,7 @@
       <div id="col-output" class="hidden">
         <div class="cards" id="col-cards"></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>System</th><th>Result</th><th class="num">Files kept</th><th class="num">To copy</th><th class="num">To move</th><th class="num">Already there</th><th>Notes</th></tr></thead>
+          <thead id="col-thead"></thead>
           <tbody id="col-table"></tbody>
         </table></div>
       </div>

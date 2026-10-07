@@ -84,3 +84,18 @@ library there: only what the rules keep, named and laid out properly. The source
    platform's ROM folder and placed in RetroArch's system folder.
 4. **Done:** shared folders: `shared_folders` / `apply_shared` read the asset settings (menu assets, rdb, cheats, playlists,
    thumbnails, downloads, remaps, rgui config) against the folders of those names in a base folder and set the unused ones.
+
+## Collection in place (v0.2)
+
+`collection.place` = `elsewhere` (default) | `inplace`. In place: `_collection_run_inplace` scans each ticked system without
+replacing the current scan, plans with the effective rules and applies the classic library build (`organiser.apply_renames` /
+`discsys.apply_plan`); `last.runs[system] = {log, root}` for undo; saves follow like a single-system build.
+
+## Sort a mixed folder and the set-aside area (v0.2)
+
+`romorg/sortroot.py` (pure planning + journalled moves) and the server's `_collection_identify` / `_collection_sort`:
+one `scanner.scan` over the root with the DATs of all ticked cartridge / flat systems (alt-hash strategies and containers
+united) plus one `discsys.scan` per ticked disc system; a file that matches several systems is left alone. Moves go to
+`<system folder>/`, loose unmatched files to `<aside>/_unmatched/<rel>`, non-ROM files to `<aside>/_other/<rel>`. In place
+reorganises can sweep the reserved folders to `<aside>/<system folder>/<reserved>/`. Journals in `<data dir>/collection-undo/`.
+Settings: `collection.aside`, `collection.sweep`, `collection.last_sort`. Concurrent settings edits merge under the config lock.

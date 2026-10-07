@@ -312,6 +312,67 @@ class CollectionTests(UiTestCase):
         self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
         self.no_js_errors()
 
+    def test_sort_a_mixed_folder_then_undo(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sort-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        mixed = base / "mixed"
+        (mixed / "Dump").mkdir(parents=True)
+        for f in list(self.fx.root.glob("*.adf"))[:3]:
+            shutil.copy(f, mixed / "Dump" / f.name)
+        for f in list(self.fx.gba.glob("*.gba"))[:2]:
+            shutil.copy(f, mixed / "Dump" / f.name)
+        (mixed / "Dump" / "cover.jpg").write_bytes(b"jpg")
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.fill("col-root", str(mixed))
+        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
+        for name in ("Commodore Amiga", "Nintendo Game Boy Advance"):
+            self.page.eval(f"""(() => {{ const r = [...document.querySelectorAll('#col-systems tr')].find(r => r.cells[1] && r.cells[1].textContent === {name!r});
+                const c = r.querySelector('input'); if (!c.checked) c.click(); }})()""")
+        self.page.wait("[...document.querySelectorAll('#col-systems tr')].filter(r => r.querySelector('input')?.checked).length === 2")
+        self.click("#col-sort-plan")
+        self.page.wait("document.getElementById('col-sort-cards').textContent.includes('Not ROMs')", timeout=60)
+        self.assertTrue((mixed / "Dump" / "cover.jpg").exists())                           # a preview moves nothing
+        self.click("#col-sort-apply")
+        self.assertIn("Undo sort moves everything back", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Sorted'))", timeout=60)
+        self.assertTrue(list((mixed / "amiga").glob("*.adf")) and list((mixed / "gba").glob("*.gba")))
+        self.assertTrue((base / "mixed-aside" / "_other" / "Dump" / "cover.jpg").is_file())
+        self.page.wait("document.getElementById('col-sort-undo').dataset.blocked !== '1'")
+        self.click("#col-sort-undo")
+        self.confirm_dialog()
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('back'))", timeout=60)
+        self.assertTrue((mixed / "Dump" / "cover.jpg").is_file())
+        self.no_js_errors()
+
+    def test_reorganise_in_place(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-inplace-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        roms = base / "roms"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
+        before = sorted(p.name for p in self.fx.root.iterdir())
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.fill("col-root", str(roms))
+        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
+        self.page.eval("document.getElementById('col-place-inplace').click()")
+        self.page.wait("document.getElementById('col-elsewhere').classList.contains('hidden')")
+        self.assertEqual(self.page.eval("document.getElementById('col-apply-btn').textContent"), "Reorganise collection")
+        self.click("#col-plan-btn")
+        self.page.wait("document.getElementById('col-table').textContent.includes('Commodore Amiga')", timeout=60)
+        self.assertEqual(sorted(p.name for p in self.fx.root.iterdir()), before)             # a preview moves nothing
+        self.click("#col-apply-btn")
+        self.assertIn("renamed and moved inside", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Reorganised'))", timeout=90)
+        self.assertNotEqual(sorted(p.name for p in self.fx.root.iterdir() if not p.name.startswith(".romorg")), before)
+        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
+        self.click("#col-undo-btn")
+        self.assertIn("Put the files", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Put back'))", timeout=60)
+        self.assertEqual(sorted(p.name for p in self.fx.root.iterdir() if not p.name.startswith(".romorg")), before)
+        self.no_js_errors()
+
     def test_sync_removes_what_the_source_lost(self) -> None:
         base = Path(tempfile.mkdtemp(prefix="romorg-ui-sync-"))
         self.addCleanup(shutil.rmtree, base, True)
