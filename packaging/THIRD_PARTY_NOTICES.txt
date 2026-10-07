@@ -34,6 +34,18 @@ audio tracks are then stored with LZMA (valid, but larger) and decoded more slow
     it. The single-file .exe carries the DLL and the licences inside (licenses\); the build also writes them next
     to the exe (licenses\, THIRD_PARTY_NOTICES.txt) to ship with it.
 
+libzstd (bundled in the Linux AppImage only, not in the Windows packages)
+-----------------------------------------------------------------------
+Used to decode and encode Zstandard (CHD zstd / cdzs hunks, the Zstandard writer preset, RVZ groups) where Python
+has no Zstandard of its own (romorg/zstdnative.py). The Windows packages use Python 3.14's compression.zstd and ship
+no libzstd.
+
+  * libzstd 1.5.7, the unmodified libzstd.so.1.5.7 of the Arch Linux package zstd-1.5.7-3 (SHA-256 of the package
+    d4cf0049137124c8a025eedfad267a3e8a02310c9efb9d1ae4a61aa1d02789fc). Copyright (c) Meta Platforms, Inc. and
+    affiliates. zstd is dual licensed under the BSD 3-clause licence or GPL-2.0; it is used here under the BSD
+    3-clause licence, reproduced in licenses/zstd/LICENSE inside the AppImage.
+  * Source code: https://github.com/facebook/zstd (tag v1.5.7).
+
 libsndfile (bundled in the Windows .zip package, in the "native" folder)
 -----------------------------------------------------------------------
 Used (optionally) to decode the FLAC audio inside CD-image CHD files quickly (romorg/nativeflac.py) when libFLAC

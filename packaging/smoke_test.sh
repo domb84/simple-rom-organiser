@@ -27,6 +27,7 @@ SELF="$(env -i HOME="$HOME" PATH=/usr/bin:/bin ROMORG_DATA_DIR="$SANDBOX/data" X
 echo "$SELF"
 grep -q '^OK    bundle at .*licenses/THIRD_PARTY.md' <<<"$SELF" || { echo "THIRD_PARTY.md / bundled tools missing from the AppImage" >&2; exit 1; }
 grep -q '^OK    libFLAC .*/tools/lib/' <<<"$SELF" || { echo "libFLAC was not loaded from the bundle" >&2; exit 1; }
+grep -q '^OK    libzstd .*/tools/lib/' <<<"$SELF" || { echo "libzstd was not loaded from the bundle" >&2; exit 1; }
 grep -q '^OK    the scheduler' <<<"$SELF" || { echo "scheduler check missing" >&2; exit 1; }
 grep -q '^OK    the writer ' <<<"$SELF" || { echo "CHD writer check missing" >&2; exit 1; }
 

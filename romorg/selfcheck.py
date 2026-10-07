@@ -7,6 +7,8 @@ against the built AppImage. It checks (and prints one line each)
 * the bundled chdman starts and prints its usage (a failure because the SYSTEM lacks a library, e.g. libSDL2 on a
   build container, is reported as ``WARN`` - the app then falls back, see :mod:`romorg.chdtool`),
 * libFLAC loads through ctypes and decodes a synthetic hunk bit-identically to the pure-Python decoder,
+* inside an AppImage libFLAC AND libzstd must have been loaded from the bundle (``tools/lib``), never from the
+  system: the app must not depend on what the host (SteamOS: an immutable image) happens to ship,
 * the parallel scheduler runs a tiny job (two worker processes, an uncompressed CD / GD image written here) and
   gives the sequential hashes,
 
@@ -152,6 +154,40 @@ def check_zstd() -> Tuple[str, str]:
     if zstdnative.decompress(frame, 5) != b"romor":
         return "WARN", "the Zstandard library did not decode a test frame"
     return "OK", f"Zstandard CHDs (cdzs / zstd) are decoded with {st['library']}"
+
+
+def _in_dir(path: str, folder: Path) -> bool:
+    try:
+        return Path(path).resolve().parent == folder.resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def check_bundled_libraries(root: Path) -> List[Tuple[str, str]]:
+    """Inside an AppImage libFLAC and libzstd must be the copies in ``<root>/tools/lib`` (``FAIL`` otherwise).
+
+    A Python that has Zstandard itself (3.14 ``compression.zstd``) satisfies the libzstd requirement. libsndfile,
+    the system's libFLAC or libzstd, or the pure-Python fallbacks are all failures here: they work, but only by
+    accident of what the host ships."""
+    from . import flacnative, zstdnative
+    lib = root / "tools" / "lib"
+    out: List[Tuple[str, str]] = []
+    flac = flacnative.library_path()
+    if flac and _in_dir(flac, lib):
+        out.append(("OK", f"libFLAC {flac} is loaded from the bundle"))
+    else:
+        out.append(("FAIL", f"libFLAC was not loaded from the bundle ({lib}): "
+                            + (f"it came from {flac}" if flac else f"none loaded ({flacnative.status()['note']})")))
+    st = zstdnative.status()
+    zlib_ = st["library"] if st["native"] else None
+    if zlib_ == "compression.zstd":
+        out.append(("OK", "libzstd is not needed: this Python has compression.zstd built in"))
+    elif zlib_ and _in_dir(zlib_, lib):
+        out.append(("OK", f"libzstd {zlib_} is loaded from the bundle"))
+    else:
+        out.append(("FAIL", f"libzstd was not loaded from the bundle ({lib}): "
+                            + (f"it came from {zlib_}" if zlib_ else f"none loaded ({st['note']})")))
+    return out
 
 
 def check_scheduler() -> Tuple[bool, str]:
@@ -351,12 +387,16 @@ def main(argv: List[str] | None = None) -> int:
     lines: List[Tuple[str, str]] = []
     if root is not None:
         need = [root / "licenses" / "THIRD_PARTY.md"]
-        libs = list((root / "tools" / "lib").glob("libFLAC.so*")) if (root / "tools" / "lib").is_dir() else []
-        missing = [str(p) for p in need if not p.exists()] + ([] if libs else ["tools/lib/libFLAC.so*"])
+        libdir = root / "tools" / "lib"
+        missing = [str(p) for p in need if not p.exists()]
+        for name in ("libFLAC", "libzstd"):
+            if not (libdir.is_dir() and list(libdir.glob(name + ".so*"))):
+                missing.append(f"tools/lib/{name}.so*")
         if missing:
             lines.append(("FAIL", "bundle incomplete: missing " + ", ".join(missing)))
         else:
-            lines.append(("OK", f"bundle at {root}: tools/lib/libFLAC, licenses/THIRD_PARTY.md"))
+            lines.append(("OK", f"bundle at {root}: tools/lib/libFLAC, tools/lib/libzstd, licenses/THIRD_PARTY.md"))
+        lines += check_bundled_libraries(root)
     else:
         package = windows_package_dirs()
         if package:

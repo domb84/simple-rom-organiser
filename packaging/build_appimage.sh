@@ -7,7 +7,7 @@
 # needs only fusermount at run time, not libfuse2).
 #
 # Downloads are cached in packaging/.cache/ and reused on later runs (idempotent).
-# Needs: bash, curl, tar, gzip, sha256sum (all present on SteamOS). No host Python.
+# Needs: bash, curl, tar (with zstd support, or bsdtar), gzip, sha256sum (all present on SteamOS). No host Python.
 #
 # Environment overrides:
 #   PY_SERIES=3.13          Python minor series to bundle (3.12 or 3.13)
@@ -16,8 +16,8 @@
 #                           ~0.6 s, AppImage ~18 MB instead of ~15 MB); 0 = sources only
 #   REFRESH_TOOLS=1         re-download appimagetool and the runtime
 #   ROMORG_CACHE=dir        download cache (default packaging/.cache)
-#   BUNDLE_TOOLS=0          do not bundle libFLAC / libogg (the system's libFLAC is then used for CD audio in
-#                           CHDs; the default 1 downloads the pinned Arch packages below and verifies their SHA-256)
+#   BUNDLE_TOOLS=0          do not bundle libFLAC / libogg / libzstd (the system's libraries are then used;
+#                           the default 1 downloads the pinned Arch packages below and verifies their SHA-256)
 # chdman is NOT bundled: the app reads and writes CHDs itself (romorg/chd.py, romorg/chdwrite.py). A chdman the
 # user has installed is still found and can be chosen in the Convert step.
 set -euo pipefail
@@ -60,6 +60,7 @@ download() {
 ARCH_BASE="https://archive.archlinux.org/packages"
 PKG_FLAC="flac-1.5.0-1-x86_64.pkg.tar.zst|f/flac|7c8dce6bde402b9d243fd240847722a57b94df1dbf53e0cabc9119219dd04735"
 PKG_OGG="libogg-1.3.6-1-x86_64.pkg.tar.zst|l/libogg|b6d4724c1ed16b4806fa596cd823a2930efeeddeb95f7d8a869644b665a9ba37"
+PKG_ZSTD="zstd-1.5.7-3-x86_64.pkg.tar.zst|z/zstd|d4cf0049137124c8a025eedfad267a3e8a02310c9efb9d1ae4a61aa1d02789fc"
 
 # fetch_pkg "file|dir|sha256": download into the cache, verify (delete + fail on a mismatch), print the cached path.
 fetch_pkg() {
@@ -191,16 +192,17 @@ fi
 
 # ---------------------------------------------------------------- libFLAC (not in git)
 if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
-  log "Bundling libFLAC and libogg (pinned Arch packages)"
+  log "Bundling libFLAC, libogg and libzstd (pinned Arch packages)"
   PKGDIR="$BUILD/pkgs"
   rm -rf "$PKGDIR"
   mkdir -p "$APPDIR/tools/lib" "$APPDIR/licenses"
-  for spec in "$PKG_FLAC" "$PKG_OGG"; do
+  for spec in "$PKG_FLAC" "$PKG_OGG" "$PKG_ZSTD"; do
     name="${spec%%-[0-9]*}"                       # flac | libogg
     pkg="$(fetch_pkg "$spec")"
     case "$name" in
       flac) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libFLAC.so.14 usr/lib/libFLAC.so.14.0.0 usr/share/licenses ;;
       libogg) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libogg.so.0 usr/lib/libogg.so.0.8.6 usr/share/licenses ;;
+      zstd) unpack_pkg "$pkg" "$PKGDIR/$name" usr/lib/libzstd.so.1 usr/lib/libzstd.so.1.5.7 usr/share/licenses ;;
     esac
     if [[ -d "$PKGDIR/$name/usr/share/licenses" ]]; then
       mkdir -p "$APPDIR/licenses/$name"
@@ -209,9 +211,11 @@ if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
   done
   cp -a "$PKGDIR"/flac/usr/lib/libFLAC.so.14* "$APPDIR/tools/lib/"
   cp -a "$PKGDIR"/libogg/usr/lib/libogg.so.0* "$APPDIR/tools/lib/"
+  cp -a "$PKGDIR"/zstd/usr/lib/libzstd.so.1* "$APPDIR/tools/lib/"
   install -m 644 "$ROOT/docs/THIRD_PARTY.md" "$APPDIR/licenses/THIRD_PARTY.md"
   rm -rf "$PKGDIR"
-  [[ -e "$APPDIR/tools/lib/libFLAC.so.14" && -e "$APPDIR/tools/lib/libogg.so.0" ]] \
+  [[ -e "$APPDIR/tools/lib/libFLAC.so.14" && -e "$APPDIR/tools/lib/libogg.so.0" && -e "$APPDIR/tools/lib/libzstd.so.1" \
+     && -s "$APPDIR/licenses/zstd/LICENSE" ]] \
     || die "bundled libraries are incomplete"
 else
   log "BUNDLE_TOOLS=0: not bundling libFLAC"
@@ -246,6 +250,7 @@ if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
     || { printf '%s\n' "$selfcheck_out" >&2; die "CHD engine self-check failed"; }
   printf '%s\n' "$selfcheck_out" >&2
   grep -q '^OK    libFLAC '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" || die "libFLAC was not loaded from the bundle"
+  grep -q '^OK    libzstd '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" || die "libzstd was not loaded from the bundle"
   grep -q '^OK    the writer ' <<<"$selfcheck_out" || die "the CHD writer self-check did not pass"
 fi
 

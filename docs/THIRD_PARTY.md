@@ -13,11 +13,17 @@ not interpret them or give legal advice. If you redistribute the AppImage, read 
 |---|---|---|---|
 | libFLAC | 1.5.0 (Arch `flac 1.5.0-1`) | `tools/lib/libFLAC.so.14*` | package: BSD-3-Clause, GPL-2.0-or-later (the BSD-3-Clause part covers the library, the GPL part the command line tools, which are not shipped) |
 | libogg | 1.3.6 (Arch `libogg 1.3.6-1`) | `tools/lib/libogg.so.0*` | BSD (3-clause, Xiph.Org) |
+| libzstd | 1.5.7 (Arch `zstd 1.5.7-3`) | `tools/lib/libzstd.so.1*` | package: BSD-3-Clause, GPL-2.0-only (zstd is dual licensed, BSD-3-Clause OR GPL-2.0-only; the BSD-3-Clause text is shipped as `licenses/zstd/LICENSE`, the command line `zstd` program is not shipped) |
 
 What they are used for:
 
 * **libFLAC** (with libogg, which it links to) decodes and encodes the FLAC audio inside CHD files (reading falls
   back to a pure-Python decoder, about 100 times slower; writing without it stores audio with LZMA / deflate).
+* **libzstd** decodes and encodes Zstandard: the `zstd` / `cdzs` hunks of CHD files, the Zstandard writer preset and
+  the Zstandard groups of RVZ (GameCube) images. The bundled Python 3.13 has no Zstandard of its own, and the pure-Python
+  decoder is about 1 MB/s, so the AppImage carries the library instead of relying on the host to have one (SteamOS
+  is an immutable image on which nothing can be installed). The bundled copy is loaded ahead of any system copy, and
+  the self-check fails inside an AppImage when libFLAC or libzstd came from outside the bundle.
 
 **chdman is not shipped** (it was, up to the release that introduced the built-in CHD writer). The app reads and
 writes CHD files with its own code (`romorg/chd.py`, `romorg/chdwrite.py`), written from MAME's published format
@@ -30,6 +36,7 @@ Exact packages (pinned in `packaging/build_appimage.sh`):
 |---|---|---|
 | flac-1.5.0-1 | https://archive.archlinux.org/packages/f/flac/flac-1.5.0-1-x86_64.pkg.tar.zst | `7c8dce6bde402b9d243fd240847722a57b94df1dbf53e0cabc9119219dd04735` |
 | libogg-1.3.6-1 | https://archive.archlinux.org/packages/l/libogg/libogg-1.3.6-1-x86_64.pkg.tar.zst | `b6d4724c1ed16b4806fa596cd823a2930efeeddeb95f7d8a869644b665a9ba37` |
+| zstd-1.5.7-3 | https://archive.archlinux.org/packages/z/zstd/zstd-1.5.7-3-x86_64.pkg.tar.zst | `d4cf0049137124c8a025eedfad267a3e8a02310c9efb9d1ae4a61aa1d02789fc` |
 
 ## Corresponding source (written offer)
 
@@ -40,6 +47,7 @@ the Arch Linux packaging repositories that built the binaries we ship:
 |---|---|---|
 | FLAC | https://github.com/xiph/flac/releases/tag/1.5.0 (https://xiph.org/flac/) | https://gitlab.archlinux.org/archlinux/packaging/packages/flac/-/tree/1.5.0-1 |
 | libogg | https://github.com/xiph/ogg/releases/tag/v1.3.6 (https://www.xiph.org/ogg/) | https://gitlab.archlinux.org/archlinux/packaging/packages/libogg/-/tree/1.3.6-1 |
+| zstd | https://github.com/facebook/zstd/releases/tag/v1.5.7 (https://facebook.github.io/zstd/) | https://gitlab.archlinux.org/archlinux/packaging/packages/zstd/-/tree/1.5.7-3 |
 
 The binaries in the AppImage are byte-for-byte the files of the Arch packages listed above (the build script
 verifies the package checksums and copies the files unchanged). If you cannot obtain the source from those

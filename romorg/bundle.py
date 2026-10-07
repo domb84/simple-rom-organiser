@@ -1,10 +1,12 @@
-"""Where the AppImage keeps the third-party tools it ships (chdman + shared libraries, licence texts).
+"""Where the AppImage keeps the third-party libraries it ships (and their licence texts).
 
 Layout inside the AppDir (built by ``packaging/build_appimage.sh``; none of it is in git)::
 
-    <AppDir>/tools/chdman            the MAME chdman binary
-    <AppDir>/tools/lib/              libutf8proc.so.3, libFLAC.so.14, libogg.so.0 (found ahead of the system's)
-    <AppDir>/licenses/               THIRD_PARTY.md and the licence texts
+    <AppDir>/tools/lib/              libFLAC.so.14, libogg.so.0, libzstd.so.1 (found ahead of the system's)
+    <AppDir>/licenses/               THIRD_PARTY.md and the licence texts (flac/, libogg/, zstd/)
+
+chdman is no longer shipped (the app reads and writes CHDs itself); ``tools/chdman`` is still looked for, so an
+older layout keeps working. Inside an AppImage ``selfcheck`` requires libFLAC and libzstd to come from ``tools/lib``.
 
 ``$ROMORG_BUNDLE_DIR`` overrides the root (tests, development); else ``$APPDIR`` (set by the AppImage runtime /
 AppRun), else the first parent of this package that has a ``tools`` folder. Outside an AppImage nothing is found and
