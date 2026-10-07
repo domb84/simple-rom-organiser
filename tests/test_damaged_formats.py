@@ -110,12 +110,14 @@ class ChdTest(unittest.TestCase):
             d = bytearray((FIX / "child.chd").read_bytes())
             d[104:124] = d[84:104]                                    # its own SHA-1 as its parent's
             p.write_bytes(bytes(d))
+            (Path(tmp) / "loop2.chd").write_bytes(bytes(d))           # a twin: each is the other's parent
             with chd.Chd(p) as c:
                 c._ensure_map()
                 idx = [i for i, t in enumerate(c._ctype) if t == chd._T_PARENT]
                 self.assertTrue(idx)
-                with self.assertRaises((chd.ChdError, chd.ChdUnsupported)):
+                with self.assertRaises(chd.ChdError) as cm:
                     c.read_hunk_raw(idx[0])
+                self.assertIn("too deep", str(cm.exception))
 
 
 class RvzTest(unittest.TestCase):
