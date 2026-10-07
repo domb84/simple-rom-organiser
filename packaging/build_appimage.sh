@@ -251,7 +251,10 @@ if [[ "${BUNDLE_TOOLS:-1}" == "1" ]]; then
     || { printf '%s\n' "$selfcheck_out" >&2; die "CHD engine self-check failed"; }
   printf '%s\n' "$selfcheck_out" >&2
   grep -q '^OK    libFLAC '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" || die "libFLAC was not loaded from the bundle"
-  grep -q '^OK    libzstd '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" || die "libzstd was not loaded from the bundle"
+  # a Python with compression.zstd built in (3.14+) needs no libzstd at all; every other one must load the bundled copy
+  grep -q '^OK    libzstd '"$APPDIR"'/tools/lib/' <<<"$selfcheck_out" \
+    || grep -q '^OK    libzstd is not needed: this Python has compression.zstd built in' <<<"$selfcheck_out" \
+    || die "libzstd was not loaded from the bundle"
   grep -q '^OK    the writer ' <<<"$selfcheck_out" || die "the CHD writer self-check did not pass"
 fi
 

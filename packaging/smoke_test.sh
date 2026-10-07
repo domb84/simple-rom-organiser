@@ -27,7 +27,9 @@ SELF="$(env -i HOME="$HOME" PATH=/usr/bin:/bin ROMORG_DATA_DIR="$SANDBOX/data" X
 echo "$SELF"
 grep -q '^OK    bundle at .*licenses/THIRD_PARTY.md' <<<"$SELF" || { echo "THIRD_PARTY.md / bundled tools missing from the AppImage" >&2; exit 1; }
 grep -q '^OK    libFLAC .*/tools/lib/' <<<"$SELF" || { echo "libFLAC was not loaded from the bundle" >&2; exit 1; }
-grep -q '^OK    libzstd .*/tools/lib/' <<<"$SELF" || { echo "libzstd was not loaded from the bundle" >&2; exit 1; }
+grep -q '^OK    libzstd .*/tools/lib/' <<<"$SELF" \
+  || grep -q '^OK    libzstd is not needed: this Python has compression.zstd built in' <<<"$SELF" \
+  || { echo "libzstd was not loaded from the bundle" >&2; exit 1; }
 grep -q '^OK    the scheduler' <<<"$SELF" || { echo "scheduler check missing" >&2; exit 1; }
 grep -q '^OK    the writer ' <<<"$SELF" || { echo "CHD writer check missing" >&2; exit 1; }
 
@@ -59,10 +61,14 @@ TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$INDEX"
 if [[ -n "$TOKEN" ]]; then
   PLATFORMS="$(curl -fsS -H "X-Romorg-Token: $TOKEN" "$URL/api/platforms")"
   for name in "Commodore Amiga" "Commodore Amiga - WHDLoad" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
-              "Sega Dreamcast" "Super Nintendo Entertainment System"; do
+              "Super Nintendo Entertainment System" "Nintendo Game Boy" "Nintendo Game Boy Color" "Nintendo DS" \
+              "Sega Mega Drive - Genesis" "Sega Master System" "Sega Game Gear" "Sega 32X" "Atari Lynx" \
+              "Sega Dreamcast" "Sony PlayStation" "Sony PlayStation 2" "Nintendo GameCube"; do
     grep -q "\"$name\"" <<<"$PLATFORMS" || { echo "platform missing: $name" >&2; exit 1; }
   done
-  echo "GET /api/platforms -> 9 systems"
+  COUNT="$(grep -o '"folder_hint"' <<<"$PLATFORMS" | wc -l)"
+  [[ "$COUNT" == "18" ]] || { echo "expected 18 systems, the app lists $COUNT" >&2; exit 1; }
+  echo "GET /api/platforms -> $COUNT systems"
   grep -q '"state"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing" >&2; exit 1; }
   grep -q '"rules"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Commodore%20Amiga")" \
     || { echo "/api/library/profile missing the rules" >&2; exit 1; }

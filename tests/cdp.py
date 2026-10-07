@@ -137,6 +137,23 @@ class Browser:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5).read()
         return cls(port)
 
+    def shutdown(self) -> None:
+        """Ask the browser to quit (``Browser.close``): every process of it exits. Needed when the browser was started
+        through ``flatpak-spawn --host``: stopping that client leaves the browser running on the host."""
+        try:
+            info = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/version", timeout=5).read())
+            ws = WebSocket(info["webSocketDebuggerUrl"])
+            try:
+                ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+                try:
+                    ws.recv()
+                except (ConnectionError, OSError):
+                    pass
+            finally:
+                ws.close()
+        except (OSError, ValueError, KeyError, ConnectionError):
+            pass
+
     def new_page(self) -> Page:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/json/new?about:blank", method="PUT")
         info = json.loads(urllib.request.urlopen(req, timeout=10).read())

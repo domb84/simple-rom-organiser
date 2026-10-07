@@ -149,3 +149,63 @@ AppImage built from merge commit 3eb8874 + `.gitattributes`: 20,388,344 bytes, s
 - Build the AppImage inside an Arch container from a `git archive` (or a checkout with LF endings: see `.gitattributes`).
 - Run the whole unit suite with the AppImage's own Python: `PYTHONPATH=<source> ROMORG_BUNDLE_DIR=<extracted AppDir>
   PYTHON=<AppImage python> <AppDir python> -m unittest discover -s tests` (the pyz test needs a python on PATH, hence `PYTHON`).
+
+## Deck results (2026-10-07, real Steam Deck)
+
+Everything in "What was NOT proven" was run on the Deck itself except where stated below.
+
+**Machine.** SteamOS 3.8.28 (build 20260922.1, `steamdeck`), glibc 2.41 (`2.41+r65`), kernel 6.18.50-valve2-1-neptune, fuse3 3.17.1,
+8 threads, 14.8 GB RAM, system Python 3.13.5. Commit tested: `c44920d` (plus the three fixes below, uncommitted when the
+numbers were taken). The AppImage was built on the Deck from the cached python-build-standalone 3.13.16 (20261003): 20,388,344
+bytes (the same size as the Arch-container build), sha256 `9fdf6de0fb7eb2a95c8c1721d5f5def8593684fff95faa9792e8017627b4f2ae`;
+the `.pyz`: 452,480 bytes. Both build in 8 s with warm caches.
+
+| Check | Result |
+|---|---|
+| Unit suite, system Python 3.13.5 | **1131 tests OK**, 42 skipped (a stale built AppDir failed `test_appdir` until the rebuild; green after) |
+| Unit suite, the AppImage's own Python 3.13.16 + bundled libs, on the host | **1131 tests OK**, 51 skipped (browser tests off) |
+| `python3 -m romorg.selfcheck` (system) | PASSED (libzstd.so.1, libFLAC.so.14, 2 workers, writer, RVZ) |
+| AppImage `--self-check`, real FUSE, on the host | PASSED; `libFLAC .../tools/lib/libFLAC.so.14 is loaded from the bundle`, `libzstd .../tools/lib/libzstd.so.1 is loaded from the bundle` |
+| `packaging/smoke_test.sh` on the host | PASSED (after fix 1 below; "GET /api/platforms -> 18 systems") |
+| Network: the AppImage's own start-up update, HTTPS with the bundled OpenSSL and AppRun's `SSL_CERT_FILE` logic | all five sources downloaded in about 25 s: TOSEC 2025-03-13, 12 No-Intro DATs (2026.08.01), WHDLoad 2026-07-05, 4 Redump DATs (GameCube 2026-06-13) |
+| `packaging/install.sh` into a throwaway `$HOME` | installs only under `$HOME`; the installed AppImage starts with no terminal and writes `~/.local/state/simple-rom-organiser/app.log`; Quit exits and unmounts FUSE |
+| Python variants | `PY_SERIES=3.12` 19.6 MB: self-check and smoke test PASSED. `PY_SERIES=3.14` 21.2 MB: PASSED after fix 3 (Zstandard through `compression.zstd`) |
+
+**Real use through the AppImage (HTTP API, which is what the UI calls; real ROM folders read-only).**
+- GameCube `gamecube` folder (3 RVZ): 3 matched, `container` chips, 3 correctly named, 10 s cold.
+- PlayStation `psx` (2 CHDs): 2 verified, 920 MB in 6 s (151 MB/s). Dreamcast reference discs (Alienfront Online, Dead or Alive 2): both
+  identified, then "Verify fully" gives both verified. PlayStation 2 `ps2` (7 CHDs, 30 GB): 7 verified in 142 s (215 MB/s).
+- Convert, in a scratch copy, built-in writer, every result verified independently and restored exactly by Undo (same files and sizes):
+  PS1 CD set 22 s, Dreamcast GD-ROM set 58 s (632 MB), PS2 CD set + PS2 ISO as DVD together 124 s (426 MB + 2832 MB), PS1 with the
+  Zstandard preset 7 s (`cdzs`, 272 MB).
+- Cancel: a Convert cancelled while writing: 8 worker processes before, 0 after, the `.part` removed, library untouched; a cancelled
+  scan of the whole Dreamcast collection: stops in 1.6 s, 0 workers; no `romorg` process left after Quit.
+- Cartridge systems (DATs 2026.08.01), identical to the earlier numbers: Mega Drive 646, Master System 249, 32X 31, Lynx 68 matched.
+
+**Timings (8 threads, internal NVMe; `tools/bench_chdwrite.py`, median of 2, same inputs as the 2026-10-06 runs).**
+
+| Input | standard | Zstandard | verify of the result | earlier Deck number (standard) |
+|---|---|---|---|---|
+| PlayStation CD, 409 MB | 15.9 s | 3.7 s | 3.2 s | 15.9 s |
+| Dreamcast GD-ROM, 1.2 GB | 42.5 s | 9.9 s | 8.5 s | 42.8 s |
+| PS2 ISO 1.46 GB as DVD | 29.9 s | 15.5 s | 6.0 s | 31.1 s |
+
+Reading: Spider CHD 3.0 s with the scheduler (136 MB/s; 6.6 s in one process), Toy Commander 5.8 s (197 MB/s), GameCube Sunshine
+2.9 s with 8 workers, 3.3 s with 4, 9.2 s with 1. Equal to or slightly better than before: no regression.
+
+**Failures found and fixed (all uncommitted before this section, committed with it).**
+1. `packaging/smoke_test.sh` printed a hard-coded "9 systems" and only checked 7 platforms: it now checks all 18 by name and counts them.
+2. The browser tests leaked headless Brave on the Deck: stopping the `flatpak-spawn` client does not stop a browser running on the host
+   (24 processes stayed after every suite run). `tests/cdp.py` has `Browser.shutdown()` (the DevTools `Browser.close`) and
+   `tests/test_browser.py::tearDownModule` calls it: 0 left now.
+3. `PY_SERIES=3.14` failed the build at "libzstd was not loaded from the bundle": a Python with `compression.zstd` needs no libzstd,
+   and the self-check says so ("libzstd is not needed: this Python has compression.zstd built in"), but the greps in
+   `packaging/build_appimage.sh` and `packaging/smoke_test.sh` only accepted the bundled-library line. Both accept either now.
+
+**Not tested, or only partly.**
+- Steam Game Mode launch (needs a Game Mode session); the desktop entry was only validated (`desktop-file-validate` hints that
+  `Categories=Utility;Game;` has two main categories, so a menu may list it twice; left as it is).
+- SD-card exFAT scratch (no card was inserted); all timings are internal NVMe.
+- The graphical UI on real data: the API the UI uses was driven end to end and the UI is covered by the 14 headless-browser tests,
+  but nobody clicked through the real folders in a visible window.
+- Emulator loading of the new CHDs (the Windows pass did PCSX2 / Flycast / PCSX ReARMed).

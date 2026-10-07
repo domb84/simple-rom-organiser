@@ -87,6 +87,8 @@ def setUpModule() -> None:
 
 def tearDownModule() -> None:
     if _proc is not None:
+        if _browser is not None:
+            _browser.shutdown()            # quits every process of it, also when it runs on the host (flatpak-spawn)
         _proc.terminate()
         try:
             _proc.wait(timeout=5)
