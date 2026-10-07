@@ -1923,7 +1923,7 @@ class App:
         out["last_dir"] = out["folders"].get(out["last_platform"]) or cfg.get("last_dir")
         exp = cfg.get("library_export") if isinstance(cfg.get("library_export"), dict) else {}
         out["library_export"] = {"enabled": bool(exp.get("enabled")), "dest": str(exp.get("dest") or ""),
-                                 "mode": exp.get("mode") if exp.get("mode") in _mod("libexport").MODES else "auto",
+                                 "mode": _mod("libexport").normalize_mode(exp.get("mode")),
                                  "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync"))}
         out["kickstart_dest"] = _kick_dest(cfg, LEGACY_KICKSTART_PLATFORM)     # the TOSEC Amiga's (legacy key)
         dests = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
@@ -2884,7 +2884,7 @@ class App:
         page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
         export_to = _str_arg(body.get("export_to"))
         if export_to:
-            page["export"] = self._export_summary(state, plan, export_to, _str_arg(body.get("export_mode")) or "auto",
+            page["export"] = self._export_summary(state, plan, export_to, _mod("libexport").normalize_mode(_str_arg(body.get("export_mode"))),
                                                   _bool_arg(body.get("export_sidecars")), _bool_arg(body.get("export_sync")))
             page["actionable"] = page["export"].get("pending", 0)
             page["empty"] = page["actionable"] == 0
@@ -3010,7 +3010,7 @@ class App:
         if sent and sent != self._plan_id(state, key):
             raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
                            "recalculate the preview and check it again", "stale_plan")
-        mode = _str_arg(body.get("export_mode")) or "auto"
+        mode = _mod("libexport").normalize_mode(_str_arg(body.get("export_mode")))
         sidecars = _bool_arg(body.get("export_sidecars"))
         sync, allow_mass = _bool_arg(body.get("export_sync")), _bool_arg(body.get("allow_mass_removal"))
         self._export_plan(state, self._library_plan(state, *key), export_to, mode, sidecars, sync)   # errors before the job
@@ -3034,11 +3034,9 @@ class App:
 
     def library_export_settings(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/library/export/settings``: remember where the library is built (``enabled, dest, mode, sidecars``)."""
-        mode = _str_arg(body.get("mode")) or "auto"
-        if mode not in _mod("libexport").MODES:
-            raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown transfer mode: {mode}")
+        mode = _mod("libexport").normalize_mode(_str_arg(body.get("mode")))
         value = {"enabled": _bool_arg(body.get("enabled")), "dest": _str_arg(body.get("dest")), "mode": mode,
-                 "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync"))}
+                 "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync")) and mode != "move"}
         self._config_update(library_export=value)
         return value
 
@@ -3334,7 +3332,7 @@ class App:
                                  "own_rules": bool(entry.get("own_rules", False))}
         mode = raw.get("mode")
         return {"root": str(raw.get("root") or ""), "dest": str(raw.get("dest") or ""),
-                "mode": mode if mode in _mod("libexport").MODES else "auto", "sidecars": bool(raw.get("sidecars")),
+                "mode": _mod("libexport").normalize_mode(mode), "sidecars": bool(raw.get("sidecars")),
                 "sync": bool(raw.get("sync")), "systems": systems, "global": _mod("collection").clean_global(raw.get("global") or {}),
                 "last": raw.get("last") if isinstance(raw.get("last"), dict) else {}}
 
@@ -3388,13 +3386,16 @@ class App:
         if "dest" in body:
             changes["dest"] = _str_arg(body.get("dest"))
         if "mode" in body:
-            if _str_arg(body.get("mode")) not in _mod("libexport").MODES:
-                raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown transfer mode: {body.get('mode')}")
-            changes["mode"] = _str_arg(body.get("mode"))
+            changes["mode"] = _mod("libexport").normalize_mode(_str_arg(body.get("mode")))
         if "sidecars" in body:
             changes["sidecars"] = _bool_arg(body.get("sidecars"))
         if "sync" in body:
             changes["sync"] = _bool_arg(body.get("sync"))
+        current = self._collection_cfg()
+        if changes.get("mode", current["mode"]) == "move":
+            if changes.get("sync"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Keeping the destination in sync needs the originals to stay: use Copy.")
+            changes["sync"] = False                              # a move leaves nothing in the source to compare with
         if "global" in body:
             if not isinstance(body["global"], dict):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "global must be an object")
@@ -3492,7 +3493,7 @@ class App:
                     res = libexport.apply_export(
                         ep, progress=lambda d, t, n, _p=plat.name: job.report(message=f"{_p}: {n}" if n else f"{_p}: building"),
                         cancel=job.cancel)
-                    row["result"] = {k: res[k] for k in ("created", "copied", "linked", "symlinked", "playlists", "skipped",
+                    row["result"] = {k: res[k] for k in ("created", "copied", "moved", "playlists", "skipped",
                                                          "replaced", "removed")}
                     row["failed"] = res["failed"][:20]
                     follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy",

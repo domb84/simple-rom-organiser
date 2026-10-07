@@ -26,7 +26,7 @@ library there: only what the rules keep, named and laid out properly. The source
 * API: `/api/library/plan` and `/api/library/apply` take `export_to`, `export_mode`, `export_sidecars` (the plan answer
   gains `export`: counts, bytes, free space, conflicts, notes); `/api/library/export/runs`, `/export/undo`,
   `/export/settings`; settings come back in `/api/status` as `library_export`.
-* The source is never changed, so an export does not re-scan.
+* With Copy the source is never changed, so an export does not re-scan. Move (copy / move only; no links) takes the files out of the source; it cannot be combined with sync.
 
 ## Phase 2 design (as built)
 

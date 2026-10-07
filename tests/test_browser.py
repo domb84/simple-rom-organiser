@@ -257,7 +257,7 @@ class BuildElsewhereTests(UiTestCase):
         self.click("#lib-plan-btn")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('To copy')")
         self.click("#lib-apply-btn")
-        self.assertIn("The source folder is not changed", self.confirm_dialog())
+        self.assertIn("its files stay where they are", self.confirm_dialog())
         self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=60)
         built = [p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts]
         self.assertTrue(built)
@@ -301,7 +301,7 @@ class CollectionTests(UiTestCase):
         self.page.wait("document.getElementById('col-table').textContent.includes('Commodore Amiga')", timeout=60)
         self.assertFalse(dest.exists())
         self.click("#col-apply-btn")
-        self.assertIn("ROM folders are not changed", self.confirm_dialog())
+        self.assertIn("ROM folders keep their files", self.confirm_dialog())
         self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=90)
         self.assertTrue([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
         self.assertEqual(sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*")), before)

@@ -68,7 +68,7 @@
       <div class="sys-head">
         <a class="back-link" href="#/">&lsaquo; Systems</a>
         <h1 id="col-title">Collection</h1>
-        <span class="muted small grow">One clean library from a whole ROM folder. The source is only read, never changed.</span>
+        <span class="muted small grow">One clean library from a whole ROM folder. Files are copied (or moved, if you choose) into it; nothing is ever deleted.</span>
       </div>
       <div class="panel">
         <h2>1. Where</h2>
@@ -88,9 +88,8 @@
         <div class="row">
           <label class="small">How files get there
             <select id="col-mode" class="input">
-              <option value="auto">Automatic (link on the same drive, else copy)</option>
-              <option value="copy">Always copy</option>
-              <option value="symlink">Symbolic links</option>
+              <option value="copy">Copy (the ROM folders keep their files)</option>
+              <option value="move">Move (the files leave the ROM folders)</option>
             </select></label>
           <label class="check"><input type="checkbox" id="col-sidecars"> Also copy save files and other files next to discs</label>
         </div>
@@ -122,7 +121,7 @@
       <div id="col-output" class="hidden">
         <div class="cards" id="col-cards"></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>System</th><th>Result</th><th class="num">Files kept</th><th class="num">To copy</th><th class="num">Linked</th><th class="num">Already there</th><th>Notes</th></tr></thead>
+          <thead><tr><th>System</th><th>Result</th><th class="num">Files kept</th><th class="num">To copy</th><th class="num">To move</th><th class="num">Already there</th><th>Notes</th></tr></thead>
           <tbody id="col-table"></tbody>
         </table></div>
       </div>
@@ -354,7 +353,7 @@
           <fieldset class="export-box" id="lib-export-box">
             <legend>Where to build</legend>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-here" checked> In this folder (reorganises the source: files are moved)</label>
-            <label class="check"><input type="radio" name="lib-where" id="lib-where-other"> In another folder (the source is only read and never changed)</label>
+            <label class="check"><input type="radio" name="lib-where" id="lib-where-other"> In another folder (the files are copied or moved there)</label>
             <div id="lib-export-opts" class="hidden">
               <div class="row">
                 <input type="text" id="lib-export-dest" class="input grow mono" placeholder="Folder to build the library in, e.g. ~/Emulation/roms" spellcheck="false" autocomplete="off" aria-label="Library destination folder">
@@ -364,9 +363,8 @@
               <div class="row">
                 <label class="small">How files get there
                   <select id="lib-export-mode" class="input">
-                    <option value="auto">Automatic (link on the same drive, else copy)</option>
-                    <option value="copy">Always copy</option>
-                    <option value="symlink">Symbolic links</option>
+                    <option value="copy">Copy (the source keeps its files)</option>
+                    <option value="move">Move (the files leave the source)</option>
                   </select></label>
                 <label class="check"><input type="checkbox" id="lib-export-sidecars"> Also copy save files and other files next to discs</label>
               </div>

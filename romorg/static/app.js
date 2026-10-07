@@ -2297,6 +2297,8 @@
     } catch (_) { /* a convenience only */ }
   }, 300);
   function exportSettingsChanged() {
+    if ($("lib-export-mode").value === "move") $("lib-export-sync").checked = false;
+    $("lib-export-sync").disabled = $("lib-export-mode").value === "move";
     $("lib-export-opts").classList.toggle("hidden", !$("lib-where-other").checked);
     $("lib-apply-btn").textContent = $("lib-where-other").checked ? "Build library in destination" : "Build library";
     $("lib-undo-btn").textContent = $("lib-where-other").checked ? "Undo last build" : "Undo last";
@@ -2310,9 +2312,10 @@
     $("lib-where-other").checked = !!e.enabled;
     $("lib-where-here").checked = !e.enabled;
     $("lib-export-dest").value = e.dest || "";
-    $("lib-export-mode").value = e.mode || "auto";
+    $("lib-export-mode").value = e.mode || "copy";
     $("lib-export-sidecars").checked = !!e.sidecars;
-    $("lib-export-sync").checked = !!e.sync;
+    $("lib-export-sync").checked = !!e.sync && e.mode !== "move";
+    $("lib-export-sync").disabled = e.mode === "move";
     $("lib-export-opts").classList.toggle("hidden", !e.enabled);
     $("lib-apply-btn").textContent = e.enabled ? "Build library in destination" : "Build library";
     $("lib-undo-btn").textContent = e.enabled ? "Undo last build" : "Undo last";
@@ -3124,8 +3127,7 @@
     $("lib-export-note").textContent = ex ? `Library goes to ${ex.dest}. ${(ex.notes || []).join(" ")}` : "";
     $("lib-cards").replaceChildren(
       ...(ex ? [card(fmt((ex.counts.copy || 0)), `To copy (${fmtBytes(ex.bytes_copy)})`, ex.counts.copy ? "info" : ""),
-        ...(ex.counts.hardlink ? [card(fmt(ex.counts.hardlink), "To link (no extra space)", "info")] : []),
-        ...(ex.counts.symlink ? [card(fmt(ex.counts.symlink), "To link symbolically", "info")] : []),
+        ...(ex.counts.move ? [card(fmt(ex.counts.move), ex.bytes_linked ? "To move (same drive: instant)" : `To move (${fmtBytes(ex.bytes_copy)} written)`, "warn")] : []),
         card(fmt(ex.counts.exists || 0), "Already in the destination", "ok"),
         ...(ex.counts.replace ? [card(fmt(ex.counts.replace), "To replace (source changed)", "info")] : []),
         ...(ex.counts.remove ? [card(fmt(ex.counts.remove), "To remove (no longer kept)", "warn")] : []),
@@ -3388,8 +3390,7 @@
       el("p", { text: `Build the library in ${ex.dest} from ${state.scan.root}:` }),
       el("ul", {},
         line(ex.counts.copy, `file(s) copied (${fmtBytes(ex.bytes_copy)})`),
-        line(ex.counts.hardlink, "file(s) hard-linked (no extra space)"),
-        line(ex.counts.symlink, "file(s) linked symbolically"),
+        line(ex.counts.move, "file(s) MOVED out of the source folder"),
         line(ex.counts.exists, "file(s) already there (skipped)"),
         line(ex.counts.conflict, "file(s) skipped: a different file is already at that name"),
         line(ex.counts.replace, "file(s) copied again because the source changed"),
@@ -3397,7 +3398,7 @@
         line(ex.counts.kept_edited, "file(s) you edited stay where they are"),
         line(ex.playlists, "playlist(s) written")),
       el("ul", {},
-        el("li", { text: "The source folder is not changed in any way." }),
+        el("li", { text: ex.counts.move ? "Moved files are no longer in the source folder. Undo moves them back." : "The source folder is not changed: its files stay where they are." }),
         el("li", { text: "Only the files your rules keep are built; excluded, superseded and unmatched files stay in the source." }),
         el("li", { text: "\"Undo last build\" removes what this build added (nothing else)." })));
     if (!(await confirmDialog({ title: ex.sync ? "Build and sync library" : "Build library in another folder", body, okText: `Build (${fmt(plan.actionable)} items)` }))) return;
@@ -3492,7 +3493,7 @@
       const text = isUndo
         ? `Reverted ${fmt(n(r.restored))} file(s)${r.created_removed ? `, removed ${fmt(r.created_removed)} playlist/converted file(s)` : ""}`
         : isExport
-          ? `Built ${fmt(r.created || 0)} file(s) in ${r.dest} (${fmt(r.copied || 0)} copied, ${fmt((r.linked || 0) + (r.symlinked || 0))} linked), ${fmt(r.playlists || 0)} playlist(s)${r.removed ? `, removed ${fmt(r.removed)}` : ""}${r.cancelled ? " - cancelled" : ""}`
+          ? `Built ${fmt(r.created || 0)} file(s) in ${r.dest} (${fmt(r.copied || 0)} copied, ${fmt(r.moved || 0)} moved), ${fmt(r.playlists || 0)} playlist(s)${r.removed ? `, removed ${fmt(r.removed)}` : ""}${r.cancelled ? " - cancelled" : ""}`
           : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
       const sv = r.saves || {};
       const saveText = (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
@@ -4382,13 +4383,21 @@
         $("col-mode").value = this.info.mode;
         $("col-sidecars").checked = !!this.info.sidecars;
         $("col-sync").checked = !!this.info.sync;
+        this.syncAllowed();
         $("col-root-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
         $("col-dest-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
       }
       this.render();
     },
 
-    adopt(info) { this.info = info; this.render(); },
+    adopt(info) { this.info = info; this.render(); this.syncAllowed(); },
+
+    /** Keeping in sync needs the originals to stay: not with Move. */
+    syncAllowed() {
+      const move = $("col-mode").value === "move";
+      if (move) $("col-sync").checked = false;
+      $("col-sync").disabled = move;
+    },
 
     async save(changes) {
       try { this.adopt(await post("/api/collection/save", changes)); } catch (err) { toast(err.message, "error"); }
@@ -4494,7 +4503,7 @@
         body: el("div", {},
           el("p", { text: `Build ${Object.values(this.info.systems).filter((e) => e.enabled).length} system(s) from ${$("col-root").value.trim()} into ${$("col-dest").value.trim()}.` }),
           el("ul", {},
-            el("li", { text: "The ROM folders are not changed in any way." }),
+            el("li", { text: $("col-mode").value === "move" ? "Move: the files leave the ROM folders. Undo moves them back." : "Copy: the ROM folders keep their files." }),
             el("li", { text: "Each system is scanned and checked against its DATs again, then only what the rules keep is built." }),
             el("li", { text: "Nothing in the destination is overwritten. Running it again adds only what is missing." }),
             ...($("col-sync").checked ? [el("li", { text: "SYNC is on: files built before that the rules no longer keep (or whose source is gone) are removed from the destination. Preview first to see how many." })] : []),
@@ -4531,7 +4540,7 @@
         card(fmt(r.systems.length), "Systems", "info"),
         card(fmt(t.files), "Files kept", "ok"),
         card(fmtBytes(t.bytes_copy), "To copy", t.bytes_copy ? "info" : ""),
-        ...(t.bytes_linked ? [card(fmtBytes(t.bytes_linked), "Linked (no extra space)", "info")] : []),
+        ...(t.bytes_linked ? [card(fmtBytes(t.bytes_linked), "Moved on the same drive (instant)", "info")] : []),
         ...(apply ? [card(fmt(built), "Files built now", "ok")] : [card(fmt(t.pending), "Would be added", t.pending ? "info" : "")]),
         ...(t.replace ? [card(fmt(t.replace), "To replace (source changed)", "info")] : []),
         ...(t.remove ? [card(fmt(t.remove), apply ? "Removed by sync" : "To remove (no longer kept)", "warn")] : []),
@@ -4546,7 +4555,7 @@
           el("td", {}, badge(x.status === "ok" ? "ok" : "bad", resultText)),
           el("td", { class: "num", text: fmt(x.files || 0) }),
           el("td", { class: "num", text: `${fmt(counts.copy || 0)} (${fmtBytes(x.bytes_copy || 0)})` }),
-          el("td", { class: "num", text: fmt((counts.hardlink || 0) + (counts.symlink || 0)) }),
+          el("td", { class: "num", text: fmt(counts.move || 0) }),
           el("td", { class: "num", text: fmt(counts.exists || 0) }),
           el("td", { class: "notes small", text: [...(x.notes || []), ...((x.counts || {}).remove ? [`${fmt(x.counts.remove)} to remove, e.g. ${x.removals.filter((q) => !q.skip).slice(0, 2).map((q) => q.rel).join(", ")}`] : []), ...(x.conflicts || []).slice(0, 3).map((c) => `${c.rel}: ${c.reason}`),
             ...(x.failed || []).slice(0, 3).map((f) => `${f.rel}: ${f.error}`)].join(" \u00B7 ") }));
@@ -4568,6 +4577,7 @@
       $("col-mode").addEventListener("change", () => this.save({ mode: $("col-mode").value }));
       $("col-sidecars").addEventListener("change", () => this.save({ sidecars: $("col-sidecars").checked }));
       $("col-sync").addEventListener("change", () => this.save({ sync: $("col-sync").checked }));
+      $("col-mode").addEventListener("change", () => this.syncAllowed());
       $("col-rules-reset").addEventListener("click", () => this.save({ global: {} }));
       $("col-plan-btn").addEventListener("click", () => this.run("/api/collection/plan"));
       $("col-apply-btn").addEventListener("click", () => this.apply());

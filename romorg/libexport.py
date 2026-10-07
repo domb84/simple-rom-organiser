@@ -5,12 +5,10 @@ takes the same plan (``organiser.LibraryPlan``: the DAT matching, the rules, the
 the files that the rules keep into a destination folder, laid out exactly as the in-place build would have laid
 them out. Excluded, superseded, unmatched ... files simply stay where they are and are not copied.
 
-How a file gets there (``mode``; each is a *preference*, the file always arrives):
+How a file gets there (``mode``):
 
-``auto``      a hard link when the destination is on the same file system (no extra disk space), else a copy
-``copy``      always a copy (works across drives and on exFAT / FAT SD cards)
-``hardlink``  like auto (a link where one is possible, else a copy)
-``symlink``   a symbolic link to the source file (a copy where links are not allowed, e.g. exFAT)
+``copy``  the file is copied; the source keeps its file (works across drives and on exFAT / FAT SD cards)
+``move``  the file is moved out of the source folder (a rename on one drive, else a copy that is checked and then removed)
 
 Safety: the destination may not be inside the source or the other way round; a different file that is already at a
 target is never overwritten (reported as a conflict); copies are written to a ``.part`` name and renamed when
@@ -29,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -36,9 +35,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence
 
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
-           "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN"]
+           "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
 
-MODES = ("auto", "copy", "hardlink", "symlink")
+MODES = ("copy", "move")
+
+
+def normalize_mode(mode: Any) -> str:
+    """``copy`` or ``move``; anything else (the old automatic / link modes of earlier settings) is a copy."""
+    return mode if mode in MODES else "copy"
 MANIFEST_DIR = ".romorg-library"
 DB_NAME = "library.sqlite"
 PART_SUFFIX = ".romorg.part"
@@ -57,19 +61,19 @@ class Transfer:
     src: Path
     rel: str                  # path inside the destination, with "/" separators
     size: int
-    action: str               # copy | hardlink | symlink | exists | conflict | replace
+    action: str               # copy | move | exists | conflict | replace
     reason: str = ""
-    via: str = ""             # replace: how the new file is made (copy | hardlink | symlink)
+    via: str = ""             # replace: how the new file is made (copy)
 
     @property
     def moves_data(self) -> bool:
-        return self.action in ("copy", "hardlink", "symlink", "replace")
+        return self.action in ("copy", "move", "replace")
 
 
 @dataclass
 class Removal:
     rel: str
-    how: str                  # how the manifest says it was made (copy | hardlink | symlink | playlist)
+    how: str                  # how the manifest says it was made (copy | move | playlist; older builds: hardlink | symlink)
     size: int = 0
     reason: str = ""          # why it goes ("not kept by the rules any more")
     skip: str = ""            # set: it stays, and this says why (edited since it was built ...)
@@ -94,9 +98,10 @@ class ExportPlan:
     sync: bool = False
     removals: List[Removal] = field(default_factory=list)
     owned_total: int = 0
+    same_fs: bool = False
 
     def counts(self) -> dict:
-        out = {"copy": 0, "hardlink": 0, "symlink": 0, "exists": 0, "conflict": 0, "replace": 0}
+        out = {"copy": 0, "move": 0, "exists": 0, "conflict": 0, "replace": 0}
         for t in self.items:
             out[t.action] = out.get(t.action, 0) + 1
         out["remove"] = sum(1 for r in self.removals if not r.skip)
@@ -111,11 +116,12 @@ class ExportPlan:
         return n > MASS_MIN and n * 2 > self.owned_total
 
     def bytes_to_copy(self) -> int:
-        return sum(t.size for t in self.items if t.action == "copy" or (t.action == "replace" and t.via == "copy"))
+        """Bytes that are written: copies, replacements and moves to another drive (a move on one drive writes nothing)."""
+        return sum(t.size for t in self.items if t.action in ("copy", "replace") or (t.action == "move" and not self.same_fs))
 
     def bytes_linked(self) -> int:
-        return sum(t.size for t in self.items if t.action in ("hardlink", "symlink")
-                   or (t.action == "replace" and t.via in ("hardlink", "symlink")))
+        """Bytes moved without being written again (a rename on the same drive)."""
+        return sum(t.size for t in self.items if t.action == "move" and self.same_fs)
 
     def pending(self) -> int:
         """Things a build would do (files transferred and playlists written)."""
@@ -235,20 +241,21 @@ def _unchanged(dest: Path, rel: str, rec: tuple) -> bool:
         return False
 
 
-def plan_export(plan: Any, root: Path, dest: Path, mode: str = "auto", sidecars: bool = False,
+def plan_export(plan: Any, root: Path, dest: Path, mode: str = "copy", sidecars: bool = False,
                 sync: bool = False) -> ExportPlan:
     """Turn a library plan into transfers for ``dest`` (nothing is written). ``sync`` also plans the removal of what an
     earlier build put there and the rules no longer keep, and the replacement of what changed in the source."""
-    if mode not in MODES:
-        raise ExportError(f"unknown transfer mode {mode!r}")
+    mode = normalize_mode(mode)
+    if mode == "move" and sync:
+        raise ExportError("Keeping the destination in sync needs the original files to stay where they are: use Copy, "
+                          "or switch sync off.")
     root = Path(root)
     dest = check_destination(root, Path(dest))
     ep = ExportPlan(root, dest, mode, sync=sync)
     owned = _owned(dest)
     ep.owned_total = len(owned)
-    same_fs = _same_fs(root, dest)
+    same_fs = ep.same_fs = _same_fs(root, dest)
     seen: dict = {}
-    other_drive = 0
     for src, final in kept_files(plan, root, sidecars):
         rel = _rel(final, root)
         if rel is None:
@@ -268,8 +275,7 @@ def plan_export(plan: Any, root: Path, dest: Path, mode: str = "auto", sidecars:
         if state == "conflict" and sync and rel in owned:
             if _unchanged(dest, rel, owned[rel]):          # ours, untouched, and the source moved on: refresh it
                 action = "replace"
-                via = "copy" if mode == "copy" else "symlink" if mode == "symlink" else ("hardlink" if same_fs else "copy")
-                ep.items.append(Transfer(src, rel, size, action, "the source changed", via))
+                ep.items.append(Transfer(src, rel, size, action, "the source changed", "copy"))
                 continue
             ep.items.append(Transfer(src, rel, size, "conflict", "edited in the destination since it was built - left alone"))
             continue
@@ -279,14 +285,7 @@ def plan_export(plan: Any, root: Path, dest: Path, mode: str = "auto", sidecars:
         if state == "conflict":
             ep.items.append(Transfer(src, rel, size, "conflict", "a different file is already there - left alone"))
             continue
-        if mode == "copy":
-            action = "copy"
-        elif mode == "symlink":
-            action = "symlink"
-        else:                                   # auto / hardlink: a link only where the file system allows it
-            action = "hardlink" if same_fs else "copy"
-            other_drive += 0 if same_fs else 1
-        ep.items.append(Transfer(src, rel, size, action))
+        ep.items.append(Transfer(src, rel, size, "move" if mode == "move" else "copy"))
     for p in getattr(plan, "playlists", ()) or ():
         if p.status not in ("write", "ok"):
             continue
@@ -325,9 +324,9 @@ def plan_export(plan: Any, root: Path, dest: Path, mode: str = "auto", sidecars:
         if ep.mass_removal():
             ep.notes.append(f"This sync removes {len(ep.to_remove())} of the {ep.owned_total} files built before. "
                             "Check the rules and that the source is complete.")
-    if mode in ("auto", "hardlink") and not same_fs and any(t.action == "copy" for t in ep.items):
-        ep.notes.append("The destination is on another drive than the source: files are copied (hard links only work "
-                        "on one drive).")
+    if mode == "move" and not same_fs and any(t.action == "move" for t in ep.items):
+        ep.notes.append("The destination is on another drive than the source: files are copied there and then removed from the "
+                        "source (a move on one drive is instant).")
     return ep
 
 
@@ -395,26 +394,19 @@ def _copy(src: Path, tmp: Path, cancel: Optional[Callable[[], bool]], tick: Call
 
 
 def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
-    """Do one transfer; returns how it was done (``copy`` | ``hardlink`` | ``symlink``)."""
+    """Do one transfer; returns how it was done (``copy`` | ``move``). A move that had to copy and then could not remove the
+    original is reported as a copy (``t.reason`` says why)."""
     src = t.src
     tmp = target.with_name(target.name + PART_SUFFIX)
-    kind = t.via if t.action == "replace" else t.action
-    if kind in ("hardlink", "symlink"):
+    if t.action == "move":
+        if os.path.lexists(target):
+            raise FileExistsError("a file appeared there")
         try:
-            if os.path.lexists(tmp):
-                os.unlink(tmp)
-            if kind == "hardlink":
-                os.link(src, tmp)
-            else:
-                os.symlink(os.path.abspath(src), tmp)
-            os.replace(tmp, target)                 # a new name for a new file; for a replacement the old one goes
+            os.replace(src, target)
             tick(t.size)
-            return kind
-        except (OSError, NotImplementedError):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass                                # another drive, exFAT / FAT, no privilege on Windows: copy
+            return "move"                               # same drive: a rename, nothing is written again
+        except OSError:
+            pass                                        # another drive: copy, check, then remove the original
     done = [0]
 
     def count(n: int) -> None:
@@ -438,13 +430,19 @@ def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
         except OSError:
             pass
         raise
+    if t.action == "move":
+        try:
+            os.unlink(src)
+            return "move"
+        except OSError as exc:
+            t.reason = f"copied, but the original could not be removed: {exc}"
     return "copy"
 
 
 def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
                  cancel: Optional[Callable[[], bool]] = None, allow_mass: bool = False) -> dict:
     """Perform the plan. ``progress(done bytes, total bytes, current file)``. Returns ``{"created", "copied",
-    "linked", "symlinked", "playlists", "skipped", "failed": [{rel, error}], "bytes", "cancelled", "run"}``."""
+    "moved", "playlists", "skipped", "failed": [{rel, error}], "bytes", "cancelled", "run"}``."""
     dest = plan.dest
     if plan.mass_removal() and not allow_mass:
         raise ExportError(f"This sync would remove {len(plan.to_remove())} of the {plan.owned_total} files built before. "
@@ -459,7 +457,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
     writes = [p for p in plan.playlists if p.action == "write"]
     total = sum(t.size for t in todo) or 1
     done_bytes = [0]
-    out = {"created": 0, "copied": 0, "linked": 0, "symlinked": 0, "playlists": 0, "replaced": 0, "removed": 0,
+    out = {"created": 0, "copied": 0, "moved": 0, "playlists": 0, "replaced": 0, "removed": 0,
            "skipped": sum(1 for t in plan.items if t.action in ("exists", "conflict")) + sum(
                1 for p in plan.playlists if p.action in ("exists", "conflict")),
            "failed": [], "bytes": 0, "cancelled": False, "run": None}
@@ -508,15 +506,17 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
                 out["failed"].append({"rel": t.rel, "error": str(exc)})
                 continue
             try:
-                mt = os.lstat(target).st_mtime_ns if how == "symlink" else os.stat(target).st_mtime_ns
+                mt = os.stat(target).st_mtime_ns
             except OSError:
                 mt = 0
+            if t.action == "move" and how == "copy":
+                out["failed"].append({"rel": t.rel, "error": t.reason})
             db.execute("INSERT OR REPLACE INTO files (path, src, size, mtime_ns, how, run) VALUES (?, ?, ?, ?, ?, ?)",
                        (t.rel, str(t.src), t.size, mt, how, run))
             out["created"] += 1
             out["replaced"] += 1 if t.action == "replace" else 0
-            out["bytes"] += t.size if how == "copy" else 0
-            out[{"copy": "copied", "hardlink": "linked", "symlink": "symlinked"}[how]] += 1
+            out["bytes"] += t.size if how == "copy" or (how == "move" and not plan.same_fs) else 0
+            out["moved" if how == "move" else "copied"] += 1
             pending += 1
             if pending >= COMMIT_EVERY:
                 db.commit()
@@ -545,7 +545,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
         if progress:
             progress(done_bytes[0], total, "")
     finally:
-        summary = {k: out[k] for k in ("created", "copied", "linked", "symlinked", "playlists", "skipped", "removed")}
+        summary = {k: out[k] for k in ("created", "copied", "moved", "playlists", "skipped", "removed")}
         summary["failed"] = len(out["failed"])
         db.execute("UPDATE runs SET summary = ? WHERE id = ?", (repr(summary), run))
         if not out["created"] and not out["playlists"] and not out["removed"]:
@@ -632,6 +632,24 @@ def undo_run(dest: Path, run: Optional[int] = None) -> dict:
             if not os.path.lexists(p):
                 db.execute("DELETE FROM files WHERE path = ?", (rel,))
                 continue
+            if how == "move":                               # put the file back where it came from (never over another file)
+                try:
+                    unchanged = not os.path.islink(p) and os.stat(p).st_size == size and os.stat(p).st_mtime_ns == mtime_ns
+                except OSError:
+                    unchanged = False
+                if not unchanged:
+                    skipped.append({"rel": rel, "reason": "changed since it was built - left in place"})
+                elif os.path.lexists(src):
+                    skipped.append({"rel": rel, "reason": "the original place is taken - left in the library"})
+                else:
+                    try:
+                        Path(src).parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(p), src)
+                        removed += 1
+                        db.execute("DELETE FROM files WHERE path = ?", (rel,))
+                    except OSError as exc:
+                        skipped.append({"rel": rel, "reason": str(exc)})
+                continue
             try:
                 if how == "symlink":
                     ok = os.path.islink(p) and os.path.realpath(p) == os.path.realpath(src)
@@ -673,9 +691,9 @@ def undo_run(dest: Path, run: Optional[int] = None) -> dict:
             else:
                 try:
                     p.parent.mkdir(parents=True, exist_ok=True)
-                    t = Transfer(Path(src), rel, size, "copy" if how == "copy" else how)
-                    got = _transfer(t, p, how, None, lambda n: None)
-                    st = os.lstat(p) if got == "symlink" else os.stat(p)
+                    t = Transfer(Path(src), rel, size, "copy")
+                    got = _transfer(t, p, "copy", None, lambda n: None)
+                    st = os.stat(p)
                     db.execute("INSERT OR REPLACE INTO files (path, src, size, mtime_ns, how, run) VALUES (?, ?, ?, ?, ?, 0)",
                                (rel, src, st.st_size, st.st_mtime_ns, got))
                     restored += 1

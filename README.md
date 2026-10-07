@@ -712,13 +712,14 @@ because emulators need the iNES header.
 ## Build the library in another folder (v0.2)
 
 On the Library tab, **Where to build** chooses between *In this folder* (the classic build: files are moved) and
-*In another folder*: the scanned folder is only **read**, and the files your rules keep are placed in a destination
+*In another folder*: the files your rules keep are **copied** (or **moved**, if you choose) into a destination
 folder, laid out exactly as an in-place build would lay them out. Excluded, superseded and unmatched files stay in
 the source and are not copied. The choice is remembered.
 
-- **How files get there:** *Automatic* uses a hard link when the destination is on the same drive (no extra disk
-  space) and a copy otherwise; *Always copy* works across drives and on exFAT SD cards; *Symbolic links* are for
-  people who want links (exFAT cannot hold them: the file is copied instead).
+- **How files get there:** **Copy** (the default) leaves the source with all its files; it works across drives and on exFAT SD
+  cards. **Move** takes the files out of the source folder: a rename on one drive (instant, nothing written again), else a
+  copy that is checked and then removed. Undo moves them back. There are no links. Move cannot be combined with *keep in
+  sync* (the originals are gone, so there is nothing to compare with).
 - **Safe:** the destination may not be inside the source or contain it; a different file already at a target is never
   overwritten (shown as a conflict); copies are written under a temporary name and renamed when complete; the free
   space is checked first. Running it again only adds what is missing.
@@ -755,7 +756,7 @@ In the list on the left, **Collection** (`#/collection`) builds the clean librar
    A system that fails (folder missing, no DATs) is reported and the others go on.
    **Undo last build** removes what the last build added in every system.
 
-The ROM folders are only read. Building again later adds only what is missing.
+With Copy the ROM folders keep their files; with Move they give them up. Building again later adds only what is missing.
 
 ## RetroArch: saves, states and the config (v0.2)
 

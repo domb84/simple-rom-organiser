@@ -1364,6 +1364,24 @@ class RealModulesIntegrationTests(unittest.TestCase):
                 urllib.request.urlopen(req, timeout=10)
         self.assertEqual(ctx.exception.code, 409)
 
+    def test_collection_move_takes_the_files_and_undo_returns_them(self) -> None:
+        roms = self.tmp / "roms-move"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
+        self.call("POST", "/api/collection/detect", {"root": str(roms)})
+        dest = self.tmp / "moved-lib"
+        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy", "sync": True})
+        info = self.call("POST", "/api/collection/save", {"mode": "move"})
+        self.assertEqual((info["mode"], info["sync"]), ("move", False))               # switching to Move switches sync off
+        self.assertFalse(self.call("POST", "/api/collection/save", {"mode": "auto"})["mode"] == "auto")   # old values read as copy
+        self.call("POST", "/api/collection/save", {"mode": "move"})
+        res = self.job("/api/collection/apply", {})["result"]
+        self.assertGreater(res["systems"][0]["result"]["moved"], 2)
+        self.assertFalse((self.root / "incoming" / "game_d1.adf").exists())
+        self.assertTrue((dest / "amiga" / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
+        self.call("POST", "/api/collection/undo", {})
+        self.assertTrue((self.root / "incoming" / "game_d1.adf").is_file())
+
     def test_library_export_refuses_bad_destinations(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         for bad in (str(self.root), str(self.root / "sub")):
@@ -1376,9 +1394,9 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 400)
 
     def test_export_settings_are_remembered(self) -> None:
-        self.call("POST", "/api/library/export/settings", {"enabled": True, "dest": "/x/y", "mode": "symlink"})
+        self.call("POST", "/api/library/export/settings", {"enabled": True, "dest": "/x/y", "mode": "move"})
         saved = self.call("GET", "/api/status")["library_export"]
-        self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "symlink", "sidecars": False, "sync": False})
+        self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "move", "sidecars": False, "sync": False})
 
 
 class ReviewFixTests(ServerTestCase):
