@@ -183,8 +183,14 @@ def main() -> None:
     ap.add_argument("--keep", action="store_true", help="keep the last CHD of each conversion")
     ap.add_argument("--json", help="write every run and the summary to this file")
     a = ap.parse_args()
-    items = [parse_input(t) for t in a.inputs]
     presets = [p for p in a.preset.split(",") if p]
+    for p in presets:
+        if p not in ("default", "zstd"):
+            ap.error(f"unknown preset {p!r} (default, zstd)")
+    for opt in ("chdman", "libflac"):
+        if getattr(a, opt) and not Path(getattr(a, opt)).is_file():
+            ap.error(f"--{opt}: no such file: {getattr(a, opt)}")
+    items = [parse_input(t) for t in a.inputs]
     tmp = None
     if a.out:
         out_dir = Path(a.out).resolve()
@@ -238,4 +244,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.path.insert(0, str(REPO))
+    from romorg.cdimage import ImageError
+    from romorg.chdwrite import ChdWriteError
+
+    try:
+        main()
+    except (OSError, ImageError, ChdWriteError) as exc:     # ChdWriteError / ImageError: bad input, not a bug
+        sys.exit(f"{Path(sys.argv[0]).name}: {type(exc).__name__}: {exc}")

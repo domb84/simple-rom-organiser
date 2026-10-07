@@ -345,7 +345,12 @@ def check_chdman() -> Tuple[str, str]:
 
 def main(argv: List[str] | None = None) -> int:
     from . import bundle
-    require_native = "--require-native" in (sys.argv[1:] if argv is None else argv)
+    args = list(sys.argv[1:] if argv is None else argv)
+    unknown = [a for a in args if a != "--require-native"]
+    if unknown:
+        print(f"unknown argument(s): {' '.join(unknown)}\nusage: python -m romorg --self-check [--require-native]", file=sys.stderr)
+        return 2
+    require_native = "--require-native" in args
     failures = 0
     root = bundle.bundle_root()
     lines: List[Tuple[str, str]] = []
