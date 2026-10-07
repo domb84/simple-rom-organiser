@@ -137,13 +137,13 @@ class SourceFileTests(unittest.TestCase):
         doc = (ROOT / "docs" / "THIRD_PARTY.md").read_text(encoding="utf-8")
         script = (PKG / "build_appimage.sh").read_text(encoding="utf-8")
         pins = re.findall(r'^PKG_\w+="([^|]+)\|([^|]+)\|([0-9a-f]{64})"', script, re.M)
-        self.assertEqual(len(pins), 2)                          # libFLAC + libogg; chdman is no longer shipped
+        self.assertEqual(len(pins), 3)                          # libFLAC + libogg + libzstd; chdman is no longer shipped
         for file, directory, sha in pins:
             self.assertIn(sha, doc, file)                       # the document lists the same checksums
             self.assertIn(f"{directory}/{file}", doc)
         self.assertNotIn("mame-tools", script)
         self.assertNotIn("tools/chdman", script)
-        for needle in ("chdman is not shipped", "libFLAC", "libogg", "BSD-3-Clause", "GPL-2.0",
+        for needle in ("chdman is not shipped", "libFLAC", "libogg", "libzstd", "BSD-3-Clause", "GPL-2.0",
                        "Corresponding source", "gitlab.archlinux.org", "github.com/mamedev/mame"):
             self.assertIn(needle, doc)
         # the build verifies and fails on a mismatch, and ships the document inside the image
@@ -256,7 +256,10 @@ class WindowsPackagingTests(unittest.TestCase):
             with mock.patch.object(sys, "platform", "win32"), \
                     mock.patch.object(sys, "frozen", True, create=True), \
                     mock.patch.object(sys, "_MEIPASS", tmp, create=True), \
+                    mock.patch("ctypes.util.find_library", return_value=None), \
                     mock.patch.dict(os.environ, {}, clear=False):
+                # find_library is patched out: with sys.platform faked to "win32" on Linux, Python 3.13's
+                # shutil.which (used by ctypes.util) takes a Windows-only branch and fails on the missing _winapi
                 os.environ.pop(flacnative.ENV_LIB, None)
                 self.assertIn(str(dll), flacnative._candidates())
 
