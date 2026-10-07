@@ -1324,6 +1324,32 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertIn('video_vsync = "true"', (ra_dir / "retroarch.cfg").read_text())
         self.assertEqual(next(r for r in res["rows"] if r["key"] == "cheat_database_path")["status"], "ok")
 
+    def test_retroarch_bios_for_every_system_with_a_folder(self) -> None:
+        ra_dir = self.tmp / "ra-bios-all"
+        (ra_dir / "cores").mkdir(parents=True)
+        (ra_dir / "retroarch.cfg").write_text(f'system_directory = "{ra_dir}/system"\n')
+        (ra_dir / "cores" / "x_libretro.info").write_text(
+            'display_name = "Commodore - Amiga (X)"\ncorename = "X"\nsupported_extensions = "adf"\nfirmware_count = 1\n'
+            'firmware0_path = "kick34005.A500"\nfirmware0_opt = "false"\n')
+        (ra_dir / "cores" / "y_libretro.info").write_text(
+            'display_name = "Sega - Dreamcast (Y)"\ncorename = "Y"\nsupported_extensions = "gdi"\nfirmware_count = 1\n'
+            'firmware0_path = "dc/dc_boot.bin"\nfirmware0_opt = "false"\n')
+        (self.root / "kick34005.A500").write_bytes(b"kick")
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/retroarch/bios/scan", method="POST", data=b"{}",
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:                       # no system has a folder yet
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(ctx.exception.code, 409)
+        self.call("POST", "/api/folders", {"platform": "Commodore Amiga", "path": str(self.root)})
+        res = self.job("/api/retroarch/bios/scan", {})["result"]
+        self.assertEqual([c["core"] for c in res["cores"]], ["X"])                   # Dreamcast has no folder: not asked about
+        self.assertEqual(res["counts"]["found"], 1)
+        everything = self.job("/api/retroarch/bios/scan", {"platform": "*all"})["result"]
+        self.assertEqual([c["core"] for c in everything["cores"]], ["X", "Y"])
+        self.job("/api/retroarch/bios/apply", {"mode": "copy"})
+        self.assertEqual((ra_dir / "system" / "kick34005.A500").read_bytes(), b"kick")
+
     def test_retroarch_is_not_touched_while_it_runs(self) -> None:
         ra_dir = self.tmp / "ra2"
         ra_dir.mkdir()

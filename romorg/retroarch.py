@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 __all__ = ["Install", "detect_installs", "read_cfg", "resolve", "settings_of", "is_running", "write_cfg",
            "classify", "plan_relocation", "apply_relocation", "undo_relocation", "list_undo", "override_warnings",
            "SETTING_KEYS", "split_save", "pairs_from_moves", "plan_follow", "apply_follow", "core_infos",
-           "cores_for_platform", "check_bios", "apply_bios", "shared_base", "shared_folders", "apply_shared"]
+           "cores_for_platform", "cores_for_platforms", "check_bios_cores", "check_bios", "apply_bios", "shared_base", "shared_folders", "apply_shared"]
 
 SETTING_KEYS = ("savefile_directory", "savestate_directory", "sort_savefiles_enable", "sort_savestates_enable",
                 "sort_savefiles_by_content_enable", "sort_savestates_by_content_enable", "savefiles_in_content_dir",
@@ -669,22 +669,47 @@ def cores_for_platform(infos: List[dict], platform: Any) -> List[dict]:
     return out
 
 
-def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seconds: float = 60.0) -> Dict[str, Path]:
+_BIOS_EXT = {"bin", "rom", "bios", "img", "sms", "gg", "a500", "a600", "a1200", "a4000", "cd32", "cdtv"}
+_BIOS_WORDS = ("bios", "boot", "scph", "kick", "firmware", "flash", "sysrom", "fw")
+
+
+def _outermost(dirs: Iterable[Path]) -> List[Path]:
+    """The search folders without those that lie inside another one (no file is indexed twice)."""
+    real = []
+    for d in dirs:
+        try:
+            r = Path(os.path.realpath(d))
+        except OSError:
+            continue
+        if r.is_dir() and r not in real:
+            real.append(r)
+    return [r for r in real if not any(o != r and (o in r.parents) for o in real)]
+
+
+def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seconds: float = 90.0,
+                     progress: Optional[Callable[[str], None]] = None) -> tuple:
     """For each wanted firmware path, a file in the search folders: the same name (verified by md5 when known), else a file
-    with the right md5 under another name."""
+    with the right md5 under another name (only files that look like a BIOS: small, a BIOS-like extension or name).
+    Returns ``(found, complete)``: ``complete`` is False when the time budget ended the search early."""
     names: Dict[str, List[Path]] = {}
-    small: List[Path] = []
-    for d in search_dirs:
-        for f in _walk(Path(d)):
+    maybe: List[Path] = []
+    for d in _outermost(search_dirs):
+        if progress:
+            progress(f"reading {d}")
+        for f in _walk(d):
             names.setdefault(f.name.casefold(), []).append(f)
-            try:
-                if 0 < f.stat().st_size <= 8 * 1024 * 1024:
-                    small.append(f)
-            except OSError:
-                pass
+            low = f.name.casefold()
+            ext = low.rsplit(".", 1)[-1] if "." in low else ""
+            if ext in _BIOS_EXT or any(w in low for w in _BIOS_WORDS):
+                try:
+                    if 0 < f.stat().st_size <= 4 * 1024 * 1024:
+                        maybe.append(f)
+                except OSError:
+                    pass
     found: Dict[str, Path] = {}
     cache: Dict[Path, str] = {}
     end = time.time() + limit_seconds
+    complete = True
 
     def md5(f: Path) -> str:
         if f not in cache:
@@ -693,6 +718,8 @@ def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seco
 
     for fw in wanted:
         base = fw["path"].split("/")[-1].casefold()
+        if progress:
+            progress(f"looking for {base}")
         for f in names.get(base, []):
             try:
                 if f.stat().st_size > MAX_BIOS_BYTES:
@@ -702,9 +729,12 @@ def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seco
                     break
             except OSError:
                 continue
-        if fw["path"] in found or not fw["md5"] or time.time() > end:
+        if fw["path"] in found or not fw["md5"]:
             continue
-        for f in small:
+        if time.time() > end:
+            complete = False
+            continue
+        for f in maybe:
             try:
                 if md5(f) == fw["md5"]:
                     found[fw["path"]] = f
@@ -712,18 +742,29 @@ def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seco
             except OSError:
                 continue
             if time.time() > end:
+                complete = False
                 break
-    return found
+    return found, complete
 
 
-def check_bios(install: Install, platform: Any, search_dirs: Iterable[Path], home: Optional[Path] = None) -> dict:
-    """What the cores of this system expect in RetroArch's system folder, what is there (checksum verified where the core
-    lists one) and, for what is missing, where a matching file lies in ``search_dirs``."""
+def cores_for_platforms(infos: List[dict], platforms: Iterable[Any]) -> List[dict]:
+    """The cores that play any of the systems, each once, in core order."""
+    seen: Dict[str, dict] = {}
+    for p in platforms:
+        for c in cores_for_platform(infos, p):
+            seen.setdefault(c["file"], c)
+    return [seen[k] for k in sorted(seen, key=lambda f: seen[f]["core"].casefold())]
+
+
+def check_bios_cores(install: Install, cores: List[dict], search_dirs: Iterable[Path], home: Optional[Path] = None,
+                     platforms: Iterable[Any] = (), progress: Optional[Callable[[str], None]] = None) -> dict:
+    """What these cores expect in RetroArch's system folder, what is there (checksum verified where the core lists one) and,
+    for what is missing, where a matching file lies in ``search_dirs``. ``platforms`` only labels which systems a core serves."""
     cur = settings_of(install, home)
     system = Path(cur["system_path"]) if cur["system_path"] else install.base / "system"
-    cores = cores_for_platform(core_infos(install, home), platform)
     missing = [fw for c in cores for fw in c["firmware"] if not (system / fw["path"]).is_file()]
-    found = _find_candidates(search_dirs, missing) if missing else {}
+    found, complete = _find_candidates(search_dirs, missing, progress=progress) if missing else ({}, True)
+    platforms = list(platforms)
     rows = []
     for c in cores:
         items = []
@@ -741,11 +782,17 @@ def check_bios(install: Install, platform: Any, search_dirs: Iterable[Path], hom
             elif fw["path"] in found:
                 status, src = "found", str(found[fw["path"]])
             items.append({**fw, "status": status, "target": str(target), "source": src})
-        rows.append({"core": c["core"], "display": c["display"], "firmware": items})
-    return {"system_dir": str(system), "cores": rows,
+        rows.append({"core": c["core"], "display": c["display"], "firmware": items,
+                     "serves": [p.name for p in platforms if any(x["file"] == c["file"] for x in cores_for_platform([c], p))]})
+    return {"system_dir": str(system), "cores": rows, "complete": complete,
             "counts": {k: sum(1 for r in rows for i in r["firmware"] if i["status"] == k)
                        for k in ("ok", "present", "wrong", "found", "missing")},
             "required_missing": sum(1 for r in rows for i in r["firmware"] if i["status"] in ("missing", "found") and not i["optional"])}
+
+
+def check_bios(install: Install, platform: Any, search_dirs: Iterable[Path], home: Optional[Path] = None) -> dict:
+    """:func:`check_bios_cores` for the cores of one system."""
+    return check_bios_cores(install, cores_for_platform(core_infos(install, home), platform), search_dirs, home, [platform])
 
 
 def apply_bios(install: Install, items: List[dict], journal_dir: Path, mode: str = "move",

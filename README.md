@@ -789,17 +789,13 @@ The ROM folders are only read. Building again later adds only what is missing.
   folder (cores stay separate). A build into another folder or a collection **copies** them to the new names and leaves the
   old ones. Nothing is overwritten (a file already at the new name is left alone). Undoing the build undoes the saves too.
   It waits if RetroArch is running (RetroArch writes its saves back when it closes). The switch is on the RetroArch page.
-- **BIOS and firmware:** pick a system and press **Check**. The app reads the installed cores' `.info` files for that system,
-  lists the BIOS / firmware each wants (required or optional) and compares them with RetroArch's system folder, verified by
-  MD5 where the core gives a checksum. Missing files are looked for in that system's ROM folder (and one more folder you can
-  name): by name, and, when the checksum is known, under any other name. **Place found files** moves (or copies) them to
-  the path the core expects inside the system folder. Nothing is overwritten and **Undo last change** puts them back.
-
-## M3U playlists (multi-disk games)
-
-Written following the
-[libretro PUAE documentation](https://docs.libretro.com/library/puae/#m3u-and-disk-control):
-
+- **BIOS and firmware:** press **Check** and the app reads the `.info` file of every installed core, lists the BIOS / firmware
+  each wants (required or optional) and compares them with RetroArch's system folder, verified by MD5 where the core gives a
+  checksum. By default it covers the cores of **every system that has a ROM folder** (or choose *Every installed core*, or one
+  system). Missing files are looked for in all those ROM folders, the Collection root and one more folder you can name: by name,
+  and, when the checksum is known, under any other BIOS-looking name. It is one pass with progress (a minute at most; it says
+  when it stopped early). **Place found files** moves (or copies) them to the path the core expects inside the system folder.
+  Nothing is overwritten, nothing is written outside the system folder, and **Undo last change** puts them back.
 - Only for the platform's disk DATs (for Amiga: Games, Workbench, Kickstart-Disks); a set
   never mixes disks from different DATs.
 - Disks are grouped by their TOSEC name with the `(Disk X of Y)` part removed, so each

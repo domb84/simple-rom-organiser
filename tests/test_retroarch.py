@@ -300,5 +300,27 @@ class Shared(World):
         self.assertEqual(ra.read_cfg(self.inst.cfg)["content_history_path"], "~/MEGA/assets/playlists/builtin/content_history.lpl")
 
 
+class BiosAll(Bios):
+    def test_all_configured_systems_in_one_pass(self) -> None:
+        from romorg import platforms
+        infos = ra.core_infos(self.inst)
+        cores = ra.cores_for_platforms(infos, [self.psx, platforms.get_platform("Sony PlayStation")])
+        self.assertEqual([c["core"] for c in cores], ["TestCore"])                       # each core once
+        (self.roms / "sub").mkdir()
+        (self.roms / "sub" / "scph-5501.bin").write_bytes(self.good)
+        r = ra.check_bios_cores(self.inst, cores, [self.roms, self.roms / "sub"], self.home, [self.psx])
+        self.assertTrue(r["complete"])
+        self.assertEqual(r["cores"][0]["serves"], ["Sony PlayStation"])
+        self.assertEqual(r["cores"][0]["firmware"][0]["status"], "found")
+
+    def test_nested_search_folders_are_read_once_and_a_non_bios_looking_file_is_not_hashed(self) -> None:
+        (self.roms / "x").mkdir()
+        self.assertEqual(ra._outermost([self.roms, self.roms / "x"]), [self.roms.resolve()])
+        (self.roms / "Some Game (USA).gba").write_bytes(self.good)                  # right bytes, but not BIOS-like: skipped
+        cores = ra.core_infos(self.inst)
+        r = ra.check_bios_cores(self.inst, cores, [self.roms], self.home, [self.psx])
+        self.assertEqual(r["cores"][0]["firmware"][0]["status"], "missing")
+
+
 if __name__ == "__main__":
     unittest.main()

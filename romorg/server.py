@@ -3246,39 +3246,69 @@ class App:
         self._config_update(retroarch={**saved, "follow": _bool_arg(body.get("follow"), True)})
         return self._ra_info()
 
-    def _ra_bios_target(self, body: dict[str, Any]) -> tuple[Any, Any, Any, list[Path]]:
+    def _ra_bios_scope(self, body: dict[str, Any]) -> tuple[Any, Any, list[dict[str, Any]], list[Path], list[Any], str]:
+        """``(retroarch module, install, cores, folders to search, systems, label)`` for ``platform``: a system's name, or
+        ``""`` / ``*configured`` (every system that has a ROM folder: the default), or ``*all`` (every installed core)."""
         ra, installs, saved = self._ra_state()
         sel = self._ra_selected(installs, saved)
         if sel is None:
             raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
-        platform = self._resolve_platform(body.get("platform"))
+        scope = _str_arg(body.get("platform"))
+        folders = self._folders()
+        platforms = list(_mod("platforms").list_platforms())
+        infos = ra.core_infos(sel)
         dirs: list[Path] = []
-        folder = self._folders().get(platform.name)
-        if folder:
-            dirs.append(Path(folder))
         extra = _str_arg(body.get("search_dir"))
+        if scope in ("", "*configured", "*all"):
+            configured = [p for p in platforms if folders.get(p.name)]
+            if not configured and not extra:
+                raise ApiError(HTTPStatus.CONFLICT, "No system has a ROM folder yet. Set one on a system's Overview, or "
+                               "choose a folder to search below.", "no_folders")
+            dirs = [Path(folders[p.name]) for p in configured]
+            root = self._collection_cfg()["root"]
+            if root:
+                dirs.append(Path(root))
+            if scope == "*all":
+                cores, systems, label = infos, platforms, "every installed core"
+            else:
+                cores, systems, label = ra.cores_for_platforms(infos, configured), configured, "the systems with a ROM folder"
+        else:
+            platform = self._resolve_platform(scope)
+            if folders.get(platform.name):
+                dirs.append(Path(folders[platform.name]))
+            cores, systems, label = ra.cores_for_platform(infos, platform), [platform], platform.name
         if extra:
             dirs.append(Path(os.path.expanduser(extra)))
-        return ra, sel, platform, dirs
+        return ra, sel, cores, dirs, systems, label
 
     def retroarch_bios(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/retroarch/bios {platform, search_dir?}``: the firmware the system's cores expect, what is in place and
-        where the missing files lie (in the system's ROM folder and ``search_dir``)."""
-        ra, sel, platform, dirs = self._ra_bios_target(body)
-        out = ra.check_bios(sel, platform, dirs)
-        out["platform"] = platform.name
-        out["searched"] = [str(d) for d in dirs]
+        """``POST /api/retroarch/bios {platform?, search_dir?}``: the firmware the cores expect, what is in place and where the
+        missing files lie (synchronous; the UI uses ``/bios/scan``, a job with progress)."""
+        ra, sel, cores, dirs, systems, label = self._ra_bios_scope(body)
+        out = ra.check_bios_cores(sel, cores, dirs, platforms=systems)
+        out["scope"], out["searched"] = label, [str(d) for d in dirs]
         return out
 
+    def retroarch_bios_scan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, sel, cores, dirs, systems, label = self._ra_bios_scope(body)
+
+        def work(job: Job) -> Any:
+            job.report(0, 0, "Reading the cores' firmware lists...")
+            out = ra.check_bios_cores(sel, cores, dirs, platforms=systems, progress=lambda m: job.report(0, 0, m))
+            out["scope"], out["searched"], out["action"] = label, [str(d) for d in dirs], "retroarch_bios_check"
+            return out
+
+        return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
+
     def retroarch_bios_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        ra, sel, platform, dirs = self._ra_bios_target(body)
+        ra, sel, cores, dirs, systems, _label = self._ra_bios_scope(body)
         mode = "copy" if _str_arg(body.get("mode")) == "copy" else "move"
         wanted = set(body.get("paths") or [])
         journal_dir = self._ra_dirs(self._ra_state()[2])[0]
 
         def work(job: Job) -> Any:
             job.report(0, 0, "Looking for the files...")
-            check = ra.check_bios(sel, platform, dirs)
+            check = ra.check_bios_cores(sel, cores, dirs, platforms=systems, progress=lambda m: job.report(0, 0, m))
             items = [{"target": i["target"], "source": i["source"]} for c in check["cores"] for i in c["firmware"]
                      if i["status"] == "found" and (not wanted or i["path"] in wanted)]
             items = list({i["target"]: i for i in items}.values())
@@ -3287,7 +3317,8 @@ class App:
             res["action"] = "retroarch_bios"
             return res
 
-        return {"job": self.jobs.start("retroarch", work, cancellable=False, platform=platform.name).to_dict()}
+        return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
+
 
     # ---------------------------------------------------------------- collection (v0.2): a whole ROM root
     def _collection_cfg(self, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3875,6 +3906,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/retroarch/shared"): App.retroarch_shared,
     ("POST", "/api/retroarch/shared/apply"): App.retroarch_shared_apply,
     ("POST", "/api/retroarch/bios"): App.retroarch_bios,
+    ("POST", "/api/retroarch/bios/scan"): App.retroarch_bios_scan,
     ("POST", "/api/retroarch/bios/apply"): App.retroarch_bios_apply,
     ("GET", "/api/collection"): App.collection_get,
     ("POST", "/api/collection/detect"): App.collection_detect,

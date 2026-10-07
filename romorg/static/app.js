@@ -4173,8 +4173,9 @@
       $("ra-follow-panel").classList.remove("hidden");
       $("ra-bios-panel").classList.remove("hidden");
       if (!$("ra-bios-platform").options.length) {
-        $("ra-bios-platform").replaceChildren(...state.platforms.map((p) => el("option", { value: p.name, text: p.name })));
-        if (state.platform) $("ra-bios-platform").value = state.platform;
+        $("ra-bios-platform").replaceChildren(
+          el("option", { value: "", text: "All systems that have a ROM folder" }), el("option", { value: "*all", text: "Every installed core" }),
+          ...state.platforms.map((p) => el("option", { value: p.name, text: p.name })));
       }
       $("ra-backup").checked = info.backup.enabled;
       if (document.activeElement !== $("ra-backup-dir")) $("ra-backup-dir").value = info.backup.dir;
@@ -4268,37 +4269,41 @@
       } catch (err) { toast(err.message, "error"); }
     },
 
-    async biosCheck() {
-      const platform = $("ra-bios-platform").value;
-      if (!platform) return null;
-      try {
-        const r = await post("/api/retroarch/bios", { platform, search_dir: $("ra-bios-search").value.trim() });
-        this.bios = r;
-        const c = r.counts;
-        $("ra-bios-out").classList.remove("hidden");
-        $("ra-bios-cards").replaceChildren(
-          card(fmt(r.cores.length), "Cores", "info"), card(fmt(c.ok + c.present), "In place", "ok"),
-          ...(c.wrong ? [card(fmt(c.wrong), "Wrong checksum", "bad")] : []),
-          ...(c.found ? [card(fmt(c.found), "Found, not placed yet", "info")] : []),
-          card(fmt(c.missing), "Missing", c.missing ? "warn" : ""),
-          card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"));
-        $("ra-bios-where").textContent = `System folder: ${r.system_dir}. Searched: ${r.searched.length ? r.searched.join(", ") : "nothing (set a folder for this system, or add one above)"}`;
-        const LABEL = { ok: "verified", present: "there (no checksum to compare)", wrong: "there, wrong checksum", found: "found - not in place", missing: "missing" };
-        $("ra-bios-table").replaceChildren(...r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
-          el("td", { text: core.core }), el("td", { class: "mono small", text: f.path }), el("td", { text: f.optional ? "optional" : "required" }),
-          el("td", {}, badge(f.status === "ok" || f.status === "present" ? "ok" : f.status === "found" ? "info" : f.status === "wrong" ? "bad" : f.optional ? "skip" : "warn", LABEL[f.status])),
-          el("td", { class: "mono small", text: f.source || "" })))));
-        return r;
-      } catch (err) { toast(err.message, "error"); return null; }
+    biosBody() {
+      return { platform: $("ra-bios-platform").value, search_dir: $("ra-bios-search").value.trim() };
+    },
+
+    biosCheck() {
+      $("ra-bios-where").textContent = "Looking... this reads every ROM folder once and can take a minute for a large collection.";
+      $("ra-bios-out").classList.remove("hidden");
+      Jobs.start("/api/retroarch/bios/scan", this.biosBody());
+    },
+
+    showBios(r) {
+      this.bios = r;
+      const c = r.counts;
+      $("ra-bios-out").classList.remove("hidden");
+      $("ra-bios-cards").replaceChildren(
+        card(fmt(r.cores.length), "Cores", "info"), card(fmt(c.ok + c.present), "In place", "ok"),
+        ...(c.wrong ? [card(fmt(c.wrong), "Wrong checksum", "bad")] : []),
+        ...(c.found ? [card(fmt(c.found), "Found, not placed yet", "info")] : []),
+        card(fmt(c.missing), "Missing", c.missing ? "warn" : ""),
+        card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"));
+      $("ra-bios-where").textContent = `Cores of ${r.scope}. System folder: ${r.system_dir}. Searched: ${r.searched.length ? r.searched.join(", ") : "nothing"}.${r.complete ? "" : " The search stopped early (time limit): files found by checksum under another name may be missing from the list."}`;
+      const LABEL = { ok: "verified", present: "there (no checksum to compare)", wrong: "there, wrong checksum", found: "found - not in place", missing: "missing" };
+      $("ra-bios-table").replaceChildren(...r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
+        el("td", { text: core.core, title: (core.serves || []).join(", ") }), el("td", { class: "mono small", text: f.path }), el("td", { text: f.optional ? "optional" : "required" }),
+        el("td", {}, badge(f.status === "ok" || f.status === "present" ? "ok" : f.status === "found" ? "info" : f.status === "wrong" ? "bad" : f.optional ? "skip" : "warn", LABEL[f.status])),
+        el("td", { class: "mono small", text: f.source || "" })))));
     },
 
     async biosApply() {
-      const r = await this.biosCheck();
-      if (!r) return;
+      const r = this.bios;
+      if (!r) { toast("Press Check first to see what can be placed.", "info"); return; }
       if (!r.counts.found) { toast("No file to place: nothing missing was found in the folders searched.", "info"); return; }
       const mode = $("ra-bios-mode").value;
       if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} file(s) into ${r.system_dir}? Nothing is overwritten; Undo puts them back.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
-      Jobs.start("/api/retroarch/bios/apply", { platform: $("ra-bios-platform").value, search_dir: $("ra-bios-search").value.trim(), mode });
+      Jobs.start("/api/retroarch/bios/apply", { ...this.biosBody(), mode });
     },
 
     async undo() {
@@ -4343,11 +4348,13 @@
   Jobs.handlers.retroarch = async (job) => {
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
+      if (r.action === "retroarch_bios_check") { RetroArch.showBios(r); return; }
       if (r.action === "retroarch_bios") {
         toast(`Placed ${fmt(r.placed)} file(s)${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}`, r.failed.length ? "error" : "ok", 8000);
         showFailures("ra-failures", "Could not place:", r.failed, (f) => `${f.path}: ${f.error}`);
         await RetroArch.load();
         RetroArch.render();
+        RetroArch.bios = null;
         RetroArch.biosCheck();
         return;
       }
