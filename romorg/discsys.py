@@ -1932,6 +1932,8 @@ def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
     except (OSError, NotImplementedError):
         pass
     try:
+        if os.name == "nt" and not os.access(src, os.W_OK):
+            raise OSError("read-only source: a link to it could not be deleted again")
         os.link(src, dst)
         return name
     except OSError:
@@ -2116,7 +2118,7 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
             moved.append((s, d))
     except BaseException as exc:
         # roll back what was done: originals back, new CHD removed
-        for s, d in reversed(moved):
+        for s, d in list(reversed(moved)):
             try:
                 rseq = journal.record({"op": "move", "src": organiser.rel_str(d, root), "dst": organiser.rel_str(s, root)})
                 try:
@@ -2124,6 +2126,7 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 except BaseException:
                     journal.failed(rseq)
                     raise
+                moved.remove((s, d))            # back in place: only what could not be restored stays listed
             except (OSError, ValueError):
                 pass
         if placed and not moved:
