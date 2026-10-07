@@ -452,13 +452,11 @@ class DevToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             r = subprocess.run([sys.executable, str(ROOT / "tools" / "fetch_real_dats.py"), "--help"],
                                cwd=d, capture_output=True, text=True, timeout=60)
-            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.returncode, 0)          # --help is not an error (any other option is: exit 2)
             self.assertIn("Usage", r.stdout)
             self.assertEqual(os.listdir(d), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class DeveloperToolArgumentTests(unittest.TestCase):
@@ -491,3 +489,7 @@ class DeveloperToolArgumentTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
