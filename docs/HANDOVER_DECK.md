@@ -87,6 +87,8 @@ stores audio with LZMA (valid, larger); Windows now ships libFLAC so this only a
 - DAT-o-MATIC GBA test (`test_dat_o_matic_matches_libretro`) stays skipped: the app has no downloader for that DAT.
 - Convert for hard disks, parents and laserdiscs (out of scope by decision).
 
+**To do the Deck verification step by step, follow `docs/DECK_RUNBOOK.md`.**
+
 ## Update 2026-10-07: full bug check, libzstd bundled, AppImage re-verified in a Deck-like container
 
 **Read this first: the Deck is still the final check.** Everything below ran on Windows, in WSL (Ubuntu 24.04, Python 3.12) and
