@@ -86,3 +86,64 @@ stores audio with LZMA (valid, larger); Windows now ships libFLAC so this only a
 - Linux/Deck run of any of this (step 1-4 above).
 - DAT-o-MATIC GBA test (`test_dat_o_matic_matches_libretro`) stays skipped: the app has no downloader for that DAT.
 - Convert for hard disks, parents and laserdiscs (out of scope by decision).
+
+## Update 2026-10-07: full bug check, libzstd bundled, AppImage re-verified in a Deck-like container
+
+**Read this first: the Deck is still the final check.** Everything below ran on Windows, in WSL (Ubuntu 24.04, Python 3.12) and
+in Docker Arch Linux containers on a Windows host. None of it ran on SteamOS or on Deck hardware.
+
+### What changed since the sections above
+
+- **The AppImage now bundles libzstd** (pinned `zstd-1.5.7-3` from the Arch Linux Archive, SHA-256 checked before use,
+  BSD-3-Clause text in `licenses/zstd/`). Before, Zstandard CHDs, the Zstandard writer preset and GameCube RVZ discs used the
+  system's libzstd or, without one, a pure-Python decoder at about 1 MB/s. Inside an AppImage `python -m romorg.selfcheck` (the
+  `--self-check` of the AppImage) now FAILS unless libFLAC and libzstd were loaded from `<AppDir>/tools/lib`; normal start-up
+  is unaffected. The AppImage is about 19.4 MiB (was about 18).
+- **Bug check (seven independent lenses, every finding re-verified by a skeptic on Windows and in real Linux, every fix
+  reviewed for Linux neutrality).** Fixed, each with a regression test: a valid FLAC frame that is not 2-channel 16-bit crashed
+  the process (SIGSEGV) in the libFLAC binding on Linux; damaged CHDs and crafted RVZs could cost 20+ s and gigabytes before an
+  error, and non-`ChdError` exceptions from a damaged CHD aborted a whole scan; a `.rvz` hashed as a plain file poisoned the cache
+  of the later GameCube scan; a failed move of a later original during Convert left the new CHD behind; `chd_workers = Infinity`
+  in `config.json` failed every job; several workers dying at once broke the pool early; the Windows generated-GDI scratch
+  folder could leak; `ratings.Store` did not reload a replaced index within one clock tick (flaky test on tmpfs); the shipped
+  `.pyc` files embedded the builder's path; `tools/fetch_real_dats.py --help` created a folder and downloaded 120 MB; stale
+  README / CHD_WRITER_PLAN text; the tag parser's `Rumble` hardware pattern also matched a TOSEC author. See `git log` for the
+  eight `bc-*` / `deck-appimage` branches merged on 2026-10-07.
+- `.gitattributes` keeps `*.sh`, `AppRun` and the `.desktop` file LF on every checkout (a Windows checkout otherwise turns
+  `build_appimage.sh` into CRLF and `set -o pipefail` fails).
+
+### What was proven, and where
+
+| Check | Where | Result |
+|---|---|---|
+| Full suite, 1131 tests | Windows, Python 3.14 | OK (48 skipped) |
+| Full suite, 1131 tests | WSL Ubuntu 24.04, Python 3.12, libFLAC + libsndfile + libzstd installed | OK (60 skipped) |
+| Full suite, 1131 tests, AppImage's own Python 3.13.16, bundled libs only | Arch container, uid 1000, `--read-only` root, 8 CPUs, no network, no system libzstd / libFLAC / libsndfile / libogg | OK (59 skipped, all environment-bound) |
+| `--self-check`, `smoke_test.sh`, server end to end (scan, convert of two ISOs via the HTTP API, quit) | the same container, AppImage mounted through real FUSE | passed; libFLAC and libzstd both loaded from the bundle |
+| Four real discs written (default and Zstandard preset) | the same container | header SHA-1 equal to chdman 0.289's; built-in reader verifies raw + overall |
+| Super Mario Sunshine RVZ | the same container | SHA-1 `8d094f2c5c112aba9660f0478b16c7f2caf63cbf`; 2.6 s with workers (bundled libzstd), 6.1 s with one worker |
+| The old SIGSEGV | the same container | the pre-fix code dies with rc -11, the current code raises `FlacError`/`ChdError` for mono, 8/12/20/24-bit, 3- and 8-channel frames |
+| Negative controls | extracted AppDir with the bundled libzstd removed or unloadable | the self-check FAILS (so the "from the bundle" check is real) |
+
+AppImage built from merge commit 3eb8874 + `.gitattributes`: 20,388,344 bytes, sha256
+`4aa61d1cc2ed33740ca3301874ab2e3db2ad57835383477b07cf8018a6043595` (clean cache, every pinned SHA-256 verified).
+
+### What was NOT proven (do these on the Deck)
+
+1. Run the AppImage on the Deck: `--self-check`, then use the app (scan, Convert a CD and a DVD, a GameCube folder).
+2. Real SteamOS glibc (about 2.41; the container had 2.44), the SteamOS kernel, its FUSE setup, Desktop Mode / Steam launch.
+   The bundled libFLAC and libzstd need at most GLIBC_2.34 by a symbol check; the bundled Python is a python-build-standalone
+   build that was not run against glibc 2.41.
+3. Real hardware timings (Zen 2, 8 threads, SD-card exFAT scratch). The container numbers are not comparable.
+4. Network paths (DAT downloads, HTTPS with the system CA bundle through AppRun's `SSL_CERT_FILE` logic): the containers had no network.
+5. The `PY_SERIES=3.12` / `3.14` AppImage variants.
+6. Re-run `tools/bench_chd.py` / `tools/bench_chdwrite.py` on the Deck against the numbers in `HANDOVER_WINDOWS.md` section 4.
+
+### Method, in case it must be repeated
+
+- WSL Ubuntu is a convenience, not the target. For Deck fidelity use `docker run archlinux:latest` with `--read-only`,
+  `--tmpfs /tmp`, `--cpus 8`, `--network none`, user uid 1000, `/dev/fuse` + `SYS_ADMIN` for a real FUSE mount, and delete
+  libzstd / libFLAC / libsndfile / libogg from the image's `/usr/lib` so only the bundle can satisfy them.
+- Build the AppImage inside an Arch container from a `git archive` (or a checkout with LF endings: see `.gitattributes`).
+- Run the whole unit suite with the AppImage's own Python: `PYTHONPATH=<source> ROMORG_BUNDLE_DIR=<extracted AppDir>
+  PYTHON=<AppImage python> <AppDir python> -m unittest discover -s tests` (the pyz test needs a python on PATH, hence `PYTHON`).

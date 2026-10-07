@@ -1,0 +1,4 @@
+# Shell scripts and the AppImage launcher must stay LF on every checkout (a CRLF "set -o pipefail" fails on Linux).
+*.sh text eol=lf
+packaging/AppRun text eol=lf
+packaging/*.desktop text eol=lf
