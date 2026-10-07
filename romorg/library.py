@@ -73,6 +73,7 @@ def _norm_languages(raw: Any) -> tuple[str, ...]:
 def _norm_regions(raw: Any) -> tuple[str, ...]:
     out: list[str] = []
     for r in raw or ():
+        r = tags.canon_region(r) if isinstance(r, str) else r
         if isinstance(r, str) and r in tags.REGIONS and r not in out:
             out.append(r)
     return tuple(out)
@@ -1683,6 +1684,22 @@ def _with_dat(rom: Any, dat_name: str) -> Any:
         return rom
 
 
+def available_regions(dats: Iterable[Any]) -> dict[str, int]:
+    """``{region: games}`` over the DATs (one count per game / set, whatever its dump flags): the regions that exist in the data,
+    each under its canonical name."""
+    counts: dict[str, int] = {}
+    seen: set = set()
+    for dat in dats:
+        for rom in getattr(dat, "roms", ()):
+            key = (getattr(dat, "name", ""), getattr(rom, "set_name", "") or rom.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            for r in tags.of_rom(rom).regions:
+                counts[r] = counts.get(r, 0) + 1
+    return counts
+
+
 def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any]]:
     """Languages present in ``source`` for the language checkboxes.
 
@@ -1738,7 +1755,8 @@ def _ratings_supported(platform: Any) -> bool:
     return ratings.supported(platform)
 
 
-def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dict[str, Any]:
+def profile_info(platform: Any, profile: Optional[LibraryProfile] = None,
+                 regions_present: Optional[Iterable[str]] = None) -> dict[str, Any]:
     """Everything the Build library panel needs for one platform (see ARCHITECTURE.md, Amendment 8)."""
     prof = profile if profile is not None else default_profile(platform)
     style = _style_of_platform(platform)
@@ -1772,7 +1790,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None) -> dic
             "region_dats": list(_dats(platform, "region_dats")),
             "exclude_dats": list(getattr(platform, "dats", ()) or ()),
         },
-        "regions": tags.region_order(prof.region_priority),
+        "regions": tags.region_order(prof.region_priority, regions_present),
         "language_names": dict(tags.LANGUAGES),
     }
 

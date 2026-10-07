@@ -451,7 +451,7 @@ class StaticAndSecurityTests(ServerTestCase):
         self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
         self.assertEqual(headers["Cache-Control"], "no-store")
-        for element_id in ("home-groups", "sys-tabs", "tab-browse", "dat-cards", "organise-dest-filters", "kick-dest", "kick-apply-btn"):
+        for element_id in ("home-groups", "sys-tabs", "tab-browse", "dat-cards"):
             self.assertIn(f'id="{element_id}"', html)
 
     def test_static_assets(self) -> None:
@@ -647,7 +647,7 @@ class EndpointTests(ServerTestCase):
     def test_results_before_scan(self) -> None:
         status, _, _ = self.request("GET", "/api/scan/results?kind=matched")
         self.assertEqual(status, 409)
-        for path in ("/api/organise/plan", "/api/kickstart/plan", "/api/kickstart/apply"):
+        for path in ("/api/library/plan", "/api/kickstart/plan", "/api/kickstart/apply"):
             status, _, _ = self.request("POST", path, {"dest": str(self.bios)})
             self.assertEqual(status, 409, path)
 
@@ -753,35 +753,8 @@ class EndpointTests(ServerTestCase):
         self.assertEqual(self.wait_job()["status"], "done")
         self.assertEqual(self.get("/api/status")["scan"]["platform"], "Atari ST")
 
-    def test_organise_plan_apply_undo(self) -> None:
+    def test_undo_logs_and_undo(self) -> None:
         self.scan()
-        plan = self.post("/api/organise/plan", {})
-        self.assertEqual(plan["counts"], {"ok": 1, "conflict": 1, "move": 3})
-        self.assertEqual(plan["actionable"], 3)
-        self.assertEqual(plan["to_unmatched"], 1)
-        self.assertEqual(plan["by_dest"], {WB: 1, "_unmatched": 1, FIRMWARE: 1})
-        # grouped by status: moves first, then conflicts, ..., ok last
-        self.assertEqual([i["status"] for i in plan["items"]], ["move", "move", "move", "conflict", "ok"])
-        first = plan["items"][0]
-        self.assertEqual((first["from"], first["to"]), ("wb13.adf", f"{WB}/Workbench v1.3 (1988)(Commodore).adf"))
-        self.assertEqual(first["dest"], WB)
-        self.assertEqual(plan["items"][1]["to"], "_unmatched/junk.bin")
-        only = self.post("/api/organise/plan", {"status": "conflict"})
-        self.assertEqual((only["total"], only["all"]), (1, 5))
-        self.assertEqual(only["items"][0]["from"], "sub/pack.zip")
-        dest = self.post("/api/organise/plan", {"dest": "_unmatched"})
-        self.assertEqual([i["from"] for i in dest["items"]], ["junk.bin"])
-
-        scans_before = len(self.calls["scan"])
-        self.post("/api/organise/apply", {})
-        job = self.wait_job()
-        self.assertEqual(job["status"], "done", job)
-        self.assertEqual(job["result"]["moved"], 3)
-        self.assertEqual(job["result"]["undo_log"], str(self.undo_log))
-        self.assertIn("summary", job["result"])
-        self.assertEqual(len(self.calls["apply"]), 1)
-        self.assertEqual(len(self.calls["scan"]), scans_before + 1)  # automatic re-scan
-
         logs = self.get("/api/organise/undo-logs")["logs"]
         self.assertEqual(logs[0]["name"], self.undo_log.name)
         self.assertEqual(logs[0]["count"], 2)  # dict-style log {"moves": [...]}
@@ -1091,27 +1064,25 @@ class RealModulesIntegrationTests(unittest.TestCase):
         matched = self.call("GET", f"/api/scan/results?kind=matched&dat={urllib.request.quote(WB)}")
         self.assertEqual([i["file"] for i in matched["items"]], ["incoming/deep/wb.adf"])
 
-        plan = self.call("POST", "/api/organise/plan", {"limit": 100})
-        self.assertEqual(plan["actionable"], 5, plan)
-        self.assertEqual(plan["to_unmatched"], 1)
-        moves = {i["from"]: i["to"] for i in plan["items"]}
+        plan = self.call("POST", "/api/library/plan", {"limit": 100})
+        self.assertEqual(plan["actionable"], 6, plan)                                     # five files and a playlist
+        moves = {i["from"]: i["to"] for i in plan["items"] if "from" in i}
         self.assertEqual(moves["incoming/deep/wb.adf"], f"{WB}/Workbench v1.3 (1988)(Commodore).adf")
         self.assertEqual(moves["incoming/readme.txt"], "_unmatched/incoming/readme.txt")
 
-        result = self.job("/api/organise/apply", {})["result"]
+        result = self.job("/api/library/apply", {})["result"]
         self.assertFalse(result.get("failed"), result)
         self.assertTrue((self.root / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
         self.assertTrue((self.root / FIRMWARE / "Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom").is_file())
         self.assertTrue((self.root / "_unmatched" / "incoming" / "readme.txt").is_file())
         self.assertFalse((self.root / "incoming").exists())  # emptied by our moves -> removed
         self.assertEqual(result["summary"]["matched_files"], 4)  # re-scanned
-        replan = self.call("POST", "/api/organise/plan", {})
+        replan = self.call("POST", "/api/library/plan", {})
         self.assertEqual(replan["actionable"], 0, replan)
 
         m3u = self.call("POST", "/api/m3u/plan", {"labels": True})
-        self.assertEqual(m3u["counts"], {"write": 1})
+        self.assertEqual(m3u["counts"], {"ok": 1})                                         # the library build wrote it
         self.assertEqual(m3u["items"][0]["dir"], GAMES)
-        self.job("/api/m3u/apply", {"labels": True})
         self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
 
         kick = self.call("POST", "/api/kickstart/plan", {"dest": str(self.bios), "status": "copy"})
@@ -1154,68 +1125,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
         undone = self.call("POST", "/api/library/export/undo", {"dest": str(dest)})
         self.assertEqual(undone["removed"], res["created"] + res["playlists"])
         self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
-
-    def test_collection_from_a_rom_root(self) -> None:
-        roms = self.tmp / "roms"                    # the ROM root holds the system folder (a link to the fixture)
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
-        info = self.call("POST", "/api/collection/detect", {"root": str(roms)})
-        amiga = info["systems"]["Commodore Amiga"]
-        self.assertTrue(amiga["enabled"])
-        self.assertEqual(amiga["path"], str(roms / "amiga"))
-        self.assertEqual([n for n, e in info["systems"].items() if e["enabled"]], ["Commodore Amiga"])
-        dest = self.tmp / "collection"
-        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy", "global": {"latest_only": True}})
-        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
-        plan = self.job("/api/collection/plan", {})["result"]
-        row = plan["systems"][0]
-        self.assertEqual((row["platform"], row["status"]), ("Commodore Amiga", "ok"))
-        self.assertGreaterEqual(row["counts"]["copy"], 3)
-        self.assertFalse(dest.exists())
-        res = self.job("/api/collection/apply", {})["result"]
-        built = res["systems"][0]
-        self.assertFalse(built["failed"], built)
-        self.assertEqual(built["dest"], str(dest / "amiga"))
-        self.assertTrue((dest / "amiga" / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
-        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
-        undone = self.call("POST", "/api/collection/undo", {})
-        self.assertGreaterEqual(undone["removed"], 3)
-        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
-
-    def test_collection_refuses_a_destination_inside_the_root(self) -> None:
-        self.call("POST", "/api/collection/detect", {"root": str(self.tmp)})
-        self.call("POST", "/api/collection/save", {"dest": str(self.tmp / "inside")})
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/collection/plan", method="POST", data=b"{}",
-                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json",
-                                              "X-Romorg-Token": "t"})
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(req, timeout=10)
-        self.assertEqual(ctx.exception.code, 400)
-
-    def test_collection_sync_removes_what_is_gone_from_the_source(self) -> None:
-        roms = self.tmp / "roms"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
-        self.call("POST", "/api/collection/detect", {"root": str(roms)})
-        dest = self.tmp / "synced"
-        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy"})
-        self.job("/api/collection/apply", {})
-        wb = dest / "amiga" / WB / "Workbench v1.3 (1988)(Commodore).adf"
-        self.assertTrue(wb.is_file())
-        (self.root / "incoming" / "deep" / "wb.adf").unlink()
-        self.job("/api/collection/apply", {})                       # no sync: the old file stays
-        self.assertTrue(wb.is_file())
-        self.call("POST", "/api/collection/save", {"sync": True})
-        plan = self.job("/api/collection/plan", {})["result"]
-        self.assertEqual(plan["systems"][0]["counts"]["remove"], 1)
-        self.assertTrue(wb.is_file())                                # a preview removes nothing
-        res = self.job("/api/collection/apply", {})["result"]
-        self.assertEqual(res["systems"][0]["result"]["removed"], 1)
-        self.assertFalse(wb.exists())
-        undone = self.call("POST", "/api/collection/undo", {})
-        self.assertEqual(undone["removed"], 0)
-        self.assertEqual(undone["skipped"], [{"system": "Commodore Amiga", "rel": WB + "/Workbench v1.3 (1988)(Commodore).adf",
-                                              "reason": "the source file is gone - cannot restore"}])
 
     def test_retroarch_saves_are_moved_and_the_config_updated(self) -> None:
         ra_dir = self.tmp / "ra"
@@ -1273,23 +1182,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.job("/api/library/undo", {"log": res["undo_log"]})
             self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())
             self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
-
-    def test_saves_are_copied_to_the_new_names_in_a_collection_build(self) -> None:
-        _ra, saves = self._retroarch_with_saves()
-        roms = self.tmp / "roms2"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
-        self.call("POST", "/api/collection/detect", {"root": str(roms)})
-        self.call("POST", "/api/collection/save", {"dest": str(self.tmp / "lib2"), "mode": "copy"})
-        with mock.patch("romorg.retroarch.is_running", return_value=False):
-            res = self.job("/api/collection/apply", {})["result"]
-            self.assertEqual(res["systems"][0]["saves"]["copied"], 2)
-            new = "Game (1990)(Pub)(Disk 1 of 2)"
-            self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
-            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())              # the old name stays
-            self.call("POST", "/api/collection/undo", {})
-            self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
-            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())
 
     def test_retroarch_bios_check_and_place_over_http(self) -> None:
         ra_dir = self.tmp / "ra-bios"
@@ -1364,51 +1256,23 @@ class RealModulesIntegrationTests(unittest.TestCase):
                 urllib.request.urlopen(req, timeout=10)
         self.assertEqual(ctx.exception.code, 409)
 
-    def test_collection_move_takes_the_files_and_undo_returns_them(self) -> None:
-        roms = self.tmp / "roms-move"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
-        self.call("POST", "/api/collection/detect", {"root": str(roms)})
-        dest = self.tmp / "moved-lib"
-        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy", "sync": True})
-        info = self.call("POST", "/api/collection/save", {"mode": "move"})
-        self.assertEqual((info["mode"], info["sync"]), ("move", False))               # switching to Move switches sync off
-        self.assertFalse(self.call("POST", "/api/collection/save", {"mode": "auto"})["mode"] == "auto")   # old values read as copy
-        self.call("POST", "/api/collection/save", {"mode": "move"})
-        res = self.job("/api/collection/apply", {})["result"]
-        self.assertGreater(res["systems"][0]["result"]["moved"], 2)
-        self.assertFalse((self.root / "incoming" / "game_d1.adf").exists())
-        self.assertTrue((dest / "amiga" / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
-        self.call("POST", "/api/collection/undo", {})
+    def test_a_library_build_in_place_can_move_what_it_sets_aside_out_of_the_folder(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        aside = self.tmp / "tidy-aside"
+        plan = self.call("POST", "/api/library/plan", {"limit": 5, "aside_to": str(aside)})
+        self.assertEqual(plan["aside"]["path"], str(aside))
+        self.assertGreater(plan["aside"]["coming"], 0)
+        res = self.job("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})["result"]
+        self.assertGreater(res["aside"]["moved"], 0)
+        self.assertFalse([p for p in self.root.glob("_*")], "no reserved folder is left in the system folder")
+        self.assertTrue(any(aside.rglob("*.*")))
+        self.job("/api/library/undo", {"log": res["undo_log"]})
+        self.assertFalse(any(p.is_file() for p in aside.rglob("*")))                      # all of it came back first
         self.assertTrue((self.root / "incoming" / "game_d1.adf").is_file())
 
-    def test_collection_can_just_reorganise_the_folders_where_they_are(self) -> None:
-        roms = self.tmp / "roms-inplace"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
-        self.call("POST", "/api/collection/detect", {"root": str(roms)})
-        info = self.call("POST", "/api/collection/save", {"place": "inplace"})
-        self.assertEqual(info["place"], "inplace")                                     # no destination needed
-        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file())
-        plan = self.job("/api/collection/plan", {})["result"]
-        row = plan["systems"][0]
-        self.assertEqual((plan["place"], row["status"]), ("inplace", "ok"))
-        self.assertGreater(row["counts"]["kept"], 2)
-        self.assertGreater(row["actionable"], 0)
-        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file()), before)  # a preview moves nothing
-        res = self.job("/api/collection/apply", {})["result"]
-        self.assertFalse(res["systems"][0]["failed"], res)
-        self.assertTrue((self.root / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
-        self.assertFalse((self.root / "incoming" / "game_d1.adf").exists())
-        again = self.job("/api/collection/plan", {})["result"]
-        self.assertEqual(again["systems"][0]["actionable"], 0)                         # tidy now
-        undone = self.call("POST", "/api/collection/undo", {})
-        self.assertEqual(undone["errors"], [])
-        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")
-                                if p.is_file() and not p.name.startswith(".romorg-undo")), before)
-
-    def test_collection_sorts_a_mixed_folder_and_sweeps_what_a_build_sets_aside(self) -> None:
-        # a second system: a No-Intro GBA DAT with two games
+    # ---- Collection: one scan, then everything from its metadata
+    def _gba_games(self) -> dict[str, bytes]:
+        """A second system: a No-Intro GBA DAT with two games (returns their bytes)."""
         gba_dat = "Nintendo - Game Boy Advance"
         rng = random.Random(99)
         games = {}
@@ -1420,43 +1284,246 @@ class RealModulesIntegrationTests(unittest.TestCase):
                          f'crc {zlib.crc32(data):08x} md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} )\n)\n')
         (self.tmp / "data" / "nointro").mkdir(parents=True, exist_ok=True)
         (self.tmp / "data" / "nointro" / f"{gba_dat}.dat").write_text("\n".join(lines))
-        mixed = self.tmp / "mixed"
+        return games
+
+    def _mixed(self, name: str = "mixed") -> Path:
+        games = self._gba_games()
+        mixed = self.tmp / name
         (mixed / "Dump" / "More").mkdir(parents=True)
         (mixed / "Dump" / "Alpha.bin").write_bytes(games["Alpha Run (USA)"])             # a GBA ROM with a wrong name
         (mixed / "Dump" / "More" / "b.gba").write_bytes(games["Beta Bash (USA)"])
-        (mixed / "Dump" / "wb13.adf").write_bytes(self.files["incoming/deep/wb.adf"])    # an Amiga disk
+        (mixed / "Dump" / "wb13.adf").write_bytes(self.files["incoming/deep/wb.adf"])    # Amiga disks
         (mixed / "Dump" / "game1.adf").write_bytes(self.files["incoming/game_d1.adf"])
+        (mixed / "Dump" / "game2.adf").write_bytes(self.files["incoming/game_d2.adf"])
         (mixed / "Dump" / "mystery.gba").write_bytes(b"not in any DAT")
         (mixed / "Dump" / "notes.txt").write_text("hello")
-        info = self.call("POST", "/api/collection/detect", {"root": str(mixed)})
-        systems = {n: {"enabled": True} for n in ("Commodore Amiga", "Nintendo Game Boy Advance")}
-        self.call("POST", "/api/collection/save", {"systems": systems, "place": "inplace"})
-        plan = self.job("/api/collection/sort/plan", {})["result"]
-        self.assertEqual(plan["counts"], {"Commodore Amiga": 2, "Nintendo Game Boy Advance": 2, "_unmatched": 1, "_other": 1})
-        self.assertEqual(plan["aside"], str(self.tmp / "mixed-aside"))
-        self.assertTrue((mixed / "Dump" / "notes.txt").exists())                           # a preview moves nothing
-        res = self.job("/api/collection/sort/apply", {})["result"]
-        self.assertEqual((res["result"]["moved"], res["result"]["failed"]), (6, []))
-        self.assertTrue((mixed / "gba" / "Alpha.bin").is_file() and (mixed / "gba" / "b.gba").is_file())
-        self.assertTrue((mixed / "amiga" / "wb13.adf").is_file())
-        self.assertTrue((self.tmp / "mixed-aside" / "_unmatched" / "Dump" / "mystery.gba").is_file())
-        self.assertTrue((self.tmp / "mixed-aside" / "_other" / "Dump" / "notes.txt").is_file())
-        self.assertFalse((mixed / "Dump").exists())                                        # emptied
-        # now reorganise the systems in place: the games are renamed, and what is set aside leaves the ROM folders
-        built = self.job("/api/collection/apply", {})["result"]
-        self.assertFalse([r for r in built["systems"] if r["status"] != "ok"], built)
-        self.assertTrue((mixed / "Nintendo - Game Boy Advance" / "Alpha Run (USA).gba").is_file()
-                        or (mixed / "gba" / "Alpha Run (USA).gba").is_file())
-        self.assertFalse(list((mixed / "gba").glob("_*")))
-        self.assertFalse(list((mixed / "amiga").glob("_*")))                                 # nothing is set aside inside the ROM folders
-        aside_files = [str(p.relative_to(self.tmp / "mixed-aside")) for p in (self.tmp / "mixed-aside" / "amiga").rglob("*") if p.is_file()]
-        self.assertTrue(aside_files, "an incomplete disk set should have been moved out of the ROM folder")
-        back = self.call("POST", "/api/collection/undo", {})
-        self.assertEqual(back["errors"], [])
-        undone = self.call("POST", "/api/collection/sort/undo", {})
-        self.assertEqual(undone["skipped"], [])
+        return mixed
+
+    def _scan_collection(self, root: Path, **save: Any) -> dict[str, Any]:
+        self.call("POST", "/api/collection/save", {"root": str(root), **save})
+        return self.job("/api/collection/scan", {})["result"]["scan"]
+
+    def test_the_scan_finds_every_system_by_itself(self) -> None:
+        mixed = self._mixed()
+        scan = self._scan_collection(mixed)
+        self.assertEqual([s["name"] for s in scan["systems"]], ["Commodore Amiga", "Nintendo Game Boy Advance"])
+        self.assertEqual((scan["unmatched"], scan["other"], scan["files"]), (1, 1, 7))
+        self.assertGreater(scan["bytes"], 0)
+        gba = next(s for s in scan["systems"] if s["hint"] == "gba")
+        self.assertEqual((gba["games"], gba["files"], gba["current"]), (2, 2, ""))
+        self.assertNotIn("enabled", gba)                                                   # there is nothing to switch on
+
+    def test_nothing_runs_before_there_is_a_scan(self) -> None:
+        mixed = self._mixed()
+        self.call("POST", "/api/collection/save", {"root": str(mixed)})
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/collection/plan", method="POST", data=b"{}",
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(ctx.exception.code, 409)
+
+    def test_sort_and_tidy_work_from_one_scan_and_undo_puts_everything_back(self) -> None:
+        from romorg import scanner as scanner_mod
+        mixed = self._mixed()
+        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
+        calls: list[int] = []
+        real = scanner_mod.scan
+
+        def counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+
+        with mock.patch.object(scanner_mod, "scan", counting):
+            self._scan_collection(mixed)
+            self.assertEqual(len(calls), 1)
+            plan = self.job("/api/collection/plan", {})["result"]
+            plan2 = self.job("/api/collection/plan", {})["result"]
+            self.assertEqual(len(calls), 1)                                                # previews read nothing again
+            self.assertEqual(plan["sort"]["counts"], {"Commodore Amiga": 3, "Nintendo Game Boy Advance": 2, "_unmatched": 1, "_other": 1})
+            self.assertEqual(plan2["sort"]["counts"], plan["sort"]["counts"])
+            self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # a preview moves nothing
+            self.assertEqual(sorted(r["platform"] for r in plan["systems"]), ["Commodore Amiga", "Nintendo Game Boy Advance"])
+            res = self.job("/api/collection/apply", {})["result"]
+            self.assertEqual(len(calls), 2)                                                # one more: the scan after the change
+        self.assertEqual(res["sort"]["result"]["failed"], [])
+        self.assertTrue((mixed / "gba" / "Alpha Run (USA).gba").is_file() and (mixed / "gba" / "Beta Bash (USA).gba").is_file())
+        self.assertTrue(any((mixed / "amiga").rglob("Workbench v1.3*.adf")))
+        aside = self.tmp / "mixed-archive"
+        self.assertTrue((aside / "_unmatched" / "Dump" / "mystery.gba").is_file())
+        self.assertTrue((aside / "_other" / "Dump" / "notes.txt").is_file())
+        self.assertFalse(list((mixed / "gba").glob("_*")) + list((mixed / "amiga").glob("_*")))   # the ROM folders hold only what is kept
+        self.assertFalse((mixed / "Dump").exists())
+        again = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(again["totals"]["actionable"], 0)                                 # it is tidy now
+        # one move per file: nothing that a move put somewhere is moved on again
+        steps = []
+        for log in mixed.glob(".romorg-undo-*.json"):
+            steps += [json.loads(line) for line in log.read_text().splitlines()[1:]]
+        sorted_log = json.loads(Path(self.call("GET", "/api/collection")["last"]["sort"]).read_text())
+        steps = [(mixed / s["src"], mixed / s["dst"]) for s in steps if s.get("op") == "move"] \
+            + [(Path(m["from"]), Path(m["to"])) for m in sorted_log["moves"]]
+        self.assertEqual(len({a for a, _b in steps}), len(steps))
+        self.assertFalse({a for a, _b in steps} & {b for _a, b in steps})
+        undone = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(undone["errors"], [])
+        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()
+                                and not p.name.startswith(".romorg")), before)
+
+    def test_a_headered_snes_dump_is_cleaned_up_from_where_it_lies(self) -> None:
+        dat = "Nintendo - Super Nintendo Entertainment System"
+        rng = random.Random(7)
+        data = bytes(rng.getrandbits(8) for _ in range(4096))
+        name = "Delta Dash (USA)"
+        (self.tmp / "data" / "nointro").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "data" / "nointro" / f"{dat}.dat").write_text(
+            f'clrmamepro (\n\tname "{dat}"\n\tdescription "{dat}"\n\tversion "20250101-000000"\n)\n\n'
+            f'game (\n\tname "{name}"\n\tdescription "{name}"\n\trom ( name "{name}.sfc" size {len(data)} '
+            f'crc {zlib.crc32(data):08x} md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} )\n)\n')
+        roms = self.tmp / "roms-snes"
+        (roms / "Dump").mkdir(parents=True)
+        (roms / "Dump" / "delta.smc").write_bytes(bytes(512) + data)                       # a copier header in front
+        self._scan_collection(roms, convert=True)
+        self.job("/api/collection/apply", {})
+        self.assertEqual((roms / "snes" / f"{name}.sfc").read_bytes(), data)
+        self.assertTrue((roms / "snes" / "_converted_originals" / "Dump" / "delta.smc").is_file())   # moved once, from Dump/
+        self.assertFalse((roms / "Dump").exists())
+        self.call("POST", "/api/collection/undo", {})
+        self.assertTrue((roms / "Dump" / "delta.smc").is_file())
+        self.assertFalse(list(roms.glob("snes/*.sfc")))
+
+    def test_a_duplicate_goes_from_where_it_is_straight_to_the_archive(self) -> None:
+        mixed = self._mixed()
+        (mixed / "Dump" / "Alpha copy.bin").write_bytes((mixed / "Dump" / "Alpha.bin").read_bytes())
+        self._scan_collection(mixed)
+        self.job("/api/collection/apply", {})
+        archive = self.tmp / "mixed-archive"
+        self.assertEqual(len(list((archive / "gba" / "_duplicates").rglob("*.*"))), 1)
+        self.assertFalse((mixed / "gba" / "_duplicates").exists())                         # it never stopped in the ROM folder
+        self.assertEqual(len(list((mixed / "gba").glob("Alpha*"))), 1)
+        self.call("POST", "/api/collection/undo", {})
+        self.assertTrue((mixed / "Dump" / "Alpha.bin").is_file() and (mixed / "Dump" / "Alpha copy.bin").is_file())
+
+    def test_files_move_to_the_standard_folder_and_the_old_empty_one_goes(self) -> None:
+        roms = self.tmp / "roms-names"
+        (roms / "Commodore Amiga").mkdir(parents=True)
+        for rel, data in self.files.items():
+            if rel.endswith(".adf"):
+                (roms / "Commodore Amiga" / Path(rel).name).write_bytes(data)
+        self._scan_collection(roms)
+        plan = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(plan["renames"], [])                                              # no folder is renamed
+        self.assertTrue((roms / "Commodore Amiga").is_dir())                               # shown, not done
+        self.job("/api/collection/apply", {})
+        self.assertTrue(any((roms / "amiga").rglob("*.adf")))
+        self.assertFalse((roms / "Commodore Amiga").exists())
+        self.call("POST", "/api/collection/undo", {})
+        self.assertTrue(any((roms / "Commodore Amiga").glob("*.adf")))
+        self.assertFalse(any((roms / "amiga").rglob("*.adf")))
+
+    def test_unmatched_and_other_files_are_set_aside_with_their_folders(self) -> None:
+        roms = self.tmp / "roms-aside-test"
+        (roms / "Game Boy Advance").mkdir(parents=True)
+        (roms / "Game Boy Advance" / "Alpha.gba").write_bytes(self._gba_games()["Alpha Run (USA)"])
+        (roms / "Loose").mkdir()
+        (roms / "Loose" / "mystery.gba").write_bytes(b"not in any DAT")
+        (roms / "Loose" / "notes.txt").write_text("hello")
+        self._scan_collection(roms)
+        self.job("/api/collection/apply", {})
+        aside = self.tmp / "roms-aside-test-archive"
+        self.assertTrue((roms / "gba" / "Alpha Run (USA).gba").is_file())
+        self.assertTrue((aside / "_unmatched" / "Loose" / "mystery.gba").is_file())
+        self.assertTrue((aside / "_other" / "Loose" / "notes.txt").is_file())
+        self.assertFalse((roms / "Game Boy Advance").exists() or (roms / "Loose").exists())
+
+    def test_a_clean_library_is_built_elsewhere_from_the_scan(self) -> None:
+        mixed = self._mixed()
+        dest = self.tmp / "library"
+        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
+        self._scan_collection(mixed, place="elsewhere", dest=str(dest), mode="copy")
+        plan = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(plan["place"], "elsewhere")
+        self.assertFalse(dest.exists())
+        res = self.job("/api/collection/apply", {})["result"]
+        self.assertFalse([r for r in res["systems"] if r["status"] != "ok" or r.get("failed")], res)
+        self.assertTrue((dest / "gba" / "Alpha Run (USA).gba").is_file())
+        self.assertTrue(any((dest / "amiga").rglob("Workbench v1.3*.adf")))
+        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # the source is untouched
+        self.call("POST", "/api/collection/undo", {})
+        self.assertFalse([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
+
+    def test_a_move_build_takes_the_files_and_undo_returns_them(self) -> None:
+        mixed = self._mixed()
+        self._scan_collection(mixed, place="elsewhere", dest=str(self.tmp / "moved-lib"), mode="move")
+        res = self.job("/api/collection/apply", {})["result"]
+        self.assertGreater(sum((r.get("result") or {}).get("moved", 0) for r in res["systems"]), 2)
+        self.assertFalse((mixed / "Dump" / "More" / "b.gba").exists())
+        self.call("POST", "/api/collection/undo", {})
         self.assertTrue((mixed / "Dump" / "More" / "b.gba").is_file())
-        self.assertTrue((mixed / "Dump" / "notes.txt").is_file())
+
+    def test_sync_removes_what_the_source_lost(self) -> None:
+        mixed = self._mixed()
+        dest = self.tmp / "synced"
+        self._scan_collection(mixed, place="elsewhere", dest=str(dest), mode="copy")
+        self.job("/api/collection/apply", {})
+        gone = dest / "gba" / "Beta Bash (USA).gba"
+        self.assertTrue(gone.is_file())
+        (mixed / "Dump" / "More" / "b.gba").unlink()
+        self._scan_collection(mixed, sync=True)
+        plan = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(sum((r.get("counts") or {}).get("remove", 0) for r in plan["systems"]), 1)
+        self.assertTrue(gone.is_file())
+        self.job("/api/collection/apply", {})
+        self.assertFalse(gone.exists())
+
+    def test_switching_to_move_switches_sync_off_and_the_destination_may_not_be_inside_the_root(self) -> None:
+        mixed = self._mixed()
+        self.call("POST", "/api/collection/save", {"mode": "copy", "sync": True})
+        info = self.call("POST", "/api/collection/save", {"mode": "move"})
+        self.assertEqual((info["mode"], info["sync"]), ("move", False))
+        self._scan_collection(mixed, place="elsewhere", dest=str(mixed / "inside"))
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/collection/plan", method="POST", data=b"{}",
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+        self.call("POST", "/api/collection/plan", {})
+        job = self.call("GET", "/api/job")
+        deadline = time.time() + 10
+        while job["status"] == "running" and time.time() < deadline:
+            time.sleep(0.05)
+            job = self.call("GET", "/api/job")
+        self.assertEqual(job["status"], "error")
+        self.assertIn("inside", job["error"])
+
+    def test_own_rules_is_remembered_per_system(self) -> None:
+        mixed = self._mixed()
+        self._scan_collection(mixed)
+        info = self.call("POST", "/api/collection/save", {"systems": {"Commodore Amiga": {"own_rules": True}}})
+        row = next(s for s in info["scan"]["systems"] if s["name"] == "Commodore Amiga")
+        self.assertTrue(row["own_rules"])
+        self.assertFalse(next(s for s in info["scan"]["systems"] if s["hint"] == "gba")["own_rules"])
+
+    def _saves_for_mixed(self) -> tuple[Path, Path]:
+        ra_dir, saves = self.tmp / "ra-follow2", self.tmp / "ra-saves2"
+        (saves / "PUAE").mkdir(parents=True)
+        ra_dir.mkdir()
+        (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{saves}"\nsavestate_directory = "{saves}"\n'
+                                              'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        (saves / "PUAE" / "game1.srm").write_bytes(b"s1")
+        (saves / "PUAE" / "game1.state1").write_bytes(b"s2")
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        return ra_dir, saves
+
+    def test_saves_are_copied_to_the_new_names_when_building_elsewhere(self) -> None:
+        _ra, saves = self._saves_for_mixed()
+        mixed = self._mixed()
+        self._scan_collection(mixed, place="elsewhere", dest=str(self.tmp / "lib-saves"), mode="copy")
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            res = self.job("/api/collection/apply", {})["result"]
+            amiga = next(r for r in res["systems"] if r["platform"] == "Commodore Amiga")
+            self.assertEqual(amiga["saves"]["copied"], 2)
+            new = "Game (1990)(Pub)(Disk 1 of 2)"
+            self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
+            self.assertTrue((saves / "PUAE" / "game1.srm").is_file())
+            self.call("POST", "/api/collection/undo", {})
+            self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
 
     def test_library_export_refuses_bad_destinations(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
@@ -1472,7 +1539,8 @@ class RealModulesIntegrationTests(unittest.TestCase):
     def test_export_settings_are_remembered(self) -> None:
         self.call("POST", "/api/library/export/settings", {"enabled": True, "dest": "/x/y", "mode": "move"})
         saved = self.call("GET", "/api/status")["library_export"]
-        self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "move", "sidecars": False, "sync": False})
+        self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "move", "sidecars": False, "sync": False,
+                                 "aside": False, "aside_dir": ""})
 
 
 class ReviewFixTests(ServerTestCase):
@@ -1487,7 +1555,6 @@ class ReviewFixTests(ServerTestCase):
             self.assertEqual(page["kind"], kind)
         items = self.get("/api/scan/results?kind=unmatched")["items"]
         self.assertIn(bad, [i["file"] for i in items])  # round-trips losslessly
-        self.post("/api/organise/plan", {})
         if sys.platform.startswith("linux"):
             try:
                 (self.roms / bad).mkdir()
@@ -1496,35 +1563,6 @@ class ReviewFixTests(ServerTestCase):
             dirs = self.get(f"/api/fs/list?path={self.q(str(self.roms))}")["dirs"]
             self.assertIn(bad, [d["name"] for d in dirs])
 
-    def test_plan_passes_missing_dats_and_ignores_move_unmatched(self) -> None:
-        seen: list[dict[str, Any]] = []
-        organiser = sys.modules["romorg.organiser"]
-        old = organiser.plan_renames
-
-        def plan(result: Any, missing_dats: Any = ()) -> list[RenameOp]:
-            seen.append({"missing": list(missing_dats)})
-            return old(result)
-        organiser.plan_renames = plan
-        self.scan()
-        a = self.post("/api/organise/plan", {})
-        b = self.post("/api/organise/plan", {"move_unmatched": False})   # stale client: accepted and ignored
-        self.assertEqual(seen, [{"missing": [KICKDISKS]}])               # the second plan is the cached first
-        self.assertNotIn("move_unmatched", a)
-        self.assertEqual(a["actionable"], b["actionable"])
-        self.assertEqual(a["missing_dats"], [KICKDISKS])
-        self.assertEqual(a["warnings"], [])
-
-    def test_plan_warns_about_other_systems(self) -> None:
-        organiser = sys.modules["romorg.organiser"]
-        root = self.roms
-        organiser.plan_renames = lambda result: [
-            RenameOp(root / sys_ / f"g{i}.bin", root / "_unmatched" / sys_ / f"g{i}.bin", "move")
-            for sys_ in ("snes", "psx") for i in range(40)]
-        self.scan()
-        warnings = self.post("/api/organise/plan", {})["warnings"]
-        self.assertEqual(len(warnings), 2, warnings)
-        self.assertIn("snes", warnings[1])
-
     def test_scan_refuses_too_broad_folders(self) -> None:
         for path in (Path.home().anchor or "/", str(Path.home())):
             status, body, _ = self.request("POST", "/api/scan", {"path": path, "platform": "Commodore Amiga"})
@@ -1532,21 +1570,6 @@ class ReviewFixTests(ServerTestCase):
             self.assertIn("platform folder", body["error"])
         status, _, _ = self.request("POST", "/api/scan", {"path": str(self.data), "platform": "Commodore Amiga"})
         self.assertEqual(status, 400)
-
-    def test_rescan_failure_keeps_apply_result(self) -> None:
-        self.scan()
-        scanner = sys.modules["romorg.scanner"]
-
-        def broken(*a: Any, **k: Any) -> Any:
-            raise NotADirectoryError("folder vanished")
-        scanner.scan = broken
-        with mock.patch("traceback.print_exc"):
-            self.post("/api/organise/apply", {})
-            job = self.wait_job()
-        self.assertEqual(job["status"], "done", job)
-        self.assertEqual(job["result"]["undo_log"], str(self.undo_log))
-        self.assertIn("vanished", job["result"]["rescan_error"])
-        self.assertEqual(job["result"]["action"], "apply")
 
     def test_fs_pick_timeout_and_game_mode(self) -> None:
         with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
@@ -1951,13 +1974,12 @@ class NoIntroServerTests(ServerTestCase):
     def test_platform_options_saved_right_away(self) -> None:
         # ticking "Latest version only" must survive a scan / DAT download before the next preview
         res = self.post("/api/platforms/options", {"platform": SNES, "latest_only": True})
-        self.assertEqual(res, {"platform": SNES, "latest_only": True})
+        self.assertEqual(res, {"platform": SNES, "latest_only": True, "convert": False})
         self.assertTrue({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
         self.scan_snes()
         self.assertTrue({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
-        self.assertTrue(self.post("/api/organise/plan", {})["latest_only"])
         self.post("/api/platforms/options", {"platform": SNES, "latest_only": False})
-        self.assertFalse(self.post("/api/organise/plan", {})["latest_only"])
+        self.assertFalse({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
         for body in ({"platform": SNES}, {"platform": "Sega Saturn", "latest_only": True}):
             status, _, _ = self.request("POST", "/api/platforms/options", body)
             self.assertEqual(status, 400, body)
@@ -1982,42 +2004,19 @@ class NoIntroServerTests(ServerTestCase):
         self.assertEqual(len(server._tag_filter(rows, {"flag": "Ocean"})), 1)
         self.assertEqual(len(server._tag_filter(rows, {"flag": "[cr]"})), 1)
 
-    def test_organise_latest_only_remembered(self) -> None:
+    def test_rescan_failure_keeps_apply_result(self) -> None:
         self.scan_snes()
-        plan = self.post("/api/organise/plan", {})
-        self.assertFalse(plan["latest_only"])
-        self.assertEqual(plan["layout"], "flat")
-        self.assertEqual(self.calls["plan_kw"][-1], {"latest_only": False, "layout": "flat"})
-        self.assertEqual(plan["by_dest"], {"": 2, "_unmatched": 1})
-        root_only = self.post("/api/organise/plan", {"dest": "."})  # "." = the console folder itself
-        self.assertEqual([i["from"] for i in root_only["items"]],
-                         ["mario.sfc", "sub/mario r1.smc", "Zelda (Europe) (En,Fr).sfc"])
+        scanner = sys.modules["romorg.scanner"]
 
-        plan = self.post("/api/organise/plan", {"latest_only": True})
-        self.assertEqual(self.calls["plan_kw"][-1]["latest_only"], True)
-        self.assertTrue(plan["latest_only"])
-        self.assertEqual(plan["to_superseded"], 1)
-        self.assertEqual(plan["superseded_dir"], "_superseded")
-        superseded = [i for i in plan["items"] if i["superseded_by"]]
-        self.assertEqual(len(superseded), 1)
-        self.assertEqual(superseded[0]["dest"], "_superseded")
-        self.assertEqual(superseded[0]["superseded_by"], "Mario (USA) (Rev 1).sfc")
-        self.assertEqual(plan["warnings"], [])
-
-        # remembered per platform: the next plan / the platforms list default to it
-        self.assertTrue({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
-        # Amiga keeps its own (default: on) library profile; SNES' choice does not leak into it
-        self.assertEqual({p["name"]: p for p in self.get("/api/platforms")}["Commodore Amiga"]["library"]["latest_only"], True)
-        self.assertTrue(self.post("/api/organise/plan", {})["latest_only"])
-        self.assertEqual(self.get("/api/scan/results?kind=rename")["total"], 4)
-
-        self.post("/api/organise/apply", {})
-        job = self.wait_job()
+        def broken(*a: Any, **k: Any) -> Any:
+            raise NotADirectoryError("folder vanished")
+        scanner.scan = broken
+        with mock.patch("traceback.print_exc"):
+            self.post("/api/convert/apply", {})
+            job = self.wait_job()
         self.assertEqual(job["status"], "done", job)
-        applied = self.calls["apply"][-1]
-        self.assertEqual(applied[0].superseded_by, "Mario (USA) (Rev 1).sfc")
-        self.assertFalse(self.post("/api/organise/plan", {"latest_only": False})["latest_only"])
-        self.assertFalse({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
+        self.assertIn("vanished", job["result"]["rescan_error"])
+        self.assertEqual(job["result"]["action"], "convert")
 
     def test_convert_plan_apply(self) -> None:
         self.scan_snes()
@@ -2526,7 +2525,7 @@ class LibraryServerTests(ServerTestCase):
             self.assertNotIn(gone, html)
             self.assertNotIn(gone, js)
         for present in ("updates-btn", "updates-line", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn", "library-rules",
-                        "advanced-box", "lib-incomplete"):
+                        "lib-incomplete"):
             self.assertIn(f'id="{present}"', html)
         self.assertNotIn("/api/dats/update", js)
         self.assertIn("/api/library/apply", js)
@@ -2795,13 +2794,13 @@ class UiStructureTests(unittest.TestCase):
         html = server.read_static("index.html").decode()
         for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups", "side", "side-toggle", "more-btn",
                            "view-system", "back-link", "sys-tabs", "tabbtn-overview", "tabbtn-library", "tabbtn-browse",
-                           "tabbtn-tools", "tab-overview", "tab-library", "tab-browse", "tab-tools", "folder-input",
-                           "scan-btn", "summary-cards", "library-rules-summary", "tool-convert", "tool-verify",
-                           "tool-kickstart", "browse-gate", "lib-gate", "result-table"):
+                           "tab-overview", "tab-library", "tab-browse", "folder-input",
+                           "scan-btn", "summary-cards", "library-rules-summary",
+                           "browse-gate", "lib-gate", "result-table"):
             self.assertIn(f'id="{element_id}"', html)
         for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"'):
             self.assertNotIn(gone, html)
-        self.assertEqual(html.count('role="tab"'), 4)
+        self.assertEqual(html.count('role="tab"'), 3)
         self.assertNotIn("http://", html.replace("http://www.w3.org", ""))      # no external resources
         self.assertNotIn("https://", html)
 

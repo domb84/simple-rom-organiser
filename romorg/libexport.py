@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence
 
+from . import meter
+
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
            "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
 
@@ -163,12 +165,16 @@ def check_destination(root: Path, dest: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- what a library plan keeps
-def kept_files(plan: Any, root: Path, sidecars: bool = False) -> Iterator[tuple]:
+def kept_files(plan: Any, root: Path, sidecars: bool = False, src_map: Optional[dict] = None) -> Iterator[tuple]:
     """``(source file, final path inside root)`` of every file the plan's rules keep, in plan order.
 
     A kept op is one that ends in the library (``move`` / ``ok``) and is not set aside for any reason or sent to a
     reserved folder. A disc unit travels as the CHD or the files of its raw set; its sidecars (save states, memory
-    cards, notes) stay behind unless ``sidecars``."""
+    cards, notes) stay behind unless ``sidecars``. ``src_map``: when the plan was made for where the files WILL be, it maps
+    those paths back to where they are now."""
+    def real(p: Any) -> Path:
+        return Path((src_map or {}).get(Path(p), p))
+
     for op in plan.ops:
         if getattr(op, "kind", "") == "m3u" or op.status not in ("move", "ok"):
             continue
@@ -179,9 +185,9 @@ def kept_files(plan: Any, root: Path, sidecars: bool = False) -> Iterator[tuple]
             final = {s: d for s, d in (getattr(op, "moves", None) or [])}
             keep = list(unit.files) if (sidecars or unit.kind == "raw") else [unit.path]
             for f in keep:
-                yield Path(f), Path(final.get(f, f))
+                yield real(f), Path(final.get(f, f))
         else:
-            yield Path(op.src), Path(op.dst)
+            yield real(op.src), Path(op.dst)
 
 
 def _rel(path: Path, root: Path) -> Optional[str]:
@@ -242,7 +248,7 @@ def _unchanged(dest: Path, rel: str, rec: tuple) -> bool:
 
 
 def plan_export(plan: Any, root: Path, dest: Path, mode: str = "copy", sidecars: bool = False,
-                sync: bool = False) -> ExportPlan:
+                sync: bool = False, src_map: Optional[dict] = None, fs_root: Optional[Path] = None) -> ExportPlan:
     """Turn a library plan into transfers for ``dest`` (nothing is written). ``sync`` also plans the removal of what an
     earlier build put there and the rules no longer keep, and the replacement of what changed in the source."""
     mode = normalize_mode(mode)
@@ -254,9 +260,9 @@ def plan_export(plan: Any, root: Path, dest: Path, mode: str = "copy", sidecars:
     ep = ExportPlan(root, dest, mode, sync=sync)
     owned = _owned(dest)
     ep.owned_total = len(owned)
-    same_fs = ep.same_fs = _same_fs(root, dest)
+    same_fs = ep.same_fs = _same_fs(fs_root or root, dest)
     seen: dict = {}
-    for src, final in kept_files(plan, root, sidecars):
+    for src, final in kept_files(plan, root, sidecars, src_map):
         rel = _rel(final, root)
         if rel is None:
             continue
@@ -484,6 +490,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
 
     def tick(n: int) -> None:
         done_bytes[0] += n
+        meter.add(n)
 
     cancelled = lambda: bool(cancel and cancel())   # noqa: E731
     try:

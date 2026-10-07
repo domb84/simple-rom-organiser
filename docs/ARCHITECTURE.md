@@ -2202,3 +2202,13 @@ files to `<aside>/_other`; sidecars follow their ROM), `plan_sweep` / `plan_rest
 from `<aside>/<system folder>/`), `apply_moves` / `undo_moves` (journal, never overwrite, emptied folders removed). Server:
 `/api/collection/sort/plan|apply|undo`, `/api/collection/aside/restore`; in place collection builds sweep after applying.
 
+## v0.2: removed and changed
+
+* `POST /api/organise/plan` and `/api/organise/apply` are gone (nothing in the UI called them; Build library does the same job with
+  the rules). `/api/organise/undo-logs` and `/api/organise/undo` stay: they undo any `.romorg-undo-*.json`.
+* Collection (in place) moves each file once: `_collection_single_pass` merges the sort into the system folder with the library
+  plan's own moves, and sends what the rules archive straight to the archive folder (journalled by `sortroot`, as it lies
+  outside the ROM folder). "Convert first" converts from where the raw files lie (`_collection_convert_first`): the new file is
+  written in the system's folder and the original goes to that folder's `_converted_originals`; the folder is then read again
+  and planned as usual. The undo logs of a collection build live in the ROM root.
+

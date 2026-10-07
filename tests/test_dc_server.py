@@ -177,15 +177,14 @@ class DcEndpointTests(DcServerCase):
         missing = self.call("/api/scan/results?kind=missing&limit=50")
         self.assertIn("Alpha (USA) (En,Fr)", [m["name"] for m in missing["items"]])
 
-    def test_organise_plan_apply_undo(self) -> None:
+    def test_library_apply_and_undo(self) -> None:
         self.call("/api/chdman", {"engine": "python"})
         self.put("Beta (Europe)", "x/y.chd", ["y.state"])
         self.scan()
-        plan = self.call("/api/organise/plan", {})
+        plan = self.call("/api/library/plan", {})
         row = [r for r in plan["items"] if r.get("game") == "Beta (Europe)"][0]
         self.assertEqual((row["status"], row["to"], row["level"], row["files"]), ("move", "Beta (Europe)", "identified", 2))
-        self.assertEqual(plan["layout"], "game_folder")
-        self.call("/api/organise/apply", {})
+        self.call("/api/library/apply", {})
         j = self.job()
         self.assertEqual(j["status"], "done")
         self.assertEqual(j["result"]["failed"], [])
@@ -203,7 +202,7 @@ class DcEndpointTests(DcServerCase):
         self.put("Beta (Europe)", "x/y.chd", ["y.state"])
         (self.roms / "stray.txt").write_text("junk")
         self.scan()
-        for path in ("/api/organise/plan", "/api/library/plan"):
+        for path in ("/api/library/plan",):
             plan = self.call(path, {"platform": PLAT, "move_unmatched": False})   # an old client: no 400, ignored
             names = [r.get("name") or r.get("from") or "" for r in plan["items"]]
             self.assertTrue(any("stray.txt" in str(r) and "_unmatched" in str(r) for r in plan["items"]), (path, names))
@@ -343,6 +342,41 @@ class DcEndpointTests(DcServerCase):
             self.assertEqual(sorted(str(p.relative_to(self.roms)) for p in self.roms.rglob("*")), before)
         self.assertEqual(list(ram.iterdir()), [])
         self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_a_scan_can_verify_every_track_itself(self) -> None:
+        self.call("/api/chdman", {"engine": "python"})
+        self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
+        s = self.scan()
+        self.assertEqual((s["identified"], s["verified"]), (1, 0))                       # data tracks hashed, audio checked by length
+        self.assertFalse(self.call("/api/chdman")["verify_scan"])
+        self.assertTrue(self.call("/api/chdman", {"verify_scan": True})["verify_scan"])
+        s = self.scan()
+        self.assertEqual((s["identified"], s["verified"]), (0, 1))                       # now every track was read in the scan
+
+    def test_the_library_build_converts_raw_discs_first_when_the_option_is_on(self) -> None:
+        self.use_fake_chdman()
+        self.call("/api/chdman", {"engine": "python"})
+        raw_e = T.prepare_fake_raw(self.base / "fakeraw_e2", self.discs["Epsilon (USA)"])
+        os.environ["FAKE_RAW"] = str(raw_e)
+        self.discs["Epsilon (USA)"].write_raw(self.roms / "raw set", "e")
+        self.scan()
+        plan = self.call("/api/library/plan", {"limit": 5})
+        self.assertNotIn("convert", plan)                                                  # off by default
+        self.assertEqual(self.call("/api/platforms/options", {"platform": PLAT, "convert": True})["convert"], True)
+        rows = {p["name"]: p for p in self.call("/api/platforms")}
+        self.assertTrue(rows[PLAT]["convert_on_build"])
+        plan = self.call("/api/library/plan", {"limit": 5})
+        self.assertEqual(plan["convert"], {"count": 1, "kind": "chd"})
+        self.call("/api/library/apply", {})
+        j = self.job()
+        self.assertEqual(j["status"], "done", j)
+        self.assertEqual((j["result"]["converted"]["count"], j["result"]["converted"]["failed"]), (1, []))
+        self.assertTrue((self.roms / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
+        self.assertTrue((self.roms / "_converted_originals" / "raw set" / "e.gdi").is_file())
+        self.call("/api/library/undo", {"log": j["result"]["undo_log"]})                   # one undo reverts both
+        self.assertEqual(self.job()["status"], "done")
+        self.assertTrue((self.roms / "raw set" / "e.gdi").is_file())
+        self.assertFalse((self.roms / "Epsilon (USA)").exists())
 
     def test_convert_plan_apply_and_undo(self) -> None:
         self.use_fake_chdman()

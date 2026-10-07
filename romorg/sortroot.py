@@ -22,10 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
+from . import meter
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
 __all__ = ["SMove", "ASIDE_FOLDERS", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
-           "default_aside", "rom_like"]
+           "default_aside", "rom_like", "remove_empty_tree", "Names", "UNMATCHED"]
 
 # the folders a library build sets things aside in (the converted originals are the user's safety copies: they stay)
 ASIDE_FOLDERS = tuple(d for d in RESERVED_DIRS if d != CONVERTED_DIR)
@@ -47,9 +48,9 @@ class SMove:
 
 
 def default_aside(root: Path) -> Path:
-    """Next to the ROM folder: ``<root>-aside``."""
+    """Next to the ROM folder: ``<root>-archive``."""
     root = Path(root)
-    return root.with_name(root.name + "-aside")
+    return root.with_name(root.name + "-archive")
 
 
 def inside(path: Path, folder: Path) -> bool:
@@ -66,20 +67,24 @@ def rom_like(path: Path, extensions: Iterable[str]) -> bool:
     return ext in set(extensions) or ext in DISC_EXTS or ext in ARCHIVE_EXTS
 
 
-class _Names:
+class Names:
     """Free names: a target that is taken (on disk or by an earlier move of this plan) gets `` (2)``, `` (3)`` ..."""
 
-    def __init__(self) -> None:
+    def __init__(self, exists: Optional[Callable[[Path], bool]] = None) -> None:
         self.taken: set = set()
+        self.exists = exists or os.path.lexists
 
     def free(self, dst: Path, folder: bool = False) -> Path:
         n = 1
         cand = dst
-        while os.path.lexists(cand) or os.path.normcase(str(cand)).casefold() in self.taken:
+        while self.exists(cand) or os.path.normcase(str(cand)).casefold() in self.taken:
             n += 1
             cand = dst.with_name(f"{dst.name} ({n})") if folder or not dst.suffix else dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
         self.taken.add(os.path.normcase(str(cand)).casefold())
         return cand
+
+
+_Names = Names
 
 
 def _size(path: Path) -> int:
@@ -90,7 +95,8 @@ def _size(path: Path) -> int:
 
 
 def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path, Optional[str]],
-              discs: Sequence[dict], unmatched: Iterable[Path], other: Iterable[Path]) -> List[SMove]:
+              discs: Sequence[dict], unmatched: Iterable[Path], other: Iterable[Path],
+              exists: Optional[Callable[[Path], bool]] = None) -> List[SMove]:
     """The moves that sort ``root``.
 
     ``folders``: system name -> its folder. ``flat``: identified ROM file -> system (None when it matches several systems:
@@ -102,7 +108,7 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
     system folder) go to ``<aside>/_unmatched``; those inside a system folder are left for that system's library build.
     Other files go to ``<aside>/_other`` unless they belong to a disc game or to a ROM that stays."""
     root, aside = Path(root), Path(aside)
-    names = _Names()
+    names = Names(exists)
     moves: List[SMove] = []
     sys_dirs = list(folders.values())
     unit_tops = [Path(d["top"]) for d in discs if d.get("folder")]
@@ -158,7 +164,7 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
 def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
     """Everything a build set aside inside the system folders, to ``<aside>/<system folder name>/<reserved folder>/...``."""
     aside = Path(aside)
-    names = _Names()
+    names = Names()
     moves: List[SMove] = []
     for plat, folder in folders.items():
         for reserved in ASIDE_FOLDERS:
@@ -178,7 +184,7 @@ def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
 
 def plan_restore(folders: Dict[str, Path], aside: Path) -> List[SMove]:
     """The reverse of a sweep: ``<aside>/<system folder name>/<reserved>/...`` back into the system's folder."""
-    names = _Names()
+    names = Names()
     moves: List[SMove] = []
     for plat, folder in folders.items():
         for reserved in ASIDE_FOLDERS:
@@ -207,6 +213,18 @@ def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path]) -> None:
             cur = cur.parent
 
 
+def remove_empty_tree(root: Path, keep: Iterable[Path] = ()) -> None:
+    """Remove every folder under ``root`` that holds nothing (``keep`` and ``root`` itself stay)."""
+    stops = {os.path.normcase(os.path.realpath(s)) for s in [root, *keep]}
+    for dirpath, _dirs, _files in os.walk(root, topdown=False):
+        if os.path.normcase(os.path.realpath(dirpath)) in stops or os.path.islink(dirpath):
+            continue
+        try:
+            os.rmdir(dirpath)
+        except OSError:
+            pass
+
+
 def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable[Path] = (),
                 progress: Optional[Callable[[int, int, str], None]] = None,
                 cancel: Optional[Callable[[], bool]] = None, extra: Optional[dict] = None) -> dict:
@@ -230,6 +248,7 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
             except OSError:
                 shutil.move(str(m.src), str(m.dst))
             done.append({"from": str(m.src), "to": str(m.dst), "kind": m.kind})
+            meter.add(m.size)
             emptied.add(m.src.parent)
             res["moved"] += 1
         except OSError as exc:

@@ -529,7 +529,7 @@ class UiContractTests(unittest.TestCase):
                        "Calculating...", "clockText(it.at)", "staleAll", "Previews.onScan()", "plan_id: plan.plan_id",
                        'b.dataset.stale === "1"', 'b.dataset.busy === "1"', 'role: "status"', '"aria-live": "polite"'):
             self.assertIn(needle, self.js, needle)
-        for pair in ("lib", "organise", "convert", "m3u", "kick"):
+        for pair in ("lib",):
             self.assertIn(f"{pair}: {{ btn:", self.js)
         for needle in (".pv-banner", ".pv-stale", ".pv-attn", ".pv-spin", ".pv-meta"):
             self.assertIn(needle, self.css)

@@ -50,7 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
 from . import cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
-from . import winproc
+from . import meter, winproc
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -710,6 +710,7 @@ class _Progress:
             raise scanner.ScanCancelled()
 
     def add(self, n: int) -> None:
+        meter.add(n)
         with self._lock:
             self.done += n
             now = time.monotonic()
@@ -847,10 +848,12 @@ def _rom_ok(rom: Rom, tr: dict) -> bool:
         and (not rom.md5 or tr.get("md5") == rom.md5)
 
 
-def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], None]) -> tuple[list[DcGame], str, str]:
+def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], None],
+              full: bool = False) -> tuple[list[DcGame], str, str]:
     """Candidates by track sizes, then by the hashes of the data tracks (smallest first), then audio if needed.
 
-    ``hasher(indexes)`` fills ``meta[i]["crc32" / "md5" / "sha1"]`` for the 0-based track indexes it is given.
+    ``hasher(indexes)`` fills ``meta[i]["crc32" / "md5" / "sha1"]`` for the 0-based track indexes it is given. ``full``: every
+    track is read and compared (audio too), so a match is always ``verified``.
     Returns ``(matching games, level, reason)``; ``level`` is ``verified`` only when every track is hashed
     and equal, else ``identified`` (audio by length) or ``""``.
     """
@@ -867,7 +870,7 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
         alive = [g for g in alive if _rom_ok(g.tracks[i], meta[i])]
         if not alive:
             return [], "", "the data tracks do not match any Redump game with this track layout"
-    if len(alive) > 1:     # same sizes and data: only the audio can tell them apart
+    if len(alive) > 1 or full:     # same sizes and data: only the audio can tell them apart (or the audio is wanted anyway)
         audio = [i for i in range(len(meta)) if i not in order]
         todo = [i for i in audio if not meta[i]["sha1"]]
         if todo:
@@ -886,7 +889,8 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
 
 
 def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chdman: Optional[chdtool.Chdman],
-                  engine: str, prog: Optional[_Progress], pool: Optional[chdsched.Scheduler] = None) -> None:
+                  engine: str, prog: Optional[_Progress], pool: Optional[chdsched.Scheduler] = None,
+                  full: bool = False) -> None:
     """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first).
 
     Engine policy: ``auto`` / ``python`` decode with the built-in reader (parallel scheduler + native FLAC);
@@ -961,7 +965,7 @@ def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chd
                 meta[i].update(h)
                 meta[i].pop("claimed", None)
 
-        games, level, reason = match_chd(index, meta, hasher)
+        games, level, reason = match_chd(index, meta, hasher, full)
         unit.via = via[0] if any(_is_hashed(m) for m in meta) else ("header" if info.is_dvd else "")
         if games:
             unit.game, unit.level, unit.reason = games[0], level, ""
@@ -1116,9 +1120,39 @@ class DcScanResult(scanner.ScanResult):
         }
 
 
+def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full: bool = False) -> tuple[int, int]:
+    """``(bytes, files)`` that reading these units will take: what is not in the cache yet."""
+    total = 0
+    files_todo = 0
+    for u in units:
+        before = total
+        try:
+            if u.kind == "chd":
+                info = chdlib.Chd(u.path, load_map=False)
+                try:
+                    st = u.path.stat()
+                    cached = cache.get(str(u.path), st.st_size, st.st_mtime_ns, info.sha1)
+                    all_hashed = all(t.get("sha1") for t in (cached or {}).get("tracks", [{}])) and bool(cached)
+                    if info.is_dvd:
+                        pass            # identified by the header SHA-1: nothing to decode
+                    elif not cached:
+                        total += sum(t.size for t in info.tracks if use_chdman or full or not t.is_audio) * (2 if use_chdman else 1)
+                    elif (use_chdman or full) and not all_hashed:
+                        total += sum(t.size for t in info.tracks)
+                finally:
+                    info.close()
+            else:
+                total += sum(f.stat().st_size for f in (sheet_track_files(u.path) or []) if f.exists())
+        except (OSError, chdlib.ChdError):
+            pass
+        if total > before:
+            files_todo += 1
+    return total, files_todo
+
+
 def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
          cache_path: Optional[Path] = None, use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None,
-         engine: str = "auto", protected_dirs: Sequence[str] = (), workers: int = 1,
+         engine: str = "auto", protected_dirs: Sequence[str] = (), workers: int = 1, full: bool = False,
          **_ignored: Any) -> DcScanResult:
     """Scan ``root`` for CHDs and raw sets and match them to the Redump DAT (``dats``: one DatFile or a list)."""
     root = Path(root).expanduser().absolute()
@@ -1140,31 +1174,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
     sched = chdsched.make_scheduler(workers)
     try:
         # progress total: what has to be decoded / hashed (cached CHDs cost nothing)
-        total = 0
-        files_todo = 0
-        for u in units:
-            before = total
-            try:
-                if u.kind == "chd":
-                    info = chdlib.Chd(u.path, load_map=False)
-                    try:
-                        st = u.path.stat()
-                        cached = cache.get(str(u.path), st.st_size, st.st_mtime_ns, info.sha1)
-                        full = all(t.get("sha1") for t in (cached or {}).get("tracks", [{}])) and bool(cached)
-                        if info.is_dvd:
-                            pass            # identified by the header SHA-1: nothing to decode
-                        elif not cached:
-                            total += sum(t.size for t in info.tracks if use_chdman or not t.is_audio) * (2 if use_chdman else 1)
-                        elif use_chdman and not full:
-                            total += sum(t.size for t in info.tracks)
-                    finally:
-                        info.close()
-                else:
-                    total += sum(f.stat().st_size for f in (sheet_track_files(u.path) or []) if f.exists())
-            except (OSError, chdlib.ChdError):
-                pass
-            if total > before:
-                files_todo += 1
+        total, files_todo = _estimate(units, cache, use_chdman, full)
         prog = _Progress(progress, max(total, 1), cancel)
         prog.files_total = files_todo
         prog.emit("Scanning...")
@@ -1176,7 +1186,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                 def work(u: DcUnit) -> None:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, chdman, engine, prog, pool)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full)
                     if u.decoded:
                         prog.file_done()
                 # several CHDs at once: their chunks share the worker processes (the early-reject strategy of one
@@ -1188,7 +1198,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                 for u in chd_units:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, chdman, engine, prog, pool)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full)
                     if u.decoded:
                         prog.file_done()
             for u in units:
@@ -1241,6 +1251,105 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                 else ("chdman" if use_chdman else "python")),
         engine_info=stats_info, chdman_label=chdman.label if chdman else "", swept=swept,
         temp=tempspace.report(), system=system)
+
+
+def scan_many(root, dats: Sequence[DatFile], files: Optional[Sequence[Path]] = None,
+              progress: Optional[ProgressFn] = None, cancel: Any = None, cache_path: Optional[Path] = None,
+              use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None, engine: str = "auto",
+              workers: int = 1, full: bool = False) -> tuple[list[tuple[DcUnit, "DiscSystem"]], list[DcUnit], list[Path]]:
+    """Every disc image under ``root`` against the Redump DATs of ALL disc systems in ONE pass: the folder is walked and the
+    CHDs / sheets found once, each disc is read once (its track hashes are cached and shared by every DAT it is tried
+    against; a disc whose track sizes fit no game of a DAT is rejected without decoding anything).
+
+    Returns ``(matched [(unit, system)], unmatched units, other files)``. ``files`` is the list from
+    ``scanner.collect_files`` when the caller already has it."""
+    root = Path(root).expanduser().absolute()
+    if not root.is_dir():
+        raise NotADirectoryError(str(root))
+    indexes = [get_index(d) for d in dats]
+    swept = chdtool.sweep_stale(root) + tempspace.sweep_stale()
+    tempspace.reset_report()
+    if files is None:
+        files = scanner.collect_files(root, True, [], ())
+    units, rest = discover_units(root, list(files), None)
+    units = [u for u in units if not folders.is_converted(_parts(u.path, root))]
+    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None)
+    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None)
+    use_chdman = chdman is not None and engine == "chdman"
+    sched = chdsched.make_scheduler(workers)
+    try:
+        total, files_todo = _estimate(units, cache, use_chdman, full)
+        prog = _Progress(progress, max(total, 1), cancel)
+        prog.files_total = files_todo
+        prog.emit("Reading the disc images...")
+        pool = None if use_chdman else sched
+
+        def one_chd(u: DcUnit) -> None:
+            prog.check()
+            prog.emit(f"Checking {u.path.name}")
+            for idx in indexes:
+                u.game, u.level, u.reason, u.candidates = None, "", "", []
+                identify_unit(u, idx, cache, root, chdman, engine, prog, pool, full)
+                if u.game is not None:
+                    u.system_key = idx.system.key
+                    break
+            if u.decoded:
+                prog.file_done()
+
+        chd_units = [u for u in units if u.kind == "chd"]
+        try:
+            if pool is not None and pool.pooled and len(chd_units) > 1:
+                with ThreadPoolExecutor(max_workers=min(max(2, pool.workers), len(chd_units))) as ex:
+                    for fut in [ex.submit(one_chd, u) for u in chd_units]:
+                        fut.result()
+            else:
+                for u in chd_units:
+                    one_chd(u)
+            for u in units:
+                if u.kind == "chd":
+                    continue
+                prog.check()
+                prog.emit(f"Checking {u.path.name}")
+                before = prog.done
+                for idx in indexes:
+                    u.game, u.level, u.reason, u.candidates = None, "", "", []
+                    identify_raw(u, idx, fcache, prog)
+                    if u.game is not None:
+                        u.system_key = idx.system.key
+                        break
+                if prog.done > before:
+                    prog.file_done()
+        finally:
+            sched.close()
+    finally:
+        fcache.close()
+        cache.close()
+    matched = [(u, system_for_dat(u.game.rep.dat)) for u in units if u.game is not None]
+    return matched, [u for u in units if u.game is None], rest
+
+
+def identify_isos(paths: Sequence[Path], dats: Sequence[DatFile], progress: Optional[ProgressFn] = None,
+                  cancel: Any = None, cache_path: Optional[Path] = None) -> list[tuple[DcUnit, "DiscSystem"]]:
+    """Loose ``.iso`` files (PlayStation 2 DVD games) against the DATs of the ISO systems; the ones that match."""
+    indexes = [get_index(d) for d in dats if system_for_dat(d.name).iso]
+    out: list[tuple[DcUnit, DiscSystem]] = []
+    if not indexes or not paths:
+        return out
+    fcache = scanner.HashCache(cache_path or scanner.default_cache_path())
+    try:
+        prog = _Progress(progress, max(sum(Path(p).stat().st_size for p in paths if Path(p).exists()), 1), cancel)
+        for p in paths:
+            prog.check()
+            u = DcUnit("raw", Path(p), None, [Path(p)], Path(p).stem)
+            for idx in indexes:
+                u.game, u.level, u.reason, u.candidates = None, "", "", []
+                identify_raw(u, idx, fcache, prog)
+                if u.game is not None:
+                    out.append((u, idx.system))
+                    break
+    finally:
+        fcache.close()
+    return out
 
 
 # --------------------------------------------------------------------------- targets

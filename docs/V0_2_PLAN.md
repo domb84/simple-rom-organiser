@@ -91,7 +91,7 @@ library there: only what the rules keep, named and laid out properly. The source
 replacing the current scan, plans with the effective rules and applies the classic library build (`organiser.apply_renames` /
 `discsys.apply_plan`); `last.runs[system] = {log, root}` for undo; saves follow like a single-system build.
 
-## Sort a mixed folder and the set-aside area (v0.2)
+## Sort a mixed folder and the archive area (v0.2)
 
 `romorg/sortroot.py` (pure planning + journalled moves) and the server's `_collection_identify` / `_collection_sort`:
 one `scanner.scan` over the root with the DATs of all ticked cartridge / flat systems (alt-hash strategies and containers
@@ -99,3 +99,47 @@ united) plus one `discsys.scan` per ticked disc system; a file that matches seve
 `<system folder>/`, loose unmatched files to `<aside>/_unmatched/<rel>`, non-ROM files to `<aside>/_other/<rel>`. In place
 reorganises can sweep the reserved folders to `<aside>/<system folder>/<reserved>/`. Journals in `<data dir>/collection-undo/`.
 Settings: `collection.aside`, `collection.sweep`, `collection.last_sort`. Concurrent settings edits merge under the config lock.
+
+## Progress meter, tidy single systems, standard names (v0.2)
+
+* `romorg/meter.py`: a process-wide byte counter the scanner (file sizes as they are covered), the disc reader, the exporter and the
+  mover add to; reset per job and reported as `bytes` in the job's status. The UI adds elapsed, ETA (percent based) and rate.
+  `_staged(job, i, n, label)` maps a step's progress onto its share of a Collection job (fractional `done`).
+* `library apply` with `aside_to`: `sortroot.plan_sweep` + `apply_moves(kind="libsweep", library_log=...)` after the build; the
+  library undo undoes that journal first.
+* `/api/collection/rename/plan|apply|undo`: system folders to `Platform.folder_hint` (the ES-DE set); `detect_systems` also matches
+  a folder named like the full system name.
+
+## One pass over a mixed root (v0.2)
+
+Identification reads each file once: `collect_files` walks the root once; `discsys.scan_many` finds the CHDs / cue / gdi sets once and
+tries each disc against the Redump DATs of all disc systems (track-size prefilter first, track hashes cached and shared, so a
+disc is decoded at most once); the other systems' ROMs are one `scanner.scan(files=...)` over the remaining files with all DATs;
+leftover loose `.iso` files get one more look as PlayStation 2 DVD games (`discsys.identify_isos`). Disc files are never hashed
+by the flat scan.
+
+## Regions, automatic folder names, shared scans (v0.2)
+
+* `tags.REGION_ALIASES` (`UK` -> `United Kingdom`); `canon_region`; `library.available_regions(dats)` and the server's cached
+  `_available_regions` feed `profile_info` / the Collection page.
+* Standard folder names are applied by the in-place reorganise and the sort (journal `rename`, undone with them); a build into another
+  folder names the destination folders. The preview lists the renames (`renames` in the result).
+* `_collection_scan` keeps a Preview's scans (`_coll_scans`, keyed by folder signature + DAT signature) for the Build.
+
+## Collection: one scan, then metadata (v0.2)
+
+`collection.RootScan` / `Sys` hold what one scan of the root found (`_collection_scan_work`: one `collect_files`, one
+`discsys.scan_many`, one `scanner.scan` with all flat DATs, `identify_isos`). The preview and the builds derive everything from it:
+`_collection_layout` (folder renames, `sortroot.plan_sort`, a `Mapper` from where a file is to where it will be),
+`collection.virtual_flat` / `virtual_disc` (the system's scan result under those new paths), then the ordinary
+`_make_library_plan`; in place the apply runs renames, sort, each system's `apply_renames` / `apply_plan`, the sweep and a rescan;
+elsewhere `plan_export(src_map=...)` exports from the real files. No per-system on/off, no "find systems" step.
+
+## CHD settings page, Convert first (v0.2)
+
+The per-system Tools tab is gone (the Kickstart tool went too: the RetroArch BIOS & firmware check covers it; the `/api/kickstart/*` endpoints remain). Convert (raw discs to CHD; SNES / N64 clean-up) is `convert_on_build[platform]`
+(`/api/platforms/options {convert}`): `library_apply` converts first (`_apply_conversions`, rescan) and links the two undo logs
+(`libconv-*.json`); the library preview adds `convert {count, kind}`. Collection `convert` converts each system's
+convertible units (`_collection_convertible`) after the sort, before planning from a fresh scan of that folder. CHD settings are the
+`#/chd` view (same ids as the old chdman box); `chd_verify_scan` passes `full=True` to `discsys.scan` / `scan_many` (every
+track hashed, so `match_chd` reports `verified`). `/api/convert/*` and `/api/dc/verify` remain as API.

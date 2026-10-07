@@ -727,10 +727,10 @@ class ServerWhdloadTest(ServerCase):
         plan = self.call("/api/kickstart/plan", {"platform": PLAT, "dest": str(self.bios)})
         self.assertEqual((plan["source_exists"], set(plan["counts"])), (False, {"missing"}))
 
-    def test_organise_plan_ignores_kickstarts(self) -> None:
+    def test_library_plan_ignores_kickstarts(self) -> None:
         self.call("/api/scan", {"path": str(self.root), "platform": PLAT})
         self.job()
-        plan = self.call("/api/organise/plan", {})
+        plan = self.call("/api/library/plan", {})
         self.assertFalse(any("Kickstarts" in (i.get("from") or "") for i in plan["items"]))
 
 
@@ -828,7 +828,6 @@ class FolderPersistenceTest(ServerCase):
         for needle in ('addEventListener("change"', "function commitFolder", "dataset.folderState",
                        'dispatchEvent(new Event("change"))', "await commitFolder(p, true)"):
             self.assertIn(needle, js)
-        self.assertIn("/api/kickstart/dest", js)
 
 
 if __name__ == "__main__":

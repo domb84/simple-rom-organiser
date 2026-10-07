@@ -26,10 +26,18 @@
   const fmt = (n) => (n === null || n === undefined ? "-" : Number(n).toLocaleString());
   function fmtBytes(n) {
     if (!n && n !== 0) return "-";
-    const units = ["B", "KB", "MB", "GB"];
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
     let i = 0;
     while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
     return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+  /** 45s, 2m 05s, 1h 05m */
+  function fmtDuration(sec) {
+    sec = Math.max(0, Math.round(sec));
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60), s = sec % 60;
+    if (m < 60) return `${m}m ${String(s).padStart(2, "0")}s`;
+    return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
   }
   function debounce(fn, ms) {
     let t;
@@ -452,7 +460,6 @@
     organiseFilter: "",
     organiseDest: "",
     m3uFilter: "",
-    kickFilter: "",
     tab: "overview",   // the open tab of the system page
     scanFailed: {},    // platform -> error text of its last failed scan
     showChecksums: false,   // Browse: checksum rows expanded for every visible row
@@ -531,7 +538,7 @@
       const pct = total > 0 ? Math.min(100, (100 * done) / total) : null;
       const isBytes = total > 1e6 && /download|updat/i.test(message || "");
       let countText = "";
-      if (total > 0) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(done)} / ${fmt(total)}`;
+      if (total > 0) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(Math.floor(done))} / ${fmt(total)}`;
       let msg = message || "";
       if (job.status === "done") msg = "Finished";
       if (job.status === "error") msg = `Error: ${job.error}`;
@@ -555,7 +562,16 @@
       } else if (job.status !== "running") {
         head.append(el("button", { class: "btn btn-small btn-ghost", text: "Hide", on: { click: () => box.classList.add("hidden") } }));
       }
-      box.replaceChildren(head, progress);
+      // time and data: elapsed, an estimate of what is left, and how much data the job has dealt with so far
+      const elapsed = Math.max(0, (job.finished || Date.now() / 1000) - job.started);
+      const bits = [`${job.status === "running" ? "running" : "took"} ${fmtDuration(elapsed)}`];
+      if (job.status === "running" && pct !== null && pct >= 1 && elapsed >= 4) bits.push(`about ${fmtDuration((elapsed * (100 - pct)) / pct)} left`);
+      if (job.bytes > 0) {
+        bits.push(`${fmtBytes(job.bytes)} ${/^(scan|collection|verify)$/.test(job.kind) ? "scanned" : "processed"}`);
+        if (job.status === "running" && elapsed >= 4) bits.push(`${fmtBytes(job.bytes / elapsed)}/s`);
+      }
+      const timing = el("div", { class: "job-time muted small", text: bits.join(" · ") });
+      box.replaceChildren(head, progress, timing);
       renderCardJob(job, msg, countText, pct);
       clearTimeout(this.hideTimer);
       if (job.status === "done" || job.status === "cancelled") this.hideTimer = setTimeout(() => box.classList.add("hidden"), 8000);
@@ -563,7 +579,7 @@
   };
 
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
-    m3u: "Playlists", kickstart: "Kickstarts" };
+    m3u: "Playlists", collection: "Collection", retroarch: "RetroArch" };
 
 
   const UNMATCHED = "_unmatched";
@@ -586,7 +602,6 @@
   const discOf = (p) => (p && p.disc) || null;                         // {key, label, gd, iso, playlists, iso_mode, ...}
   const discPlaylists = (p) => !!p && isGameFolder(p) && (!discOf(p) || discOf(p).playlists !== false);
   const rawKinds = (p) => { const d = discOf(p); return d && d.iso ? ".cue / .iso" : d && !d.gd ? ".cue" : ".gdi / .cue"; };
-  const hasKickstart = (p) => !!(p && (p.has_kickstart !== undefined ? p.has_kickstart : p.kickstart_dat));
   const folderOf = (p) => (p ? (p.name in state.drafts ? state.drafts[p.name] : p.folder || "") : "");
 
   // ------------------------------------------- status, systems and folders
@@ -602,8 +617,8 @@
     $("app-version").textContent = `v${s.version}`;
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
-    $("kick-native-browse-btn").classList.toggle("hidden", !s.dialog_available);
     $("lib-export-native-btn").classList.toggle("hidden", !s.dialog_available);
+    $("lib-aside-native").classList.toggle("hidden", !s.dialog_available);
     if (!state.exportLoaded) { state.exportLoaded = true; loadExportSettings(); }      // once: later loads must not undo an edit
     $("folder-native-btn").classList.toggle("hidden", !s.dialog_available);
   }
@@ -751,8 +766,8 @@
   // ------------------------------------------------------------- routing
   // Hash routes (no server support needed; back / forward / reload just work):
   //   #/                                  home: one card per system
-  //   #/system/<slug>/<tab>[?view=...]    <tab> = overview | library | browse | tools
-  const TABS = ["overview", "library", "browse", "tools"];
+  //   #/system/<slug>/<tab>[?view=...]    <tab> = overview | library | browse
+  const TABS = ["overview", "library", "browse"];
   const slugOf = (p) => p.slug || String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const Route = {
     /** "#/system/snes/browse?view=missing&have=0" -> {view: "system", slug, tab, params}; anything else -> home. */
@@ -766,6 +781,7 @@
       }
       if (parts[0] === "collection") return { view: "collection", slug: "", tab: "", params: {} };
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
+      if (parts[0] === "chd") return { view: "chd", slug: "", tab: "", params: {} };
       return { view: "home", slug: "", tab: "", params: {} };
     },
     build(slug, tab = "overview", params = {}) {
@@ -806,9 +822,9 @@
   // --------------------------------------------------------- home: system cards
   /** Home groups come from what a system is (no system names here): disc systems, cartridge consoles, computers. */
   const GROUPS = [
-    ["computers", "Computers", (p) => !isGameFolder(p) && p.source !== "nointro"],
+    ["computers", "Computers", (p) => !isGameFolder(p) && p.source !== "nointro" && p.source !== "redump"],
     ["consoles", "Cartridge consoles", (p) => !isGameFolder(p) && p.source === "nointro"],
-    ["discs", "Disc systems", (p) => isGameFolder(p)],
+    ["discs", "Disc systems", (p) => isGameFolder(p) || p.source === "redump"],
   ];
 
   const groupOf = (p) => (GROUPS.find((g) => g[2](p)) || GROUPS[0])[0];
@@ -862,6 +878,7 @@
     box.replaceChildren(...(groups.length ? groups : [el("div", { class: "muted small side-none", text: "No system matches." })]));
     $("collection-link").setAttribute("aria-current", state.route && state.route.view === "collection" ? "true" : "false");
     $("retroarch-link").setAttribute("aria-current", state.route && state.route.view === "retroarch" ? "true" : "false");
+    $("chd-link").setAttribute("aria-current", state.route && state.route.view === "chd" ? "true" : "false");
     Jobs.setRunning(Jobs.running);
     if (Jobs.last) renderCardJob(Jobs.last);
   }
@@ -1006,7 +1023,7 @@
     $("platform-details-title").textContent = p ? `DAT files for ${p.name} (${sourceLabel(p.source)})` : "DAT files";
     const rows = p ? p.dats.map((d) => el("tr", {},
       el("td", { class: "wrap" }, el("div", { text: d.name }),
-        el("div", { class: "sub", text: [d.m3u ? "M3U playlists" : "", d.kickstart ? "Kickstart source" : ""].filter(Boolean).join(" · ") })),
+        el("div", { class: "sub", text: [d.m3u ? "M3U playlists" : ""].filter(Boolean).join(" · ") })),
       el("td", { class: "mono", text: d.version || "-" }),
       el("td", { class: "mono wrap", text: d.folder ? `${d.folder}/` : "(console folder)" }),
       el("td", {}, badge(d.present ? "ok" : "missing")))) : [];
@@ -1025,29 +1042,11 @@
       el("span", { class: `dat-chip ${ds.kind}`, text: ds.text }),
       p ? el("span", { class: "muted small", text: ` ${p.dats.length} DAT${p.dats.length === 1 ? "" : "s"} · ${sourceLabel(p.source)}` }) : null);
 
-    // Organise: what goes where for this layout.
+    // Library: what goes where for this layout.
     const gameFolder = isGameFolder(p);
     const flat = isFlat(p);
-    $("organise-title").textContent = gameFolder ? "Organise (one folder per game)"
-      : flat ? "Organise (rename in the console folder)" : "Organise (into DAT folders)";
-    $("organise-intro").textContent = gameFolder
-      ? "Every game gets its own folder named exactly like the Redump entry, holding <name>.chd. Save states, saves and other files "
-        + "that start with the CHD's old name (.zip .md5 .state .srm ...) are renamed with it, so they stay linked; anything else in "
-        + "the folder keeps its name and moves along. A loose .chd in the system folder gets a folder of its own. A CHD that matches "
-        + "no Redump entry moves with its whole folder into _unmatched/. Nothing is overwritten or deleted; every apply writes an undo log."
-      : p && p.source === "whdload"
-      ? "Matched .lha archives get their exact WHDLoad database name (for example 1000ccTurbo_v1.0.lha) and are kept flat in the system "
-        + "folder (files in subfolders are moved up). The archives are never opened - they are matched by the hash of the whole file. "
-        + "Files that match nothing go to _unmatched/ (keeping their subfolders); a Kickstarts/ folder is left alone. "
-        + "Nothing is overwritten, and every apply writes an undo log in the folder."
-      : flat
-      ? "Matched files get their exact No-Intro name and are kept flat in the console folder (files in subfolders are moved up; "
-        + "archives are named after the game). Files that match nothing go to _unmatched/ (keeping their subfolders); frontend "
-        + "media folders such as media/ or images/ are left alone. Nothing is overwritten, and every apply writes an undo log in the folder."
-      : "Matched files are moved into one folder per DAT and given their exact TOSEC name; files that match nothing go to "
-        + "_unmatched/ (keeping their subfolders). Nothing is overwritten, and every apply writes an undo log in the platform folder.";
     const hasM3uLayout = !!(p && p.m3u_dats && p.m3u_dats.length) || gameFolder;
-    $("organise-layout").textContent = !p ? "" : [
+    $("library-layout").textContent = !p ? "" : [
       flat ? "<console folder>/" : "<platform folder>/",
       ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
         discPlaylists(p) ? "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"
@@ -1055,20 +1054,16 @@
       ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
         : p.dats.map((d) => `  ${d.folder}/`)),
       ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [])].join("\n");
-    $("organise-latest-only").checked = !!(p && p.latest_only);
-    $("m3u-dats").textContent = p && p.m3u_dats.length ? `Playlists are made for: ${p.m3u_dats.map(shortDat).join(", ")}` : "";
     const hasM3u = !!(p && p.m3u_dats && p.m3u_dats.length);
-    $("m3u-block").classList.toggle("hidden", !hasM3u);
     $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !discPlaylists(p));
     $("lib-savedisk-wrap").classList.toggle("hidden", !hasM3u);
-    $("library-layout").textContent = $("organise-layout").textContent;
     $("library-intro").replaceChildren(
-      "One action tidies the whole folder: files are renamed and sorted, and unwanted, older and duplicate files are set aside in their own folders next to the games (",
+      "One action tidies the whole folder: files are renamed and sorted, and unwanted, older and duplicate files are archived in their own folders next to the games (",
       el("code", { text: `${EXCLUDED}/` }), ", ", el("code", { text: `${SUPERSEDED}/` }), ", ",
       ...(hasM3u && !gameFolder ? [el("code", { text: `${INCOMPLETE}/` }), ", "] : []),
       el("code", { text: `${DUPLICATES}/` }), "; never deleted; files that match nothing go to ", el("code", { text: `${UNMATCHED}/` }), ")",
       hasM3u ? ", and playlists are written for complete multi-disk games."
-        : discPlaylists(p) ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; set-aside games move with their whole folder)."
+        : discPlaylists(p) ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; archived games move with their whole folder)."
         : gameFolder ? " (the discs of a multi-disc game stay together; no playlists are written for this system - its emulator does not use them)." : ".",
       " Preview first; ", el("b", { text: "Undo last" }), hasM3u ? " reverts everything, playlists included." : " reverts everything.");
     loadLibraryProfile();
@@ -1078,14 +1073,8 @@
   }
 
   // ------------------------------------------------------------------ tabs
-  const toolsApply = (p) => !!p && (!!p.convertible || hasKickstart(p) || isGameFolder(p));
-
-  /** Show only the tools this system uses; hide the Tools tab when nothing applies. */
+  /** Mark the open tab. */
   function renderTabs() {
-    const p = currentPlatform();
-    const show = { "tool-convert": !!(p && p.convertible), "tool-verify": isGameFolder(p), "tool-kickstart": hasKickstart(p) };
-    for (const [id, on] of Object.entries(show)) $(id).classList.toggle("hidden", !on);
-    $("tabbtn-tools").classList.toggle("hidden", !toolsApply(p));
     for (const tab of TABS) {
       const on = tab === state.tab;
       const btn = $(`tabbtn-${tab}`);
@@ -1099,7 +1088,6 @@
   /** Open a tab of the system page (the route already says which). Heavy parts load only now. */
   function showTab(tab) {
     const p = currentPlatform();
-    if (tab === "tools" && !toolsApply(p)) tab = "overview";
     state.tab = tab;
     renderTabs();
     if (tab === "overview" || tab === "library") loadTotals();
@@ -1108,9 +1096,6 @@
       if (statsStale) refreshLibraryStats();
     } else if (tab === "browse") {
       renderBrowse();
-    } else if (tab === "tools") {
-      if (hasKickstart(p) && !kickDirsLoaded) loadKickDirs();
-      if (isGameFolder(p)) loadChdman();
     }
   }
 
@@ -1127,6 +1112,17 @@
     if (!wideLayout()) setSide(r.view === "home");
     $("view-collection").classList.toggle("hidden", !collection);
     $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
+    $("view-chd").classList.toggle("hidden", r.view !== "chd");
+    if (r.view === "chd") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "Disc images - Simple ROM Organiser";
+      state.viewWas = "chd";
+      loadChdman();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
     if (r.view === "retroarch") {
       $("view-home").classList.add("hidden");
       $("view-system").classList.add("hidden");
@@ -1188,11 +1184,8 @@
     state.organiseDest = "";
     state.convertFilter = "";
     state.m3uFilter = "";
-    state.kickFilter = "";
     activeTab = "";
-    kickDirsLoaded = false;                       // each system has its own Kickstart destination
     $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for disc-system playlists
-    setKickDest(currentPlatform());
     $("folder-input").value = folderOf(currentPlatform());
     $("scan-error").classList.toggle("hidden", !state.scanFailed[name]);
     $("scan-error-text").textContent = state.scanFailed[name] || "";
@@ -1309,10 +1302,8 @@
     if (inSystem() && state.tab === "browse") renderBrowse();
     renderLibraryIntro();
     renderLibraryGate();
-    renderOrganiseIntro();
-    renderConvertIntro();
-    renderM3UIntro();
-    renderKickIntro();
+    refreshUndo();
+    renderLibraryConvert();
     updateActionState();
     loadTotals();
   }
@@ -1572,54 +1563,10 @@
     return el("div", { class: "tags" }, ...(base ? Array.from(base.childNodes) : []), levelChip(level));
   }
 
-  /** Sega Dreamcast: which engine reads the CHDs, and the Verify fully button. */
+  /** A disc system's scan: remember how fast the CHDs were decoded (shown on the Disc images page). */
   function renderDcBar(s) {
-    const dc = s.chd_files !== undefined;
-    $("dc-bar").classList.toggle("hidden", !dc);
-    $("verify-empty").classList.toggle("hidden", dc);
-    if (!dc) return;
-    $("dc-engine-line").textContent = s.engine === "chdman"
-      ? `CHDs were read with chdman (${s.chdman}) - every track was checked, so they are verified.`
-      : (s.engine === "mixed" ? `CHDs were read with the built-in reader; chdman (${s.chdman}) decoded the ones the reader cannot. `
-        : "CHDs were read with the built-in reader (no chdman needed). ")
-        + "Data tracks are hashed, audio is checked by length until you press Verify fully." + (s.identified ? ` ${fmt(s.identified)} CHD(s) are still only identified.` : "")
-        + (s.needs_chdman ? ` ${fmt(s.needs_chdman)} CHD(s) use a compression this version does not know (made by a newer chdman?) - they are left in place; install that chdman to identify them.` : "");
-    const speed = s.engine_text || state.dcSpeed || "";
-    $("dc-speed-line").textContent = speed ? `Last decode: ${speed}` : "";
-    $("dc-speed-line").classList.toggle("hidden", !speed);
-    const tempText = s.temp_text || (s.temp && s.temp.text) || "";
-    $("dc-temp-line").textContent = tempText;
-    $("dc-temp-line").classList.toggle("hidden", !tempText);
-    $("dc-verify-btn").dataset.blocked = s.identified ? "0" : "1";
-    $("dc-verify-btn").title = s.identified ? "Decode EVERY track of the identified CHDs (audio included) and compare it with Redump - can take a while"
-      : "Every CHD is already verified";
-    Jobs.setRunning(Jobs.running);
+    if (s && (s.engine_text || state.dcSpeed)) state.dcSpeed = s.engine_text || state.dcSpeed;
   }
-
-  async function verifyFully() {
-    const s = (state.scan && state.scan.summary) || {};
-    if (!s.identified) { toast("Every CHD is already verified.", "ok"); return; }
-    const body = el("div", {},
-      el("p", { text: `Decode every track - audio included - of ${fmt(s.identified)} CHD${s.identified === 1 ? "" : "s"} and compare it with Redump?` }),
-      el("ul", {},
-        el("li", { text: "Nothing is changed in your folder; the result is remembered, so this is done once per file." }),
-        el("li", { text: "The built-in reader decodes with every CPU core at once (and libFLAC for audio when it is available): typically 100-250 MB/s on a 4-core / 8-thread machine such as a Steam Deck, more with more cores, so a 1 GB disc takes seconds and an 8 GB PlayStation 2 DVD well under a minute or two. Nothing is written to disk." }),
-        el("li", { text: "The built-in reader reads every CHD chdman 0.289 can (all versions and compressions, parent files next to their child). chdman is only used for a CHD in a format newer than that, or when you chose \"always chdman\": it extracts the disc to scratch space (in RAM when that fits with a safe reserve, otherwise in the app\u2019s cache folder - never in your game folder) and deletes it again. You can cancel at any time." })));
-    if (!(await confirmDialog({ title: "Verify fully", body, okText: "Verify" }))) return;
-    Jobs.start("/api/dc/verify", {});
-  }
-
-  Jobs.handlers.verify = async (job) => {
-    if ((job.status === "done" || job.status === "cancelled") && job.result) {
-      const r = job.result;
-      const failed = Array.isArray(r.failed) ? r.failed : [];
-      if (r.engine_text) state.dcSpeed = r.engine_text;
-      toast(`Verified ${fmt(r.verified || 0)} CHD(s)${failed.length ? `, ${fmt(failed.length)} do not match Redump` : ""}${r.engine_text ? ` - ${r.engine_text}` : ""}`, failed.length ? "error" : "ok", 12000);
-      showFailures("dc-failures", "Does not match Redump:", failed, (f) => `${f.file}: ${f.error}`,
-        [r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
-    }
-    await refreshScan();
-  };
 
   const first = (...vals) => vals.find((v) => v !== undefined && v !== null);
   const TAG_FACETS = [["region", "regions", "Region"], ["language", "languages", "Language"],
@@ -1649,7 +1596,7 @@
       const chips = [el("button", { class: `chip chip-sm ${current ? "" : "active"}`, text: "Any", on: { click: () => pick("") } }),
         ...shown.map(([value, n]) => el("button", {
           class: `chip chip-sm ${current === value ? "active" : ""} ${key === "flag" && value === "bad" ? "chip-bad" : ""}`,
-          text: `${facetLabel(key, value)} (${fmt(n)})`, title: key === "rule" ? "Rows that a library rule would set aside" : null,
+          text: `${facetLabel(key, value)} (${fmt(n)})`, title: key === "rule" ? "Rows that a library rule would archive" : null,
           on: { click: () => pick(value) },
         }))];
       if (entries.length > TAG_SHOWN) {
@@ -1887,7 +1834,7 @@
             {
               label: "Place", render: (i) => {
                 if (i.placed_ok && i.named_ok) return badge("ok");
-                if (i.aside) return el("span", { class: "badge skip", text: "set aside", title: "In one of the app's own folders (_excluded/, _superseded/ ...) on purpose" });
+                if (i.aside) return el("span", { class: "badge skip", text: "archived", title: "In one of the app's own folders (_excluded/, _superseded/ ...) on purpose" });
                 return el("span", { class: "badge move", text: i.placed_ok ? "rename" : "move" });
               },
             },
@@ -1949,10 +1896,6 @@
     // id -> button / apply button / output box / noun / how to count / how to drop it
     CONFIG: {
       lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => libTable, reset: () => resetLibraryPreview() },
-      organise: { btn: "plan-btn", apply: "apply-btn", output: "organise-output", noun: "files", count: (d) => (d.all !== undefined ? d.all : sumCounts(d.counts)), run: () => showOrganisePlan(), table: () => organiseTable, reset: () => resetOrganisePreview() },
-      convert: { btn: "convert-plan-btn", apply: "convert-apply-btn", output: "convert-output", noun: "files", count: (d) => sumCounts(d.counts), run: () => showConvertPlan(), table: () => convertTable, reset: () => resetConvertPreview() },
-      m3u: { btn: "m3u-plan-btn", apply: "m3u-apply-btn", output: "m3u-output", noun: "playlists", count: (d) => sumCounts(d.counts), run: () => showM3UPlan(), table: () => m3uTable, reset: () => resetM3UPreview() },
-      kick: { btn: "kick-plan-btn", apply: "kick-apply-btn", output: "kick-output", noun: "files", count: (d) => sumCounts(d.counts), run: () => showKickPlan(), table: () => kickTable, reset: () => resetKickPreview() },
     },
 
     /** Wire the buttons once: icon + label, a status line with the hint (aria-live) and the out-of-date banner. */
@@ -2289,14 +2232,34 @@
   const exportOptions = () => (exportActive()
     ? { export_to: $("lib-export-dest").value.trim(), export_mode: $("lib-export-mode").value, export_sidecars: $("lib-export-sidecars").checked, export_sync: $("lib-export-sync").checked }
     : {});
-  const buildOptions = () => ({ ...libOptions(), ...exportOptions() });
+  // "Keep this folder tidy": a build in place moves what it sets aside to another folder
+  const asideActive = () => !$("lib-where-other").checked && $("lib-aside-on").checked && !!$("lib-aside-dir").value.trim();
+  const asideOptions = () => (asideActive() ? { aside_to: $("lib-aside-dir").value.trim() } : {});
+  const buildOptions = () => ({ ...libOptions(), ...exportOptions(), ...asideOptions() });
+  /** Next to the ROM folders, named like their folder with -archive (the same default as Collection). */
+  function defaultAsideFor(folder) {
+    const parts = String(folder || "").replace(/[\\/]+$/, "").split(/[\\/]/);
+    if (parts.length < 3) return "";
+    const parent = parts.slice(0, -1);
+    const sep = String(folder).includes("\\") ? "\\" : "/";
+    return `${parent.join(sep)}-archive`;
+  }
+  function asideChanged() {
+    $("lib-aside-row").classList.toggle("hidden", !$("lib-aside-on").checked || $("lib-where-other").checked);
+    if ($("lib-aside-on").checked && !$("lib-aside-dir").value.trim()) $("lib-aside-dir").value = defaultAsideFor(folderOf(currentPlatform()));
+    saveExportSettings();
+    if (Previews.has("lib")) resetLibraryPreview();
+  }
   const saveExportSettings = debounce(async () => {
     try {
       await post("/api/library/export/settings", { enabled: $("lib-where-other").checked, dest: $("lib-export-dest").value.trim(),
-        mode: $("lib-export-mode").value, sidecars: $("lib-export-sidecars").checked, sync: $("lib-export-sync").checked });
+        mode: $("lib-export-mode").value, sidecars: $("lib-export-sidecars").checked, sync: $("lib-export-sync").checked,
+        aside: $("lib-aside-on").checked, aside_dir: $("lib-aside-dir").value.trim() });
     } catch (_) { /* a convenience only */ }
   }, 300);
   function exportSettingsChanged() {
+    $("lib-aside-opts").classList.toggle("hidden", $("lib-where-other").checked);
+    $("lib-aside-row").classList.toggle("hidden", !$("lib-aside-on").checked || $("lib-where-other").checked);
     if ($("lib-export-mode").value === "move") $("lib-export-sync").checked = false;
     $("lib-export-sync").disabled = $("lib-export-mode").value === "move";
     $("lib-export-opts").classList.toggle("hidden", !$("lib-where-other").checked);
@@ -2314,6 +2277,10 @@
     $("lib-export-dest").value = e.dest || "";
     $("lib-export-mode").value = e.mode || "copy";
     $("lib-export-sidecars").checked = !!e.sidecars;
+    $("lib-aside-on").checked = !!e.aside;
+    $("lib-aside-dir").value = e.aside_dir || "";
+    $("lib-aside-opts").classList.toggle("hidden", !!e.enabled);
+    $("lib-aside-row").classList.toggle("hidden", !e.aside || !!e.enabled);
     $("lib-export-sync").checked = !!e.sync && e.mode !== "move";
     $("lib-export-sync").disabled = e.mode === "move";
     $("lib-export-opts").classList.toggle("hidden", !e.enabled);
@@ -2369,7 +2336,6 @@
     if (name !== state.platform) return;
     const p = currentPlatform();
     if (p) { p.library = info.profile; p.latest_only = !!p.library.latest_only; }
-    $("organise-latest-only").checked = !!(p && p.latest_only);
     profileChanged();
   }
 
@@ -2828,15 +2794,14 @@
     const oldList = document.querySelector("#rules-regions .sortable-list");
     const keepScroll = oldList ? oldList.scrollTop : 0;
     const ui = sortableList({
-      items: info.regions || [], label: "Region priority, best region first", noun: "region", prioCount: 4,
-      prioLabel: "Prioritised (tried first)", restLabel: "Everything else (alphabetical unless you move it up)",
+      items: info.regions || [], label: "Region priority, best region first", noun: "region",
       onCommit: (order) => commitRegionOrder(name, order),
     });
     regionSave.ui = ui;
     regionSave.uiPlatform = name;
     const section = el("div", { class: "rules-group", id: "rules-regions" },
       el("div", { class: "rules-head", text: "Region priority" }),
-      el("div", { class: "sub note", text: (catalogOf(info).find((e) => e.id === "region_priority") || {}).description || "Best region first." }),
+      el("div", { class: "sub note", text: `${(catalogOf(info).find((e) => e.id === "region_priority") || {}).description || "Best region first."} The whole list counts, in this order; regions you have not moved stay in alphabetical order after the ones you placed.` }),
       ui.root);
     requestAnimationFrame(() => { ui.list.scrollTop = keepScroll; });
     return section;
@@ -3097,7 +3062,7 @@
     refreshLibraryStats();
     // The previews stay on screen but are marked out of date (Recalculate is the highlighted action, Build / Apply
     // are disabled until it ran); the library totals on the Overview follow after a short pause.
-    Previews.staleAll("Rules changed since this preview", ["lib", "organise", "convert"]);
+    Previews.staleAll("Rules changed since this preview", ["lib"]);
     scheduleTotals();
     updateActionState();
   }
@@ -3121,9 +3086,10 @@
 
   function renderLibraryCards(plan) {
     const r = plan.reasons || {}, pl = plan.playlists || {}, vanish = plan.vanish || {}, cats = plan.categories || {};
-    // the cards count what this build moves; files a previous build already set aside are named next to it
-    const aside = (label, moving, all) => ((all || 0) > (moving || 0) ? `${label} now (${fmt(all - (moving || 0))} already set aside)` : label);
+    // the cards count what this build moves; files a previous build already archived are named next to it
+    const aside = (label, moving, all) => ((all || 0) > (moving || 0) ? `${label} now (${fmt(all - (moving || 0))} already archived)` : label);
     const ex = plan.export;
+    const asd = plan.aside;
     $("lib-export-note").textContent = ex ? `Library goes to ${ex.dest}. ${(ex.notes || []).join(" ")}` : "";
     $("lib-cards").replaceChildren(
       ...(ex ? [card(fmt((ex.counts.copy || 0)), `To copy (${fmtBytes(ex.bytes_copy)})`, ex.counts.copy ? "info" : ""),
@@ -3135,6 +3101,8 @@
         ...(ex.counts.conflict ? [card(fmt(ex.counts.conflict), "Conflicts (left alone)", "bad")] : []),
         ...(ex.enough_space ? [] : [card(fmtBytes(ex.free || 0), "Free space is not enough", "bad")])] : []),
       card(fmt(r.kept), "Kept", "ok"),
+      ...(asd ? [card(fmt(asd.coming + asd.existing), "To move out to the archive folder", "info")] : []),
+      ...(plan.convert ? [card(fmt(plan.convert.count), plan.convert.kind === "chd" ? "Raw discs to convert to CHD first" : "Dumps to clean up first", plan.convert.count ? "info" : "ok")] : []),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
       card(fmt(r.excluded), aside("Excluded", r.excluded, cats.excluded), r.excluded ? "warn" : ""),
       card(fmt(r.superseded), aside("Superseded", r.superseded, cats.superseded), r.superseded ? "warn" : ""),
@@ -3168,7 +3136,7 @@
     const total = plan.incomplete_total || sets.length;
     $("lib-incomplete-title").textContent = isGameFolder(currentPlatform())
       ? `Multi-disc games with a disc missing (${fmt(total)}) - kept where they are, no playlist`
-      : `Incomplete sets (${fmt(total)}) - disks missing, set aside as _incomplete`;
+      : `Incomplete sets (${fmt(total)}) - disks missing, archived as _incomplete`;
     $("lib-incomplete").replaceChildren(...sets.map((x) => el("li", {},
       el("span", { text: x.name }), " ",
       el("span", { class: "tag tag-status", text: `missing ${isGameFolder(currentPlatform()) ? "disc" : "disk"} ${x.missing.join(", ")} of ${x.total}` }),
@@ -3345,7 +3313,7 @@
             (key) => { state.libReason = key; if (key !== "excluded") state.libWhy = ""; reload(); }, (k) => REASON_LABEL[k] || k, "All reasons");
           filterChips($("lib-status-filters"), data.counts || {}, state.libStatus, ["move", "rename", "delete", "conflict", "skip", "ok"],
             (key) => { state.libStatus = key; reload(); }, (k) => k, "All statuses");
-          $("lib-apply-btn").dataset.blocked = data.empty ? "1" : "0";
+          $("lib-apply-btn").dataset.blocked = data.empty && !(data.aside && data.aside.existing) && !(data.convert && data.convert.count) ? "1" : "0";
           Jobs.setRunning(Jobs.running);
           return data;
         }),
@@ -3433,9 +3401,9 @@
     if ($("lib-where-other").checked) { toast("Choose the folder to build the library in first.", "error"); return; }
     let plan;
     try {
-      plan = await post("/api/library/plan", { ...libOptions(), limit: 1 });
+      plan = await post("/api/library/plan", { ...libOptions(), ...asideOptions(), limit: 1 });
     } catch (err) { toast(err.message, "error"); return; }
-    if (plan.empty) { toast("Nothing to do - the library is already built.", "ok"); return; }
+    if (plan.empty && !(plan.aside && plan.aside.existing) && !(plan.convert && plan.convert.count)) { toast("Nothing to do - the library is already built.", "ok"); return; }
     const r = plan.reasons || {}, pl = plan.playlists || {};
     const warnings = plan.warnings || [];
     const line = (n, text) => (n ? el("li", { text: `${fmt(n)} ${text}` }) : null);
@@ -3454,6 +3422,10 @@
         line(pl.remove, "outdated playlist(s) made by this app removed")),
       el("ul", {},
         el("li", { text: "Nothing is deleted and existing files are never overwritten." }),
+        ...(plan.aside ? [el("li", { text: `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is then moved out of this folder to ${plan.aside.path}.` })] : []),
+      ...(plan.convert && plan.convert.count ? [el("li", { text: plan.convert.kind === "chd"
+        ? `${fmt(plan.convert.count)} raw disc set(s) are converted to CHD first (checked against Redump; this can take a long time). The library counts above are those before the conversion.`
+        : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
         el("li", { text: "One undo log is saved as it goes - \"Undo last\" reverts the moves and removes / restores the playlists." }),
         el("li", { text: "The folder is re-scanned afterwards." })));
     if (!(await confirmDialog({ title: "Build library", body, okText: `Build library (${fmt(plan.actionable)} changes)` }))) return;
@@ -3462,7 +3434,7 @@
       body: `${warnings.join(" ")} Moving files out of other systems' folders would break them for your emulators.`,
       okText: "Yes, build in this folder", danger: true,
     }))) return;
-    Jobs.start("/api/library/apply", { ...libOptions(), plan_id: plan.plan_id });   // the server refuses a plan of other rules
+    Jobs.start("/api/library/apply", { ...libOptions(), ...asideOptions(), plan_id: plan.plan_id });   // the server refuses a plan of other rules
   }
 
   async function undoLibrary() {
@@ -3497,7 +3469,9 @@
           : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
       const sv = r.saves || {};
       const saveText = (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
-      toast(text + saveText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
+      const asideText = r.aside ? `; ${fmt(r.aside.moved)} archived file(s) moved out to ${r.aside.path}` : (r.action === "undo" && r.aside_restored ? `; ${fmt(r.aside_restored)} archived file(s) brought back` : "");
+      const convText = r.converted ? `; ${fmt(r.converted.count)} converted first${r.converted.failed.length ? ` (${fmt(r.converted.failed.length)} could not be converted)` : ""}` : (r.action === "undo" && r.converted_back ? "; the conversion was undone too" : "");
+      toast(text + saveText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
       showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move / write:",
         failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
@@ -3516,34 +3490,8 @@
   };
 
   // --------------------------------------------------------- 3b. Organise (advanced)
-  let organiseTable = null;
-  let organisePlan = null; // last plan response (counts, by_dest, ...)
   const ACTIONABLE = ["move", "rename", "delete"];
-  const latestOnly = () => $("organise-latest-only").checked;
-
-  function renderOrganiseWarnings(plan) {
-    const notes = [...(plan.warnings || [])];
-    if (plan.missing_dats && plan.missing_dats.length) {
-      notes.push(`Not checked (DAT not downloaded): ${plan.missing_dats.map(shortDat).join(", ")} - files in those folders are left where they are.`);
-    }
-    const box = $("organise-warnings");
-    box.classList.toggle("hidden", !notes.length);
-    box.replaceChildren(...notes.map((n) => el("div", { text: n })));
-  }
-  const actionableCount = (counts) => ACTIONABLE.reduce((n, k) => n + (counts[k] || 0), 0);
-
-  function resetOrganisePreview() {
-    $("organise-empty").textContent = state.scan ? "Press \"Preview changes\" to see what would move." : "Run a scan first.";
-    $("organise-empty").classList.remove("hidden");
-    $("organise-output").classList.add("hidden");
-    organiseTable = null;
-    organisePlan = null;
-  }
-
-  function renderOrganiseIntro() {
-    if (!Previews.has("organise")) resetOrganisePreview();
-    refreshUndo();
-  }
+  const latestOnly = () => !!(currentPlatform() && currentPlatform().latest_only);   // the library rule: there is one setting for it
 
   function filterChips(container, counts, current, order, onPick, labelFor = (k) => k, allLabel = "All") {
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -3558,98 +3506,6 @@
   const destLabel = (dest) => (dest === "." ? (isFlat(currentPlatform()) ? "(console folder)" : "(platform folder)")
     : `${dest}/`);
 
-  function renderOrganiseCards(plan) {
-    const c = plan.counts || {};
-    $("organise-cards").replaceChildren(
-      card(fmt(plan.actionable !== undefined ? plan.actionable : actionableCount(c)), "To move / rename", "info"),
-      card(fmt(plan.to_unmatched || 0), `Going to ${UNMATCHED}/`, plan.to_unmatched ? "warn" : ""),
-      ...(plan.latest_only ? [card(fmt(plan.to_superseded || 0), "Older versions → _superseded/", plan.to_superseded ? "info" : "")] : []),
-      card(fmt(c.ok || 0), "Already in place", "ok"),
-      card(fmt(c.duplicate || 0), "Duplicates (left alone)", c.duplicate ? "warn" : ""),
-      card(fmt(c.conflict || 0), "Conflicts (skipped)", c.conflict ? "bad" : ""),
-      ...(c.delete ? [card(fmt(c.delete), "Old playlists to remove", "warn")] : []),
-      ...(c.skip ? [card(fmt(c.skip), "Skipped / left in place", "")] : []),
-    );
-  }
-
-  async function showOrganisePlan() {
-    Previews.busy("organise");
-    $("organise-empty").classList.add("hidden");
-    $("organise-output").classList.remove("hidden");
-    if (!organiseTable) {
-      organiseTable = new PagedTable($("organise-table"), {
-        placeholder: "Search file names or folders...",
-        emptyText: "Nothing in this category.",
-        fetch: Previews.wrap("organise", async ({ offset, limit, q, refresh }) => {
-          const data = await post("/api/organise/plan", {
-            status: state.organiseFilter, dest: state.organiseDest, offset, limit, q,
-            latest_only: latestOnly(), refresh,
-          });
-          organisePlan = data;
-          renderOrganiseCards(data);
-          renderOrganiseWarnings(data);
-          const reload = () => { organiseTable.offset = 0; organiseTable.load(); };
-          filterChips($("organise-filters"), data.counts || {}, state.organiseFilter,
-            ["move", "rename", "delete", "conflict", "duplicate", "skip", "ok"],
-            (key) => { state.organiseFilter = key; reload(); }, (k) => k, "All statuses");
-          // The root folder's key is "" on the server; "." here so it differs from "All".
-          const byDest = Object.fromEntries(Object.entries(data.by_dest || {}).map(([k, v]) => [k === "" ? "." : k, v]));
-          $("organise-dest-filters").classList.toggle("hidden", Object.keys(byDest).length < 2 && !state.organiseDest);
-          filterChips($("organise-dest-filters"), byDest, state.organiseDest, [],
-            (key) => { state.organiseDest = key; reload(); }, destLabel, "All destinations");
-          $("apply-btn").dataset.blocked = actionableCount(data.counts || {}) ? "0" : "1";
-          Jobs.setRunning(Jobs.running);
-          return data;
-        }),
-        columns: [
-          { label: "Status", render: (i) => badge(i.status) },
-          {
-            label: `Change (from → to, relative to the ${isFlat(currentPlatform()) ? "console" : "platform"} folder)`, cls: "wrap", render: (i) => {
-              const changed = i.from !== i.to;
-              return el("div", {},
-                el("div", { class: changed ? "rename-from mono-path" : "rename-to mono-path", text: i.from }),
-                changed ? el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })) : null,
-                i.superseded_by ? el("div", { class: "tags" }, el("span", { class: "tag tag-status", text: "older version" })) : null);
-            },
-          },
-          { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
-        ],
-      });
-    }
-    await organiseTable.load();
-  }
-
-  async function applyOrganise() {
-    let plan;
-    try {
-      plan = await post("/api/organise/plan", { limit: 1, latest_only: latestOnly() });
-    } catch (err) { toast(err.message, "error"); return; }
-    const n = plan.actionable !== undefined ? plan.actionable : actionableCount(plan.counts || {});
-    if (!n) { toast("Nothing to do - every file is already in its place.", "ok"); return; }
-    const byDest = plan.by_dest || {};
-    const del = (plan.counts || {}).delete || 0;
-    const warnings = plan.warnings || [];
-    const body = el("div", {},
-      ...warnings.map((w) => el("p", { class: "notice", text: w })),
-      el("p", { text: `Change ${fmt(n)} file${n === 1 ? "" : "s"} inside ${state.scan.root}:` }),
-      el("ul", {}, Object.entries(byDest).map(([dest, count]) =>
-        el("li", { text: `${fmt(count)} → ${destLabel(dest === "" ? "." : dest)}` }))),
-      el("ul", {},
-        plan.to_superseded ? el("li", { text: `${fmt(plan.to_superseded)} older version(s) go to ${plan.superseded_dir || SUPERSEDED}/ (the newest one you have stays).` }) : null,
-        el("li", { text: "Existing files are never overwritten (conflicts are skipped)." }),
-        del ? el("li", { text: `${fmt(del)} old playlist(s) made by this app are removed - write the M3U playlists again afterwards.` }) : null,
-        el("li", { text: "Folders emptied by the moves are removed." }),
-        el("li", { text: "An undo log is saved in the folder as it goes - use \"Undo last\" to revert." }),
-        el("li", { text: "The folder is re-scanned afterwards." })));
-    if (!(await confirmDialog({ title: "Organise files", body, okText: `Apply ${fmt(n)} changes` }))) return;
-    if (warnings.length && !(await confirmDialog({
-      title: "Are you sure?",
-      body: `${warnings.join(" ")} Moving files out of other systems' folders would break them for your emulators.`,
-      okText: "Yes, organise this folder", danger: true,
-    }))) return;
-    Jobs.start("/api/organise/apply", { latest_only: latestOnly() });
-  }
-
   let undoLogs = [];
   let undoFetch = null;      // the request in flight: every tab intro asks at once when a page opens
   async function refreshUndo() {
@@ -3659,7 +3515,7 @@
       try { logs = (await undoFetch).logs || []; } catch (_) { logs = []; }
     }
     undoLogs = logs;
-    for (const id of ["undo-btn", "convert-undo-btn", "lib-undo-btn"]) {
+    for (const id of ["lib-undo-btn"]) {
       const btn = $(id);
       btn.dataset.blocked = undoLogs.length || (id === "lib-undo-btn" && $("lib-where-other").checked && state.scan) ? "0" : "1";
       btn.title = undoLogs.length ? `Undo ${undoLogs[0].name}` : "No undo logs in this folder";
@@ -3693,27 +3549,17 @@
       toast(`${isUndo ? "Reverted" : "Moved"} ${fmt(count)} file(s)${created}${failed.length ? `, ${fmt(failed.length)} failed` : ""}`,
         failed.length || r.error ? "error" : "ok", 8000);
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
-      showFailures("organise-failures", isUndo ? "Could not restore:" : "Could not move:",
+      showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move:",
         failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
         (f) => `${f.src}${f.dst ? ` → ${f.dst}` : ""}: ${f.error || f.reason || "failed"}`,
         [r.error ? `Stopped: ${r.error}` : "",
           r.remaining ? `${fmt(r.remaining)} move(s) are kept in the undo log - fix the cause and press "Undo last" again.` : "",
           r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
     }
-    const wasOpen = !$("organise-output").classList.contains("hidden");
     await refreshScan();
-    if (wasOpen && state.scan) { if (organiseTable) organiseTable.offset = 0; await showOrganisePlan(); }
   };
 
-  // ----------------------------------------------------------- 4. Convert
-  let convertTable = null;
-  const VIA_TEXT = { headerless: "remove 512-byte copier header", byteswapped: "byte-swap to big-endian .z64", chdman: "written as a CHD, then checked against Redump by the built-in reader", builtin: "written as a CHD, then checked against Redump by the built-in reader" };
-  const MODE_TEXT = { createcd: "written as a CD image CHD, then checked against Redump by the built-in reader", createdvd: "written as a DVD image CHD, then checked against Redump by the built-in reader" };
-
-  const CHD_INTRO = "Turns an unpacked Redump set (a .gdi or .cue with one .bin / .raw file per track, or a single .iso) into a CHD (a CD image, or a DVD image for a PlayStation 2 .iso) - the app writes it itself, chdman is not needed. "
-    + "The new CHD is checked track by track against Redump BEFORE anything of your set is touched; only if every track matches is it placed in the "
-    + "game folder (named like the Redump entry) and the raw files are moved to _converted_originals/ - nothing is deleted, and Undo last removes "
-    + "the CHD and puts the raw files back. The new CHD is written next to its final place (needs the disc size free there); the check decodes it in scratch space (RAM or the app's cache folder, never in your game folder).";
+  // ------------------------------------------------------------------ Disc images (CHD): the settings every disc system shares
   let chdmanInfo = null;
 
   async function loadChdman(refresh = false) {
@@ -3732,12 +3578,8 @@
   }
 
   function renderChdman() {
-    const box = $("chdman-box");
-    const dc = isGameFolder(currentPlatform());
-    box.classList.toggle("hidden", !dc || !chdmanInfo);
-    if (!dc || !chdmanInfo) return;
+    if (!chdmanInfo) return;
     const found = !!chdmanInfo.found;
-    box.classList.remove("missing");
     const notes = (chdmanInfo.notes || []).join(" ");
     $("chdman-line").textContent = (found ? `chdman found: ${chdmanInfo.label}${chdmanInfo.bundled ? " - shipped with the app" : ""} (optional: the app reads and writes CHDs by itself).`
       : "chdman not found - it is not needed: the app reads and writes CHDs by itself.")
@@ -3758,6 +3600,10 @@
     zstdOption.disabled = !chdmanInfo.zstd_writer || chdmanInfo.writer === "chdman";
     $("chd-preset").value = zstdOption.disabled ? "default" : (chdmanInfo.preset || "default");
     $("chd-preset-note").classList.toggle("hidden", $("chd-preset").value !== "zstd");
+    $("chd-verify-scan").checked = !!chdmanInfo.verify_scan;
+    const speed = state.dcSpeed || "";
+    $("chd-speed-line").textContent = speed ? `Last decode: ${speed}` : "";
+    $("chd-speed-line").classList.toggle("hidden", !speed);
   }
 
   async function saveChdman(body) {
@@ -3766,356 +3612,31 @@
       renderChdman();
       if (chdmanInfo.warning) toast(chdmanInfo.warning, "error", 8000);
       else toast("Saved", "ok");
-      if (convertTable) { convertTable.offset = 0; convertTable.load(); }
     } catch (err) { toast(err.message, "error", 8000); }
   }
 
-  function renderConvertIntro() {
-    const dc = isGameFolder(currentPlatform());
-    $("convert-title").textContent = dc ? "Convert raw Redump sets to CHD (optional)" : "Convert to No-Intro format (optional)";
-    if (dc) $("convert-intro").textContent = CHD_INTRO;
-    if (dc) loadChdman(); else $("chdman-box").classList.add("hidden");
-    if (!Previews.has("convert")) resetConvertPreview();
-  }
-
-  function resetConvertPreview() {
-    $("convert-empty").textContent = state.scan ? "Press \"Preview conversions\" to see which files can be converted." : "Run a scan first.";
-    $("convert-empty").classList.remove("hidden");
-    $("convert-output").classList.add("hidden");
-    convertTable = null;
-  }
-
-  function renderConvertCards(data) {
-    const c = data.counts || {};
-    $("convert-cards").replaceChildren(
-      card(fmt(c.convert || 0), isGameFolder(currentPlatform()) ? "Raw sets to convert to CHD" : "To convert", "info"),
-      card(fmt(c.conflict || 0), "Conflicts (skipped)", c.conflict ? "bad" : ""),
-      card(fmt(c.skip || 0), "Skipped", ""));
-  }
-
-  async function showConvertPlan() {
-    Previews.busy("convert");
-    $("convert-empty").classList.add("hidden");
-    $("convert-output").classList.remove("hidden");
-    if (!convertTable) {
-      convertTable = new PagedTable($("convert-table"), {
-        placeholder: "Search file names...",
-        emptyText: isGameFolder(currentPlatform()) ? "No raw Redump sets found in this folder." : "Nothing to convert - every matched file is already in No-Intro format.",
-        fetch: Previews.wrap("convert", async ({ offset, limit, q, refresh }) => {
-          const data = await post("/api/convert/plan", { status: state.convertFilter, offset, limit, q, latest_only: latestOnly(), refresh });
-          renderConvertCards(data);
-          if (data.chdman) { chdmanInfo = { ...(chdmanInfo || {}), ...data.chdman }; renderChdman(); }
-          filterChips($("convert-filters"), data.counts || {}, state.convertFilter, ["convert", "conflict", "skip"],
-            (key) => { state.convertFilter = key; convertTable.offset = 0; convertTable.load(); });
-          $("convert-apply-btn").dataset.blocked = (data.counts || {}).convert ? "0" : "1";
-          Jobs.setRunning(Jobs.running);
-          return data;
-        }),
-        columns: [
-          { label: "Status", render: (i) => badge(i.status) },
-          {
-            label: "Change (relative to the console folder)", cls: "wrap", render: (i) => el("div", {},
-              el("div", { class: "rename-from mono-path", text: i.from }),
-              el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })),
-              i.status === "convert" ? el("div", { class: "sub mono-path", text: `original kept as ${i.original_to}` }) : null),
-          },
-          { label: "How", cls: "wrap", render: (i) => el("span", { class: "muted", text: (MODE_TEXT[i.mode] || VIA_TEXT[i.via] || i.via || "-") + (i.note ? ` (${i.note})` : "") }) },
-          { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
-        ],
-      });
-    }
-    await convertTable.load();
-  }
-
-  async function applyConvert() {
-    let data;
-    try {
-      data = await post("/api/convert/plan", { limit: 1, latest_only: latestOnly() });
-    } catch (err) { toast(err.message, "error"); return; }
-    const n = (data.counts || {}).convert || 0;
-    if (!n) { toast("Nothing to convert.", "ok"); return; }
-    const body = isGameFolder(currentPlatform()) ? el("div", {},
-      el("p", { text: `Convert ${fmt(n)} raw set${n === 1 ? "" : "s"} inside ${state.scan.root} to CHD${data.chdman && data.chdman.writer === "chdman" && data.chdman.found ? ` with chdman (${data.chdman.label})` : ""}${data.chdman && data.chdman.preset === "zstd" && !(data.chdman.writer === "chdman" && data.chdman.found) ? " with Zstandard compression (needs an emulator from 2024 or later)" : ""}?` }),
-      el("ul", {},
-        el("li", { text: "The new CHD is decoded again and compared with every Redump track before it is kept; on any mismatch nothing changes." }),
-        el("li", { text: `The raw files are moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
-        el("li", { text: "The new CHD is written next to its final place as a .part file (about the raw size must be free there) and renamed only after the check; the check itself uses scratch space outside your game folder." }),
-        el("li", { text: "An undo log is saved as it goes - \"Undo last\" removes the CHD and puts the raw files back." }),
-        el("li", { text: "The folder is re-scanned afterwards. You can cancel; the raw files stay untouched." })))
-    : el("div", {},
-      el("p", { text: `Convert ${fmt(n)} file${n === 1 ? "" : "s"} inside ${state.scan.root} into No-Intro format?` }),
-      el("ul", {},
-        el("li", { text: "A clean copy is written under the exact DAT name and checked against the DAT before it is kept." }),
-        el("li", { text: `The original is moved to ${data.originals_dir || CONVERTED}/ - nothing is deleted.` }),
-        el("li", { text: "An undo log is saved as it goes - \"Undo last\" removes the copies and puts the originals back." }),
-        el("li", { text: "The folder is re-scanned afterwards." })));
-    if (!(await confirmDialog({ title: isGameFolder(currentPlatform()) ? "Convert to CHD" : "Convert to No-Intro format", body, okText: `Convert ${fmt(n)}` }))) return;
-    Jobs.start("/api/convert/apply", { latest_only: latestOnly() });
-  }
-
-  Jobs.handlers.convert = async (job) => {
-    if ((job.status === "done" || job.status === "cancelled") && job.result) {
-      const r = job.result;
-      const failed = Array.isArray(r.failed) ? r.failed : [];
-      const converted = Array.isArray(r.converted) ? r.converted.length : r.converted || 0;
-      toast(`Converted ${fmt(converted)} file(s)${failed.length ? `, ${fmt(failed.length)} failed` : ""}${r.cancelled ? " (cancelled)" : ""}${r.verify_text ? ` - ${r.verify_text}` : ""}${r.generated_gdi ? `; ${fmt(r.generated_gdi)} .gdi generated from the .cue` : ""}`,
-        failed.length || r.error ? "error" : "ok", 12000);
-      showFailures("convert-failures", "Could not convert:", failed,
-        (f) => `${f.src}${f.dst ? ` → ${f.dst}` : ""}: ${f.error || "failed"}`,
-        [r.error ? `Stopped: ${r.error}` : "",
-          r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
-    }
-    const wasOpen = !$("convert-output").classList.contains("hidden");
-    await refreshScan();
-    if (wasOpen && state.scan) { if (convertTable) convertTable.offset = 0; await showConvertPlan(); }
-  };
-
-  // -------------------------------------------------------------- 5. M3U
-  let m3uTable = null;
-  const m3uOptions = () => ({ savedisk: $("m3u-savedisk").checked, labels: $("m3u-labels").checked });
-
-  function renderM3UIntro() {
-    if (!Previews.has("m3u")) resetM3UPreview();
-  }
-
-  function resetM3UPreview() {
-    $("m3u-empty").textContent = state.scan ? "Press \"Preview playlists\" to find multi-disk sets." : "Run a scan first.";
-    $("m3u-empty").classList.remove("hidden");
-    $("m3u-output").classList.add("hidden");
-    m3uTable = null;
-  }
-
-  async function showM3UPlan() {
-    Previews.busy("m3u");
-    $("m3u-empty").classList.add("hidden");
-    $("m3u-output").classList.remove("hidden");
-    if (!m3uTable) {
-      m3uTable = new PagedTable($("m3u-table"), {
-        pageSize: 25,
-        placeholder: "Search playlists...",
-        emptyText: "No multi-disk sets found among the matched files.",
-        fetch: Previews.wrap("m3u", async ({ offset, limit, q, refresh }) => {
-          const data = await post("/api/m3u/plan", { ...m3uOptions(), status: state.m3uFilter, offset, limit, q, refresh });
-          const counts = data.counts || {};
-          filterChips($("m3u-filters"), counts, state.m3uFilter, ["write", "stale", "ok", "incomplete", "conflict"],
-            (key) => { state.m3uFilter = key; m3uTable.offset = 0; m3uTable.load(); });
-          $("m3u-apply-btn").dataset.blocked = counts.write || counts.stale ? "0" : "1";
-          Jobs.setRunning(Jobs.running);
-          return data;
-        }),
-        columns: [
-          { label: "Status", render: (i) => badge(i.status) },
-          {
-            label: "Playlist", cls: "wrap", render: (i) => el("div", {},
-              el("div", { text: i.name }),
-              i.dir && i.dir !== "." ? el("div", { class: "sub", text: `in ${i.dir}` }) : null),
-          },
-          {
-            label: "Disks", cls: "wrap", render: (i) => {
-              if (!i.lines.length) return el("span", { class: "muted", text: "-" });
-              return el("details", {},
-                el("summary", { text: `${i.disks} disk${i.disks === 1 ? "" : "s"}` }),
-                el("pre", { class: "m3u-lines", text: i.lines.join("\n") }));
-            },
-          },
-          { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
-        ],
-      });
-    }
-    await m3uTable.load();
-  }
-
-  async function writeM3Us() {
-    let counts;
-    try {
-      counts = (await post("/api/m3u/plan", { ...m3uOptions(), limit: 1 })).counts || {};
-    } catch (err) { toast(err.message, "error"); return; }
-    const n = counts.write || 0;
-    const stale = counts.stale || 0;
-    if (!n && !stale) { toast("No new playlists to write.", "ok"); return; }
-    const ok = await confirmDialog({
-      title: "Write M3U playlists",
-      body: `Write ${fmt(n)} playlist${n === 1 ? "" : "s"} next to the disk images?`
-        + (stale ? ` ${fmt(stale)} outdated playlist(s) made by this app are removed.` : "")
-        + " Playlists not created by this app are left alone.",
-      okText: n ? `Write ${fmt(n)}` : `Remove ${fmt(stale)}`,
-    });
-    if (ok) Jobs.start("/api/m3u/apply", m3uOptions());
-  }
-
-  Jobs.handlers.m3u = async (job) => {
-    if (job.status === "done" && job.result) {
-      const r = job.result;
-      const written = r.written !== undefined ? (Array.isArray(r.written) ? r.written.length : r.written) : null;
-      const failed = Array.isArray(r.failed) ? r.failed : [];
-      toast((written !== null ? `Wrote ${fmt(written)} playlist(s)` : "Playlists written")
-        + (r.removed ? `, removed ${fmt(r.removed)} outdated` : "")
-        + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length ? "error" : "ok", 8000);
-      showFailures("m3u-failures", "Could not write:", failed, (f) => `${f.path}: ${f.error}`);
-    }
-    if (m3uTable) m3uTable.offset = 0;
-    if (state.scan) await showM3UPlan();
-  };
-
-  // -------------------------------------------------------- 6. Kickstarts
-  let kickTable = null;
-  let kickDirsLoaded = false;
-
-  /** The Kickstart destination field belongs to the selected system (each has its own saved folder). */
-  function setKickDest(p) {
-    $("kick-dest").value = (p && p.kickstart_dest) || "";
-    kickTable = null;
-    $("kick-output").classList.add("hidden");
-    $("kick-failures").classList.add("hidden");
-  }
-
-  const kickFolderMode = (p) => !!(p && p.kickstart_folder);
-  /** The Kickstart step can run: a folder-source system needs its folder, a DAT-source one a scan of itself. */
-  const kickReady = (p) => (kickFolderMode(p) ? !!folderOf(p).trim() : !!state.scan);
-
-  function renderKickIntro() {
+  // ------------------------------------------------- the Library option "convert first" (raw discs to CHD / clean up dumps)
+  function renderLibraryConvert() {
     const p = currentPlatform();
-    const folderMode = kickFolderMode(p);
-    $("kick-intro").replaceChildren(...(folderMode ? [
-      "Optional. Copies the Kickstart ROMs you put into the ", el("code", { text: `${p.kickstart_folder}/` }),
-      " folder inside this system's folder (matched by MD5 against the ",
-      el("a", { href: "https://docs.libretro.com/library/puae/", target: "_blank", rel: "noopener noreferrer", text: "PUAE BIOS list" }),
-      ") into RetroArch's system / BIOS folder under the file names PUAE expects. PUAE needs these for WHDLoad. ",
-      "That folder is never scanned, moved or organised by the other steps. Files are copied, never moved, and existing files are never overwritten.",
-    ] : [
-      "Optional. Copies the Kickstart ROMs you have (matched by MD5 against the ",
-      el("a", { href: "https://docs.libretro.com/library/puae/", target: "_blank", rel: "noopener noreferrer", text: "PUAE BIOS list" }),
-      ") into RetroArch's system / BIOS folder under the file names PUAE expects. Files are copied, never moved, and existing files are never overwritten.",
-    ]));
-    if (!Previews.has("kick")) resetKickPreview();
-    if (!kickDirsLoaded && hasKickstart(p)) loadKickDirs();
+    const on = !!(p && p.convertible);
+    $("lib-convert-row").classList.toggle("hidden", !on);
+    if (!on) return;
+    $("lib-convert-label").textContent = isGameFolder(p)
+      ? "Convert raw disc sets (.gdi / .cue + tracks, or an .iso) to CHD first. Each CHD is checked against Redump before the raw files move to _converted_originals/ (nothing is deleted); this takes a while. Settings: Disc images (CHD)."
+      : "Clean up dumps first: remove SNES copier headers and fix the byte order of N64 dumps, so the files equal the database's. The originals move to _converted_originals/ (nothing is deleted).";
+    $("lib-convert").checked = !!p.convert_on_build;
   }
 
-  function resetKickPreview() {
+  async function saveConvertOption() {
     const p = currentPlatform();
-    $("kick-empty").textContent = kickReady(p) ? "Pick a destination, then press \"Preview\"."
-      : kickFolderMode(p) ? `Choose the ${p ? p.name : "system"} folder in step 1 first.` : "Run a scan first.";
-    $("kick-empty").classList.remove("hidden");
-    $("kick-output").classList.add("hidden");
-    $("kick-source").textContent = "";
-    kickTable = null;
-  }
-
-  async function loadKickDirs() {
-    let data;
-    const forPlatform = state.platform;
+    if (!p) return;
+    const value = $("lib-convert").checked;
     try {
-      data = await get(`/api/kickstart/dirs?${qs({ platform: forPlatform })}`);
-    } catch (err) {
-      $("kick-dirs").replaceChildren(el("div", { class: "muted small", text: `Could not detect RetroArch folders: ${err.message}` }));
-      return;
-    }
-    if (forPlatform !== state.platform) return;   // the user switched system meanwhile
-    kickDirsLoaded = true;
-    const dirs = data.dirs || [];
-    const input = $("kick-dest");
-    if (!input.value.trim()) {
-      const firstExisting = dirs.find((d) => d.exists);
-      input.value = data.last || (firstExisting ? firstExisting.path : "");
-    }
-    renderKickDirs(dirs);
-    updateActionState(); // the destination may have just been filled in
+      await post("/api/platforms/options", { platform: p.name, convert: value });
+      p.convert_on_build = value;
+    } catch (err) { toast(`Could not save the option: ${err.message}`, "error"); $("lib-convert").checked = !value; return; }
+    if (Previews.has("lib")) resetLibraryPreview();
   }
-
-  function renderKickDirs(dirs) {
-    const chosen = $("kick-dest").value.trim();
-    $("kick-dirs").replaceChildren(...(dirs.length ? dirs.map((d) => el("button", {
-      class: `dest-option ${d.path === chosen ? "active" : ""}`, title: d.path,
-      on: { click: () => { $("kick-dest").value = d.path; $("kick-dest").dispatchEvent(new Event("input")); $("kick-dest").dispatchEvent(new Event("change")); renderKickDirs(dirs); } },
-    },
-    el("div", { class: "dest-label" }, el("span", { text: d.label || "Folder" }), " ", badge(d.exists ? "ok" : "missing")),
-    el("div", { class: "sub mono", text: d.path }))) : [el("div", { class: "muted small", text: "No RetroArch / EmuDeck / RetroDECK folders found - type or browse to your BIOS folder." })]));
-    $("kick-dirs").dataset.dirs = JSON.stringify(dirs);
-  }
-
-  /** Remember the destination of the selected system as soon as it is chosen (not only after a copy). */
-  async function saveKickDest() {
-    const p = currentPlatform();
-    const dest = $("kick-dest").value.trim();
-    if (!p || !dest || !hasKickstart(p) || dest === p.kickstart_dest) return;
-    try {
-      const res = await post("/api/kickstart/dest", { platform: p.name, dest });
-      p.kickstart_dest = res.dest;
-      toast(`Saved the Kickstart folder for ${p.name}`, "ok");
-    } catch (err) {
-      toast(`Kickstart folder not saved - ${err.message}`, "error");
-    }
-  }
-
-  async function showKickPlan() {
-    const dest = $("kick-dest").value.trim();
-    if (!dest) { toast("Choose a destination folder first", "error"); return; }
-    Previews.busy("kick");
-    $("kick-empty").classList.add("hidden");
-    $("kick-output").classList.remove("hidden");
-    const platform = state.platform;
-    kickTable = new PagedTable($("kick-table"), {
-      placeholder: "Search Kickstarts...",
-      emptyText: "Nothing in this category.",
-      fetch: Previews.wrap("kick", async ({ offset, limit, q }) => {
-        const data = await post("/api/kickstart/plan", { platform, dest, status: state.kickFilter, offset, limit, q });
-        const counts = data.counts || {};
-        filterChips($("kick-filters"), counts, state.kickFilter, ["copy", "ok", "conflict", "missing", "unmatched"],
-          (key) => { state.kickFilter = key; kickTable.offset = 0; kickTable.load(); });
-        $("kick-apply-btn").dataset.blocked = counts.copy ? "0" : "1";
-        $("kick-source").textContent = data.source === "folder"
-          ? (data.source_exists ? `Kickstart ROMs are read from ${data.source_dir}`
-            : `The folder ${data.source_dir} does not exist yet - create it and drop your Kickstart ROMs into it.`)
-          : "";
-        Jobs.setRunning(Jobs.running);
-        return data;
-      }),
-      columns: [
-        { label: "Status", render: (i) => badge(i.status) },
-        {
-          label: "PUAE file", cls: "wrap", render: (i) => el("div", {},
-            el("div", { class: "mono", text: i.file }),
-            i.description ? el("div", { class: "sub", text: i.description }) : null),
-        },
-        { label: "From (your files)", cls: "wrap", render: (i) => (i.source ? fileCell(i.source) : el("span", { class: "muted", text: "-" })) },
-        { label: "Note", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason }) },
-      ],
-    });
-    await kickTable.load();
-  }
-
-  async function applyKick() {
-    const dest = $("kick-dest").value.trim();
-    if (!dest) { toast("Choose a destination folder first", "error"); return; }
-    let data;
-    try {
-      data = await post("/api/kickstart/plan", { platform: state.platform, dest, limit: 1 });
-    } catch (err) { toast(err.message, "error"); return; }
-    const n = (data.counts || {}).copy || 0;
-    if (!n) { toast("Nothing to copy - press Preview to see why.", "ok"); return; }
-    const ok = await confirmDialog({
-      title: "Copy Kickstarts",
-      body: `Copy ${fmt(n)} Kickstart file${n === 1 ? "" : "s"} into ${data.dest}${data.dest_exists ? "" : " (the folder will be created)"}? Existing files are not overwritten.`,
-      okText: `Copy ${fmt(n)}`,
-    });
-    if (ok) Jobs.start("/api/kickstart/apply", { platform: state.platform, dest });
-  }
-
-  Jobs.handlers.kickstart = async (job) => {
-    if (job.status === "done" && job.result) {
-      const r = job.result;
-      const copied = Array.isArray(r.copied) ? r.copied.length : r.copied;
-      const failed = Array.isArray(r.failed) ? r.failed.length : r.failed || 0;
-      toast(`Copied ${fmt(copied || 0)} Kickstart file(s)${failed ? `, ${fmt(failed)} failed` : ""}`, failed ? "error" : "ok", 8000);
-      showFailures("kick-failures", "Could not copy:", Array.isArray(r.failed) ? r.failed : [],
-        (f) => `${f.target}: ${f.error}`);
-      const p = state.platforms.find((x) => x.name === r.platform);
-      if (p && r.dest) p.kickstart_dest = r.dest;
-    }
-    if (kickReady(currentPlatform()) && $("kick-dest").value.trim()) await showKickPlan();
-  };
-
-
 
   // ------------------------------------------------------------------ RetroArch: saves and config (v0.2)
   const RetroArch = {
@@ -4368,53 +3889,37 @@
     $("ra-output").classList.add("hidden");
   };
 
-  // ------------------------------------------------------------------ collection (v0.2): a whole ROM root
+  // ------------------------------------------------------------------ collection (v0.2): a whole ROM folder
+  // One scan reads every file once and finds its system in all the databases; the preview and the builds only sort that scan's
+  // metadata, so they are quick.
   const Collection = {
     info: null,
     loaded: false,
     last: null,           // the last preview / build answer
+    saveSeq: 0,
 
     async show() {
       if (!this.loaded) {
         try { this.info = await get("/api/collection"); } catch (err) { toast(err.message, "error"); return; }
         this.loaded = true;
-        $("col-root").value = this.info.root || "";
-        $("col-dest").value = this.info.dest || "";
-        $("col-mode").value = this.info.mode;
-        $("col-sidecars").checked = !!this.info.sidecars;
-        $("col-sync").checked = !!this.info.sync;
-        $("col-aside").value = this.info.aside || "";
-        $("col-aside").placeholder = this.info.aside_default ? `Default: ${this.info.aside_default}` : $("col-aside").placeholder;
-        $("col-sweep").checked = this.info.sweep !== false;
-        $("col-aside-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
-        $("col-place-inplace").checked = this.info.place === "inplace";
-        $("col-place-elsewhere").checked = this.info.place !== "inplace";
-        this.syncAllowed();
-        $("col-root-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
-        $("col-dest-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
+        const i = this.info, nat = !!(state.status && state.status.dialog_available);
+        $("col-root").value = i.root || "";
+        $("col-dest").value = i.dest || "";
+        $("col-mode").value = i.mode;
+        $("col-sidecars").checked = !!i.sidecars;
+        $("col-sync").checked = !!i.sync;
+        $("col-aside").value = i.aside || "";
+        $("col-sweep").checked = i.sweep !== false;
+        $("col-convert").checked = !!i.convert;
+        $("col-place-inplace").checked = i.place !== "elsewhere";
+        $("col-place-elsewhere").checked = i.place === "elsewhere";
+        for (const id of ["col-root-native", "col-dest-native", "col-aside-native"]) $(id).classList.toggle("hidden", !nat);
       }
       this.render();
     },
 
-    adopt(info) { this.info = info; this.render(); this.syncAllowed(); this.placeChanged(); },
+    adopt(info) { this.info = info; this.render(); },
 
-    inplace() { return $("col-place-inplace").checked; },
-
-    placeChanged() {
-      const inp = this.inplace();
-      $("col-elsewhere").classList.toggle("hidden", inp);
-      $("col-inplace-note").classList.toggle("hidden", !inp);
-      $("col-apply-btn").textContent = inp ? "Reorganise collection" : "Build collection";
-    },
-
-    /** Keeping in sync needs the originals to stay: not with Move. */
-    syncAllowed() {
-      const move = $("col-mode").value === "move";
-      if (move) $("col-sync").checked = false;
-      $("col-sync").disabled = move;
-    },
-
-    saveSeq: 0,
     async save(changes) {
       const n = ++this.saveSeq;               // answers can arrive out of order: only the newest one is shown
       try {
@@ -4423,37 +3928,51 @@
       } catch (err) { toast(err.message, "error"); }
     },
 
-    async detect() {
-      const root = $("col-root").value.trim();
-      if (!root) { toast("Choose the ROM root folder first.", "error"); return; }
-      try {
-        this.adopt(await post("/api/collection/detect", { root }));
-        const n = Object.values(this.info.systems).filter((e) => e.enabled).length;
-        toast(n ? `Found ${n} system folder${n === 1 ? "" : "s"}.` : "No system folders found in that folder - check the name of each folder below.", n ? "ok" : "info", 6000);
-      } catch (err) { toast(err.message, "error"); }
-    },
+    inplace() { return $("col-place-inplace").checked; },
 
     render() {
       const info = this.info;
       if (!info) return;
-      const names = info.platforms;
-      const known = names.filter((p) => info.systems[p.name]);
-      $("col-systems").replaceChildren(...(known.length ? known : []).map((p) => {
-        const e = info.systems[p.name];
-        const path = el("input", { type: "text", class: "input mono", value: e.path, spellcheck: "false", "aria-label": `${p.name} folder` });
-        path.addEventListener("change", () => this.save({ systems: { [p.name]: { path: path.value.trim() } } }));
-        return el("tr", {},
-          el("td", {}, el("input", { type: "checkbox", checked: e.enabled, "aria-label": `Build ${p.name}`,
-            on: { change: (ev) => this.save({ systems: { [p.name]: { enabled: ev.target.checked } } }) } })),
-          el("td", { text: p.name }),
-          el("td", {}, path),
-          el("td", {}, el("input", { type: "checkbox", checked: e.own_rules, "aria-label": `${p.name} uses its own rules`,
-            on: { change: (ev) => this.save({ systems: { [p.name]: { own_rules: ev.target.checked } } }) } })));
-      }));
-      if (!known.length) $("col-systems").replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "Choose the ROM root and press \"Find the systems\"." })));
+      const scan = info.scan;
+      const inp = this.inplace();
+      $("col-systems-panel").classList.toggle("hidden", !scan);
+      $("col-do-panel").classList.toggle("hidden", !scan);
+      $("col-rules-box").classList.toggle("hidden", !scan);
+      $("col-actions").classList.toggle("hidden", !scan);
+      $("col-inplace-opts").classList.toggle("hidden", !inp);
+      $("col-elsewhere").classList.toggle("hidden", inp);
+      $("col-apply-btn").textContent = inp ? "Build library" : "Build collection";
+      $("col-restore").classList.toggle("hidden", !inp);
+      const move = $("col-mode").value === "move";
+      if (move) $("col-sync").checked = false;
+      $("col-sync").disabled = move;
+      const toConvert = scan ? scan.systems.reduce((n, x) => n + (x.convert || 0), 0) : 0;
+      const chdN = scan ? scan.systems.filter((x) => x.chd).reduce((n, x) => n + (x.convert || 0), 0) : 0;
+      $("col-convert-wrap").classList.toggle("hidden", !inp || !toConvert);
+      $("col-convert-label").textContent = `Convert first: ${chdN ? `${fmt(chdN)} raw disc set(s) to CHD` : ""}${chdN && toConvert > chdN ? " and " : ""}${toConvert > chdN ? `${fmt(toConvert - chdN)} SNES / N64 dump(s) to the database's format` : ""} (the originals move to _converted_originals/; this takes a while)`;
+      if (!scan) {
+        $("col-scan-info").textContent = $("col-root").value.trim()
+          ? "Not scanned yet. The scan reads every file once; after it, previewing and tidying are quick."
+          : "Choose the folder with your ROMs, then scan it.";
+        $("col-scan-notes").classList.add("hidden");
+      } else {
+        const games = scan.systems.reduce((n, x) => n + x.games, 0);
+        $("col-scan-info").textContent = `Scanned ${fmt(scan.files)} files (${fmtBytes(scan.bytes)}) in ${fmtDuration(scan.seconds)}: ${fmt(games)} games in ${scan.systems.length} system${scan.systems.length === 1 ? "" : "s"}${scan.unmatched ? `, ${fmt(scan.unmatched)} files match nothing` : ""}${scan.other ? `, ${fmt(scan.other)} are not ROMs` : ""}${scan.ambiguous ? `, ${fmt(scan.ambiguous)} fit more than one system` : ""}. Scan again after you add or remove files.`;
+        $("col-scan-notes").classList.toggle("hidden", !scan.notes.length);
+        $("col-scan-notes").replaceChildren(...scan.notes.map((n) => el("div", { text: n })));
+        $("col-systems").replaceChildren(...scan.systems.map((x) => {
+          const folder = el("td", { class: "mono small", text: x.hint });
+          return el("tr", {},
+            el("td", { text: x.name }), folder, el("td", { class: "num", text: fmt(x.games) }), el("td", { class: "num", text: fmt(x.files) }),
+            el("td", {}, el("input", { type: "checkbox", checked: x.own_rules, "aria-label": `${x.name} uses its own rules`,
+              on: { change: (e) => this.save({ systems: { [x.name]: { own_rules: e.target.checked } } }) } })));
+        }));
+        $("col-leftovers").textContent = scan.unmatched || scan.other
+          ? `${fmt(scan.unmatched)} files match no game and ${fmt(scan.other)} are not ROMs: they are listed in the preview.` : "";
+      }
+      $("col-aside").placeholder = info.aside_default ? `Default: ${info.aside_default}` : "Default: next to the ROM folder, named like it with -archive";
+      $("col-undo-btn").dataset.blocked = info.last && Object.keys(info.last).length && (info.last.runs && Object.keys(info.last.runs).length || info.last.sort || (info.last.archive && info.last.archive.length) || info.last.rename || info.last.sweep) ? "0" : "1";
       this.renderRules();
-      $("col-undo-btn").dataset.blocked = info.last && info.last.runs && Object.keys(info.last.runs).length ? "0" : "1";
-      $("col-sort-undo").dataset.blocked = info.last_sort && info.last_sort.journal ? "0" : "1";
       Jobs.setRunning(Jobs.running);
     },
 
@@ -4474,7 +3993,7 @@
       const toggle = (list, key, on) => (on ? [...list, key] : list.filter((x) => x !== key));
       const groups = [];
       groups.push(el("div", { class: "rules-group" },
-        el("div", { class: "rules-head", text: "Leave out (never copied)" }),
+        el("div", { class: "rules-head", text: "Leave out (not kept)" }),
         el("div", { class: "rules-grid" }, info.rules.map((r) => tickRow(r.label, p.exclude.includes(r.key), (on) => this.setRules({ exclude: toggle(p.exclude, r.key, on) }))))));
       groups.push(el("div", { class: "rules-group" },
         el("div", { class: "rules-head", text: "Options" }),
@@ -4494,12 +4013,11 @@
           ...p.languages.map((c, i) => el("span", { class: "lang-pill" }, el("span", { text: `${i + 1}. ${info.languages[c] || c}` }),
             el("button", { class: "btn btn-icon", text: "▲", disabled: i === 0, "aria-label": `Move ${info.languages[c] || c} up`, on: { click: () => this.setRules({ languages: moved(p.languages, i, -1) }) } }),
             el("button", { class: "btn btn-icon", text: "▼", disabled: i === p.languages.length - 1, "aria-label": `Move ${info.languages[c] || c} down`, on: { click: () => this.setRules({ languages: moved(p.languages, i, 1) }) } })))) : null));
-      const ui = sortableList({ items: info.regions, label: "Region priority, best region first", noun: "region", prioCount: 4,
-        prioLabel: "Prioritised (tried first)", restLabel: "Everything else (alphabetical unless you move it up)",
+      const ui = sortableList({ items: info.regions, label: "Region priority, best region first", noun: "region",
         onCommit: (order) => this.setRules({ region_priority: order }) });
       groups.push(el("div", { class: "rules-group", id: "col-regions" },
         el("div", { class: "rules-head", text: "Region priority" }),
-        el("div", { class: "sub note", text: "Which region's version is kept when a game has several. Applies to No-Intro and Redump systems." }), ui.root));
+        el("div", { class: "sub note", text: "Which region's version is kept when a game has several, best region first. The whole list counts, in this order; regions you have not moved stay in alphabetical order after the ones you placed. Applies to No-Intro and Redump systems." }), ui.root));
       if (info.keep_flags.length) {
         groups.push(el("div", { class: "rules-group" },
           el("div", { class: "rules-head", text: "Keep these kinds of variants (Amiga TOSEC)" }),
@@ -4511,123 +4029,85 @@
       $("col-rules-summary").textContent = custom ? `${p.exclude.length} exclusions \u00B7 ${p.languages.length ? p.languages.join(", ") : "all languages"} \u00B7 ${p.region_priority.slice(0, 2).join(" > ")} first` : "defaults";
     },
 
+    // ---- scan, preview, build, undo
+    async scan() {
+      const root = $("col-root").value.trim();
+      if (!root) { toast("Choose the folder with your ROMs first.", "error"); return; }
+      $("col-output").classList.add("hidden");
+      try { Jobs.track((await post("/api/collection/scan", { root })).job); } catch (err) { toast(err.message, "error"); }
+    },
+
     async run(path, body = {}) {
+      if (!this.info.scan) { toast("Scan the folder first.", "error"); return false; }
       if (this.inplace()) {
-        if (!Object.values(this.info.systems).some((e) => e.enabled)) { toast("Find the systems first and tick the ones to reorganise.", "error"); return false; }
-        await this.save({ place: "inplace" });
-        Jobs.start(path, body);
-        return true;
+        await this.save({ place: "inplace", aside: $("col-aside").value.trim(), sweep: $("col-sweep").checked });
+      } else {
+        if (!$("col-dest").value.trim()) { toast("Choose the folder to build the collection in.", "error"); return false; }
+        await this.save({ place: "elsewhere", dest: $("col-dest").value.trim(), mode: $("col-mode").value, sidecars: $("col-sidecars").checked, sync: $("col-sync").checked });
       }
-      if (!$("col-root").value.trim() || !$("col-dest").value.trim()) { toast("Choose the ROM root and the destination folder first.", "error"); return false; }
-      await this.save({ place: "elsewhere", dest: $("col-dest").value.trim(), mode: $("col-mode").value, sidecars: $("col-sidecars").checked, sync: $("col-sync").checked });
       Jobs.start(path, body);
       return true;
     },
 
-    async applyInplace() {
-      const n = Object.values(this.info.systems).filter((e) => e.enabled).length;
-      const sure = await confirmDialog({
-        title: "Reorganise the collection", danger: true, okText: "Reorganise",
-        body: el("div", {},
-          el("p", { text: `Reorganise ${n} system folder(s) where they are.` }),
-          el("ul", {},
-            el("li", { text: "Files are renamed and moved inside each system's own folder." }),
-            el("li", { text: $("col-sweep").checked ? `What the rules leave out (excluded, superseded, incomplete, duplicates, unmatched) is moved out of the ROM folders into ${$("col-aside").value.trim() || this.info.aside_default}. Nothing is deleted.` : "What the rules leave out is set aside in _excluded, _superseded and similar folders inside each system's folder. Nothing is deleted." }),
-            el("li", { text: "Each system is scanned again first. Preview shows the counts per system." }),
-            el("li", { text: "\"Undo last build\" puts everything back (every system has its own undo log)." }))) });
-      if (sure) this.run("/api/collection/apply");
-    },
-
     async apply() {
-      if (this.inplace()) return this.applyInplace();
-      const sure = await confirmDialog({
-        title: "Build the collection",
+      const inp = this.inplace();
+      const sure = await confirmDialog(inp ? {
+        title: "Build the library in this folder", danger: true, okText: "Apply",
         body: el("div", {},
-          el("p", { text: `Build ${Object.values(this.info.systems).filter((e) => e.enabled).length} system(s) from ${$("col-root").value.trim()} into ${$("col-dest").value.trim()}.` }),
+          el("p", { text: `Sort ${fmt(this.info.scan.systems.reduce((n, x) => n + x.files, 0))} files of ${this.info.scan.systems.length} system(s) in ${$("col-root").value.trim()}.` }),
           el("ul", {},
-            el("li", { text: $("col-mode").value === "move" ? "Move: the files leave the ROM folders. Undo moves them back." : "Copy: the ROM folders keep their files." }),
-            el("li", { text: "Each system is scanned and checked against its DATs again, then only what the rules keep is built." }),
-            el("li", { text: "Nothing in the destination is overwritten. Running it again adds only what is missing." }),
+            el("li", { text: "Every file moves into its system's folder, named with the standard short names. Folders left empty are removed." }),
+            ...([el("li", { text: "Files are renamed to the databases' names and sorted by the rules." }),
+              ...($("col-convert").checked && !$("col-convert-wrap").classList.contains("hidden") ? [el("li", { text: $("col-convert-label").textContent.replace(/\.$/, "") + "." })] : []),
+              el("li", { text: $("col-sweep").checked ? `What the rules archive is moved out into ${$("col-aside").value.trim() || this.info.aside_default}.` : "What the rules archive goes to _excluded, _superseded ... inside each system's folder." })]),
+            el("li", { text: "Files that match nothing, and files that are not ROMs, go to the archive folder. Nothing is deleted." }),
+            el("li", { text: "\"Undo last\" puts everything back." }))) } : {
+        title: "Build the collection", okText: "Build collection",
+        body: el("div", {},
+          el("p", { text: `Build ${this.info.scan.systems.length} system(s) from ${$("col-root").value.trim()} into ${$("col-dest").value.trim()}.` }),
+          el("ul", {},
+            el("li", { text: $("col-mode").value === "move" ? "Move: the files leave the ROM folder. Undo moves them back." : "Copy: the ROM folder keeps its files." }),
+            el("li", { text: "Only what the rules keep is built. Nothing in the destination is overwritten; running it again adds only what is missing." }),
             ...($("col-sync").checked ? [el("li", { text: "SYNC is on: files built before that the rules no longer keep (or whose source is gone) are removed from the destination. Preview first to see how many." })] : []),
-            el("li", { text: "\"Undo last build\" removes what this build added." }))),
-        okText: "Build collection" });
+            el("li", { text: "\"Undo last\" removes what this build added." }))) });
       if (!sure) return;
-      const mass = this.last && this.last.sync && this.last.systems.some((x) => x.mass_removal);
+      const mass = !inp && this.last && this.last.sync && (this.last.systems || []).some((x) => x.mass_removal);
       if (mass && !(await confirmDialog({ title: "Remove most of a library?", danger: true, okText: "Yes, remove them",
         body: `The last preview shows a sync that removes most of the files built before in: ${this.last.systems.filter((x) => x.mass_removal).map((x) => x.platform).join(", ")}. Only do this if you changed the rules on purpose and the source is complete.` }))) return;
       this.run("/api/collection/apply", mass ? { allow_mass_removal: true } : {});
     },
 
     async undo() {
-      const runs = (this.info.last || {}).runs || {};
-      const n = Object.keys(runs).length;
-      if (!n) { toast("There is no collection build to undo.", "info"); return; }
-      if (!(await confirmDialog({ title: "Undo last build", body: this.info.last && this.info.last.place === "inplace" ? `Put the files of ${n} system${n === 1 ? "" : "s"} back where they were before the last reorganise? Files moved since are left.` : `Remove what the last build added to ${(this.info.last || {}).dest} (${n} system${n === 1 ? "" : "s"})? Files you changed since are left in place.`, okText: "Undo", danger: true }))) return;
+      if (!(await confirmDialog({ title: "Undo last", body: "Put everything the last collection run did back: renamed folders, moved files, archived files. Files you changed or moved since are left.", okText: "Undo", danger: true }))) return;
       try {
         const r = await post("/api/collection/undo", {});
-        toast(`${r.removed || !r.restored ? `Removed ${fmt(r.removed)} file(s)` : `Put back ${fmt(r.restored)} file(s)`}${r.removed && r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length || r.errors.length ? "error" : "ok", 8000);
+        toast(`${r.removed || !r.restored ? `Removed ${fmt(r.removed)} file(s)` : `Put back ${fmt(r.restored)} file(s)`}${r.removed && r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}. Scan again to see the folder as it is now.`, r.skipped.length || r.errors.length ? "error" : "ok", 9000);
         this.adopt(await get("/api/collection"));
         this.last = null;
         $("col-output").classList.add("hidden");
       } catch (err) { toast(err.message, "error"); }
     },
 
-    async sortRun(path) {
-      if (!$("col-root").value.trim()) { toast("Choose the ROM root first.", "error"); return false; }
-      await this.save({ aside: $("col-aside").value.trim(), sweep: $("col-sweep").checked });
-      if (!Object.values(this.info.systems).some((e) => e.enabled)) { toast("Find the systems first and tick the ones to sort into.", "error"); return false; }
-      Jobs.start(path, {});
-      return true;
-    },
-
-    async sortApply() {
-      const r = this.sortLast;
-      if (!r) { toast("Press Preview sort first to see what would move.", "info"); return; }
-      if (!r.total) { toast("Nothing to sort: every file is already where it belongs.", "ok"); return; }
-      if (!(await confirmDialog({ title: "Sort into systems", okText: `Move ${fmt(r.total)} file(s)`, danger: true,
-        body: el("div", {}, el("p", { text: `Move ${fmt(r.total)} file(s) (${fmtBytes(r.bytes)}) under ${r.root}:` }),
-          el("ul", {}, ...Object.entries(r.counts).map(([k, n]) => el("li", { text: `${fmt(n)} to ${k === "_unmatched" || k === "_other" ? `${r.aside}/${k}/` : k === "sidecar" ? "go with their ROM" : `the ${k} folder`}` })),
-            el("li", { text: "Nothing is deleted or overwritten; Undo sort moves everything back." }))) }))) return;
-      this.sortRun("/api/collection/sort/apply");
-    },
-
-    showSort(r) {
-      this.sortLast = r;
-      const apply = r.action === "collection_sort_apply";
-      $("col-sort-output").classList.remove("hidden");
-      $("col-sort-cards").replaceChildren(
-        card(fmt(r.recognised || 0), "Games recognised", "info"),
-        ...Object.entries(r.counts || {}).map(([k, n]) => card(fmt(n), k === "_unmatched" ? "Unmatched, set aside" : k === "_other" ? "Not ROMs, set aside" : k === "sidecar" ? "Saves / notes going along" : `To ${k}`, k.startsWith("_") ? "warn" : "info")),
-        card(fmtBytes(r.bytes || 0), "Size", ""),
-        ...(apply && r.result ? [card(fmt(r.result.moved), "Moved now", "ok")] : []));
-      const notes = r.notes || [];
-      $("col-sort-notes").classList.toggle("hidden", !notes.length);
-      $("col-sort-notes").replaceChildren(...notes.map((n) => el("div", { text: n })));
-      $("col-sort-table").replaceChildren(...(r.items || []).map((i) => el("tr", {},
-        el("td", { text: i.bucket }), el("td", { class: "mono small", text: i.from }), el("td", { class: "mono small", text: i.to }))));
-      if (apply && r.result) {
-        toast(`Sorted: ${fmt(r.result.moved)} file(s) moved${r.result.failed.length ? `, ${fmt(r.result.failed.length)} failed` : ""}`, r.result.failed.length ? "error" : "ok", 9000);
-        showFailures("col-failures", "Could not move:", r.result.failed, (f) => `${f.path}: ${f.error}`);
-      }
-    },
-
-    async sortUndo() {
-      if (!(await confirmDialog({ title: "Undo sort", body: "Move every file of the last sort back to where it was? Files you moved since are left.", okText: "Undo", danger: true }))) return;
+    async restoreAside() {
+      if (!(await confirmDialog({ title: "Bring archived files back", body: "Move everything in the archive folder back into each system's folder (_excluded, _superseded ...)? The next tidy decides again.", okText: "Bring back" }))) return;
       try {
-        const r = await post("/api/collection/sort/undo", {});
-        toast(`Moved ${fmt(r.restored)} file(s) back${r.skipped.length ? `, ${fmt(r.skipped.length)} left` : ""}`, r.skipped.length ? "error" : "ok", 8000);
-        $("col-sort-output").classList.add("hidden");
-        this.sortLast = null;
+        const r = await post("/api/collection/aside/restore", {});
+        toast(`Moved ${fmt(r.moved)} file(s) back${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}. Scan again to see the folder as it is now.`, r.failed.length ? "error" : "ok", 8000);
         this.adopt(await get("/api/collection"));
       } catch (err) { toast(err.message, "error"); }
     },
 
-    async restoreAside() {
-      if (!(await confirmDialog({ title: "Bring set-aside files back", body: "Move everything in the set-aside folder back into each system's folder (_excluded, _superseded ...)? The next reorganise decides again.", okText: "Bring back" }))) return;
-      try {
-        const r = await post("/api/collection/aside/restore", {});
-        toast(`Moved ${fmt(r.moved)} file(s) back${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}`, r.failed.length ? "error" : "ok", 8000);
-      } catch (err) { toast(err.message, "error"); }
+    // ---- what a preview / build answers
+    /** "Folders are renamed to the standard short names": what will be (or was) renamed, shown with every preview and result. */
+    showRenames(r) {
+      const rows = r.renames || [];
+      const box = $("col-renames");
+      box.classList.toggle("hidden", !rows.length);
+      if (!rows.length) return;
+      const apply = /_apply$/.test(r.action || "");
+      const verb = (x) => (x.status === "conflict" ? "left alone" : x.status === "failed" ? "could not be renamed" : x.status === "in the destination" ? "in the destination" : apply ? "renamed" : "will be renamed");
+      box.replaceChildren(el("div", { text: "Folder names (the standard short names of EmulationStation-DE, EmuDeck and RetroDECK):" }),
+        ...rows.map((x) => el("div", { class: "mono small", text: `${x.platform}: ${(x.from || "").split(/[\\/]/).pop()} -> ${(x.to || "").split(/[\\/]/).pop()}  (${verb(x)}${x.note ? `: ${x.note}` : ""})` })));
     },
 
     head(cols) {
@@ -4635,38 +4115,49 @@
     },
 
     showInplace(r) {
-      const t = r.totals, apply = r.action === "collection_apply";
+      const t = r.totals, apply = r.action === "collection_apply", sort = r.sort || { counts: {}, total: 0 };
       const moved = r.systems.reduce((n, x) => n + ((x.result || {}).moved || 0), 0);
       const aside = t.excluded + t.superseded + t.incomplete + t.duplicates;
+      const sorted = Object.entries(sort.counts).filter(([k]) => !k.startsWith("_") && k !== "sidecar" && k !== "rename").reduce((n, [, v]) => n + v, 0);
       $("col-output").classList.remove("hidden");
       $("col-cards").replaceChildren(
-        card(fmt(r.systems.length), "Systems", "info"), card(fmt(t.kept), "Kept", "ok"),
-        card(fmt(t.renamed + t.moved), "Renamed / moved", t.renamed + t.moved ? "info" : "ok"),
-        card(fmt(aside), "Set aside (excluded, superseded ...)", aside ? "warn" : ""),
-        ...(t.unmatched ? [card(fmt(t.unmatched), "Unmatched", "warn")] : []),
-        ...(t.conflict ? [card(fmt(t.conflict), "Conflicts (left alone)", "bad")] : []),
-        ...(r.aside ? [card(fmt(r.aside.moved !== undefined ? r.aside.moved : r.aside.files), r.aside.moved !== undefined ? "Moved out of the ROM folders" : "Set-aside files to move out", "info")] : []),
-        ...(apply ? [card(fmt(moved), "Files moved now", "ok")] : [card(fmt(t.actionable), "Changes to make", t.actionable ? "info" : "ok")]));
-      this.head([["System"], ["Result"], ["Kept", 1], ["Renamed / moved", 1], ["Set aside", 1], ["Unmatched", 1], ["Notes"]]);
+        card(fmt(r.systems.length || Object.keys(sort.counts).length), "Systems", "info"),
+        card(fmt(sorted), apply ? "Files sorted into systems" : "Files to sort into systems", sorted ? "info" : "ok"),
+        ...(r.systems.some((x) => x.convert) ? [card(fmt(r.systems.reduce((n, x) => n + (x.convert || 0), 0)), "To convert first", "info")] : []),
+        ...((sort.counts._unmatched || t.unmatched) ? [card(fmt((sort.counts._unmatched || 0) + (t.unmatched || 0)), "Match nothing: archived", "warn")] : []),
+        ...(sort.counts._other ? [card(fmt(sort.counts._other), "Not ROMs: archived", "warn")] : []),
+        ...(r.systems.length ? [card(fmt(t.kept), "Kept", "ok"), card(fmt(t.renamed + t.moved), apply ? "Files renamed or moved to the databases' names" : "Files to rename or move", t.renamed + t.moved ? "info" : "ok"),
+          card(fmt(aside), "Archived by the rules", aside ? "warn" : "")] : []),
+                ...(t.conflict ? [card(fmt(t.conflict), "Conflicts (left alone)", "bad")] : []),
+        ...(r.aside ? [card(fmt(r.aside.moved !== undefined ? r.aside.moved : r.aside.files), r.aside.moved !== undefined ? "Moved out of the ROM folders" : "Files to archive", "info")] : []),
+        ...(apply ? [card(fmt(moved), "Files tidied now", "ok")] : [card(fmt(t.actionable), "Library changes", t.actionable ? "info" : "ok")]));
+      this.head([["System"], ["Result"], ["Games", 1], ["Kept", 1], ["Changed", 1], ["Archived", 1], ["Notes"]]);
+      // files that match no database belong to no system: one line, one total (those in system folders are archived too)
+      const unmatchedAll = (sort.counts._unmatched || 0) + (t.unmatched || 0);
+      const unmatchedRow = unmatchedAll ? el("tr", {},
+        el("td", { text: "Unmatched files" }), el("td", {}, badge("warn", apply ? "archived" : "to archive")), el("td", { class: "num", text: "" }),
+        el("td", { class: "num", text: "" }), el("td", { class: "num", text: "" }), el("td", { class: "num", text: fmt(unmatchedAll) }),
+        el("td", { class: "notes small", text: "Match nothing in any database, so they belong to no system." })) : null;
       $("col-table").replaceChildren(...r.systems.map((x) => {
         const c = x.counts || {}, res = x.result;
-        const text = x.status !== "ok" ? x.error || x.status : res ? `moved ${fmt(res.moved)}` : x.actionable ? `${fmt(x.actionable)} changes` : "already tidy";
+        const text = x.status !== "ok" ? x.error || x.status : res ? `tidied ${fmt(res.moved)}` : x.actionable ? `${fmt(x.actionable)} changes` : "already tidy";
         return el("tr", {},
-          el("td", { text: x.platform }), el("td", {}, badge(x.status === "ok" ? "ok" : "bad", text)),
-          el("td", { class: "num", text: fmt(c.kept || 0) }), el("td", { class: "num", text: fmt((c.renamed || 0) + (c.moved || 0)) }),
+          el("td", { text: x.platform + (x.own_rules ? " (own rules)" : "") }), el("td", {}, badge(x.status === "ok" ? "ok" : "bad", text)),
+          el("td", { class: "num", text: fmt(x.games || 0) }), el("td", { class: "num", text: fmt(c.kept || 0) }),
+          el("td", { class: "num", text: fmt((c.renamed || 0) + (c.moved || 0)) }),
           el("td", { class: "num", text: fmt((c.excluded || 0) + (c.superseded || 0) + (c.incomplete || 0) + (c.duplicates || 0)) }),
-          el("td", { class: "num", text: fmt(c.unmatched || 0) }),
           el("td", { class: "notes small", text: [...(x.failed || []).slice(0, 3).map((f) => `${f.src || f.path || ""}: ${f.error || "failed"}`),
             ...(x.saves && x.saves.followed ? [`${fmt(x.saves.followed)} save file(s) renamed`] : [])].join(" \u00B7 ") }));
-      }));
-      showFailures("col-failures", "Problems:", r.systems.filter((x) => x.status !== "ok"), (x) => `${x.platform}: ${x.error || x.status}`);
-      if (apply) toast(`Reorganised: ${fmt(moved)} file(s) moved${r.systems.some((x) => x.status !== "ok" || (x.failed || []).length) ? " (with problems)" : ""}`,
+      }), ...(unmatchedRow ? [unmatchedRow] : []));
+      showFailures("col-failures", "Problems:", [...r.systems.filter((x) => x.status !== "ok"),
+        ...(((sort.result || {}).failed) || []).map((f) => ({ platform: "Sorting", error: `${f.path}: ${f.error}`, status: "failed" }))], (x) => `${x.platform}: ${x.error || x.status}`);
+      if (apply) toast(`Done: ${fmt((sort.result || {}).moved || 0)} file(s) sorted, ${fmt(moved)} tidied${r.systems.some((x) => x.status !== "ok" || (x.failed || []).length) ? " (with problems)" : ""}`,
         r.systems.some((x) => x.status !== "ok" || (x.failed || []).length) ? "error" : "ok", 9000);
     },
 
     showResult(r) {
-      if (r.place === "sort") { this.showSort(r); return; }
       this.last = r;
+      this.showRenames(r);
       if (r.place === "inplace") { this.showInplace(r); return; }
       this.head([["System"], ["Result"], ["Files kept", 1], ["To copy", 1], ["To move", 1], ["Already there", 1], ["Notes"]]);
       const t = r.totals;
@@ -4703,39 +4194,40 @@
     },
 
     bind() {
-      $("col-detect").addEventListener("click", () => this.detect());
-      $("col-root").addEventListener("keydown", (e) => { if (e.key === "Enter") this.detect(); });
-      $("col-root-browse").addEventListener("click", () => FolderBrowser.open($("col-root"), "Choose the ROM root folder"));
-      $("col-root-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-root"), "Choose the ROM root folder"));
+      $("col-scan-btn").addEventListener("click", () => this.scan());
+      $("col-root").addEventListener("keydown", (e) => { if (e.key === "Enter") this.scan(); });
+      $("col-root").addEventListener("change", () => this.save({ root: $("col-root").value.trim() }));
+      $("col-root-browse").addEventListener("click", () => FolderBrowser.open($("col-root"), "Choose the folder with your ROMs"));
+      $("col-root-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-root"), "Choose the folder with your ROMs"));
       $("col-dest-browse").addEventListener("click", () => FolderBrowser.open($("col-dest"), "Choose the folder to build the collection in"));
       $("col-dest-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-dest"), "Choose the folder to build the collection in"));
-      $("col-root").addEventListener("change", () => { if ($("col-root").value.trim() !== (this.info || {}).root) this.detect(); });
+      $("col-aside-browse").addEventListener("click", () => FolderBrowser.open($("col-aside"), "Choose the archive folder"));
+      $("col-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-aside"), "Choose the archive folder"));
       $("col-dest").addEventListener("change", () => this.save({ dest: $("col-dest").value.trim() }));
+      $("col-aside").addEventListener("change", () => this.save({ aside: $("col-aside").value.trim() }));
       $("col-mode").addEventListener("change", () => this.save({ mode: $("col-mode").value }));
       $("col-sidecars").addEventListener("change", () => this.save({ sidecars: $("col-sidecars").checked }));
       $("col-sync").addEventListener("change", () => this.save({ sync: $("col-sync").checked }));
-      $("col-mode").addEventListener("change", () => this.syncAllowed());
+      $("col-sweep").addEventListener("change", () => this.save({ sweep: $("col-sweep").checked }));
+      $("col-convert").addEventListener("change", () => this.save({ convert: $("col-convert").checked }));
       for (const id of ["col-place-elsewhere", "col-place-inplace"]) {
-        $(id).addEventListener("change", () => { this.placeChanged(); this.save({ place: this.inplace() ? "inplace" : "elsewhere" }); $("col-output").classList.add("hidden"); });
+        $(id).addEventListener("change", () => { this.save({ place: this.inplace() ? "inplace" : "elsewhere" }); this.render(); $("col-output").classList.add("hidden"); });
       }
       $("col-rules-reset").addEventListener("click", () => this.save({ global: {} }));
       $("col-plan-btn").addEventListener("click", () => this.run("/api/collection/plan"));
       $("col-apply-btn").addEventListener("click", () => this.apply());
       $("col-undo-btn").addEventListener("click", () => this.undo());
-      $("col-sort-plan").addEventListener("click", () => this.sortRun("/api/collection/sort/plan"));
-      $("col-sort-apply").addEventListener("click", () => this.sortApply());
-      $("col-sort-undo").addEventListener("click", () => this.sortUndo());
       $("col-restore").addEventListener("click", () => this.restoreAside());
-      $("col-aside").addEventListener("change", () => this.save({ aside: $("col-aside").value.trim() }));
-      $("col-sweep").addEventListener("change", () => this.save({ sweep: $("col-sweep").checked }));
-      $("col-aside-browse").addEventListener("click", () => FolderBrowser.open($("col-aside"), "Choose the set-aside folder"));
-      $("col-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-aside"), "Choose the set-aside folder"));
     },
   };
 
   Jobs.handlers.collection = async (job) => {
-    if ((job.status === "done" || job.status === "cancelled") && job.result) Collection.showResult(job.result);
+    const r = job.result;
+    if ((job.status === "done" || job.status === "cancelled") && r && r.action !== "collection_scan") Collection.showResult(r);
     try { Collection.adopt(await get("/api/collection")); } catch (_) { /* keep what is shown */ }
+    if (job.status === "done" && r && r.action === "collection_scan" && Collection.info.scan) {
+      toast(`Scanned: ${fmt(Collection.info.scan.systems.reduce((n, x) => n + x.games, 0))} games in ${Collection.info.scan.systems.length} systems`, "ok", 6000);
+    }
   };
 
   // ----------------------------------------------------------- shared UI
@@ -4743,18 +4235,11 @@
     const hasScan = !!state.scan;
     const canScan = !!state.platform && !!folderOf(currentPlatform()).trim();
     $("scan-btn").dataset.blocked = canScan ? "0" : "1";
-    for (const id of ["plan-btn", "m3u-plan-btn", "convert-plan-btn", "lib-plan-btn"]) $(id).dataset.blocked = hasScan ? "0" : "1";
-    if (!hasScan) for (const id of ["undo-btn", "convert-undo-btn", "lib-undo-btn"]) $(id).dataset.blocked = "1";
+    for (const id of ["lib-plan-btn"]) $(id).dataset.blocked = hasScan ? "0" : "1";
+    if (!hasScan) for (const id of ["lib-undo-btn"]) $(id).dataset.blocked = "1";
     if (!hasScan || libTable === null) $("lib-apply-btn").dataset.blocked = hasScan ? "0" : "1";
-    if (!hasScan || convertTable === null) $("convert-apply-btn").dataset.blocked = hasScan ? "0" : "1";
     // Apply buttons are enabled once a scan exists (until a preview shows there is
     // nothing to do); the confirmation step re-checks the counts anyway.
-    if (!hasScan || organiseTable === null) $("apply-btn").dataset.blocked = hasScan ? "0" : "1";
-    if (!hasScan || m3uTable === null) $("m3u-apply-btn").dataset.blocked = hasScan ? "0" : "1";
-    const hasDest = !!$("kick-dest").value.trim();
-    const kickOk = kickReady(currentPlatform());
-    $("kick-plan-btn").dataset.blocked = kickOk && hasDest ? "0" : "1";
-    if (!kickOk || !hasDest || kickTable === null) $("kick-apply-btn").dataset.blocked = kickOk && hasDest ? "0" : "1";
     Jobs.setRunning(Jobs.running);
   }
 
@@ -4787,9 +4272,7 @@
   function bind() {
     bindMoreMenu();
     initSide();
-    for (const id of ["scan-btn", "plan-btn", "apply-btn", "undo-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn",
-      "convert-plan-btn", "convert-apply-btn", "convert-undo-btn", "m3u-plan-btn", "m3u-apply-btn",
-      "kick-plan-btn", "kick-apply-btn", "dc-verify-btn"]) {
+    for (const id of ["scan-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn"]) {
       $(id).setAttribute("data-needs-idle", "");
     }
     $("updates-btn").addEventListener("click", () => Updates.check());
@@ -4804,6 +4287,10 @@
     $("lib-undo-btn").addEventListener("click", undoLibrary);
     for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
     $("lib-export-dest").addEventListener("change", exportSettingsChanged);
+    $("lib-aside-on").addEventListener("change", asideChanged);
+    $("lib-aside-dir").addEventListener("change", asideChanged);
+    $("lib-aside-browse").addEventListener("click", () => FolderBrowser.open($("lib-aside-dir"), "Choose the folder for the archived files"));
+    $("lib-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("lib-aside-dir"), "Choose the folder for the archived files"));
     $("lib-export-browse-btn").addEventListener("click", () => FolderBrowser.open($("lib-export-dest"), "Choose the folder to build the library in"));
     $("lib-export-native-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("lib-export-dest"), "Choose the folder to build the library in"));
     $("library-reset").addEventListener("click", async () => {
@@ -4811,8 +4298,7 @@
         state.library[state.platform] = await post("/api/library/profile", { platform: state.platform, reset: true });
         const p = currentPlatform();
         if (p) { p.library = state.library[state.platform].profile; p.latest_only = !!p.library.latest_only; }
-        $("organise-latest-only").checked = !!(p && p.latest_only);
-        profileChanged();
+            profileChanged();
         renderLibraryRules();
       } catch (err) { toast(err.message, "error"); }
     });
@@ -4828,46 +4314,13 @@
     tabKeys($("sys-tabs"));
     tabKeys($("result-tabs"));
     window.addEventListener("hashchange", applyRoute);
-    $("apply-btn").addEventListener("click", applyOrganise);
-    $("undo-btn").addEventListener("click", undoLast);
-    $("m3u-apply-btn").addEventListener("click", writeM3Us);
-    $("organise-latest-only").addEventListener("change", async () => {
-      const p = currentPlatform();
-      const value = latestOnly();
-      if (p) {
-        p.latest_only = value;
-        try { // remembered right away, so a scan / DAT download in between keeps it
-          await post("/api/platforms/options", { platform: p.name, latest_only: value });
-        } catch (err) { toast(`Could not save "Latest version only": ${err.message}`, "error"); }
-      }
-      loadLibraryProfile();
-      Previews.staleAll("Rules changed since this preview", ["lib", "organise", "convert"]);
-      scheduleTotals();
-    });
-    $("dc-verify-btn").addEventListener("click", verifyFully);
     $("chdman-save").addEventListener("click", () => saveChdman({ path: $("chdman-path").value.trim() }));
     $("chdman-refresh").addEventListener("click", () => loadChdman(true));
     $("chdman-engine").addEventListener("change", (e) => saveChdman({ engine: e.target.value }));
     $("chd-writer").addEventListener("change", (e) => saveChdman({ writer: e.target.value }));
     $("chd-preset").addEventListener("change", (e) => saveChdman({ preset: e.target.value }));
-    $("convert-apply-btn").addEventListener("click", applyConvert);
-    $("convert-undo-btn").addEventListener("click", undoLast);
-    for (const id of ["m3u-labels", "m3u-savedisk"]) {
-      $(id).addEventListener("change", () => Previews.stale("m3u", "Options changed since this preview"));
-    }
-    $("kick-dest").addEventListener("input", debounce(() => {
-      kickTable = null;
-      Previews.clear("kick");
-      $("kick-output").classList.add("hidden");
-      $("kick-empty").classList.remove("hidden");
-      try { renderKickDirs(JSON.parse($("kick-dirs").dataset.dirs || "[]")); } catch (_) { /* ignore */ }
-      updateActionState();
-    }, 150));
-    $("kick-dest").addEventListener("change", saveKickDest);
-    $("kick-dest").addEventListener("keydown", (e) => { if (e.key === "Enter" && kickReady(currentPlatform())) showKickPlan(); });
-    $("kick-browse-btn").addEventListener("click", () => FolderBrowser.open($("kick-dest"), "Choose the RetroArch system / BIOS folder"));
-    $("kick-native-browse-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("kick-dest"), "Choose the RetroArch system / BIOS folder"));
-    $("kick-apply-btn").addEventListener("click", applyKick);
+    $("lib-convert").addEventListener("change", saveConvertOption);
+    $("chd-verify-scan").addEventListener("change", (e) => saveChdman({ verify_scan: e.target.checked }));
     $("quit-btn").addEventListener("click", quit);
     $("databases-btn").addEventListener("click", () => toggleDatabases());
     document.addEventListener("click", (e) => {
@@ -4920,7 +4373,6 @@
     state.platform = (s.scan && s.scan.platform) || s.last_platform || s.default_platform || null;
     if (state.platform) Prefs.restore(state.platform);
     await loadPlatforms();
-    setKickDest(currentPlatform());
     renderHome();          // status and platforms were just loaded: no second round trip (refreshScan would refetch both)
     applyScan();
     applyRoute();

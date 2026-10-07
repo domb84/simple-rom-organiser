@@ -58,6 +58,18 @@ CSP = (
 )
 
 
+def _staged(job: "Job", index: int, count: int, label: str) -> Callable[..., None]:
+    """A progress callback that maps ``(done, total, message)`` of one step onto its share of a job of ``count`` steps:
+    ``done`` becomes ``index + done / total``, so the job's percentage (and ETA) follow the whole run."""
+    def report(*args: Any, **kwargs: Any) -> None:
+        nums = [a for a in args if isinstance(a, (int, float)) and not isinstance(a, bool)]
+        texts = [a for a in args if isinstance(a, (str, os.PathLike))]
+        frac = min(1.0, nums[0] / nums[1]) if len(nums) > 1 and nums[1] else 0.0
+        text = Path(texts[0]).name if texts and isinstance(texts[0], os.PathLike) else (texts[0] if texts else "")
+        job.report(index + frac, count, f"[{min(index + 1, count)}/{count}] {label}" + (f": {text}" if text else ""))
+    return report
+
+
 def _existing_parent(path: Path) -> Path:
     """``path`` itself, or its nearest ancestor that exists (for a free-space check on a folder yet to be created)."""
     while not path.exists() and path.parent != path:
@@ -124,6 +136,7 @@ class Job:
         self.error: str | None = None
         self.error_code: str | None = None
         self.cancel = CancelToken()
+        self.bytes = 0                     # the data the job dealt with, fixed when it ends
         self.started = time.time()
         self.finished: float | None = None
         self.thread: threading.Thread | None = None
@@ -157,6 +170,7 @@ class Job:
                 "status": self.status,
                 "cancellable": self.cancellable,
                 "progress": dict(self.progress),
+                "bytes": self.bytes if self.finished is not None else _mod("meter").value(),
                 "result": self.result,
                 "error": self.error,
                 "error_code": self.error_code,
@@ -179,6 +193,7 @@ class JobManager:
             if self._current is not None and self._current.status == "running":
                 raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is already running")
             job = Job(self._next_id, kind, cancellable, platform)
+            _mod("meter").reset()
             self._next_id += 1
             self._current = job
         job.thread = threading.Thread(target=self._run, args=(job, fn), name=f"job-{kind}", daemon=True)
@@ -204,6 +219,7 @@ class JobManager:
             job.status = status
             job.error = error
             job.error_code = code if status == "error" and code else None
+            job.bytes = _mod("meter").value()
             job.finished = time.time()
 
     @property
@@ -806,6 +822,8 @@ class App:
         self._undo_counts: dict[tuple[str, int, int], int] = {}
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
+        self._rootscan: Any = None                                 # the scan of the collection's ROM folder (collection.RootScan)
+        self._region_cache: dict[str, tuple[tuple, dict[str, int]]] = {}   # platform -> regions found in its DATs
         self._lang_cache_games: dict[str, tuple[tuple, frozenset]] = {}   # platform -> games that have a version in your languages
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
         self._totals_mgr: Any = None                           # totals.TotalsManager (library totals, Amendment 17)
@@ -1021,6 +1039,27 @@ class App:
         self._lang_cache = {key: rows}  # one platform at a time
         return rows
 
+    def _available_regions(self, platform: Any) -> dict[str, int]:
+        """``{region: games}`` of the platform's installed region-filtered DATs (``library.available_regions``), cached per DAT
+        versions: the region list is what the data has, not a list made up in advance."""
+        library = _optional_mod("library")
+        scope = tuple(getattr(platform, "region_dats", ()) or ())
+        func = getattr(library, "available_regions", None)
+        if func is None or not scope:
+            return {}
+        try:
+            key = (platform.name, self._dats_signature(platform))
+            hit = self._region_cache.get(platform.name)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+            dats, _missing = self._platform_dats(platform)
+            counts = dict(func([d for d in dats if getattr(d, "name", "") in scope]))
+        except Exception:  # noqa: BLE001 - informative only: without it the list falls back to every known region
+            traceback.print_exc()
+            return {}
+        self._region_cache[platform.name] = (key, counts)
+        return counts
+
     @staticmethod
     def _ranking_text(style: str = SOURCE_TOSEC) -> str:
         """The variant ranking as one line (from ``tags.PLATFORM_ORDER``)."""
@@ -1066,8 +1105,10 @@ class App:
             "style": SOURCE_TOSEC, "catalog": [], "regions": [], "language_names": {},
         }
         build = getattr(library, "profile_info", None)
+        region_counts = self._available_regions(platform)
+        info["region_counts"] = region_counts
         if build is not None:
-            extra = build(platform, profile)
+            extra = _call(build, platform, profile, regions_present=(set(region_counts) if region_counts else None))
             for key in ("style", "catalog", "regions", "language_names", "rating_codes", "reason_labels"):
                 if key in extra:
                     info[key] = extra[key]
@@ -1293,6 +1334,7 @@ class App:
             "folder_hint": getattr(platform, "folder_hint", "") or "",
             "extensions": list(getattr(platform, "extensions", ()) or ()),
             "convertible": bool(getattr(platform, "convertible", False)),
+            "convert_on_build": self._convert_on_build(platform, cfg),
             "chd": layout == LAYOUT_GAME_FOLDER,
             "disc": self._disc_info(platform, cfg),
             "folder": self._folders(cfg).get(platform.name),
@@ -1368,12 +1410,14 @@ class App:
         return path
 
     def _run_scan(self, job: Job, root: Path, platform: Any, cancellable: bool = True,
-                  keep: bool = True) -> ScanState | None:
-        """Scan ``root``. ``keep=False`` (collection builds) returns the state without making it the current scan."""
+                  keep: bool = True, report: Callable[..., None] | None = None) -> ScanState | None:
+        """Scan ``root``. ``keep=False`` (collection builds) returns the state without making it the current scan.
+        ``report`` replaces ``rep`` (a collection maps each system's progress onto its share of the whole job)."""
+        rep = report or job.report
         # DATs are kept current automatically: a platform whose DATs are not installed yet waits for
         # (or starts) the update here, with its progress shown as this job's progress.
         try:
-            self.updates.ensure(platform, progress=job.report, cancel=job.cancel)
+            self.updates.ensure(platform, progress=rep, cancel=job.cancel)
         except Exception as exc:  # noqa: BLE001 - UpdateError (offline / failed / cancelled)
             if type(exc).__name__ != "UpdateError":
                 raise
@@ -1391,7 +1435,7 @@ class App:
                            "update_failed") from None
         if keep:
             self._shed_scan_caches()
-        job.report(0, 0, f"Loading {platform.name} DATs...")
+        rep(0, 0, f"Loading {platform.name} DATs...")
         dats, missing = self._platform_dats(platform)
         sig = self._dats_signature(platform)  # what this scan parsed (see _scan_is_stale)
         clear = getattr(self.updates, "clear_stale", None)
@@ -1401,18 +1445,18 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT,
                            f"No DATs for {platform.name} are installed (automatic DAT updates are off or unavailable)",
                            "no_dats")
-        job.report(0, 0, "Scanning...")
+        rep(0, 0, "Scanning...")
         layout = _layout(platform)
         if layout == LAYOUT_GAME_FOLDER:     # disc systems (Dreamcast, PlayStation, PlayStation 2): CHD / raw sets, matched per track
             cfg = self._config()
             self._configure_temp(cfg)
             result = _mod("discsys").scan(
-                root, dats, progress=job.report, cancel=job.cancel if cancellable else None,
+                root, dats, progress=rep, cancel=job.cancel if cancellable else None,
                 chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
-                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
+                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")), full=bool(cfg.get("chd_verify_scan")),
                 protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
         else:
-            result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=job.report,
+            result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=rep,
                            cancel=job.cancel if cancellable else None,
                            alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=layout,
                            protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()),
@@ -1520,7 +1564,7 @@ class App:
         to_unmatched = matched = 0
         systems: set[str] = set()
         for item, _ in rows:
-            if item.get("superseded_by") or item.get("code"):  # matched, set aside for a library rule
+            if item.get("superseded_by") or item.get("code"):  # matched, archived for a library rule
                 matched += 1
                 continue
             if item["dest"] in RESERVED_DIRS and item["dest"] != UNMATCHED_DIR:
@@ -1757,7 +1801,7 @@ class App:
             "other_dats": sorted({_rom_dat(r) for r in match.roms} - {dat, ""}),
             "named_ok": named,
             "placed_ok": placed,
-            # set aside on purpose (_excluded/, _superseded/ ...): not "needs moving"
+            # archived on purpose (_excluded/, _superseded/ ...): not "needs moving"
             "aside": _rel(path, root).split("/", 1)[0] in RESERVED_DIRS,
             "via": via,
             "header": getattr(match, "header", 0) or 0,
@@ -1924,7 +1968,8 @@ class App:
         exp = cfg.get("library_export") if isinstance(cfg.get("library_export"), dict) else {}
         out["library_export"] = {"enabled": bool(exp.get("enabled")), "dest": str(exp.get("dest") or ""),
                                  "mode": _mod("libexport").normalize_mode(exp.get("mode")),
-                                 "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync"))}
+                                 "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync")),
+                                 "aside": bool(exp.get("aside")), "aside_dir": str(exp.get("aside_dir") or "")}
         out["kickstart_dest"] = _kick_dest(cfg, LEGACY_KICKSTART_PLATFORM)     # the TOSEC Amiga's (legacy key)
         dests = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
         out["kickstart_dests"] = {k: v for k, v in dests.items() if isinstance(v, str)}
@@ -2020,14 +2065,28 @@ class App:
             cfg = self._config_update(folder_for=(platform.name, str(path)), strict=True)
         return {"folders": self._folders(cfg)}
 
+    @staticmethod
+    def _convert_on_build(platform: Any, cfg: dict[str, Any]) -> bool:
+        """The Library option "convert raw discs to CHD" / "clean up dumps" of a system (off by default: it takes a while)."""
+        table = cfg.get("convert_on_build") if isinstance(cfg.get("convert_on_build"), dict) else {}
+        return bool(getattr(platform, "convertible", False)) and bool(table.get(platform.name))
+
     def platform_options(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """Remember per-platform options right away (``latest_only``), not only on the next
-        organise / convert request - so a scan or DAT download in between keeps them."""
+        """Remember per-platform options right away (``latest_only``, ``convert``), not only on the next request - so a scan
+        or DAT download in between keeps them."""
         platform = self._resolve_platform(body.get("platform"))
-        if "latest_only" not in body:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected latest_only)")
-        self._save_latest_only(platform, _bool_arg(body.get("latest_only")))
-        return {"platform": platform.name, "latest_only": self._latest_only(platform)}
+        if "latest_only" not in body and "convert" not in body:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected latest_only or convert)")
+        if "latest_only" in body:
+            self._save_latest_only(platform, _bool_arg(body.get("latest_only")))
+        if "convert" in body:
+            def mutate(cfg: dict[str, Any]) -> None:
+                table = cfg.get("convert_on_build") if isinstance(cfg.get("convert_on_build"), dict) else {}
+                table[platform.name] = _bool_arg(body.get("convert"))
+                cfg["convert_on_build"] = table
+            _mod("paths").update_config(mutate)
+        return {"platform": platform.name, "latest_only": self._latest_only(platform),
+                "convert": self._convert_on_build(platform, self._config())}
 
     def dats_update(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Alias of ``/api/updates/check`` (kept for older clients; the job form is gone)."""
@@ -2088,6 +2147,9 @@ class App:
         if "keep_flags" in body:
             changes["keep_flags"] = frozenset(names("keep_flags", getattr(tags, "KEEP_FLAGS", None), "flag types"))
         if "region_priority" in body:
+            if isinstance(body.get("region_priority"), list):
+                body = {**body, "region_priority": [tags.canon_region(r) if isinstance(r, str) else r
+                                                    for r in body["region_priority"]]}
             changes["region_priority"] = tuple(names("region_priority", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
                     "borrow_other_editions", "keep_other_language"):
@@ -2563,40 +2625,6 @@ class App:
         return {"kind": "file" if locals_ else "missing", "source": label, "dat_name": item.get("dat", ""),
                 "dat": dat_rows, "also_named": 0, "local": locals_, "more_files": max(0, len(matches) - 6)}
 
-    def organise_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        state = self._require_scan()
-        if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse a cached plan
-            self._drop_plans(state)
-        latest_only = self._latest_arg(state, body)
-        ops = self._rename_plan(state, latest_only)
-        rows = self._rename_rows(state, latest_only)
-        status = _str_arg(body.get("status"))
-        dest = _str_arg(body.get("dest"))  # "." = the root folder itself
-        by_dest: dict[str, int] = {}
-        to_superseded = 0
-        for item, _ in rows:
-            if item["status"] in ACTIONABLE:
-                by_dest[item["dest"]] = by_dest.get(item["dest"], 0) + 1
-                if item["superseded_by"]:
-                    to_superseded += 1
-        if status or dest:
-            folder = "" if dest == "." else dest
-            rows = [r for r in rows
-                    if (not status or r[0]["status"] == status) and (not dest or r[0]["dest"] == folder)]
-        key = ("warnings", latest_only)
-        if key not in state.items:
-            state.items[key] = [(dict(text=w), "") for w in self._plan_warnings(
-                state, self._rename_rows(state, latest_only))]
-        page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
-        page.update(counts=_status_counts(ops), all=len(ops), root=str(state.root),
-                    actionable=sum(by_dest.values()), by_dest=by_dest,
-                    to_unmatched=by_dest.get(UNMATCHED_DIR, 0), unmatched_dir=UNMATCHED_DIR, reserved_dirs=list(RESERVED_DIRS),
-                    missing_dats=list(state.missing_dats),
-                    warnings=[w["text"] for w, _ in state.items[key]],
-                    latest_only=latest_only, to_superseded=to_superseded, superseded_dir=SUPERSEDED_DIR,
-                    layout=state.layout)
-        return page
-
     def _rescan_after(self, job: Job, state: ScanState) -> dict[str, Any]:
         job.report(0, 0, "Re-scanning folder...")
         new_state = self._run_scan(job, state.root, state.platform, cancellable=False)
@@ -2617,21 +2645,6 @@ class App:
                     self._scan = None  # the old plan is stale: force a new scan
             res["rescan_error"] = (exc.message if isinstance(exc, ApiError) else str(exc)) or type(exc).__name__
         return res
-
-    def organise_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        state = self._require_scan()
-        latest_only = self._latest_arg(state, body)
-
-        def work(job: Job) -> Any:
-            ops = self._rename_plan(state, latest_only)
-            todo = sum(1 for op in ops if op.status in ACTIONABLE)
-            job.report(0, todo, "Moving files...")
-            apply = _mod("discsys").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
-            res = dict(_call(apply, ops, state.root, progress=job.report, cancel=job.cancel))
-            res["action"] = "apply"
-            return self._rescan_into(job, state, res)
-
-        return {"job": self.jobs.start("organise", work, cancellable=False, platform=state.platform.name).to_dict()}
 
     def _root_for(self, raw: Any) -> Path:
         if isinstance(raw, str) and raw.strip():
@@ -2690,8 +2703,14 @@ class App:
 
         def work(job: Job) -> Any:
             job.report(0, 0, "Undoing moves...")
+            back = self._undo_library_sweep(str(log))
             res = dict(_call(_mod("organiser").undo, log, root=state.root))
             res["action"] = "undo"
+            conv = self._undo_linked_conversion(str(log), state.root) if kind == "library" else None
+            if conv:
+                res["converted_back"] = conv.get("restored")
+            if back:
+                res["aside_restored"] = back["restored"]
             saves = self._ra_undo_follow(str(log))
             if saves:
                 res["saves"] = saves
@@ -2882,6 +2901,16 @@ class App:
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
             reserved_dirs=list(RESERVED_DIRS))
         page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
+        if self._convert_on_build(state.platform, self._config()):
+            ops = self._convert_plan(state, self._latest_arg(state, {}))
+            page["convert"] = {"count": sum(1 for op in ops if op.status == "convert"), "kind": "chd" if self._is_dc(state) else "clean"}
+        aside_raw = _str_arg(body.get("aside_to"))
+        if aside_raw and not _str_arg(body.get("export_to")):
+            aside = self._library_aside_dir(state, body)
+            existing = len(_mod("sortroot").plan_sweep({state.platform.name: state.root}, aside)) if aside else 0
+            r = page["reasons"]
+            page["aside"] = {"path": str(aside), "existing": existing,
+                             "coming": sum(r.get(k, 0) for k in ("excluded", "superseded", "incomplete", "duplicates", "unmatched"))}
         export_to = _str_arg(body.get("export_to"))
         if export_to:
             page["export"] = self._export_summary(state, plan, export_to, _mod("libexport").normalize_mode(_str_arg(body.get("export_mode"))),
@@ -2963,6 +2992,18 @@ class App:
                 "sync": sync, "mass_removal": ep.mass_removal(),
                 "removals": [{"rel": r.rel, "reason": r.reason, "skip": r.skip} for r in ep.removals[:200]]}
 
+    def _library_aside_dir(self, state: ScanState, body: dict[str, Any]) -> Path | None:
+        """The folder a build in place moves what it sets aside to (``aside_to``): checked not to lie in this folder."""
+        raw = _str_arg(body.get("aside_to"))
+        if not raw:
+            return None
+        aside = Path(os.path.abspath(os.path.expanduser(raw)))
+        problem = _mod("collection").check_folders(state.root, aside)
+        if problem:
+            raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "archive folder").replace("ROM root", "ROM folder"),
+                           "bad_aside")
+        return aside
+
     def library_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
         key = self._library_flags(body)
@@ -2974,22 +3015,67 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
                            "recalculate the preview and check it again", "stale_plan")
         self._library_plan(state, *key)  # errors (e.g. module missing) before starting a job
+        aside = self._library_aside_dir(state, body)
 
         def work(job: Job) -> Any:
-            plan = self._library_plan(state, *key)
+            st = state
+            conv_res: dict[str, Any] | None = None
+            if self._convert_on_build(st.platform, self._config()):      # raw discs / odd dumps are converted first
+                latest = self._latest_arg(st, {})
+                if any(op.status == "convert" for op in self._convert_plan(st, latest)):
+                    conv_res = self._apply_conversions(job, st, latest)
+                    self._rescan_into(job, st, conv_res)
+                    self._carry_temp(st, conv_res)
+                    st = self._require_scan()
+                    if job.cancel.is_set():
+                        return conv_res
+            plan = self._library_plan(st, *key)
             todo = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
                 1 for p in plan.playlists if p.status == "write")
             job.report(0, todo, "Building library...")
-            apply = _mod("discsys").apply_plan if self._is_dc(state) else _mod("organiser").apply_renames
-            res = dict(_call(apply, plan.ops, state.root, progress=job.report,
-                             cancel=job.cancel, playlists=list(plan.playlists)))
+            sortroot = _mod("sortroot")
+            arch_out: dict[str, Any] | None = None
+            if aside is not None:
+                # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
+                ops, arch, _n = self._collection_single_pass(st.root, [], plan, st.root.parent, aside, True)
+                if arch:
+                    arch_out = sortroot.apply_moves(arch, _mod("paths").data_dir() / "collection-undo", "libsweep",
+                                                    keep=[st.root, aside], cancel=job.cancel)
+                res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
+                                                           playlists=list(plan.playlists)))
+                if arch_out and arch_out.get("journal") and res.get("undo_log"):      # one undo takes both back
+                    jp = Path(arch_out["journal"])
+                    data = json.loads(jp.read_text(encoding="utf-8"))
+                    data["library_log"] = res["undo_log"]
+                    jp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            else:
+                apply = _mod("discsys").apply_plan if self._is_dc(st) else _mod("organiser").apply_renames
+                res = dict(_call(apply, plan.ops, st.root, progress=job.report,
+                                 cancel=job.cancel, playlists=list(plan.playlists)))
             res["action"] = "library"
+            if conv_res is not None:
+                res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
+                                    "failed": list(conv_res.get("failed") or [])[:20]}
+                if conv_res.get("undo_log") and res.get("undo_log"):    # one undo reverts both
+                    self._link_undo(res["undo_log"], conv_res["undo_log"])
+                elif conv_res.get("undo_log"):                           # the build itself changed nothing: undo the conversion
+                    res["undo_log"] = conv_res["undo_log"]
             moved = self._moved_pairs(plan.ops)
             if moved:
                 follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")})
                 if follow:
                     res["saves"] = follow
-            return self._rescan_into(job, state, res)
+            if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
+                sweep = sortroot.plan_sweep({st.platform.name: st.root}, aside)       # what earlier builds left in _excluded/ ...
+                out = {"moved": 0, "failed": []}
+                if sweep:
+                    out = sortroot.apply_moves(sweep, _mod("paths").data_dir() / "collection-undo", "libsweep",
+                                               keep=[state.root, aside], progress=_staged(job, 0, 1, "moving the archived files out"),
+                                               extra={"library_log": res.get("undo_log") or ""})
+                if sweep or arch_out:
+                    res["aside"] = {"path": str(aside), "moved": out["moved"] + (arch_out or {}).get("moved", 0),
+                                    "failed": (out["failed"] + (arch_out or {}).get("failed", []))[:20]}
+            return self._rescan_into(job, st, res)
 
         return {"job": self.jobs.start("library", work, cancellable=False, platform=state.platform.name).to_dict()}
 
@@ -3036,7 +3122,8 @@ class App:
         """``POST /api/library/export/settings``: remember where the library is built (``enabled, dest, mode, sidecars``)."""
         mode = _mod("libexport").normalize_mode(_str_arg(body.get("mode")))
         value = {"enabled": _bool_arg(body.get("enabled")), "dest": _str_arg(body.get("dest")), "mode": mode,
-                 "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync")) and mode != "move"}
+                 "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync")) and mode != "move",
+                 "aside": _bool_arg(body.get("aside")), "aside_dir": _str_arg(body.get("aside_dir"))}
         self._config_update(library_export=value)
         return value
 
@@ -3196,6 +3283,39 @@ class App:
             traceback.print_exc()
             return {"error": str(exc), "followed": 0, "copied": 0, "failed": []}
 
+    def _link_undo(self, library_log: str, convert_log: str) -> None:
+        folder = _mod("paths").data_dir() / "collection-undo"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"libconv-{time.strftime('%Y%m%d-%H%M%S')}.json").write_text(
+            json.dumps({"library_log": library_log, "convert_log": convert_log}), encoding="utf-8")
+
+    def _undo_linked_conversion(self, library_log: str, root: Path) -> dict[str, Any] | None:
+        """Undoing a library build that converted first also undoes the conversion (its log was linked to the build's)."""
+        folder = _mod("paths").data_dir() / "collection-undo"
+        try:
+            for j in sorted(folder.glob("libconv-*.json"), reverse=True):
+                data = json.loads(j.read_text(encoding="utf-8"))
+                if Path(data["library_log"]).resolve() == Path(library_log).resolve() and Path(data["convert_log"]).is_file():
+                    res = dict(_mod("organiser").undo(Path(data["convert_log"]), root=root))
+                    j.rename(j.with_suffix(".json.undone"))
+                    return res
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        return None
+
+    def _undo_library_sweep(self, library_log: str) -> dict[str, Any] | None:
+        """Undoing a build that moved its archived files out brings them back first (so the build's own undo finds them)."""
+        sortroot = _mod("sortroot")
+        folder = _mod("paths").data_dir() / "collection-undo"
+        try:
+            for j in sorted(folder.glob("libsweep-*.json"), reverse=True):
+                data = json.loads(j.read_text(encoding="utf-8"))
+                if not data.get("undone") and data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
+                    return sortroot.undo_moves(j)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        return None
+
     def _ra_undo_follow(self, library_log: str) -> dict[str, Any] | None:
         """Undoing a library build also gives the saves their old names back (the follow journal made by that build)."""
         try:
@@ -3319,23 +3439,23 @@ class App:
 
 
     # ---------------------------------------------------------------- collection (v0.2): a whole ROM root
+    # One scan of the root reads every file once and finds its system (``_collection_scan_work``). Everything else (the
+    # preview, sorting into system folders, the library rules, the build elsewhere) works from that scan's metadata.
     def _collection_cfg(self, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-        """The saved collection settings, normalised: ``root, dest, mode, sidecars, systems{name:{path, enabled,
-        own_rules}}, global{rule fields}, last{dest, runs{name:{dest, run}}}``."""
+        """The saved collection settings, normalised."""
         cfg = self._config() if cfg is None else cfg
         raw = cfg.get("collection") if isinstance(cfg.get("collection"), dict) else {}
         known = {p.name for p in _mod("platforms").list_platforms()}
         systems: dict[str, dict[str, Any]] = {}
         for name, entry in (raw.get("systems") if isinstance(raw.get("systems"), dict) else {}).items():
-            if name in known and isinstance(entry, dict) and isinstance(entry.get("path"), str):
-                systems[name] = {"path": entry["path"], "enabled": bool(entry.get("enabled", True)),
-                                 "own_rules": bool(entry.get("own_rules", False))}
-        mode = raw.get("mode")
+            if name in known and isinstance(entry, dict):
+                systems[name] = {"own_rules": bool(entry.get("own_rules", False))}
         return {"root": str(raw.get("root") or ""), "dest": str(raw.get("dest") or ""),
-                "mode": _mod("libexport").normalize_mode(mode), "sidecars": bool(raw.get("sidecars")),
-                "sync": bool(raw.get("sync")), "place": "inplace" if raw.get("place") == "inplace" else "elsewhere",
-                "aside": str(raw.get("aside") or ""), "sweep": raw.get("sweep", True) is not False,
-                "last_sort": raw.get("last_sort") if isinstance(raw.get("last_sort"), dict) else {}, "systems": systems, "global": _mod("collection").clean_global(raw.get("global") or {}),
+                "place": "elsewhere" if raw.get("place") == "elsewhere" else "inplace",
+                "mode": _mod("libexport").normalize_mode(raw.get("mode")), "sidecars": bool(raw.get("sidecars")),
+                "sync": bool(raw.get("sync")), "aside": str(raw.get("aside") or ""), "sweep": raw.get("sweep", True) is not False,
+                "convert": bool(raw.get("convert")), "systems": systems,
+                "global": _mod("collection").clean_global(raw.get("global") or {}),
                 "last": raw.get("last") if isinstance(raw.get("last"), dict) else {}}
 
     def _collection_save(self, **changes: Any) -> dict[str, Any]:
@@ -3347,9 +3467,7 @@ class App:
             if patch:                      # merged under the config lock: two quick edits never lose each other
                 systems = cur.get("systems") if isinstance(cur.get("systems"), dict) else {}
                 for name, fields in patch.items():
-                    merged = {**{"path": "", "enabled": True, "own_rules": False}, **(systems.get(name) or {}), **fields}
-                    systems[name] = {"path": str(merged["path"]).strip(), "enabled": bool(merged["enabled"]),
-                                     "own_rules": bool(merged["own_rules"])}
+                    systems[name] = {**(systems.get(name) or {}), **fields}
                 cur["systems"] = systems
             cfg["collection"] = cur
         try:
@@ -3358,62 +3476,77 @@ class App:
             raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save the settings: {exc}") from None
         return self._collection_cfg()
 
+    @staticmethod
+    def _collection_convertible(sysobj: Any) -> int:
+        """What converting would touch: raw disc sets (to CHD), or SNES / N64 dumps with a copier header / wrong byte order."""
+        if not getattr(sysobj.platform, "convertible", False):
+            return 0
+        if _layout(sysobj.platform) == LAYOUT_GAME_FOLDER:
+            return sum(1 for u in sysobj.units if u.kind == "raw")
+        return len({m.entry.path for m in sysobj.matches if getattr(m, "matched_via", "") in ("headerless", "byteswapped")})
+
+    def _collection_scan_summary(self, cfg: dict[str, Any]) -> dict[str, Any] | None:
+        rs = self._rootscan
+        if rs is None or not cfg["root"]:
+            return None
+        try:
+            if str(rs.root) != str(Path(cfg["root"]).expanduser().resolve()):
+                return None
+        except (OSError, RuntimeError):
+            return None
+        rows = []
+        for s in sorted(rs.systems.values(), key=lambda x: x.name.casefold()):
+            rows.append({"name": s.name, "hint": s.platform.folder_hint, "games": s.games(), "files": s.files(),
+                         "convert": self._collection_convertible(s), "chd": _layout(s.platform) == LAYOUT_GAME_FOLDER,
+                         "folder": str(s.std), "current": str(s.current) if s.current else "",
+                         "own_rules": bool(cfg["systems"].get(s.name, {}).get("own_rules"))})
+        return {"at": rs.at, "files": rs.files, "bytes": rs.bytes, "seconds": rs.seconds, "systems": rows,
+                "unmatched": len(rs.unmatched), "other": len(rs.other), "ambiguous": len(rs.ambiguous), "notes": rs.notes}
+
     def _collection_info(self) -> dict[str, Any]:
         library = self._library_mod()
         labels = self._rule_labels()
         tags = getattr(library, "tags", None) or _optional_mod("tags")
         cfg = self._collection_cfg()
         shown = library.LibraryProfile.from_dict(cfg["global"], library.LibraryProfile())
+        present: dict[str, int] = {}
+        scan = self._collection_scan_summary(cfg)
+        found = {r["name"] for r in scan["systems"]} if scan else None
+        for plat in _mod("platforms").list_platforms():              # the regions of the DATs of the systems that were found
+            if found is None or plat.name in found:                  # (every installed DAT before the first scan)
+                for r, n in self._available_regions(plat).items():
+                    present[r] = present.get(r, 0) + n
         cfg = {**cfg, "aside_default": str(_mod("sortroot").default_aside(Path(cfg["root"]))) if cfg["root"] else ""}
-        return {**cfg, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
+        return {**cfg, "scan": scan, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
                 "rules": [{"key": k, "label": labels.get(k, k)} for k in self._rule_keys()],
                 "languages": dict(getattr(tags, "LANGUAGES", {}) or {}),
-                "regions": list(tags.region_order(shown.region_priority)),
+                "regions": list(tags.region_order(shown.region_priority, present or None)),
+                "region_counts": present,
                 "keep_flags": [{"id": e["id"], "label": e["label"]} for e in library.rule_catalog("tosec")
-                               if e.get("kind") == "keep_flag"],
-                "platforms": [{"name": p.name, "hint": p.folder_hint, "source": getattr(p, "source", "")}
-                              for p in _mod("platforms").list_platforms()]}
+                               if e.get("kind") == "keep_flag"]}
 
     def collection_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return self._collection_info()
 
-    def collection_detect(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/collection/detect {root}``: find the system folders in a ROM root and remember the root. A system
-        the user already set up keeps its choices while its folder is still inside the root."""
-        root = self._validate_dir(_str_arg(body.get("root")))
-        saved = self._collection_cfg()["systems"]
-        systems: dict[str, dict[str, Any]] = {}
-        for found in _mod("collection").detect_systems(root, _mod("platforms").list_platforms()):
-            old = saved.get(found["platform"])
-            if old and Path(old["path"]).is_dir() and str(root) in (old["path"], *map(str, Path(old["path"]).parents)):
-                systems[found["platform"]] = old
-            else:
-                systems[found["platform"]] = {"path": found["path"], "enabled": found["found"], "own_rules": False}
-        self._collection_save(root=str(root), systems=systems)
-        return self._collection_info()
-
     def collection_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/collection/save``: any of ``dest, mode, sidecars, systems, global`` (``global`` replaces the rules)."""
+        """``POST /api/collection/save``: any of ``root, place, dest, mode, sidecars, sync, aside, sweep, systems
+        ({name: {own_rules}}), global`` (``global`` replaces the shared rules)."""
         changes: dict[str, Any] = {}
+        if "root" in body:
+            changes["root"] = _str_arg(body.get("root"))
         if "dest" in body:
             changes["dest"] = _str_arg(body.get("dest"))
         if "mode" in body:
             changes["mode"] = _mod("libexport").normalize_mode(_str_arg(body.get("mode")))
-        if "sidecars" in body:
-            changes["sidecars"] = _bool_arg(body.get("sidecars"))
-        if "sync" in body:
-            changes["sync"] = _bool_arg(body.get("sync"))
-        if "place" in body:
-            changes["place"] = "inplace" if _str_arg(body.get("place")) == "inplace" else "elsewhere"
-        if "aside" in body:
-            changes["aside"] = _str_arg(body.get("aside"))
+        for key in ("sidecars", "sync", "convert"):
+            if key in body:
+                changes[key] = _bool_arg(body.get(key))
         if "sweep" in body:
             changes["sweep"] = _bool_arg(body.get("sweep"), True)
-        current = self._collection_cfg()
-        if changes.get("mode", current["mode"]) == "move":
-            if changes.get("sync"):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "Keeping the destination in sync needs the originals to stay: use Copy.")
-            changes["sync"] = False                              # a move leaves nothing in the source to compare with
+        if "place" in body:
+            changes["place"] = "elsewhere" if _str_arg(body.get("place")) == "elsewhere" else "inplace"
+        if "aside" in body:
+            changes["aside"] = _str_arg(body.get("aside"))
         if "global" in body:
             if not isinstance(body["global"], dict):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "global must be an object")
@@ -3422,83 +3555,471 @@ class App:
             known = {p.name for p in _mod("platforms").list_platforms()}
             if not isinstance(body["systems"], dict) or not set(body["systems"]) <= known:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "systems must map known system names to settings")
-            patch: dict[str, dict[str, Any]] = {}
-            for name, entry in body["systems"].items():
-                if not isinstance(entry, dict):
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "each system needs an object")
-                patch[name] = {k: entry[k] for k in ("path", "enabled", "own_rules") if k in entry}
-            changes["systems_patch"] = patch
-        if "root" in body:
-            changes["root"] = _str_arg(body.get("root"))
+            changes["systems_patch"] = {n: {"own_rules": _bool_arg(e.get("own_rules"))} for n, e in body["systems"].items()
+                                        if isinstance(e, dict) and "own_rules" in e}
+        current = self._collection_cfg()
+        if changes.get("mode", current["mode"]) == "move":
+            if changes.get("sync"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Keeping the destination in sync needs the originals to stay: use Copy.")
+            changes["sync"] = False                              # a move leaves nothing in the source to compare with
+        if "root" in changes and changes["root"] != current["root"]:
+            self._rootscan = None                                # another folder: the old scan does not apply
         self._collection_save(**changes)
         return self._collection_info()
 
-    def _collection_targets(self, cfg: dict[str, Any]) -> tuple[Path, Path, list[tuple[Any, dict[str, Any], str]]]:
-        """``(root, dest, [(platform, system settings, destination folder name)])`` of the enabled systems; raises a 400
-        when the settings cannot be used."""
-        inplace = cfg["place"] == "inplace"
-        if not cfg["root"] and not inplace:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
-        root = self._validate_dir(cfg["root"]) if cfg["root"] else Path(".")
-        dest = Path(".")
-        if not inplace:
-            if not cfg["dest"].strip():
-                raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
-            dest = Path(os.path.abspath(os.path.expanduser(cfg["dest"])))
-            problem = _mod("collection").check_folders(root, dest)
-            if problem:
-                raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
-        picked: list[tuple[Any, dict[str, Any], str]] = []
-        used: set[str] = set()
-        for plat in _mod("platforms").list_platforms():
-            entry = cfg["systems"].get(plat.name)
-            if not entry or not entry["enabled"] or not entry["path"].strip():
-                continue
-            name = Path(entry["path"]).name or plat.folder_hint
-            if name.casefold() in used:
-                name = plat.folder_hint or plat.name
-            used.add(name.casefold())
-            picked.append((plat, entry, name))
-        if not picked:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "No system is switched on. Detect the folders and tick the systems to build.",
-                           "no_systems")
-        return root, dest, picked
+    # ---- the scan
+    def _collection_root(self, cfg: dict[str, Any]) -> Path:
+        if not cfg["root"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM folder first.", "no_root")
+        return self._validate_dir(cfg["root"])
 
-    def _collection_run(self, job: Job, apply: bool, allow_mass: bool = False) -> dict[str, Any]:
-        """Scan, plan and (apply) export every enabled system, one after the other; a failing system is reported and the
-        others go on."""
+    def _collection_aside(self, cfg: dict[str, Any], root: Path) -> Path:
+        sortroot = _mod("sortroot")
+        aside = Path(os.path.abspath(os.path.expanduser(cfg["aside"]))) if cfg["aside"].strip() else sortroot.default_aside(root)
+        problem = _mod("collection").check_folders(root, aside)
+        if problem:
+            raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "archive folder"), "bad_aside")
+        return aside
+
+    def _collection_scan_work(self, job: Job, root: Path) -> Any:
+        """Read every file under ``root`` ONCE and find its system: the cartridge / flat systems in one scan with all their
+        DATs together, every disc image once against the DATs of all disc systems."""
+        sortroot, scanner, discsys, collection = _mod("sortroot"), _mod("scanner"), _mod("discsys"), _mod("collection")
+        t0 = time.time()
+        _mod("meter").reset()
+        platforms = list(_mod("platforms").list_platforms())
+        notes: list[str] = []
+        flat_dats: list[Any] = []
+        dat_owner: dict[str, str] = {}
+        alt: list[str] = []
+        containers: list[str] = []
+        extensions: set[str] = set()
+        disc_dats: list[Any] = []
+        disc_owner: dict[str, str] = {}
+        dats_of: dict[str, list[Any]] = {}
+        no_dats: list[str] = []
+        part_dats: list[str] = []
+        for plat in platforms:
+            extensions.update(getattr(plat, "extensions", ()) or ())
+            try:
+                self.updates.ensure(plat, progress=job.report, cancel=job.cancel)
+            except Exception as exc:  # noqa: BLE001 - offline and not installed: that system cannot be told apart
+                if job.cancel.is_set():
+                    return None
+                if type(exc).__name__ != "UpdateError":
+                    raise
+            dats, missing = self._platform_dats(plat)
+            if not dats:
+                no_dats.append(plat.name)
+                continue
+            dats_of[plat.name] = list(dats)
+            if missing:
+                part_dats.append(plat.name)
+            if _layout(plat) == LAYOUT_GAME_FOLDER:
+                for d in dats:
+                    if d.name not in disc_owner:
+                        disc_dats.append(d)
+                        disc_owner[d.name] = plat.name
+                continue
+            for d in dats:
+                if d.name not in dat_owner:
+                    flat_dats.append(d)
+                    dat_owner[d.name] = plat.name
+            alt += [a for a in (getattr(plat, "alt_hashes", ()) or ()) if a not in alt]
+            containers += [c for c in (getattr(plat, "containers", ()) or ()) if c not in containers]
+        if no_dats:
+            notes.append(f"No DATs installed for {', '.join(no_dats)}: their games cannot be recognised "
+                         "(they are downloaded with Check for updates, or when that system is scanned).")
+        if part_dats:
+            notes.append(f"Some DATs are not installed for {', '.join(part_dats)}.")
+        steps = (1 if flat_dats else 0) + (1 if disc_dats else 0)
+        step = 0
+        job.report(0, steps or 1, "Looking at the folder...")
+        files = scanner.collect_files(root, True, [], ())               # the folder is walked ONCE for everything below
+        rs = collection.RootScan(root=root, notes=notes, files=len(files))
+        sys_of: dict[str, Any] = {}
+        by_name = {p.name: p for p in platforms}
+        found_dirs = {e["platform"]: (Path(e["path"]) if e["found"] else None)
+                      for e in collection.detect_systems(root, platforms)}
+
+        def system(name: str) -> Any:
+            if name not in sys_of:
+                plat = by_name[name]
+                sys_of[name] = collection.Sys(plat, root / (plat.folder_hint or plat.name), found_dirs.get(name),
+                                              dats=dats_of.get(name, []))
+            return sys_of[name]
+
+        claimed: set[Path] = set()
+        bad_units: list[Any] = []
+        if disc_dats:
+            cfgd = self._config()
+            self._configure_temp(cfgd)
+            matched_units, bad_units, _rest = discsys.scan_many(
+                root, disc_dats, files=files, progress=_staged(job, step, steps, "reading the disc images"), cancel=job.cancel,
+                chdman=self._chdman(), engine=str(cfgd.get("chd_engine") or "auto"),
+                workers=_mod("chdsched").default_workers(cfgd.get("chd_workers")), full=bool(cfgd.get("chd_verify_scan")))
+            if job.cancel.is_set():
+                return None
+            for u, _system in matched_units:
+                sysobj = system(disc_owner.get(u.game.rep.dat, ""))
+                sysobj.units.append(u)
+                sysobj.index = discsys.get_index(next(d for d in sysobj.dats if d.name == u.game.rep.dat))
+                claimed.update(Path(f) for f in u.files)
+            for u in bad_units:
+                claimed.update(Path(f) for f in u.files)
+            step += 1
+        if flat_dats:
+            res = scanner.scan(root, flat_dats, recursive=True, progress=_staged(job, step, steps, "reading every file"),
+                               cancel=job.cancel, alt_hashes=tuple(alt), containers=tuple(containers),
+                               files=[f for f in files if f not in claimed])
+            owners: dict[Path, set[str]] = {}
+            for m in res.matched:
+                owners.setdefault(m.entry.path, set())
+                for r in m.primary:
+                    owners[m.entry.path].add(dat_owner.get(r.dat, ""))
+            for m in res.matched:
+                plats = owners[m.entry.path] - {""}
+                if len(plats) == 1:
+                    system(next(iter(plats))).matches.append(m)
+                else:
+                    rs.ambiguous.add(m.entry.path)
+            for e in res.unmatched:
+                rs.entries[e.path] = e
+                (rs.unmatched if sortroot.rom_like(e.path, extensions) else rs.other).add(e.path)
+            for path in res.unsupported:
+                (rs.unmatched if sortroot.rom_like(path, extensions) else rs.other).add(path)
+            step += 1
+        else:
+            for f in files:
+                if f not in claimed:
+                    (rs.unmatched if sortroot.rom_like(f, extensions) else rs.other).add(f)
+        for u in bad_units:                                          # a disc image no DAT knows
+            rs.unmatched.update(Path(f) for f in u.files)
+        if disc_dats:                                                # loose .iso files left over: PlayStation 2 DVD games
+            isos = sorted(p for p in rs.unmatched if p.suffix.lower() == ".iso" and p not in claimed)
+            for u, _system in discsys.identify_isos(isos, disc_dats, cancel=job.cancel):
+                sysobj = system(disc_owner.get(u.game.rep.dat, ""))
+                sysobj.units.append(u)
+                sysobj.index = discsys.get_index(next(d for d in sysobj.dats if d.name == u.game.rep.dat))
+                rs.unmatched.discard(Path(u.path))
+        # what matches nothing but lies inside a system's own folder is that system's business (its library build sets it aside)
+        for s in sys_of.values():
+            if s.current is None:
+                continue
+            if _layout(s.platform) == LAYOUT_GAME_FOLDER:
+                for u in bad_units:
+                    if collection.Mapper._inside(Path(u.path), s.current):
+                        s.unmatched.append(discsys.DcEntry(Path(u.path), None, 0, "", u.sha1 or None, root, reason=u.reason,
+                                                           kind=u.kind, needs_chdman=u.needs_chdman))
+            else:
+                s.unmatched += [rs.entries[p] for p in sorted(rs.unmatched)
+                                if p in rs.entries and collection.Mapper._inside(p, s.current)]
+        rs.systems = {n: s for n, s in sys_of.items() if s.matches or s.units}
+        rs.bytes = _mod("meter").value()
+        rs.seconds = time.time() - t0
+        rs.at = time.time()
+        return rs
+
+    def collection_scan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/scan``: read the whole ROM folder once and find every file's system."""
+        if body.get("root"):
+            self._collection_save(root=_str_arg(body["root"]))
         cfg = self._collection_cfg()
-        root, dest, picked = self._collection_targets(cfg)
-        if cfg["place"] == "inplace":
-            return self._collection_run_inplace(job, cfg, picked, apply)
-        libexport, collection = _mod("libexport"), _mod("collection")
+        root = self._collection_root(cfg)
+
+        def work(job: Job) -> Any:
+            rs = self._collection_scan_work(job, root)
+            if rs is None:
+                return {"action": "collection_scan", "cancelled": True}
+            self._rootscan = rs
+            return {"action": "collection_scan", "scan": self._collection_scan_summary(self._collection_cfg())}
+
+        self._rootscan = None
+        return {"job": self.jobs.start("collection", work).to_dict()}
+
+    # ---- the layout: folder names, where each file goes, and the library of each system as it will be
+    def _collection_layout(self, rs: Any, cfg: dict[str, Any], root: Path, aside: Path) -> dict[str, Any]:
+        """Everything that follows from the scan, without touching the disk: the sort moves and a Mapper
+        from where a file is to where it will be."""
+        collection, sortroot = _mod("collection"), _mod("sortroot")
+        folder_of: dict[str, Path] = {}
+        renames: list[tuple[Path, Path]] = []          # folders are never renamed: files move into the standard folder
+        for name, s in rs.systems.items():
+            folder_of[name] = s.std
+        base = collection.Mapper(renames)
+        flat = {base.renamed(p): v for p, v in rs.flat().items()}
+        discs = [{**d, "top": base.renamed(d["top"]), "files": [base.renamed(f) for f in d["files"]]} for d in rs.discs()]
+        unmatched = {base.renamed(p) for p in rs.unmatched}
+        other = {base.renamed(p) for p in rs.other}
+        moves = sortroot.plan_sort(root, aside, folder_of, flat, discs, unmatched, other,
+                                   exists=lambda p: os.path.lexists(p) or os.path.lexists(base.unrenamed(p)))
+        mapper = collection.Mapper(renames, {m.src: m.dst for m in moves if m.kind == "file"},
+                                   [(m.src, m.dst) for m in moves if m.kind == "folder"])
+        return {"renames": [], "rename_pairs": renames, "moves": moves, "mapper": mapper, "folder_of": folder_of}
+
+    def _collection_state(self, rs: Any, sysobj: Any, layout: dict[str, Any]) -> ScanState:
+        """The system as it will look once its files are in place, as the ScanState the library planning wants."""
+        collection = _mod("collection")
+        plat = sysobj.platform
+        folder = layout["folder_of"][sysobj.name]
+        lay = _layout(plat)
+        if lay == LAYOUT_GAME_FOLDER:
+            result = collection.virtual_disc(sysobj, layout["mapper"], folder)
+        else:
+            result = collection.virtual_flat(sysobj, layout["mapper"], lay, folder)
+        return ScanState(result=result, root=folder, platform=plat, dat_names=[d.name for d in sysobj.dats], missing_dats=[],
+                         layout=_enum_str(getattr(result, "layout", None), lay))
+
+    def _collection_profile(self, sysobj: Any, cfg: dict[str, Any]) -> Any:
+        entry = cfg["systems"].get(sysobj.name, {})
+        return self._profile(sysobj.platform) if entry.get("own_rules") else _mod("collection").effective_profile(sysobj.platform, cfg["global"])
+
+    def _collection_plan_of(self, rs: Any, sysobj: Any, layout: dict[str, Any], cfg: dict[str, Any]) -> tuple[Any, Any]:
+        state = self._collection_state(rs, sysobj, layout)
+        plan = self._make_library_plan(state, self._collection_profile(sysobj, cfg), False, not self._is_dc(state))
+        return state, plan
+
+    def _collection_real_files(self, rs: Any, layout: dict[str, Any]) -> dict[Path, Path]:
+        """Where each file will be -> where it is now (to export from the real files)."""
+        mapper = layout["mapper"]
+        back: dict[Path, Path] = {}
+        for s in rs.systems.values():
+            for m in s.matches:
+                back[mapper(m.entry.path)] = m.entry.path
+            for u in s.units:
+                for f in u.files:
+                    back[mapper(Path(f))] = Path(f)
+        return back
+
+    # ---- preview and build
+    def _collection_run(self, job: Job, apply: bool, allow_mass: bool = False) -> dict[str, Any]:
+        cfg = self._collection_cfg()
+        root = self._collection_root(cfg)
+        rs = self._rootscan
+        if rs is None or str(rs.root) != str(root):
+            raise ApiError(HTTPStatus.CONFLICT, "Scan the folder first.", "not_scanned")
+        if not rs.systems:
+            raise ApiError(HTTPStatus.CONFLICT, "The scan found no game of any system in this folder.", "nothing_found")
+        aside = self._collection_aside(cfg, root)
+        if cfg["place"] == "elsewhere":
+            return self._collection_run_elsewhere(job, cfg, rs, root, apply, allow_mass)
+        return self._collection_run_inplace(job, cfg, rs, root, aside, apply)
+
+    def _collection_sort_summary(self, moves: list[Any], aside: Path) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        for m in moves:
+            counts[m.bucket] = counts.get(m.bucket, 0) + 1
+        return {"counts": counts, "total": len(moves), "bytes": sum(m.size for m in moves), "aside": str(aside),
+                "items": [{"from": str(m.src), "to": str(m.dst), "bucket": m.bucket, "kind": m.kind} for m in moves[:400]]}
+
+    def _collection_single_pass(self, folder: Path, sort_moves: list[Any], plan: Any, root: Path, aside: Path,
+                                archive: bool) -> tuple[list[Any], list[Any], int]:
+        """One move per file: the sort into the system's folder and the library plan are put together, so a file goes from where
+        it is to its final name / place (or the archive) without stopping in between. Returns ``(ops, archive moves, sorted)``:
+        the ``RenameOp`` list for ``organiser.apply_renames`` (inside the ROM folder), the moves to the archive folder (outside it,
+        so they are journalled by ``sortroot``), and how many files this also sorted into the system's folder."""
+        organiser, discsys, sortroot = _mod("organiser"), _mod("discsys"), _mod("sortroot")
+        flat_ops = list(discsys.file_ops(plan.ops))
+        final = {op.src: op for op in flat_ops if op.status == "move"}
+        used: set = set()
+        ops: list[Any] = []
+
+        def put(src: Path, there: Path) -> None:
+            op = final.get(there)
+            if op is not None:
+                used.add(there)
+                ops.append(dataclasses.replace(op, src=src))
+            else:
+                ops.append(organiser.RenameOp(src, there, "move", "sorted into its system's folder", "", "move"))
+
+        for m in sort_moves:
+            if m.kind == "file":
+                put(m.src, m.dst)
+            else:                                              # a game folder: its files go one by one to their final place
+                for dirpath, _dirs, files in os.walk(m.src):
+                    for f in sorted(files):
+                        src = Path(dirpath) / f
+                        put(src, m.dst / src.relative_to(m.src))
+        sorted_n = len(ops)
+        ops += [op for op in flat_ops if op.status != "move" or op.src not in used]
+        ops = [op for op in ops if op.status != "move" or op.src != op.dst]
+        arch: list[Any] = []
+        if archive:
+            names = sortroot.Names()
+            keep: list[Any] = []
+            for op in ops:
+                top = ""
+                if op.status == "move":
+                    try:
+                        rel = op.dst.relative_to(folder)
+                        top = rel.parts[0] if rel.parts else ""
+                    except ValueError:
+                        pass
+                if top in sortroot.ASIDE_FOLDERS:
+                    if top == sortroot.UNMATCHED:
+                        try:
+                            sub = op.src.relative_to(root)
+                        except ValueError:
+                            sub = Path(op.src.name)
+                        new = aside / top / sub
+                    else:
+                        new = aside / folder.name / rel
+                    size = 0
+                    try:
+                        size = op.src.stat().st_size
+                    except OSError:
+                        pass
+                    arch.append(sortroot.SMove(op.src, names.free(new), top, size=size))
+                else:
+                    keep.append(op)
+            ops = keep
+        return ops, arch, sorted_n
+
+    def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, aside: Path, apply: bool) -> dict[str, Any]:
+        """Sort into the systems' folders, rename them, apply each system's library rules, move what is archived out."""
+        sortroot, organiser = _mod("sortroot"), _mod("organiser")
+        conv_counts = {s.name: (self._collection_convertible(s) if cfg["convert"] else 0) for s in rs.systems.values()}
+        conv_logs: dict[str, str] = {}
+        if apply and any(conv_counts.values()):
+            rs, conv_logs = self._collection_convert_first(job, cfg, rs, root, conv_counts)
+        layout = self._collection_layout(rs, cfg, root, aside)
+        systems = sorted(rs.systems.values(), key=lambda x: x.name.casefold())
+        steps = len(systems) + 2
+        undo_dir = _mod("paths").data_dir() / "collection-undo"
+        out: dict[str, Any] = {"action": "collection_apply" if apply else "collection_plan", "place": "inplace",
+                               "renames": layout["renames"], "sort": self._collection_sort_summary(layout["moves"], aside)}
+        last: dict[str, Any] = {"place": "inplace", "runs": {}, "sweep": "", "sort": "", "rename": ""}
+        keep = [root, aside, *layout["folder_of"].values()]
+        prepared: dict[str, tuple[Any, Any, list[Any], int]] = {}
+        if apply:
+            # One move per file: each file goes from where it is to its final name / place (or the archive); the sort into the
+            # system's folder is part of the library's own moves. (A system that converts first has been converted from where
+            # its raw files lie, see _collection_convert_first.)
+            now_moves: list[Any] = []                       # moved before the libraries run (journalled as the "sort")
+            by_system: dict[str, list[Any]] = {}
+            for m in layout["moves"]:
+                (by_system.setdefault(m.bucket, []) if m.bucket in rs.systems else now_moves).append(m)
+            for sysobj in systems:
+                if job.cancel.is_set():
+                    break
+                job.report(0, steps, f"Planning {sysobj.name}")
+                state, plan = self._collection_plan_of(rs, sysobj, layout, cfg)
+                ops, arch, sorted_n = self._collection_single_pass(layout["folder_of"][sysobj.name], by_system.get(sysobj.name, []),
+                                                                   plan, root, aside, cfg["sweep"])
+                prepared[sysobj.name] = (state, plan, ops, sorted_n)
+                now_moves += arch
+            if now_moves:
+                res = sortroot.apply_moves(now_moves, undo_dir, "sort", keep=keep,
+                                           progress=_staged(job, 0, steps, "moving files out of the ROM folders"), cancel=job.cancel)
+                last["sort"] = res["journal"] or ""
+                out["sort"]["result"] = {"moved": res["moved"], "failed": res["failed"][:30]}
+            if prepared:
+                done = out["sort"].setdefault("result", {"moved": 0, "failed": []})
+                done["moved"] += sum(v[3] for v in prepared.values())     # sorted by the libraries' own moves
         rows: list[dict[str, Any]] = []
-        runs: dict[str, dict[str, Any]] = {}
-        for i, (plat, entry, name) in enumerate(picked):
+        for i, sysobj in enumerate(systems):
             if job.cancel.is_set():
                 break
-            row: dict[str, Any] = {"platform": plat.name, "path": entry["path"], "dest": str(dest / name),
-                                   "own_rules": entry["own_rules"], "status": "ok"}
+            rep = _staged(job, i + 1, steps, sysobj.name)
+            rep(0, 1, "planning")
+            conv_n = conv_counts.get(sysobj.name, 0)
+            conv_log = conv_logs.get(sysobj.name, "")
+            apply_ops: Any = None
+            sorted_n = 0
+            if apply and sysobj.name in prepared:
+                state, plan, apply_ops, sorted_n = prepared[sysobj.name]
+            elif apply:
+                continue                                           # cancelled before this system was planned
+            else:
+                state, plan = self._collection_plan_of(rs, sysobj, layout, cfg)
+            counts = dict(organiser.reason_counts(plan))
+            actionable = sum(1 for op in (apply_ops if apply_ops is not None else plan.ops) if op.status in ACTIONABLE) \
+                + sum(1 for p in plan.playlists if p.status == "write")
+            row: dict[str, Any] = {"platform": sysobj.name, "folder": str(state.root), "status": "ok", "games": sysobj.games(),
+                                   "convert": conv_n,
+                                   "own_rules": bool(cfg["systems"].get(sysobj.name, {}).get("own_rules")),
+                                   "counts": {k: counts.get(k, 0) for k in ("kept", "renamed", "moved", "excluded", "superseded",
+                                                                             "incomplete", "duplicates", "unmatched", "conflict", "playlists_write")},
+                                   "actionable": actionable, "files": len(plan.ops)}
             rows.append(row)
-            job.report(i, len(picked), f"{plat.name}: scanning")
-            folder = Path(entry["path"])
-            if not folder.is_dir():
-                row.update(status="missing", error="The folder does not exist.")
-                continue
+            if apply and actionable:
+                try:
+                    rep(0, 1, "reorganising")
+                    if apply_ops is not None:             # one pass over the ROM folder: the undo log lives there
+                        res = dict(organiser.apply_renames(apply_ops, root, progress=rep, cancel=job.cancel, playlists=list(plan.playlists)))
+                    else:
+                        fn = _mod("discsys").apply_plan if self._is_dc(state) else organiser.apply_renames
+                        res = dict(_call(fn, plan.ops, state.root, progress=rep, cancel=job.cancel, playlists=list(plan.playlists)))
+                    moved = res.get("moved")
+                    row["result"] = {"moved": len(moved) if isinstance(moved, (list, tuple)) else (moved or 0),
+                                     "playlists": res.get("playlists_written", 0)}
+                    row["failed"] = list(res.get("failed") or [])[:20]
+                    follow = self._ra_follow(self._moved_pairs(apply_ops if apply_ops is not None else plan.ops), "move", {"library_log": res.get("undo_log") or ""})
+                    if follow:
+                        row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
+                    if res.get("undo_log"):
+                        last["runs"][sysobj.name] = {"log": res["undo_log"], "root": str(root), "convert_log": conv_log}
+                except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
+                    traceback.print_exc()
+                    row.update(status="error", error=str(exc) or type(exc).__name__)
+            if apply and conv_log and sysobj.name not in last["runs"]:      # converted, and the library itself had nothing to do
+                last["runs"][sysobj.name] = {"log": "", "root": str(root), "convert_log": conv_log}
+        if apply and not job.cancel.is_set():
+            sortroot.remove_empty_tree(root, keep)          # the old, now empty folders go
+        if cfg["sweep"] and not job.cancel.is_set():
+            sweep = sortroot.plan_sweep({n: f for n, f in layout["folder_of"].items()}, aside)
+            out["aside"] = {"path": str(aside), "files": len(sweep), "bytes": sum(m.size for m in sweep)}
+            if apply and sweep:
+                res = sortroot.apply_moves(sweep, undo_dir, "sweep", keep=keep,
+                                           progress=_staged(job, steps - 1, steps, "moving the archived files out of the ROM folders"))
+                out["aside"]["moved"], out["aside"]["failed"] = res["moved"], res["failed"][:20]
+                last["sweep"] = res["journal"] or ""
+        total = {k: sum((r.get("counts") or {}).get(k, 0) for r in rows)
+                 for k in ("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates", "unmatched", "conflict")}
+        total["actionable"] = sum(r.get("actionable", 0) for r in rows)
+        out.update(systems=rows, totals=total, cancelled=job.cancel.is_set())
+        if apply:
+            if any(last.get(k) for k in ("runs", "sweep", "sort", "rename")):
+                self._collection_save(last=last)
+            job.report(steps - 1, steps, "Reading the folder again...")
+            rs2 = self._collection_scan_work(job, root)           # the folders changed: the scan is made again (quick: cached)
+            self._rootscan = rs2
+        return out
+
+    def _collection_run_elsewhere(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, apply: bool, allow_mass: bool) -> dict[str, Any]:
+        """Build a clean library of every system in another folder, from the scan (the source is read, copied or moved)."""
+        libexport = _mod("libexport")
+        if not cfg["dest"].strip():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
+        dest = Path(os.path.abspath(os.path.expanduser(cfg["dest"])))
+        problem = _mod("collection").check_folders(root, dest)
+        if problem:
+            raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
+        aside = _mod("sortroot").default_aside(root)
+        layout = self._collection_layout(rs, cfg, root, aside)
+        back = self._collection_real_files(rs, layout)
+        systems = sorted(rs.systems.values(), key=lambda x: x.name.casefold())
+        rows: list[dict[str, Any]] = []
+        runs: dict[str, dict[str, Any]] = {}
+        for i, sysobj in enumerate(systems):
+            if job.cancel.is_set():
+                break
+            rep = _staged(job, i, len(systems), sysobj.name)
+            rep(0, 1, "planning")
+            name = sysobj.platform.folder_hint or sysobj.platform.name
+            row: dict[str, Any] = {"platform": sysobj.name, "dest": str(dest / name), "status": "ok", "games": sysobj.games(),
+                                   "own_rules": bool(cfg["systems"].get(sysobj.name, {}).get("own_rules"))}
+            rows.append(row)
             try:
-                state = self._run_scan(job, folder.resolve(), plat, cancellable=True, keep=False)
-                if state is None:
-                    break
-                job.report(i, len(picked), f"{plat.name}: choosing what to keep")
-                prof = self._profile(plat) if entry["own_rules"] else collection.effective_profile(plat, cfg["global"])
-                plan = self._make_library_plan(state, prof, False, not self._is_dc(state))
-                ep = libexport.plan_export(plan, state.root, dest / name, cfg["mode"], cfg["sidecars"], cfg["sync"])
+                state, plan = self._collection_plan_of(rs, sysobj, layout, cfg)
+                ep = libexport.plan_export(plan, state.root, dest / name, cfg["mode"], cfg["sidecars"], cfg["sync"],
+                                           src_map=back, fs_root=root)
                 row.update(files=len(ep.items), counts=ep.counts(), mass_removal=ep.mass_removal(),
-                           removals=[{"rel": r.rel, "skip": r.skip} for r in ep.removals[:20]], bytes_copy=ep.bytes_to_copy(),
-                           bytes_linked=ep.bytes_linked(), playlists=len([p for p in ep.playlists if p.action == "write"]),
-                           pending=ep.pending(), notes=list(ep.notes),
-                           conflicts=[{"rel": t.rel, "reason": t.reason} for t in ep.items if t.action == "conflict"][:20],
-                           unmatched=sum(1 for op in plan.ops if getattr(op, "unmatched", False)))
+                           removals=[{"rel": r.rel, "skip": r.skip} for r in ep.removals[:20]],
+                           bytes_copy=ep.bytes_to_copy(), bytes_linked=ep.bytes_linked(),
+                           playlists=len([p for p in ep.playlists if p.action == "write"]), pending=ep.pending(),
+                           notes=list(ep.notes),
+                           conflicts=[{"rel": t.rel, "reason": t.reason} for t in ep.items if t.action == "conflict"][:20])
                 if apply and ep.mass_removal() and not allow_mass:
                     row.update(status="needs_confirm", error=f"This sync would remove {len(ep.to_remove())} of the "
                                f"{ep.owned_total} files built before - not done. Check the rules and the source, then confirm.")
@@ -3508,319 +4029,84 @@ class App:
                     if ep.bytes_to_copy() > free:
                         row.update(status="no_space", error=f"Not enough free space ({ep.bytes_to_copy()} needed, {free} free).")
                         continue
-                    job.report(i, len(picked), f"{plat.name}: building")
-                    res = libexport.apply_export(
-                        ep, progress=lambda d, t, n, _p=plat.name: job.report(message=f"{_p}: {n}" if n else f"{_p}: building"),
-                        cancel=job.cancel)
-                    row["result"] = {k: res[k] for k in ("created", "copied", "moved", "playlists", "skipped",
-                                                         "replaced", "removed")}
+                    res = libexport.apply_export(ep, progress=lambda d, t, n: rep(d, t, n or "building"), cancel=job.cancel)
+                    row["result"] = {k: res[k] for k in ("created", "copied", "moved", "playlists", "skipped", "replaced", "removed")}
                     row["failed"] = res["failed"][:20]
-                    follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy",
-                                             {"collection": str(dest)})
+                    follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy", {"collection": str(dest)})
                     if follow:
                         row["saves"] = {k: follow.get(k) for k in ("copied", "failed", "conflicts", "skipped_running", "error")}
                     if res["run"] is not None:
-                        runs[plat.name] = {"dest": str(ep.dest), "run": res["run"],
-                                           **({"follow": follow["journal"]} if follow and follow.get("journal") else {})}
+                        runs[sysobj.name] = {"dest": str(ep.dest), "run": res["run"],
+                                             **({"follow": follow["journal"]} if follow and follow.get("journal") else {})}
                     if res["cancelled"]:
                         break
-            except ApiError as exc:
-                row.update(status="error", error=exc.message)
             except libexport.ExportError as exc:
                 row.update(status="error", error=str(exc))
             except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
                 traceback.print_exc()
                 row.update(status="error", error=str(exc) or type(exc).__name__)
-            finally:
-                state = None
+        job.report(len(systems), len(systems), "Finishing")
         total = {k: sum(r.get(k, 0) for r in rows) for k in ("files", "bytes_copy", "bytes_linked", "pending", "playlists")}
         total["conflicts"] = sum(len(r.get("conflicts", ())) for r in rows)
         total["remove"] = sum((r.get("counts") or {}).get("remove", 0) for r in rows)
         total["replace"] = sum((r.get("counts") or {}).get("replace", 0) for r in rows)
         free = shutil.disk_usage(_existing_parent(dest)).free
-        out = {"action": "collection_apply" if apply else "collection_plan", "root": str(root), "dest": str(dest),
-               "mode": cfg["mode"], "sync": cfg["sync"], "systems": rows, "totals": total, "free": free,
-               "enough_space": total["bytes_copy"] <= free, "cancelled": job.cancel.is_set()}
+        renames = [{"platform": s.name, "from": (s.current or s.std).name, "to": s.platform.folder_hint, "status": "in the destination"}
+                   for s in systems if (s.current or s.std).name != s.platform.folder_hint]
+        out = {"action": "collection_apply" if apply else "collection_plan", "place": "elsewhere", "root": str(root),
+               "dest": str(dest), "renames": renames, "mode": cfg["mode"], "sync": cfg["sync"], "systems": rows,
+               "totals": total, "free": free, "enough_space": total["bytes_copy"] <= free, "cancelled": job.cancel.is_set()}
         if apply:
-            previous = cfg["last"].get("runs") if cfg["last"].get("dest") == str(dest) else {}
             if runs:
-                self._collection_save(last={"dest": str(dest), "runs": runs})
-            out["runs"] = runs or previous
-        return out
-
-
-    def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], picked: list[Any], apply: bool) -> dict[str, Any]:
-        """Reorganise every enabled system's own folder with the collection's rules (the classic Build library, per
-        system). A failing system is reported and the others go on."""
-        organiser, collection = _mod("organiser"), _mod("collection")
-        rows: list[dict[str, Any]] = []
-        runs: dict[str, dict[str, Any]] = {}
-        for i, (plat, entry, _name) in enumerate(picked):
-            if job.cancel.is_set():
-                break
-            row: dict[str, Any] = {"platform": plat.name, "path": entry["path"], "own_rules": entry["own_rules"], "status": "ok"}
-            rows.append(row)
-            job.report(i, len(picked), f"{plat.name}: scanning")
-            folder = Path(entry["path"])
-            if not folder.is_dir():
-                row.update(status="missing", error="The folder does not exist.")
-                continue
-            try:
-                state = self._run_scan(job, folder.resolve(), plat, cancellable=True, keep=False)
-                if state is None:
-                    break
-                job.report(i, len(picked), f"{plat.name}: choosing what to keep")
-                prof = self._profile(plat) if entry["own_rules"] else collection.effective_profile(plat, cfg["global"])
-                plan = self._make_library_plan(state, prof, False, not self._is_dc(state))
-                counts = dict(organiser.reason_counts(plan))
-                actionable = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
-                    1 for p in plan.playlists if p.status == "write")
-                row.update(counts={k: counts.get(k, 0) for k in ("kept", "renamed", "moved", "excluded", "superseded",
-                                                                 "incomplete", "duplicates", "unmatched", "conflict",
-                                                                 "playlists_write")},
-                           actionable=actionable, files=len(plan.ops))
-                if apply and actionable:
-                    job.report(i, len(picked), f"{plat.name}: reorganising")
-                    fn = _mod("discsys").apply_plan if self._is_dc(state) else organiser.apply_renames
-                    res = dict(_call(fn, plan.ops, state.root, progress=job.report, cancel=job.cancel,
-                                     playlists=list(plan.playlists)))
-                    moved = res.get("moved")
-                    row["result"] = {"moved": len(moved) if isinstance(moved, (list, tuple)) else (moved or 0),
-                                     "playlists": res.get("playlists_written", 0)}
-                    row["failed"] = list(res.get("failed") or [])[:20]
-                    follow = self._ra_follow(self._moved_pairs(plan.ops), "move", {"library_log": res.get("undo_log") or ""})
-                    if follow:
-                        row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
-                    if res.get("undo_log"):
-                        runs[plat.name] = {"log": res["undo_log"], "root": str(state.root)}
-            except ApiError as exc:
-                row.update(status="error", error=exc.message)
-            except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
-                traceback.print_exc()
-                row.update(status="error", error=str(exc) or type(exc).__name__)
-            finally:
-                state = None
-        total = {k: sum((r.get("counts") or {}).get(k, 0) for r in rows)
-                 for k in ("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates", "unmatched",
-                           "conflict")}
-        total["actionable"] = sum(r.get("actionable", 0) for r in rows)
-        out = {"action": "collection_apply" if apply else "collection_plan", "place": "inplace", "systems": rows,
-               "totals": total, "cancelled": job.cancel.is_set()}
-        sweep_journal = ""
-        if cfg["sweep"] and not job.cancel.is_set():
-            sortroot = _mod("sortroot")
-            root = self._validate_dir(cfg["root"]) if cfg["root"] else Path(picked[0][1]["path"]).parent
-            aside = self._collection_aside(cfg, root)
-            folders = self._collection_sys_folders(cfg, picked, root)
-            moves = sortroot.plan_sweep(folders, aside)
-            out["aside"] = {"path": str(aside), "files": len(moves), "bytes": sum(m.size for m in moves)}
-            if apply and moves:
-                job.report(0, len(moves), "Moving the set-aside files out of the ROM folders...")
-                res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "sweep",
-                                           keep=[root, aside, *folders.values()], progress=lambda d, t, n: job.report(d, t, n))
-                out["aside"]["moved"], out["aside"]["failed"] = res["moved"], res["failed"][:20]
-                sweep_journal = res["journal"] or ""
-        if apply:
-            if runs or sweep_journal:
-                self._collection_save(last={"place": "inplace", "runs": runs, "sweep": sweep_journal})
+                self._collection_save(last={"place": "elsewhere", "runs": runs})
             out["runs"] = runs
         return out
 
-    # ---- sort a mixed folder into systems; keep the ROM folders clean
-    def _collection_aside(self, cfg: dict[str, Any], root: Path) -> Path:
-        sortroot = _mod("sortroot")
-        aside = Path(os.path.abspath(os.path.expanduser(cfg["aside"]))) if cfg["aside"].strip() else sortroot.default_aside(root)
-        problem = _mod("collection").check_folders(root, aside)
-        if problem:
-            raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "set-aside folder"), "bad_aside")
-        return aside
-
-    def _collection_sys_folders(self, cfg: dict[str, Any], picked: list[Any], root: Path) -> dict[str, Path]:
-        """System name -> its folder, for every ticked system (the folder is created by a sort when it is missing)."""
-        out: dict[str, Path] = {}
-        for plat, entry, _name in picked:
-            out[plat.name] = Path(entry["path"]) if entry["path"].strip() else root / (plat.folder_hint or plat.name)
-        return out
-
-    def _collection_identify(self, job: Job, root: Path, picked: list[Any]) -> dict[str, Any]:
-        """Read every file under ``root`` once and find the system of each: ROM files against all the ticked cartridge /
-        flat systems' DATs in one scan, discs per disc system. Returns what ``sortroot.plan_sort`` takes."""
-        sortroot, scanner, discsys = _mod("sortroot"), _mod("scanner"), _mod("discsys")
-        cfg = self._config()
-        flat_dats: list[Any] = []
-        dat_owner: dict[str, str] = {}
-        alt: list[str] = []
-        containers: list[str] = []
-        extensions: set[str] = set()
-        notes: list[str] = []
-        disc_platforms: list[Any] = []
-        for plat, _entry, _n in picked:
-            extensions.update(getattr(plat, "extensions", ()) or ())
-            try:
-                self.updates.ensure(plat, progress=job.report, cancel=job.cancel)
-            except Exception as exc:  # noqa: BLE001 - offline and not installed: that system cannot be told apart
-                if job.cancel.is_set():
-                    return {}
-                if type(exc).__name__ != "UpdateError":
-                    raise
-            dats, missing = self._platform_dats(plat)
-            if not dats:
-                notes.append(f"{plat.name}: no DATs installed, so its games cannot be recognised.")
-                continue
-            if missing:
-                notes.append(f"{plat.name}: {len(missing)} DAT(s) not installed.")
-            if _layout(plat) == LAYOUT_GAME_FOLDER:
-                disc_platforms.append((plat, list(dats)))
-                continue
-            for d in dats:
-                if d.name not in dat_owner:
-                    flat_dats.append(d)
-                    dat_owner[d.name] = plat.name
-            alt += [a for a in (getattr(plat, "alt_hashes", ()) or ()) if a not in alt]
-            containers += [c for c in (getattr(plat, "containers", ()) or ()) if c not in containers]
-        flat: dict[Path, str | None] = {}
-        unmatched: set[Path] = set()
-        other: set[Path] = set()
-        if flat_dats:
-            job.report(0, 0, "Reading every file...")
-            res = scanner.scan(root, flat_dats, recursive=True, progress=job.report, cancel=job.cancel,
-                               alt_hashes=tuple(alt), containers=tuple(containers))
-            owners: dict[Path, set[str]] = {}
-            for m in res.matched:
-                for r in m.primary:
-                    owners.setdefault(m.entry.path, set()).add(dat_owner.get(r.dat, ""))
-            for path, plats in owners.items():
-                plats.discard("")
-                flat[path] = next(iter(plats)) if len(plats) == 1 else None
-            for e in res.unmatched:
-                if e.path not in flat:
-                    (unmatched if sortroot.rom_like(e.path, extensions) else other).add(e.path)
-            for path in res.unsupported:
-                if path not in flat:
-                    (unmatched if sortroot.rom_like(path, extensions) else other).add(path)
-        discs: list[dict[str, Any]] = []
-        claimed: set[Path] = set()
-        loose_units: list[Path] = []
-        cfgd = self._config()
-        for plat, dats in disc_platforms:
-            if job.cancel.is_set():
-                return {}
-            job.report(0, 0, f"Looking for {plat.name} discs...")
-            self._configure_temp(cfgd)
-            res = discsys.scan(root, dats, progress=job.report, cancel=job.cancel, chdman=self._chdman(),
-                               engine=str(cfgd.get("chd_engine") or "auto"),
-                               workers=_mod("chdsched").default_workers(cfgd.get("chd_workers")))
-            for u in res.units:
-                files = [Path(f) for f in u.files]
-                if u.game is not None:
-                    if not any(f in claimed for f in files):
-                        discs.append({"platform": plat.name, "top": Path(u.top), "folder": u.folder is not None, "files": files})
-                        claimed.update(files)
-                else:
-                    loose_units.extend(files)
-        for f in loose_units:
-            if f not in claimed:
-                unmatched.add(f)
-        for coll in (flat, unmatched, other):
-            for f in list(coll):
-                if f in claimed:
-                    (coll.pop(f) if isinstance(coll, dict) else coll.discard(f))
-        return {"flat": flat, "discs": discs, "unmatched": unmatched, "other": other, "notes": notes}
-
-    def _collection_sort(self, job: Job, apply: bool) -> dict[str, Any]:
-        sortroot = _mod("sortroot")
+    def _collection_ready(self) -> None:
         cfg = self._collection_cfg()
-        root, _dest, picked = self._collection_targets({**cfg, "place": "inplace"})      # a sort needs no destination
-        aside = self._collection_aside(cfg, root)
-        folders = self._collection_sys_folders(cfg, picked, root)
-        found = self._collection_identify(job, root, picked)
-        if not found:
-            return {"action": "collection_sort_plan", "place": "sort", "cancelled": True, "items": [], "counts": {}}
-        moves = sortroot.plan_sort(root, aside, folders, found["flat"], found["discs"], found["unmatched"], found["other"])
-        counts: dict[str, int] = {}
-        for m in moves:
-            counts[m.bucket] = counts.get(m.bucket, 0) + 1
-        out: dict[str, Any] = {"action": "collection_sort_apply" if apply else "collection_sort_plan", "place": "sort",
-                               "root": str(root), "aside": str(aside), "counts": counts, "total": len(moves),
-                               "bytes": sum(m.size for m in moves), "notes": found["notes"],
-                               "recognised": len(found["flat"]) + len(found["discs"]),
-                               "items": [{"from": str(m.src), "to": str(m.dst), "bucket": m.bucket, "kind": m.kind}
-                                         for m in moves[:400]]}
-        if apply and moves:
-            job.report(0, len(moves), "Sorting...")
-            journal_dir = _mod("paths").data_dir() / "collection-undo"
-            res = sortroot.apply_moves(moves, journal_dir, "sort", keep=[root, aside, *folders.values()],
-                                       progress=lambda d, t, n: job.report(d, t, n), cancel=job.cancel)
-            out["result"] = {"moved": res["moved"], "failed": res["failed"][:30]}
-            if res["journal"]:
-                self._collection_save(last_sort={"journal": res["journal"], "root": str(root), "aside": str(aside)})
-        return out
-
-    def collection_sort_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        cfg = self._collection_cfg()
-        if not cfg["root"]:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
-        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
+        root = self._collection_root(cfg)
+        if self._rootscan is None or str(self._rootscan.root) != str(root):
+            raise ApiError(HTTPStatus.CONFLICT, "Scan the folder first.", "not_scanned")
         self._collection_aside(cfg, root)
-        return {"job": self.jobs.start("collection", lambda job: self._collection_sort(job, False)).to_dict()}
-
-    def collection_sort_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        cfg = self._collection_cfg()
-        if not cfg["root"]:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
-        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
-        self._collection_aside(cfg, root)
-        return {"job": self.jobs.start("collection", lambda job: self._collection_sort(job, True), cancellable=True).to_dict()}
-
-    def collection_sort_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        cfg = self._collection_cfg()
-        last = cfg["last_sort"]
-        if not last.get("journal") or not Path(last["journal"]).is_file():
-            raise ApiError(HTTPStatus.CONFLICT, "There is no sort to undo.", "nothing_to_undo")
-        res = _mod("sortroot").undo_moves(Path(last["journal"]), keep=[Path(last["root"])])
-        self._collection_save(last_sort={})
-        return res
-
-    def collection_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/collection/aside/restore``: bring the set-aside files back into the systems' folders."""
-        sortroot = _mod("sortroot")
-        cfg = self._collection_cfg()
-        root, _d, picked = self._collection_targets({**cfg, "place": "inplace"})
-        aside = self._collection_aside(cfg, root)
-        folders = self._collection_sys_folders(cfg, picked, root)
-        moves = sortroot.plan_restore(folders, aside)
-        res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "restore", keep=[aside, root])
-        return {"moved": res["moved"], "failed": res["failed"][:30]}
+        if cfg["place"] == "elsewhere" and not cfg["dest"].strip():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
 
     def collection_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        self._collection_targets(self._collection_cfg())                  # a 400 before the job starts
+        self._collection_ready()
         return {"job": self.jobs.start("collection", lambda job: self._collection_run(job, False)).to_dict()}
 
     def collection_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        self._collection_targets(self._collection_cfg())
+        self._collection_ready()
         allow = _bool_arg(body.get("allow_mass_removal"))
         return {"job": self.jobs.start("collection", lambda job: self._collection_run(job, True, allow)).to_dict()}
 
     def collection_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/collection/undo``: take back the last collection build (the run each system got in it)."""
-        libexport = _mod("libexport")
+        """``POST /api/collection/undo``: take back the last collection build (every system, the sort, the renames)."""
+        libexport, sortroot = _mod("libexport"), _mod("sortroot")
         last = self._collection_cfg()["last"]
         runs = (last.get("runs") or {})
-        if not runs:
+        if not runs and not last.get("rename") and not last.get("sort") and not last.get("sweep"):
             raise ApiError(HTTPStatus.CONFLICT, "There is no collection build to undo.", "nothing_to_undo")
         removed, restored, left, errors = 0, 0, [], []
-        if last.get("sweep") and Path(last["sweep"]).is_file():          # the set-aside files come back first
-            back = _mod("sortroot").undo_moves(Path(last["sweep"]))
-            restored += back["restored"]
-            left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
+        for journal in [last.get("sweep")]:                                             # the archived files come back first
+            if journal and Path(journal).is_file():
+                back = sortroot.undo_moves(Path(journal))
+                restored += back["restored"]
+                left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
         for name, rec in runs.items():
-            if rec.get("log"):                                  # a build in place: the system's own undo log
+            if "log" in rec:                                    # a build in place: the system's own undo log
                 try:
-                    res = dict(_mod("organiser").undo(Path(rec["log"]), root=Path(rec["root"])))
+                    if rec.get("convert_log") and Path(rec["convert_log"]).is_file():
+                        pass                                     # (undone after the library changes, below)
+                    res = dict(_mod("organiser").undo(Path(rec["log"]), root=Path(rec["root"]))) if rec.get("log") else {}
                     restored += len(res.get("restored") or []) if isinstance(res.get("restored"), (list, tuple)) else int(res.get("restored") or 0)
                     left += [{"system": name, **x} for x in (res.get("skipped") or []) if isinstance(x, dict)
                              and x.get("reason") != "already back in place"]
-                    self._ra_undo_follow(rec["log"])
+                    if rec.get("log"):
+                        self._ra_undo_follow(rec["log"])
+                    if rec.get("convert_log") and Path(rec["convert_log"]).is_file():
+                        cres = dict(_mod("organiser").undo(Path(rec["convert_log"]), root=Path(rec["root"])))   # the CHDs go, the raw sets return
+                        restored += len(cres.get("restored") or []) if isinstance(cres.get("restored"), (list, tuple)) else int(cres.get("restored") or 0)
                 except Exception as exc:  # noqa: BLE001
                     traceback.print_exc()
                     errors.append({"system": name, "error": str(exc)})
@@ -3837,8 +4123,31 @@ class App:
                 left += [{"system": name, **x} for x in res["skipped"]]
             except libexport.ExportError as exc:
                 errors.append({"system": name, "error": str(exc)})
+        if last.get("sort") and Path(last["sort"]).is_file():
+            back = sortroot.undo_moves(Path(last["sort"]))
+            restored += back["restored"]
+            left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
+        if last.get("rename") and Path(last["rename"]).is_file():       # the folders get their old names back
+            sortroot.undo_moves(Path(last["rename"]))
         self._collection_save(last={})
+        self._rootscan = None
         return {"removed": removed, "restored": restored, "skipped": left, "errors": errors}
+
+    def collection_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/aside/restore``: bring the archived files back into the systems' folders."""
+        sortroot = _mod("sortroot")
+        cfg = self._collection_cfg()
+        root = self._collection_root(cfg)
+        aside = self._collection_aside(cfg, root)
+        rs = self._rootscan
+        folders = {n: (s.current or s.std) for n, s in rs.systems.items()} if rs is not None else {}
+        for plat in _mod("platforms").list_platforms():              # a system with nothing left in the root still has its folder
+            if plat.name not in folders and (aside / (plat.folder_hint or plat.name)).is_dir():
+                folders[plat.name] = root / (plat.folder_hint or plat.name)
+        moves = sortroot.plan_restore(folders, aside)
+        res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "restore", keep=[aside, root])
+        self._rootscan = None
+        return {"moved": res["moved"], "failed": res["failed"][:30]}
 
     def library_export_runs(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``GET /api/library/export/runs?dest=``: the builds recorded in a destination folder."""
@@ -3880,6 +4189,77 @@ class App:
             page["disc"] = self._disc_info(state.platform, self._config())
         return page
 
+    def _collection_convert_first(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path,
+                                  conv_counts: dict[str, int]) -> tuple[Any, dict[str, str]]:
+        """Convert raw disc sets / odd dumps from where they lie: the new file is written in its system's folder and the original
+        goes to that folder's ``_converted_originals`` - one move, no sorting first. The folder is read again afterwards (quick)."""
+        collection, discsys, convert = _mod("collection"), _mod("discsys"), _mod("convert")
+        logs: dict[str, str] = {}
+        todo = [s for s in sorted(rs.systems.values(), key=lambda x: x.name.casefold()) if conv_counts.get(s.name)]
+        for i, sysobj in enumerate(todo):
+            if job.cancel.is_set():
+                break
+            rep = _staged(job, i, len(todo), f"{sysobj.name}: converting")
+            plat, folder = sysobj.platform, sysobj.std
+            prof = self._collection_profile(sysobj, cfg)
+            lay = _layout(plat)
+            if lay == LAYOUT_GAME_FOLDER:
+                result = collection.virtual_disc(sysobj, collection.Mapper(), root)
+                ops = list(discsys.plan_convert(result, self._chdman() is not None, self._config()))
+            else:
+                result = collection.virtual_flat(sysobj, collection.Mapper(), lay, root)
+                ops = list(convert.plan_conversions(result, layout=lay, latest_only=bool(prof.latest_only)))
+            for op in ops:                                  # the new file and the kept original belong in the system's folder
+                if op.status != "convert":
+                    continue
+                op.dst = folder / op.dst.relative_to(root)
+                op.original_dst = folder / op.original_dst.relative_to(root)
+                if hasattr(op, "moves"):
+                    op.moves = [(s, folder / d.relative_to(root)) for s, d in op.moves]
+                taken = [op.dst] if not os.path.lexists(op.src) or not _mod("organiser")._same_file(op.src, op.dst) else []
+                if any(os.path.lexists(x) for x in taken) or any(os.path.lexists(d) for _s, d in getattr(op, "moves", [])):
+                    op.status, op.reason = "conflict", "target exists"
+            try:
+                res = self._run_conversions(job, ops, root, plat, getattr(sysobj, "index", None), rep)
+            except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
+                traceback.print_exc()
+                rep(0, 1, f"conversion failed: {exc}")
+                continue
+            if res.get("undo_log"):
+                logs[sysobj.name] = res["undo_log"]
+        if logs:
+            job.report(0, 1, "Reading the folder again...")
+            fresh = self._collection_scan_work(job, root)
+            if fresh is not None:
+                self._rootscan = rs = fresh
+        return rs, logs
+
+    def _run_conversions(self, job: Job, ops: list[Any], root: Path, platform: Any, index: Any,
+                         report: Callable[..., None] | None = None) -> dict[str, Any]:
+        """Do the ``convert`` ops (raw disc sets to CHD, or SNES / N64 dumps cleaned up); ``root`` holds the undo log."""
+        rep = report or job.report
+        rep(0, sum(1 for op in ops if op.status == "convert"), "Converting files...")
+        if _layout(platform) == LAYOUT_GAME_FOLDER:
+            chdman = self._chdman()         # optional: the built-in writer converts without it
+            cfg = self._config()
+            self._configure_temp(cfg)
+            res = dict(_mod("discsys").apply_conversions(
+                ops, root, chdman, index, progress=rep, cancel=job.cancel,
+                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
+                engine=str(cfg.get("chd_engine") or "auto"), writer=self._chd_writer(cfg),
+                preset=self._chd_preset(cfg)))
+        else:
+            res = dict(_call(_mod("convert").apply_conversions, ops, root, progress=rep, cancel=job.cancel))
+        res["action"] = "convert"
+        return res
+
+    def _apply_conversions(self, job: Job, state: ScanState, latest_only: bool, report: Callable[..., None] | None = None) -> dict[str, Any]:
+        """Do the conversions of the state's plan (raw disc sets to CHD, or SNES / N64 dumps cleaned up); returns the result
+        (with ``undo_log``). The caller re-scans."""
+        ops = self._convert_plan(state, latest_only)
+        index = state.result.index if self._is_dc(state) else None
+        return self._run_conversions(job, ops, state.root, state.platform, index, report)
+
     def convert_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
         if not getattr(state.platform, "convertible", False):
@@ -3888,22 +4268,7 @@ class App:
         self._convert_plan(state, latest_only)  # errors (e.g. module missing) before starting a job
 
         def work(job: Job) -> Any:
-            ops = self._convert_plan(state, latest_only)
-            todo = sum(1 for op in ops if op.status == "convert")
-            job.report(0, todo, "Converting files...")
-            if self._is_dc(state):
-                chdman = self._chdman()         # optional: the built-in writer converts without it
-                cfg = self._config()
-                self._configure_temp(cfg)
-                res = dict(_mod("discsys").apply_conversions(
-                    ops, state.root, chdman, state.result.index, progress=job.report, cancel=job.cancel,
-                    workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
-                    engine=str(cfg.get("chd_engine") or "auto"), writer=self._chd_writer(cfg),
-                    preset=self._chd_preset(cfg)))
-            else:
-                res = dict(_call(_mod("convert").apply_conversions, ops, state.root, progress=job.report,
-                                 cancel=job.cancel))
-            res["action"] = "convert"
+            res = self._apply_conversions(job, state, latest_only)
             self._rescan_into(job, state, res)
             self._carry_temp(state, res)
             return res
@@ -4048,6 +4413,7 @@ class App:
         """chdman detection result (``?refresh=1`` forces a new look)."""
         info = self._chdman_info(refresh=_bool_arg(query.get("refresh")))
         info["engine"] = str(self._config().get("chd_engine") or "auto")
+        info["verify_scan"] = bool(self._config().get("chd_verify_scan"))
         self._engine_facts(info)
         self._writer_facts(info)
         return info
@@ -4084,11 +4450,14 @@ class App:
             if preset == "zstd" and not _mod("chdwrite").zstd_available():
                 raise ApiError(HTTPStatus.CONFLICT, "Zstandard compression needs a Zstandard library (libzstd)")
             values["chd_preset"] = preset
+        if "verify_scan" in body:
+            values["chd_verify_scan"] = _bool_arg(body.get("verify_scan"))
         if not values:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path, engine, writer or preset)")
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path, engine, writer, preset or verify_scan)")
         self._config_update(strict=True, **values)
         info = self._chdman_info(refresh=True)
         info["engine"] = str(self._config().get("chd_engine") or "auto")
+        info["verify_scan"] = bool(self._config().get("chd_verify_scan"))
         self._engine_facts(info)
         self._writer_facts(info)
         if raw and not info.get("found"):
@@ -4189,13 +4558,10 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/retroarch/bios/scan"): App.retroarch_bios_scan,
     ("POST", "/api/retroarch/bios/apply"): App.retroarch_bios_apply,
     ("GET", "/api/collection"): App.collection_get,
-    ("POST", "/api/collection/detect"): App.collection_detect,
+    ("POST", "/api/collection/scan"): App.collection_scan,
     ("POST", "/api/collection/save"): App.collection_save,
     ("POST", "/api/collection/plan"): App.collection_plan,
     ("POST", "/api/collection/apply"): App.collection_apply,
-    ("POST", "/api/collection/sort/plan"): App.collection_sort_plan,
-    ("POST", "/api/collection/sort/apply"): App.collection_sort_apply,
-    ("POST", "/api/collection/sort/undo"): App.collection_sort_undo,
     ("POST", "/api/collection/aside/restore"): App.collection_restore,
     ("POST", "/api/collection/undo"): App.collection_undo,
     ("POST", "/api/library/export/settings"): App.library_export_settings,
@@ -4207,8 +4573,6 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/scan"): App.scan_start,
     ("GET", "/api/scan/results"): App.scan_results,
     ("GET", "/api/scan/checksums"): App.scan_checksums,
-    ("POST", "/api/organise/plan"): App.organise_plan,
-    ("POST", "/api/organise/apply"): App.organise_apply,
     ("GET", "/api/organise/undo-logs"): App.undo_logs,
     ("POST", "/api/organise/undo"): App.organise_undo,
     ("POST", "/api/convert/plan"): App.convert_plan,

@@ -673,3 +673,5 @@ td.change-col { width: 44%; min-width: 300px; }
 #col-table .notes { white-space: normal; }
 
 .shell .back-link { display: none; }
+
+.job-time { margin-top: 4px; font-variant-numeric: tabular-nums; }

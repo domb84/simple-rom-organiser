@@ -489,10 +489,10 @@ class ServerTest(unittest.TestCase):
         rows = self.call("/api/scan/results?kind=matched&limit=50")
         via = {i["file"]: i["via"] for i in rows["items"]}
         self.assertEqual(via, {"x.rvz": "container", "y.iso": "raw"})
-        plan = self.call("/api/organise/plan", {})
+        plan = self.call("/api/library/plan", {})
         self.assertEqual(sorted(i["to"] for i in plan["items"] if i["status"] != "ok"),
                          ["Alpha (USA).rvz", "Beta (Europe).iso"])
-        self.call("/api/organise/apply", {})
+        self.call("/api/library/apply", {})
         self.job()
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.is_file() and not p.name.startswith(".")),
                          ["Alpha (USA).rvz", "Beta (Europe).iso"])

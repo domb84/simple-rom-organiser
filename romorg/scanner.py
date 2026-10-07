@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Container, Iterable, Optional, Sequence, Union
 
-from . import multihash, sevenzip, winproc
+from . import meter, multihash, sevenzip, winproc
 from .datfile import archive_stem, unit_key
 
 if TYPE_CHECKING:  # avoid a hard runtime dependency; only duck-typed methods are used
@@ -1223,6 +1223,7 @@ def scan(
     layout: str = LAYOUT_PER_DAT,
     protected_dirs: Sequence[str] = (),
     containers: Sequence[str] = (),
+    files: Optional[Sequence[Path]] = None,
 ) -> ScanResult:
     """Scan ``root`` (recursively, incl. DAT folders and the reserved ``_unmatched/``,
     ``_excluded/`` ... folders) against ``dats``.
@@ -1239,7 +1240,8 @@ def scan(
     ``containers``: compressed disc-image formats to read through (``rvz``): such a file is hashed as the ISO it
     stands for (:mod:`romorg.rvz`) and matches with ``matched_via == "container"``.
 
-    ``progress(done_files, total_files, current_name)``; ``cancel`` is a callable
+    ``files``: the files to look at (a list already collected, e.g. without the disc images another reader handled);
+    default is every file under ``root``. ``progress(done_files, total_files, current_name)``; ``cancel`` is a callable
     returning True or a ``threading.Event`` — raises :class:`ScanCancelled`.
     ``cache_path`` overrides the default ``cache_dir()/hashes.sqlite``. ``protected_dirs``: top-level
     folders of ``root`` that are not scanned at all (``Platform.protected_dirs``, e.g. ``Kickstarts``).
@@ -1265,7 +1267,10 @@ def scan(
     errors: list[tuple[Path, str]] = []
 
     problems: list[tuple[Path, str]] = []
-    files = collect_files(root, recursive, problems, protected_dirs)
+    if files is None:
+        files = collect_files(root, recursive, problems, protected_dirs)
+    else:
+        files = sorted(Path(f) for f in files)
     errors.extend(problems)
     total = len(files)
     cache = HashCache((cache_path or default_cache_path()) if use_cache else None)
@@ -1513,6 +1518,10 @@ def scan(
             except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
                     subprocess.SubprocessError, ValueError, EOFError) as exc:
                 errors.append((path, f"{type(exc).__name__}: {exc}"))
+            try:
+                meter.add(path.stat().st_size)          # data covered so far (cached files count: they are covered too)
+            except OSError:
+                pass
         if progress is not None:
             progress(total, total, "")
     finally:

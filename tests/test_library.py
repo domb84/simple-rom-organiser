@@ -49,6 +49,26 @@ ABC_PRE = [f"ABC Monday Night Football (1990)(Data East)(US)(pre-release)(Disk {
 ABC_BAD = "ABC Monday Night Football v1.1 (1991)(Data East)(US)(Disk 1 of 3)[cr SR][b corrupt file]"
 
 
+class Regions(unittest.TestCase):
+    def test_uk_is_the_united_kingdom_everywhere(self) -> None:
+        self.assertEqual(tags.parse_name("Game (UK)", "nointro").regions, ("United Kingdom",))
+        self.assertEqual(tags.parse_name("Game (Europe, UK)", "nointro").regions, ("Europe", "United Kingdom"))
+        self.assertNotIn("UK", tags.REGIONS)
+        self.assertEqual(tags.region_order(("UK", "Japan"))[:2], ["United Kingdom", "Japan"])
+        self.assertEqual(library.LibraryProfile(region_priority=("UK", "United Kingdom", "USA")).region_priority,
+                         ("United Kingdom", "USA"))
+        self.assertEqual(sum(1 for r in tags.region_order() if r in ("UK", "United Kingdom")), 1)
+
+    def test_the_region_list_comes_from_the_data(self) -> None:
+        from types import SimpleNamespace as NS
+        roms = [NS(name=f"{n}.gba", set_name=n, game=n, dat="D") for n in
+                ("A (USA)", "A (Europe)", "B (UK)", "B (Japan)", "C (United Kingdom)")]
+        counts = library.available_regions([NS(name="D", roms=roms)])
+        self.assertEqual(counts, {"USA": 1, "Europe": 1, "United Kingdom": 2, "Japan": 1})
+        order = tags.region_order(("Japan",), counts)
+        self.assertEqual(order, ["Japan", "Europe", "USA", "United Kingdom"])           # no Brazil, no Poland: not in the data
+
+
 class TokenTable(unittest.TestCase):
     def test_every_real_token(self) -> None:
         table = {

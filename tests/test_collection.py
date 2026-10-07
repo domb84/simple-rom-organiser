@@ -10,6 +10,15 @@ from romorg import collection, library, platforms
 
 
 class Detect(unittest.TestCase):
+    def test_a_folder_named_like_the_full_system_name_is_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Sega Master System").mkdir()
+            (root / "Nintendo Game Boy Advance").mkdir()
+            found = {e["platform"]: e for e in collection.detect_systems(root, platforms.list_platforms())}
+        self.assertTrue(found["Sega Master System"]["found"])
+        self.assertTrue(found["Nintendo Game Boy Advance"]["found"])
+
     def test_folder_names_and_aliases_are_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

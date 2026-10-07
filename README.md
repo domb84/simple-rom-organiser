@@ -21,11 +21,10 @@ Supported systems:
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
 every file against the system's DATs, shows what you have and what is missing, renames
-and sorts the files, and - for the Amiga - writes M3U playlists for multi-disk games and
-installs Kickstart ROMs for RetroArch.
+and sorts the files, and - for the Amiga - writes M3U playlists for multi-disk games.
 
 **Commodore Amiga - WHDLoad is a separate system from Commodore Amiga (TOSEC).** It has its own
-row, folder, DAT, library rules, Kickstart step and config keys; nothing is shared or
+row, folder, DAT, library rules and config keys; nothing is shared or
 cross-matched with the TOSEC ADF system. Each DAT entry is one pre-installed Retroplay `.lha`
 archive; files are matched by the hash (sha1, crc + size) of the **whole `.lha` file** - the
 archives are never opened. Organising renames them to the database name
@@ -63,15 +62,15 @@ What it does:
    No-Intro name, flat in the console folder. Following the **library rules** (each can be
    switched off; the panel shows the exact TOSEC / No-Intro tags behind every rule and how
    many files it moves): bad dumps, betas, demos and other unwanted variants
-   are set aside, only the languages you tick are kept (English by default), only the latest
+   are archived, only the languages you tick are kept (English by default), only the latest
    version (and for Amiga games the one best variant, for consoles one version per game in
    your region order) is kept,
-   incomplete multi-disk games and duplicate copies are set aside, and playlists are written
-   for the complete multi-disk sets. Everything set aside goes to its own folder (`_excluded/`, `_superseded/`, `_incomplete/`,
-   `_duplicates/`, next to the games) - nothing is ever deleted. The old "Organise" and "M3U" steps live on under *Advanced*.
+   incomplete multi-disk games and duplicate copies are archived, and playlists are written
+   for the complete multi-disk sets. Everything archived goes to its own folder (`_excluded/`, `_superseded/`, `_incomplete/`,
+   `_duplicates/`, next to the games) - nothing is ever deleted.
 5. Optionally converts copier-headered SNES dumps and byte-swapped N64 dumps to the clean
    No-Intro format (originals kept).
-6. Amiga: copies your Kickstart ROMs into RetroArch's system / BIOS folder for the PUAE core.
+6. RetroArch: the RetroArch page checks the BIOS / firmware (Kickstarts included) every installed core expects and copies what you have.
 
 It is pure Python (standard library only, Python 3.11+) with a plain HTML/JS
 interface - no pip, no Node, no internet access needed except for updating the DATs (offline, the installed DATs keep working).
@@ -105,7 +104,7 @@ snes/
 - Organise **never changes file contents**, so the extension stays honest: a SNES file
   matched with its 512-byte copier header skipped is named `<game>.smc`, a byte-swapped
   N64 file `<game>.v64` / `<game>.n64`, a NES file whose iNES header differs `<game>.nes`.
-  Use **Convert** to get the exact DAT files.
+  Turn on **Convert first** in the Library tab to get the exact DAT files.
 - `.zip` / `.7z` archives with one matching game are named `<game>.zip` / `<game>.7z`
   (the file inside is unchanged).
 - Unmatched files keep their relative path under `_unmatched/`. Folders named `media`,
@@ -117,7 +116,7 @@ The app owns exactly these folder names, all directly under the platform folder 
 case-insensitively, since SD cards are often exFAT): `_unmatched`, `_excluded`, `_superseded`,
 `_incomplete`, `_duplicates`, `_converted_originals`. Inside each, a file keeps its path
 relative to the platform folder. **Do not use these names for your own folders**: a file
-inside one is treated as already set aside for that reason - if it is a ROM that matches a DAT
+inside one is treated as already archived for that reason - if it is a ROM that matches a DAT
 and no rule excludes it, the next organise / Build library moves it back to its canonical place,
 and if it is excluded it simply stays.
 
@@ -230,8 +229,8 @@ move between them):
   (`4 of 4 exclusions · English · Europe > USA first · latest versions only`) with an **Edit**
   control; open it for the catalog-driven rules, languages, keep-flags and region priority. Then
   **Preview library**, **Build library**, **Undo last**, the preview cards, the incomplete-sets
-  and *Games that vanish* lists, and under *Advanced: organise only / playlists only* the plain
-  Organise and M3U steps. Without a scan the tab says *Scan first* with a button.
+  and *Games that vanish* lists. (The separate "Organise only" and "Playlists only" steps of earlier versions are gone:
+  Build library does both.) Without a scan the tab says *Scan first* with a button.
   **Every Preview button stays useful.** After the first press it reads **Recalculate preview**
   (refresh icon), with *Calculated 14:32 · 1,234 files* and *Recalculates with your current rules and
   folder contents* under it, and a spinner while it works (an error shows *Try again*). As soon as you
@@ -240,14 +239,13 @@ move between them):
   preview - Recalculate*), dimmed cards, **Recalculate** becomes the highlighted button and
   **Build library / Apply / Convert ...** are disabled until you recalculated. Build library also sends the
   identity of the plan you looked at and the app refuses (409) a plan that no longer matches the saved
-  rules. The Advanced organise / playlist previews and the Convert and Kickstart previews behave the same.
+  rules.
 * **Browse** - the heavy part, built only when you open it: tabs **Games** (consoles: green = have,
   red = missing), **Matched files**, **Missing**, **Unmatched**, search, a collapsible *Filters*
   box (region, language, video, tag, library rules), paging, and the checksums (below).
   Bad dumps show the exact DAT flag (`Bad dump [b corrupt file]`).
-* **Tools** - only what applies to the system: **Convert** (SNES, N64 No-Intro format; disc systems
-  raw Redump sets to CHD incl. the chdman status), **Verify CHDs** (disc systems) and
-  **Kickstarts** (Amiga, WHDLoad). A system with no tool has no Tools tab.
+* Converting is the **Convert first** option of the Library tab (below), and the CHD settings are on the **Disc images (CHD)**
+  page in the list on the left. Kickstarts and other BIOS files are handled by the **RetroArch** page's BIOS & firmware check.
 
 ### Library totals (Overview)
 
@@ -282,7 +280,7 @@ known* (hover for why) - the app never invents a hash:
 * MD5 of your own loose files is not computed while scanning (`-`);
 * discs (Dreamcast, PlayStation, PlayStation 2): a block per track (number, type, size) with the
   Redump hashes and the decoded hashes of your CHD / raw set; an audio track that was only
-  identified by length says *length only* until **Verify fully** hashed it;
+  identified by length says *length only* until the *Check every track while scanning* switch (Disc images page) hashed it;
 * multi-disk Amiga sets: the disks of the set, each with DAT and local hashes, missing disks marked;
 * missing games: DAT checksums only; unmatched files: *Your file - no match* with their own hashes.
 
@@ -504,7 +502,7 @@ the most votes. Ratings: LaunchBox Games Database community ratings (see `docs/T
 back, removes the playlists the build created (only if unchanged) and restores the outdated
 playlists it deleted.
 
-With the rules off (or in *Advanced: tidy only*) the older behaviour remains: **Latest
+With the library rules switched off the older behaviour remains: **Latest
 version only** moves older versions to `_superseded/` using the same ranking as
 above for consoles.
 
@@ -556,7 +554,7 @@ tracks (data / audio, sizes) without decoding anything. The Redump games with th
 candidates; every **data** track is decoded (the GD-ROM pad frames and the subcode are dropped, exactly like
 `chdman extractcd`) and hashed (crc32 + md5 + sha1) and must equal the Redump track. Audio tracks are compared by
 **length only**. That is the level **identified**. When every track - audio included - was decoded and equals
-Redump (by chdman, or by the Verify fully button) the level is **verified**. A CHD matches a game only if every
+Redump (by chdman, or with *Check every track while scanning*) the level is **verified**. A CHD matches a game only if every
 `.bin` track matches. Results are cached per file (path, size, modification time and the CHD's own header SHA-1),
 so a rescan of an unchanged CHD never decodes it again; the cache is in the data folder, scanning never writes
 into your game folder.
@@ -564,7 +562,7 @@ into your game folder.
 | Level | What was compared | How |
 | --- | --- | --- |
 | **identified** | track sizes + crc32 / md5 / sha1 of every data track; audio by length | built-in reader (default) |
-| **verified** | every track, audio included | **Verify fully** (built-in reader, parallel), or chdman when the reader cannot decode the CHD |
+| **verified** | every track, audio included | *Check every track while scanning* (built-in reader, parallel), or chdman when the reader cannot decode the CHD |
 | **raw (convertible)** | an unpacked Redump set, every track file hashed | files, no CHD involved |
 
 **Engines and speed (Amendment 14).** The **built-in reader** decodes first (`auto` = the default): a parallel scheduler
@@ -575,7 +573,7 @@ workers when the machine is short of RAM). FLAC audio (`cdfl`) is decoded by the
 ctypes** (about 80-100 MB/s per core instead of 1.2 MB/s in pure Python; the pure-Python decoder remains as the fallback,
 same results). The Dreamcast / PlayStation bar shows which engine ran and its MB/s. See the table in
 `docs/ARCHITECTURE.md` (Amendment 14) for measured times on a Steam Deck. **chdman is not needed**: the app reads and writes CHDs itself. An installed chdman is used only for a CHD in a
-format newer than the built-in reader knows, or when you choose it in the Convert step ("always chdman" for
+format newer than the built-in reader knows, or when you choose it on the Disc images page ("always chdman" for
 reading, "chdman, when it is installed" for writing). The built-in reader reads everything chdman 0.289 reads: CHD versions 1 to
 5, every compression (`zlib`, `lzma`, `zstd`, `huff`, `flac`, the CD codecs `cdlz` / `cdzl` / `cdfl` / `cdzs`, the
 laserdisc codec `avhu`) and CHDs that need a parent file (the parent is found by its SHA-1 in the same folder).
@@ -586,10 +584,10 @@ Zstandard uses the system's libzstd (SteamOS has it) and falls back to a slow bu
 build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` for versions, licences as the packages
 declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). A chdman
 you have installed is still found - `$ROMORG_CHDMAN` / the saved chdman path, `chdman` on `PATH`, the Flatpak
-`org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... - and can be chosen in the Convert step.
+`org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... - and can be chosen on the Disc images page.
 The Windows packages carry no chdman either and do not need one; to use it anyway, take `chdman.exe` from the MAME
 download at mamedev.org and put it on `PATH`, next to the app (the exe's folder, or the top folder of the unzipped
-package), or save its path in the Convert step (see `docs/PACKAGING.md`).
+package), or save its path on the Disc images page (see `docs/PACKAGING.md`).
 `Simple_ROM_Organiser.AppImage --self-check` tests the CHD engine (libFLAC decodes, the scheduler runs, the writer writes
 a CHD that reads back).
 When chdman does extract, the disc goes to **scratch space - never your game folder**: (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or
@@ -648,7 +646,7 @@ extracted file), a PlayStation disc as `MODE2_RAW`; the built-in reader decodes 
 error-correction bytes rebuilt, with the header counted as zeros as the CD standard says) and the result must equal
 the Redump size and crc32 / md5 / sha1 - a PS2 CHD matches only if the whole ISO (or every bin track) is identical. A DVD
 CHD made by `chdman createdvd` (metadata `DVD `, 2048-byte units) carries the ISO's SHA-1 in its header, so it is
-*identified* instantly without decoding; **Verify fully** decodes it (*verified*). Every compression chdman 0.289
+*identified* instantly without decoding; *Check every track while scanning* decodes it (*verified*). Every compression chdman 0.289
 writes is decoded by the built-in reader; a CHD in a format newer than that is reported as *needs chdman* and **left
 in place** (never moved to `_unmatched/`); with such a chdman installed it is read by chdman. PS2 DVD games have no audio tracks, so for them
 *identified* from a decode is already fully verified.
@@ -691,7 +689,7 @@ because emulators need the iNES header.
 
 - **Nothing is ever overwritten.** If the target already exists the file is skipped
   (`conflict`). Extra copies of the same ROM are not conflicts: one is kept and the others
-  are set aside in `_duplicates/`. Targets are re-checked at the moment of moving.
+  are archived in `_duplicates/`. Targets are re-checked at the moment of moving.
 - Case-only renames work on case-insensitive file systems (exFAT SD cards).
 - Characters that are illegal on Windows / FAT / exFAT (`: ? * " < > | \`) are replaced
   with `_`, since Steam Deck SD cards are often exFAT.
@@ -708,6 +706,23 @@ because emulators need the iNES header.
   apply and undo.
 - Closing the app (Quit, SIGTERM from Steam, Ctrl+C) during an apply stops it between two
   moves.
+
+## Regions and the Preview (v0.2)
+
+- **One region, one entry.** `UK` (No-Intro) and `United Kingdom` (TOSEC's GB) are the same region: it is listed once as
+  *United Kingdom*, saved settings that say `UK` are read as that, and names are parsed to it.
+- **The region list comes from your data.** Region priority lists the regions that exist in the installed DATs of the system
+  (in Collection: of the ticked systems), not a fixed list; your own priorities stay at the top.
+- **Preview and Build share the scan.** Preview reads and matches each system's folder; the Build that follows (and a second
+  Preview) reuses that scan while the folder (file count, size, newest change) and the DATs are unchanged, and says so in the
+  job bar. A build, a change in the folder or a scan of a single system clears it.
+
+## Progress, time and data (v0.2)
+
+The job bar at the top shows what is running with its percentage, how long it has been running, an estimate of the time left
+(from the second it can tell), how much data has been dealt with so far (files hashed, discs read, files copied or moved, in
+whatever unit fits: MB, GB, TB) and the rate. A Collection run reports one percentage over all systems, with the system and
+file in the message (`[2/6] Super Nintendo: ...`).
 
 ## Build the library in another folder (v0.2)
 
@@ -738,49 +753,55 @@ the source and are not copied. The choice is remembered.
 - Save files and other files lying next to discs stay in the source unless "Also copy save files ..." is ticked.
 - The plan for the next steps is in `docs/V0_2_PLAN.md`.
 
-### A whole ROM root: Collection
+### Collection: a whole folder of ROMs
 
-In the list on the left, **Collection** (`#/collection`) builds the clean library of *every* system at once.
+**Collection** (`#/collection`) takes any folder of ROMs, in any state: loose files, mixed folders, one folder per system.
 
-1. **Where:** the ROM root (the folder that holds one folder per system, e.g. `~/Emulation/roms`) and the destination.
-   **Find the systems** matches the sub-folders to the supported systems by the usual frontend names (`gba`, `snes`,
-   `genesis` / `megadrive`, `psx` / `ps1` ...); correct any folder in the table or untick a system. The destination may not
-   be inside the root or contain it.
-2. **Rules for every system:** one set of rules (exclusions, one version per game, latest versions, languages, region
-   priority, kept variants) applies to all systems; a rule a system does not have (no regions, no language tags) is
-   simply not used there. Tick **Own rules** for a system to use the rules of its own Library tab instead. Nothing set
-   means every system uses its own defaults.
-3. **Preview collection** scans and checks each system against its DATs (one after the other, hashes are cached) and
-   shows per system what would be kept, copied or linked, what is already in the destination and any conflicts, plus the
-   free space. **Build collection** does it: `<destination>/<system folder>/...`, using the transfer mode above.
-   A system that fails (folder missing, no DATs) is reported and the others go on.
-   **Undo last build** removes what the last build added in every system.
+1. **Scan.** Choose the folder and press **Scan folder**. The scan reads every file once and matches it against *every*
+   database (all the cartridge and console DATs together, and every disc image once against the disc DATs). There is no step
+   to find or switch on systems: every system that has games in the folder shows up, with its games and files. The scan is the
+   slow part (the job bar shows time, ETA and the data covered); a cache makes a second scan fast.
+2. **Systems found.** The table lists them. *Own rules* uses a system's own Library tab rules instead of the shared rules.
+3. **What to do** (both start with *Preview*, which only sorts the scan's metadata, so it is quick, and show the same things):
+   - **Build the library in the folder where it is** (the default): files are matched by checksum wherever they lie, and each
+     goes into its system's folder, named with the standard short names of EmulationStation-DE, EmuDeck and RetroDECK
+     (`mastersystem`, `megadrive`, `snes`, `psx` ...). Existing folders are never renamed: files are moved out of them and
+     the old, empty folders are removed. The games are renamed to the databases' names
+     and sorted by the rules (one per game, latest versions, languages, regions ...). What matches nothing, is not a ROM
+     (pictures, text ...), or is archived by the rules (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`,
+     `_unmatched`) moves to an **archive folder** outside the ROM folders (default: next to it, named like it with `-archive`;
+     `<archive>/_unmatched/...`, `<archive>/_other/...`, `<archive>/<system>/_excluded/...`), so the ROM folders hold
+     only what you keep. Every file is moved once: straight from where it is to its final name and place, or to the archive (only
+     a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up.
+   - **Build a clean library in another folder**: the same rules, but the files are **copied** (or **moved**) into
+     `<destination>/<standard name>/...` and the ROM folder keeps its names; *keep in sync* is available with Copy. Copy is the
+     default; Move takes the files out of the ROM folder and cannot be combined with sync.
+4. **Rules for every system.** One set of rules (exclusions, one version per game, latest versions, languages, region priority,
+   kept variants) for all systems; a rule a system does not have is simply not used there.
 
-**Sort a mixed folder, keep the ROM folders clean.** The *Sort and tidy* panel works on whatever is under the ROM root:
+**Apply** does it and rescans the folder (quick); **Undo last** puts back the sort, the renames, the library changes and the archive
+files in the right order. **Bring archived files back** returns the archived files to the systems' folders. Nothing is ever
+deleted or overwritten: a name that is taken gets ` (2)`.
 
-- **Sort into systems:** reads every file once (hashes are remembered, so a second run is fast), finds its system by checksum
-  against the DATs of every ticked system, and moves it into that system's folder (`snes`, `gba`, `psx` ... - the folder names
-  found by *Find the systems*, or the usual short names such as `snes` where a folder does not exist yet). A file in the wrong
-  system's folder moves to the right one; one already at home stays. Discs (CHD, cue/bin sets) move as a whole game folder. A
-  save or note named like a ROM goes with it. Preview shows every move first, **Undo sort** moves it all back.
-- **Set-aside folder** (default: next to the ROM root, named like it with `-aside`): files that match no system go to
-  `_unmatched/` and files that are not ROMs (pictures, text, playlists ...) to `_other/` there, keeping their folders. Loose
-  unmatched files only: one that sits inside a system's folder is dealt with by that system's library build.
-- **After a reorganise** (next), what the rules set aside (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`,
-  `_unmatched`) moves out of the system folders to `<set-aside>/<system folder>/<same folder>/`, so the ROM folders hold only what
-  you keep (tick or untick *After a reorganise, move what the rules set aside ...*). The converted-originals folder is never swept.
-  **Undo last build** brings it all back first. **Bring set-aside files back** returns everything to the systems' folders (a later
-  reorganise decides again).
-- Nothing is deleted or overwritten; a name that is taken gets ` (2)`.
+**Keep a single system's folder tidy too.** On a system's Library tab, with *In this folder*, tick *Keep this folder tidy*
+and choose a folder (the default is next to the ROM root, named like it with `-aside`, the same as in Collection). After the
+build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`, `_unmatched`) is moved out to
+`<folder>/<this system's folder name>/...` so the system folder holds only what you keep. The preview counts it, and
+**Undo last** brings those files back first, then reverts the build.
 
-**Just reorganise what is there:** instead of building in another folder, choose *Just reorganise the ROM folders where they
-are*. No destination is needed. Every ticked system gets the classic Build library with the shared rules (or its own): files
-are renamed and sorted inside the system's own folder, what the rules leave out is set aside in `_excluded/`, `_superseded/`
-and the like, files that match nothing go to `_unmatched/`, and nothing is deleted. Preview shows the counts per system,
-Reorganise collection does it, and **Undo last build** uses each system's own undo log. Saves follow the renames if RetroArch is
-set up (see below).
+## Disc images (CHD) and converting first (v0.2)
 
-With Copy the ROM folders keep their files; with Move they give them up. Building again later adds only what is missing.
+- **Disc images (CHD)** in the list on the left holds the settings every disc system shares (Dreamcast, PlayStation, PlayStation 2):
+  where chdman is (optional), how CHDs are read while scanning, how new CHDs are written, the compression, and **Check every
+  track while scanning** (slower: audio tracks are decoded too, so every disc ends up *verified*; a scan alone *identifies* a
+  CD by its data tracks and checks audio by length). The old per-system *Verify CHDs* tool is gone: that switch does it
+  in the scan.
+- **Convert first** (Library tab, in the system's own options, off by default): *Convert raw disc sets (.gdi / .cue + tracks, or
+  an .iso) to CHD first* for disc systems, *Clean up dumps first* for SNES (copier headers) and N64 (byte order). The Library
+  preview counts them; the build converts first (each CHD is checked against Redump before the raw files move to
+  `_converted_originals/`; nothing is deleted) and then builds the library. **Undo last** reverts both.
+- **Collection** has the same option (when sorting and tidying in place; it appears when the scan found something to convert):
+  each system's raw sets are converted after they are sorted into its folder.
 
 ## RetroArch: saves, states and the config (v0.2)
 
@@ -847,33 +868,10 @@ With Copy the ROM folders keep their files; with Move they give them up. Buildin
 
 ## Kickstarts for RetroArch (PUAE)
 
-PUAE needs Kickstart ROMs in RetroArch's system folder under fixed names such as
-`kick34005.A500` (1.3), `kick40068.A1200` (3.1) or `kick40060.CD32` - see the BIOS table in
-the [PUAE documentation](https://docs.libretro.com/library/puae/).
-
-- Your scanned files are matched to that table by MD5 (taken from the TOSEC DAT entry each
-  file matched, mainly *Commodore Amiga - Firmware*). Kickstarts inside zip / 7z archives work too.
-- The destination list shows the usual SteamOS locations that exist on your machine:
-  EmuDeck `~/Emulation/bios` (also on SD cards), RetroDECK `~/retrodeck/bios`, Flatpak
-  RetroArch `~/.var/app/org.libretro.RetroArch/config/retroarch/system`, Steam RetroArch
-  `~/.local/share/Steam/steamapps/common/RetroArch/system` and `~/.config/retroarch/system`.
-  You can also type or browse to any folder.
-- **Preview** shows each PUAE file as `copy`, `ok` (already there with the right content),
-  `conflict` (a different file has that name - never overwritten) or `missing` (you don't
-  have it). **Copy Kickstarts** copies (never moves) the files; the content is verified
-  against the expected MD5 before writing.
-
-### WHDLoad: its own Kickstart step
-
-PUAE needs Kickstarts for WHDLoad too, but the WHDLoad system has **no DAT for them**: put your
-Kickstart ROMs into a `Kickstarts/` folder inside the WHDLoad system folder (any sub-folders).
-That folder is **protected** - it is never scanned, moved, set aside or counted as unmatched by
-scan / organise / Build library. The step matches those files by MD5 against the PUAE table,
-previews `copy` / `ok` / `conflict` / `missing` and lists every other file as `unmatched` (it is
-reported, never copied). Copy never moves and never overwrites. The destination is remembered
-**per system** (`kickstart_dests` in `config.json`; the single `kickstart_dest` of older versions is
-migrated to Commodore Amiga only) and saved as soon as you pick it. The Commodore Amiga (TOSEC)
-Kickstart step above is unchanged. Systems without a Kickstart source do not show the step.
+There is no Kickstart tool on the Amiga systems any more: the **RetroArch** page's BIOS & firmware check
+covers every installed core, PUAE included, and copies the Kickstart ROMs you have (matched by MD5) into
+RetroArch's system folder. For WHDLoad, the `Kickstarts/` folder inside the WHDLoad system folder is still
+protected: it is never scanned, moved, archived or counted as unmatched.
 
 ## Building and installing
 

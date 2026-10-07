@@ -47,6 +47,7 @@
     <aside class="side" id="side" aria-label="Systems">
       <input type="search" id="side-q" class="input side-q" placeholder="Find a system" aria-label="Find a system" autocomplete="off">
       <a class="nav-item nav-collection" href="#/collection" id="collection-link"><span class="nav-name">Collection <span class="muted small">all systems</span></span></a>
+      <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
       <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">RetroArch <span class="muted small">saves and config</span></span></a>
       <nav id="home-groups" aria-label="Systems by group"><div class="empty">Loading systems...</div></nav>
       <div class="muted small side-foot" id="dats-dir"></div>
@@ -68,89 +69,85 @@
       <div class="sys-head">
         <a class="back-link" href="#/">&lsaquo; Systems</a>
         <h1 id="col-title">Collection</h1>
-        <span class="muted small grow">One clean library from a whole ROM folder. Files are copied (or moved, if you choose) into it; nothing is ever deleted.</span>
+        <span class="muted small grow">Point at a folder of ROMs. Everything in it is matched against every database, then sorted and tidied.</span>
       </div>
+
       <div class="panel">
-        <h2>1. Where</h2>
-        <label class="small" for="col-root">ROM root: the folder that holds one folder per system</label>
+        <h2>1. Scan</h2>
+        <label class="small" for="col-root">The folder with your ROMs (any layout: loose files, mixed folders, one folder per system)</label>
         <div class="row">
           <input type="text" id="col-root" class="input grow mono" placeholder="~/Emulation/roms" spellcheck="false" autocomplete="off">
           <button class="btn hidden" id="col-root-native">Browse...</button>
           <button class="btn" id="col-root-browse">Folders...</button>
-          <button class="btn btn-primary" id="col-detect">Find the systems</button>
+          <button class="btn btn-primary" id="col-scan-btn" data-needs-idle>Scan folder</button>
         </div>
-        <div class="row">
-          <label class="check"><input type="radio" name="col-place" id="col-place-elsewhere" checked> Build the clean library in another folder</label>
-          <label class="check"><input type="radio" name="col-place" id="col-place-inplace"> Just reorganise the ROM folders where they are</label>
-        </div>
-        <p class="muted small hidden" id="col-inplace-note">The files stay in their folders but are renamed and sorted the way a single system's Build library does: what the rules leave out goes to <code>_excluded/</code>, <code>_superseded/</code> and so on, files that match nothing go to <code>_unmatched/</code>. Nothing is deleted, and Undo last build puts everything back.</p>
-        <div id="col-elsewhere">
-        <label class="small" for="col-dest">Build the library in</label>
-        <div class="row">
-          <input type="text" id="col-dest" class="input grow mono" placeholder="~/Emulation/library" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="col-dest-native">Browse...</button>
-          <button class="btn" id="col-dest-browse">Folders...</button>
-        </div>
-        <div class="row">
-          <label class="small">How files get there
-            <select id="col-mode" class="input">
-              <option value="copy">Copy (the ROM folders keep their files)</option>
-              <option value="move">Move (the files leave the ROM folders)</option>
-            </select></label>
-          <label class="check"><input type="checkbox" id="col-sidecars"> Also copy save files and other files next to discs</label>
-        </div>
-        <label class="check" title="Files this app built earlier that the rules no longer keep (or whose source is gone) are removed from the destination; changed source files are copied again. Your own files and files you edited there are never touched."><input type="checkbox" id="col-sync"> Keep the destination in sync: also remove what the rules no longer keep</label>
-        </div>
+        <div id="col-scan-info" class="muted small"></div>
+        <div id="col-scan-notes" class="notice hidden"></div>
       </div>
-      <div class="panel">
-        <h2>2. Systems</h2>
-        <p class="muted small">Tick the systems to build. Each is built into its own folder in the destination. Use a system's own Library rules (from its Library tab) instead of the shared rules below by ticking <i>Own rules</i>.</p>
+
+      <div class="panel hidden" id="col-systems-panel">
+        <h2>2. Systems found</h2>
+        <p class="muted small">Every system that has games in the folder is built; there is nothing to switch on. <i>Own rules</i> uses a system's own Library tab rules instead of the shared rules below. Folders get the standard short names (the ones EmulationStation-DE, EmuDeck and RetroDECK use) when you apply.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Build</th><th>System</th><th>Folder</th><th>Own rules</th></tr></thead>
-          <tbody id="col-systems"><tr><td colspan="4" class="muted">Choose the ROM root and press "Find the systems".</td></tr></tbody>
+          <thead><tr><th>System</th><th>Folder after organising</th><th class="num">Games</th><th class="num">Files</th><th>Own rules</th></tr></thead>
+          <tbody id="col-systems"></tbody>
         </table></div>
+        <div id="col-leftovers" class="muted small"></div>
       </div>
-      <div class="panel" id="col-sort-panel">
-        <h2>Sort and tidy</h2>
-        <p class="muted small">Keep the ROM folders clean: only games you keep stay in them. Everything else goes to a folder next to them.</p>
-        <label class="small" for="col-aside">Set-aside folder (outside the ROM folders)</label>
+
+      <div class="panel hidden" id="col-do-panel">
+        <h2>3. What to do with it</h2>
         <div class="row">
-          <input type="text" id="col-aside" class="input grow mono" placeholder="Default: next to the ROM root, named like it with -aside" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="col-aside-native">Browse...</button>
-          <button class="btn" id="col-aside-browse">Folders...</button>
+          <label class="check"><input type="radio" name="col-place" id="col-place-inplace" checked> Build the library in the folder where it is</label>
+          <label class="check"><input type="radio" name="col-place" id="col-place-elsewhere"> Build a clean library in another folder</label>
         </div>
-        <label class="check"><input type="checkbox" id="col-sweep" checked> After a reorganise, move what the rules set aside (<code>_excluded</code>, <code>_superseded</code>, <code>_incomplete</code>, <code>_duplicates</code>, <code>_unmatched</code>) into the set-aside folder</label>
-        <p class="muted small"><b>Sort a mixed folder:</b> reads every file under the ROM root once, finds its system by checksum, and moves it into that system's folder (the ticked systems below). Files that match nothing go to <code>_unmatched/</code> and files that are not ROMs (pictures, text ...) to <code>_other/</code> in the set-aside folder, with their folders kept. Nothing is deleted or overwritten.</p>
-        <div class="row">
-          <button class="btn" id="col-sort-plan" data-needs-idle>Preview sort</button>
-          <button class="btn btn-primary" id="col-sort-apply" data-needs-idle>Sort into systems</button>
-          <button class="btn" id="col-sort-undo" data-needs-idle>Undo sort</button>
-          <button class="btn" id="col-restore" data-needs-idle title="Move everything in the set-aside folder back into the systems' folders">Bring set-aside files back</button>
-          <div class="grow"></div>
+        <div id="col-inplace-opts">
+          <p class="muted small">Files go into their system's folder, are renamed to the databases' names and sorted by the rules. What matches nothing, is not a ROM, or is archived by the rules (excluded, superseded, incomplete, duplicates) moves to the archive folder, so the ROM folders hold only what you keep. Nothing is deleted; Undo puts everything back.</p>
+          <label class="small" for="col-aside">Archive folder (outside the ROM folders)</label>
+          <div class="row">
+            <input type="text" id="col-aside" class="input grow mono" placeholder="Default: next to the ROM folder, named like it with -archive" spellcheck="false" autocomplete="off">
+            <button class="btn hidden" id="col-aside-native">Browse...</button>
+            <button class="btn" id="col-aside-browse">Folders...</button>
+          </div>
+          <label class="check"><input type="checkbox" id="col-sweep" checked> Move what the rules archive out of the ROM folders into the archive folder</label>
+          <label class="check hidden" id="col-convert-wrap"><input type="checkbox" id="col-convert"> <span id="col-convert-label"></span></label>
         </div>
-        <div id="col-sort-output" class="hidden">
-          <div class="cards" id="col-sort-cards"></div>
-          <div id="col-sort-notes" class="notice notice-warn hidden"></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Goes to</th><th>From</th><th>To</th></tr></thead>
-            <tbody id="col-sort-table"></tbody>
-          </table></div>
+        <div id="col-elsewhere" class="hidden">
+          <label class="small" for="col-dest">Build the library in</label>
+          <div class="row">
+            <input type="text" id="col-dest" class="input grow mono" placeholder="~/Emulation/library" spellcheck="false" autocomplete="off">
+            <button class="btn hidden" id="col-dest-native">Browse...</button>
+            <button class="btn" id="col-dest-browse">Folders...</button>
+          </div>
+          <div class="row">
+            <label class="small">How files get there
+              <select id="col-mode" class="input">
+                <option value="copy">Copy (the ROM folders keep their files)</option>
+                <option value="move">Move (the files leave the ROM folders)</option>
+              </select></label>
+            <label class="check"><input type="checkbox" id="col-sidecars"> Also copy save files and other files next to discs</label>
+          </div>
+          <label class="check" title="Files this app built earlier that the rules no longer keep (or whose source is gone) are removed from the destination; changed source files are copied again. Your own files and files you edited there are never touched."><input type="checkbox" id="col-sync"> Keep the destination in sync: also remove what the rules no longer keep</label>
         </div>
       </div>
-      <details class="rules-panel" id="col-rules-box" open>
-        <summary><span class="rules-title">3. Rules for every system</span><span class="rules-summary" id="col-rules-summary"></span><span class="edit-hint" aria-hidden="true"></span></summary>
+
+      <details class="rules-panel hidden" id="col-rules-box" open>
+        <summary><span class="rules-title">4. Rules for every system</span><span class="rules-summary" id="col-rules-summary"></span><span class="edit-hint" aria-hidden="true"></span></summary>
         <div class="rules-body" id="col-rules"></div>
         <div class="row">
           <button class="btn btn-small" id="col-rules-reset">Back to each system's defaults</button>
           <span class="muted small" id="col-rules-note"></span>
         </div>
       </details>
-      <div class="row">
-        <button class="btn" id="col-plan-btn" data-needs-idle>Preview collection</button>
-        <button class="btn btn-primary" id="col-apply-btn" data-needs-idle>Build collection</button>
-        <button class="btn" id="col-undo-btn" data-needs-idle>Undo last build</button>
+
+      <div class="row hidden" id="col-actions">
+        <button class="btn" id="col-plan-btn" data-needs-idle>Preview</button>
+        <button class="btn btn-primary" id="col-apply-btn" data-needs-idle>Build library</button>
+        <button class="btn" id="col-undo-btn" data-needs-idle>Undo last</button>
+        <button class="btn" id="col-restore" data-needs-idle title="Move everything in the archive folder back into the systems' folders">Bring archived files back</button>
         <div class="grow"></div>
       </div>
+      <div id="col-renames" class="notice hidden"></div>
       <div id="col-failures" class="notice hidden"></div>
       <div id="col-output" class="hidden">
         <div class="cards" id="col-cards"></div>
@@ -158,6 +155,60 @@
           <thead id="col-thead"></thead>
           <tbody id="col-table"></tbody>
         </table></div>
+      </div>
+    </section>
+
+    <!-- ===================== DISC IMAGES (CHD): the settings every disc system shares ===================== -->
+    <section class="view hidden" id="view-chd" aria-labelledby="chd-title">
+      <div class="sys-head">
+        <h1 id="chd-title">Disc images (CHD)</h1>
+        <span class="muted small grow">Settings for every system that uses CHD files: Dreamcast, PlayStation, PlayStation 2. Turning raw discs into CHDs is the <i>Convert</i> option of a system's Library tab.</span>
+      </div>
+      <div class="panel">
+        <h2>Reading and writing CHDs</h2>
+          <div class="chdman-box" id="chdman-box">
+            <div class="chdman-line" id="chdman-line"></div>
+            <ol class="chdman-steps hidden" id="chdman-steps"></ol>
+            <div class="row">
+              <input type="text" id="chdman-path" class="input grow mono" placeholder="path to chdman (optional override)"
+                     spellcheck="false" autocomplete="off" aria-label="chdman path">
+              <button class="btn btn-small" id="chdman-save">Save path</button>
+              <button class="btn btn-small" id="chdman-refresh">Look again</button>
+            </div>
+            <div class="row">
+              <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
+              <select id="chdman-engine" class="input select">
+                <option value="auto">the built-in reader (parallel, fast); chdman only for CHDs it cannot decode</option>
+                <option value="python">always the built-in reader (never chdman, no temporary files)</option>
+                <option value="chdman">always chdman (extracts every disc to temporary space)</option>
+              </select>
+            </div>
+            <div class="row">
+              <label class="label-inline" for="chd-writer">Writing CHDs</label>
+              <select id="chd-writer" class="input select">
+                <option value="auto">the built-in writer (no chdman needed)</option>
+                <option value="chdman">chdman, when it is installed</option>
+              </select>
+            </div>
+            <div class="row">
+              <label class="label-inline" for="chd-preset">Compression of new CHDs</label>
+              <select id="chd-preset" class="input select">
+                <option value="default">standard (LZMA / FLAC) - every emulator reads it</option>
+                <option value="zstd">Zstandard - converts about 3x faster and loads faster, but needs an emulator from 2024 or later</option>
+              </select>
+            </div>
+            <div class="muted hidden" id="chd-flac-note">libFLAC was not found, so the built-in writer stores audio tracks with LZMA instead of FLAC: the CHDs are valid and verified, but discs with audio tracks come out larger than chdman's.</div>
+            <div class="muted hidden" id="chd-preset-note">Zstandard CHDs are not read by older emulators and some RetroArch cores. Convert one game and load it in your emulators before converting a collection.</div>
+          </div>
+        <div class="row">
+          <label class="check" title="A scan always identifies a CD by its data tracks (audio is checked by length). With this on, every track, audio included, is decoded and compared with Redump while scanning, so every disc comes out verified. Slower; the result is remembered per file."><input type="checkbox" id="chd-verify-scan"> Check every track while scanning (slower, every disc ends up verified)</label>
+        </div>
+        <div class="muted small" id="chd-levels-help">
+          <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
+          <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
+          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso): convert it to a CHD with the Library tab's Convert option.
+        </div>
+        <div class="muted small hidden" id="chd-speed-line"></div>
       </div>
     </section>
 
@@ -289,7 +340,6 @@
         <button class="tab" role="tab" id="tabbtn-overview" data-tab="overview" aria-controls="tab-overview">Overview</button>
         <button class="tab" role="tab" id="tabbtn-library" data-tab="library" aria-controls="tab-library">Library</button>
         <button class="tab" role="tab" id="tabbtn-browse" data-tab="browse" aria-controls="tab-browse">Browse</button>
-        <button class="tab" role="tab" id="tabbtn-tools" data-tab="tools" aria-controls="tab-tools">Tools</button>
       </div>
 
       <!-- ---------- Overview ---------- -->
@@ -380,6 +430,9 @@
         <div id="lib-gate" class="empty hidden"></div>
         <div id="lib-body">
           <details class="dat-details"><summary>Folder layout after building</summary><pre class="layout" id="library-layout"></pre></details>
+          <div class="row hidden" id="lib-convert-row">
+            <label class="check" id="lib-convert-wrap"><input type="checkbox" id="lib-convert"> <span id="lib-convert-label"></span></label>
+          </div>
           <div class="row">
             <label class="check" id="lib-labels-wrap"><input type="checkbox" id="lib-labels" checked> Disk labels in playlists</label>
             <label class="check" id="lib-savedisk-wrap"><input type="checkbox" id="lib-savedisk"> Add save disk (#SAVEDISK)</label>
@@ -388,6 +441,14 @@
             <legend>Where to build</legend>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-here" checked> In this folder (reorganises the source: files are moved)</label>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-other"> In another folder (the files are copied or moved there)</label>
+            <div id="lib-aside-opts">
+              <label class="check" title="Files the rules archive are moved to a folder next to the ROM folders instead of staying in this one."><input type="checkbox" id="lib-aside-on"> Keep this folder tidy: move what the rules archive (excluded, superseded, incomplete, duplicates, unmatched) to another folder</label>
+              <div class="row hidden" id="lib-aside-row">
+                <input type="text" id="lib-aside-dir" class="input grow mono" placeholder="Folder for the archived files" spellcheck="false" autocomplete="off" aria-label="Archive folder">
+                <button class="btn hidden" id="lib-aside-native">Browse...</button>
+                <button class="btn" id="lib-aside-browse">Folders...</button>
+              </div>
+            </div>
             <div id="lib-export-opts" class="hidden">
               <div class="row">
                 <input type="text" id="lib-export-dest" class="input grow mono" placeholder="Folder to build the library in, e.g. ~/Emulation/roms" spellcheck="false" autocomplete="off" aria-label="Library destination folder">
@@ -425,7 +486,7 @@
             <details class="incomplete-box vanish-box hidden" id="lib-vanish-box">
               <summary id="lib-vanish-title">Games that vanish</summary>
               <p class="muted small">These titles have no version that survives your rules, so none of their files stay in the library
-                (they are set aside in <code>_excluded/</code>, <code>_superseded/</code> or <code>_incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
+                (they are archived in <code>_excluded/</code>, <code>_superseded/</code> or <code>_incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
               <div class="chips" id="lib-vanish-filters"></div>
               <div class="chips vanish-hints" id="lib-vanish-hints"></div>
               <div id="lib-vanish-table"></div>
@@ -436,51 +497,6 @@
             <div id="lib-table"></div>
           </div>
 
-          <details class="advanced" id="advanced-box">
-            <summary>Advanced: organise only / playlists only</summary>
-            <div class="advanced-block" id="step-organise">
-              <h4 id="organise-title">Organise</h4>
-              <p class="muted" id="organise-intro"></p>
-              <pre class="layout" id="organise-layout"></pre>
-              <div class="row">
-                <label class="check" title="Same as the Library rules setting (remembered per system)."><input type="checkbox" id="organise-latest-only"> Latest versions only (older ones go to <code>_superseded/</code>)</label>
-              </div>
-              <div class="row">
-                <button class="btn" id="plan-btn" disabled>Preview changes</button>
-                <button class="btn btn-primary" id="apply-btn" disabled>Apply</button>
-                <button class="btn" id="undo-btn" disabled>Undo last</button>
-                <div class="grow"></div>
-              </div>
-              <div id="organise-failures" class="notice hidden"></div>
-              <div id="organise-warnings" class="notice hidden"></div>
-              <div id="organise-empty" class="empty">Run a scan first.</div>
-              <div id="organise-output" class="hidden">
-                <div class="cards" id="organise-cards"></div>
-                <div class="chips" id="organise-filters"></div>
-                <div class="chips" id="organise-dest-filters"></div>
-                <div id="organise-table"></div>
-              </div>
-            </div>
-            <div class="advanced-block" id="m3u-block">
-              <h4>M3U playlists (multi-disk games)</h4>
-              <p class="muted">For RetroArch / PUAE: one playlist per complete multi-disk set, written next to disk 1
-                (after organising: inside the DAT folder). Load the <code>.m3u</code> as the game and swap disks via Disk Control.</p>
-              <div class="muted small" id="m3u-dats"></div>
-              <div class="row">
-                <label class="check"><input type="checkbox" id="m3u-labels" checked> Disk labels</label>
-                <label class="check"><input type="checkbox" id="m3u-savedisk"> Add save disk (#SAVEDISK)</label>
-                <div class="grow"></div>
-                <button class="btn" id="m3u-plan-btn" disabled>Preview playlists</button>
-                <button class="btn btn-primary" id="m3u-apply-btn" disabled>Write playlists</button>
-              </div>
-              <div id="m3u-failures" class="notice hidden"></div>
-              <div id="m3u-empty" class="empty">Run a scan first.</div>
-              <div id="m3u-output" class="hidden">
-                <div class="chips" id="m3u-filters"></div>
-                <div id="m3u-table"></div>
-              </div>
-            </div>
-          </details>
         </div>
       </div>
 
@@ -491,112 +507,6 @@
           <div class="tabs" role="tablist" id="result-tabs" aria-label="Result lists"></div>
           <div id="result-table"></div>
         </div>
-      </div>
-
-      <!-- ---------- Tools: only what applies to this system ---------- -->
-      <div class="tabpanel hidden" role="tabpanel" id="tab-tools" aria-labelledby="tabbtn-tools" tabindex="-1">
-        <section class="panel tool" id="tool-convert">
-          <h2 id="convert-title">Convert to No-Intro format (optional)</h2>
-          <div class="chdman-box hidden" id="chdman-box">
-            <div class="chdman-line" id="chdman-line"></div>
-            <ol class="chdman-steps hidden" id="chdman-steps"></ol>
-            <div class="row">
-              <input type="text" id="chdman-path" class="input grow mono" placeholder="path to chdman (optional override)"
-                     spellcheck="false" autocomplete="off" aria-label="chdman path">
-              <button class="btn btn-small" id="chdman-save">Save path</button>
-              <button class="btn btn-small" id="chdman-refresh">Look again</button>
-            </div>
-            <div class="row">
-              <label class="label-inline" for="chdman-engine">Reading CHDs while scanning</label>
-              <select id="chdman-engine" class="input select">
-                <option value="auto">the built-in reader (parallel, fast); chdman only for CHDs it cannot decode</option>
-                <option value="python">always the built-in reader (never chdman, no temporary files)</option>
-                <option value="chdman">always chdman (extracts every disc to temporary space)</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="label-inline" for="chd-writer">Writing CHDs</label>
-              <select id="chd-writer" class="input select">
-                <option value="auto">the built-in writer (no chdman needed)</option>
-                <option value="chdman">chdman, when it is installed</option>
-              </select>
-            </div>
-            <div class="row">
-              <label class="label-inline" for="chd-preset">Compression of new CHDs</label>
-              <select id="chd-preset" class="input select">
-                <option value="default">standard (LZMA / FLAC) - every emulator reads it</option>
-                <option value="zstd">Zstandard - converts about 3x faster and loads faster, but needs an emulator from 2024 or later</option>
-              </select>
-            </div>
-            <div class="muted hidden" id="chd-flac-note">libFLAC was not found, so the built-in writer stores audio tracks with LZMA instead of FLAC: the CHDs are valid and verified, but discs with audio tracks come out larger than chdman's.</div>
-            <div class="muted hidden" id="chd-preset-note">Zstandard CHDs are not read by older emulators and some RetroArch cores. Convert one game and load it in your emulators before converting a collection.</div>
-          </div>
-          <p class="muted" id="convert-intro">Organise only renames: a SNES dump with a 512-byte copier header stays <code>.smc</code> and a
-            byte-swapped N64 dump stays <code>.v64</code> / <code>.n64</code>. Converting writes a clean copy exactly as
-            listed in the DAT (headerless <code>.sfc</code>, big-endian <code>.z64</code>) and moves the original to
-            <code>_converted_originals/</code> - nothing is deleted, and <b>Undo last</b> reverts it.
-            Single-file <code>.zip</code> archives are converted into a new <code>.zip</code>; extract <code>.7z</code> files first.</p>
-          <div class="row">
-            <button class="btn" id="convert-plan-btn" disabled>Preview conversions</button>
-            <button class="btn btn-primary" id="convert-apply-btn" disabled>Convert</button>
-            <button class="btn" id="convert-undo-btn" disabled>Undo last</button>
-            <div class="grow"></div>
-          </div>
-          <div id="convert-failures" class="notice hidden"></div>
-          <div id="convert-empty" class="empty">Run a scan first.</div>
-          <div id="convert-output" class="hidden">
-            <div class="cards" id="convert-cards"></div>
-            <div class="chips" id="convert-filters"></div>
-            <div id="convert-table"></div>
-          </div>
-        </section>
-
-        <!-- disc systems (Dreamcast, PlayStation, PlayStation 2): how CHDs are read + Verify fully -->
-        <section class="panel tool" id="tool-verify">
-          <h2>Verify CHDs</h2>
-          <div class="dc-bar" id="dc-bar">
-            <div class="dc-line">
-              <span id="dc-engine-line" class="grow"></span>
-              <button class="btn" id="dc-verify-btn" disabled
-                      title="Decode EVERY track of the identified CHDs (audio included) and compare it with Redump">Verify fully</button>
-            </div>
-            <div class="muted small hidden" id="dc-speed-line"></div>
-            <div class="muted small hidden" id="dc-temp-line"></div>
-            <div class="muted small" id="dc-levels-help">
-              <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
-              <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
-              <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso) you can convert to CHD in Convert.
-            </div>
-            <div id="dc-failures" class="notice hidden"></div>
-          </div>
-          <div id="verify-empty" class="empty">Run a scan first.</div>
-        </section>
-
-        <section class="panel tool" id="tool-kickstart">
-          <h2>Kickstarts for RetroArch (PUAE)</h2>
-          <p class="muted" id="kick-intro"></p>
-          <div id="kick-body">
-            <h3>Destination folder</h3>
-            <div class="dest-list" id="kick-dirs"></div>
-            <div class="row">
-              <input type="text" id="kick-dest" class="input grow mono" placeholder="~/Emulation/bios" spellcheck="false" autocomplete="off" aria-label="Kickstart destination folder">
-              <button class="btn hidden" id="kick-native-browse-btn">Browse...</button>
-              <button class="btn" id="kick-browse-btn">Folders...</button>
-            </div>
-            <div class="row">
-              <button class="btn" id="kick-plan-btn" disabled>Preview</button>
-              <button class="btn btn-primary" id="kick-apply-btn" disabled>Copy Kickstarts</button>
-              <div class="grow"></div>
-            </div>
-            <div class="muted small" id="kick-source"></div>
-            <div id="kick-failures" class="notice hidden"></div>
-            <div id="kick-empty" class="empty">Run a scan first.</div>
-            <div id="kick-output" class="hidden">
-              <div class="chips" id="kick-filters"></div>
-              <div id="kick-table"></div>
-            </div>
-          </div>
-        </section>
       </div>
     </section>
     </div>

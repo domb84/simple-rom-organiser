@@ -29,7 +29,7 @@ WHDLOAD_DAT_NAME = "Commodore - Amiga - WHDLoad"
 # region -> "PAL" | "NTSC" | "" (unknown / both)
 REGIONS: dict[str, str] = {}
 for _r in ("Europe", "Australia", "New Zealand", "Germany", "France", "Spain", "Italy", "Netherlands",
-           "Sweden", "Denmark", "Norway", "Finland", "Scandinavia", "UK", "United Kingdom", "Ireland",
+           "Sweden", "Denmark", "Norway", "Finland", "Scandinavia", "United Kingdom", "Ireland",
            "Portugal", "Austria", "Switzerland", "Belgium", "Greece", "Poland", "Russia", "Croatia",
            "Czech", "Hungary", "Turkey", "South Africa", "China", "Hong Kong", "India", "Argentina",
            "United Arab Emirates"):
@@ -39,6 +39,19 @@ for _r in ("USA", "Canada", "Japan", "Korea", "Taiwan", "Brazil", "Mexico", "Per
 for _r in ("World", "Asia", "Unknown"):
     REGIONS[_r] = ""
 del _r
+
+# One region, several spellings: No-Intro writes (UK), TOSEC's GB is the United Kingdom. Everything is stored and shown under
+# the canonical name, so there is ONE entry in the region priority and one value to filter by.
+REGION_ALIASES = {"UK": "United Kingdom", "Great Britain": "United Kingdom"}
+
+
+def canon_region(name: str) -> str:
+    return REGION_ALIASES.get(name, name)
+
+
+def is_region(name: str) -> bool:
+    return name in REGIONS or name in REGION_ALIASES
+
 
 TOSEC_COUNTRIES: dict[str, str] = {
     "AE": "United Arab Emirates", "AR": "Argentina", "AT": "Austria", "AU": "Australia",
@@ -65,7 +78,7 @@ LANGUAGES: dict[str, str] = {
 
 REGION_LANGUAGE: dict[str, str] = {}
 for _codes, _lang in (
-        (("USA", "World", "Europe", "Australia", "New Zealand", "UK", "United Kingdom", "Canada",
+        (("USA", "World", "Europe", "Australia", "New Zealand", "United Kingdom", "Canada",
           "Ireland", "South Africa"), "En"),
         (("Japan",), "Ja"), (("Germany", "Austria"), "De"), (("France",), "Fr"),
         (("Spain", "Mexico", "Argentina", "Latin America", "Peru"), "Es"), (("Italy",), "It"),
@@ -288,7 +301,7 @@ def _parse_nointro(name: str) -> Tags:
     # No-Intro puts the region first; plain "(..)" groups before it are part of the title
     # ("Sansu 5 Nen (Jou) (Japan)").
     first_region = next((i for i, (k, t) in enumerate(groups)
-                         if k == "(" and all(p in REGIONS for p in t.split(", "))), 0)
+                         if k == "(" and all(is_region(p) for p in t.split(", "))), 0)
     if first_region and all(k == "(" for k, _t in groups[:first_region]):
         title = " ".join([title] + [f"({t})" for _k, t in groups[:first_region]])
         groups = groups[first_region:]
@@ -298,8 +311,8 @@ def _parse_nointro(name: str) -> Tags:
             continue
         if not regions:
             parts = text.split(", ")
-            if all(p in REGIONS for p in parts):
-                regions = tuple(parts)
+            if all(is_region(p) for p in parts):
+                regions = tuple(dict.fromkeys(canon_region(p) for p in parts))
                 continue
         if languages is None:
             langs, variants = _parse_language_group(text)
@@ -1174,10 +1187,12 @@ def flag_types(t: Tags) -> frozenset[str]:
 DEFAULT_REGION_PRIORITY: tuple[str, ...] = ("Europe", "USA", "World", "Japan")
 
 
-def region_order(priority: Iterable[str] = DEFAULT_REGION_PRIORITY) -> list[str]:
-    """``priority`` followed by every other known region in alphabetical order."""
-    first = list(dict.fromkeys(p for p in priority if p))
-    return first + sorted(r for r in REGIONS if r not in first)
+def region_order(priority: Iterable[str] = DEFAULT_REGION_PRIORITY, present: Optional[Iterable[str]] = None) -> list[str]:
+    """``priority`` (canonical names) followed by the other regions in alphabetical order: those found in the data
+    (``present``) or, when that is not known, every region the app knows."""
+    first = list(dict.fromkeys(canon_region(p) for p in priority if p))
+    pool = set(present) if present is not None else set(REGIONS)
+    return first + sorted(r for r in pool if r not in first)
 
 
 def region_rank(regions: Iterable[str], order: list[str]) -> int:

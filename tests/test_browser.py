@@ -283,124 +283,70 @@ class CollectionTests(UiTestCase):
         self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r};
             i.dispatchEvent(new Event('change')); }})()""")
 
-    def test_root_to_clean_library_and_undo(self) -> None:
+    def _mixed(self) -> tuple[Path, Path]:
         base = Path(tempfile.mkdtemp(prefix="romorg-ui-col-"))
-        self.addCleanup(shutil.rmtree, base, True)
-        roms, dest = base / "roms", base / "library"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
-        before = sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*"))
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.assertFalse(self.page.eval("document.getElementById('view-home').offsetParent !== null"))
-        self.fill("col-root", str(roms))
-        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
-        self.assertTrue(self.page.eval("[...document.querySelectorAll('#col-systems tr')].find(r => r.textContent.includes('Commodore Amiga')).querySelector('input').checked"))
-        self.fill("col-dest", str(dest))
-        self.click("#col-plan-btn")
-        self.page.wait("document.getElementById('col-table').textContent.includes('Commodore Amiga')", timeout=60)
-        self.assertFalse(dest.exists())
-        self.click("#col-apply-btn")
-        self.assertIn("ROM folders keep their files", self.confirm_dialog())
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=90)
-        self.assertTrue([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
-        self.assertEqual(sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*")), before)
-        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
-        self.click("#col-undo-btn")
-        self.assertIn("Remove what the last build added", self.confirm_dialog())
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Removed ')", timeout=30)
-        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
-        self.no_js_errors()
-
-    def test_sort_a_mixed_folder_then_undo(self) -> None:
-        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sort-"))
         self.addCleanup(shutil.rmtree, base, True)
         mixed = base / "mixed"
         (mixed / "Dump").mkdir(parents=True)
-        for f in list(self.fx.root.glob("*.adf"))[:3]:
+        for f in list(self.fx.root.glob("*.adf")):
             shutil.copy(f, mixed / "Dump" / f.name)
         for f in list(self.fx.gba.glob("*.gba"))[:2]:
             shutil.copy(f, mixed / "Dump" / f.name)
         (mixed / "Dump" / "cover.jpg").write_bytes(b"jpg")
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.fill("col-root", str(mixed))
-        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
-        for name in ("Commodore Amiga", "Nintendo Game Boy Advance"):
-            self.page.eval(f"""(() => {{ const r = [...document.querySelectorAll('#col-systems tr')].find(r => r.cells[1] && r.cells[1].textContent === {name!r});
-                const c = r.querySelector('input'); if (!c.checked) c.click(); }})()""")
-        self.page.wait("[...document.querySelectorAll('#col-systems tr')].filter(r => r.querySelector('input')?.checked).length === 2")
-        self.click("#col-sort-plan")
-        self.page.wait("document.getElementById('col-sort-cards').textContent.includes('Not ROMs')", timeout=60)
-        self.assertTrue((mixed / "Dump" / "cover.jpg").exists())                           # a preview moves nothing
-        self.click("#col-sort-apply")
-        self.assertIn("Undo sort moves everything back", self.confirm_dialog())
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Sorted'))", timeout=60)
-        self.assertTrue(list((mixed / "amiga").glob("*.adf")) and list((mixed / "gba").glob("*.gba")))
-        self.assertTrue((base / "mixed-aside" / "_other" / "Dump" / "cover.jpg").is_file())
-        self.page.wait("document.getElementById('col-sort-undo').dataset.blocked !== '1'")
-        self.click("#col-sort-undo")
-        self.confirm_dialog()
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('back'))", timeout=60)
-        self.assertTrue((mixed / "Dump" / "cover.jpg").is_file())
-        self.no_js_errors()
+        return base, mixed
 
-    def test_reorganise_in_place(self) -> None:
-        base = Path(tempfile.mkdtemp(prefix="romorg-ui-inplace-"))
-        self.addCleanup(shutil.rmtree, base, True)
-        roms = base / "roms"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
-        before = sorted(p.name for p in self.fx.root.iterdir())
+    def _scan(self, mixed: Path) -> None:
         self.open("#/collection")
         self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.fill("col-root", str(roms))
-        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
-        self.page.eval("document.getElementById('col-place-inplace').click()")
-        self.page.wait("document.getElementById('col-elsewhere').classList.contains('hidden')")
-        self.assertEqual(self.page.eval("document.getElementById('col-apply-btn').textContent"), "Reorganise collection")
+        self.assertFalse(self.page.eval("!!document.getElementById('col-detect')"))            # there is no "find the systems" step
+        self.assertTrue(self.page.eval("document.getElementById('col-systems-panel').classList.contains('hidden')"))
+        self.fill("col-root", str(mixed))
+        self.click("#col-scan-btn")
+        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 2", timeout=90)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#col-systems tr')].map(r => r.cells[0].textContent).sort()"),
+                         ["Commodore Amiga", "Nintendo Game Boy Advance"])
+        self.assertIn("Scanned", self.page.eval("document.getElementById('col-scan-info').textContent"))
+
+    def test_one_scan_then_a_quick_preview_and_sort_and_tidy_and_undo(self) -> None:
+        base, mixed = self._mixed()
+        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
+        self._scan(mixed)
         self.click("#col-plan-btn")
-        self.page.wait("document.getElementById('col-table').textContent.includes('Commodore Amiga')", timeout=60)
-        self.assertEqual(sorted(p.name for p in self.fx.root.iterdir()), before)             # a preview moves nothing
+        self.page.wait("document.getElementById('col-cards').textContent.includes('Files to sort into systems')", timeout=60)
+        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # a preview moves nothing
         self.click("#col-apply-btn")
-        self.assertIn("renamed and moved inside", self.confirm_dialog())
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Reorganised'))", timeout=90)
-        self.assertNotEqual(sorted(p.name for p in self.fx.root.iterdir() if not p.name.startswith(".romorg")), before)
+        self.assertIn("standard short names", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Done:'))", timeout=120)
+        self.assertTrue(list((mixed / "amiga").rglob("*.adf")) and list((mixed / "gba").rglob("*.gba")))
+        self.assertTrue((base / "mixed-archive" / "_other" / "Dump" / "cover.jpg").is_file())
         self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
         self.click("#col-undo-btn")
-        self.assertIn("Put the files", self.confirm_dialog())
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Put back'))", timeout=60)
-        self.assertEqual(sorted(p.name for p in self.fx.root.iterdir() if not p.name.startswith(".romorg")), before)
+        self.confirm_dialog()
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Scan again'))", timeout=60)
+        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file() and not p.name.startswith(".romorg")), before)
         self.no_js_errors()
 
-    def test_sync_removes_what_the_source_lost(self) -> None:
-        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sync-"))
-        self.addCleanup(shutil.rmtree, base, True)
-        roms, dest = base / "roms", base / "library"
-        roms.mkdir()
-        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.fill("col-root", str(roms))
-        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
+    def test_a_clean_library_built_elsewhere_from_the_scan(self) -> None:
+        base, mixed = self._mixed()
+        dest = base / "library"
+        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
+        self._scan(mixed)
+        self.page.eval("document.getElementById('col-place-elsewhere').click()")
+        self.page.wait("!document.getElementById('col-elsewhere').classList.contains('hidden')")
         self.fill("col-dest", str(dest))
-        self.click("#col-apply-btn")
-        self.confirm_dialog()
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=90)
-        built = sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
-        self.assertGreater(len(built), 2)
-        victim = self.fx.root / "Zeta Zone (1995)(Zed).adf"
-        victim.unlink()
-        self.page.eval("document.getElementById('col-sync').click()")
-        self.page.wait("document.getElementById('col-sync').checked")
         self.click("#col-plan-btn")
-        self.page.wait("document.getElementById('col-cards').textContent.includes('To remove')", timeout=60)
-        self.assertEqual(sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts), built)
+        self.page.wait("document.getElementById('col-cards').textContent.includes('To copy')", timeout=60)
+        self.assertFalse(dest.exists())
         self.click("#col-apply-btn")
-        self.assertIn("SYNC is on", self.confirm_dialog())
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built 0 ')", timeout=90)
-        after = sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
-        self.assertEqual(len(after), len(built) - 1)
+        self.assertIn("ROM folder keeps its files", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Built '))", timeout=120)
+        self.assertTrue(list((dest / "gba").glob("*.gba")))
+        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # the source is untouched
+        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
+        self.click("#col-undo-btn")
+        self.confirm_dialog()
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Removed'))", timeout=60)
+        self.assertFalse([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
         self.no_js_errors()
 
     def test_shared_rules_are_saved_and_the_home_page_links_here(self) -> None:
@@ -409,7 +355,7 @@ class CollectionTests(UiTestCase):
         self.page.goto(self.fx.url + "#/collection")
         self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
         self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').click()")
-        self.page.wait("document.getElementById('col-rules-note').textContent.includes('set')")
+        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
         self.page.goto(self.fx.url + "#/collection")
         self.page.eval("location.reload()")
         self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
@@ -490,6 +436,31 @@ class RetroArchTests(UiTestCase):
         self.no_js_errors()
 
 
+
+
+class TidyFolderTests(UiTestCase):
+    def confirm_dialog(self) -> str:
+        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
+        text = self.page.eval("document.getElementById('confirm-body').innerText")
+        self.page.eval("document.getElementById('confirm-yes').click()")
+        return text
+
+    def test_build_in_place_can_move_the_set_aside_files_out_and_shows_time_and_data(self) -> None:
+        aside = Path(tempfile.mkdtemp(prefix="romorg-ui-aside-"))
+        self.addCleanup(shutil.rmtree, aside, True)
+        self.library_preview()
+        self.page.eval("document.getElementById('lib-aside-on').click()")
+        self.page.eval(f"""(() => {{ const i = document.getElementById('lib-aside-dir'); i.value = {str(aside)!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+        self.click("#lib-plan-btn")
+        self.page.wait("document.getElementById('lib-cards').textContent.includes('To move out to the archive folder')", timeout=30)
+        self.click("#lib-apply-btn")
+        self.assertIn("is then moved out of this folder", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('moved out to'))", timeout=60)
+        self.assertFalse([p for p in self.fx.root.glob("_*")])
+        self.assertTrue(any(aside.rglob("*.adf")))
+        self.assertRegex(self.page.eval("document.querySelector('#job-bar .job-time')?.textContent || ''"), r"took \d+s|running")
+        self.no_js_errors()
 
 
 class RememberedViewTests(UiTestCase):
@@ -580,8 +551,8 @@ class BrowseListTests(UiTestCase):
 
 
 class ConvertDropdownTests(UiTestCase):
-    """The Convert step of a disc system: the writer / compression dropdowns and plan -> apply -> undo with the
-    built-in writer (a one-track synthetic PlayStation disc, no chdman, no audio so no libFLAC is needed)."""
+    """The global CHD settings page (writer / compression) and the Library option that converts raw discs to CHD first, with
+    the built-in writer (a one-track synthetic PlayStation disc, no chdman, no audio so no libFLAC is needed)."""
 
     SLUG, PLATFORM = "sony-playstation", "Sony PlayStation"
 
@@ -601,11 +572,9 @@ class ConvertDropdownTests(UiTestCase):
         (self.psx / "raw" / "t.cue").write_text('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
 
     def tools(self) -> None:
-        self.open()
-        self.scan(self.PLATFORM, str(self.psx))
-        self.page.goto(self.fx.url + f"#/system/{self.SLUG}/tools")
-        self.page.wait("!!document.querySelector('#chdman-box:not(.hidden)') && "
-                       "document.getElementById('chdman-line').textContent.length > 5")
+        self.open("#/chd")
+        self.page.wait("!document.getElementById('view-chd').classList.contains('hidden')")
+        self.page.wait("document.getElementById('chdman-line').textContent.length > 5")
 
     def select(self, selector: str, value: str) -> None:
         self.page.eval(f"""(() => {{ const s = document.querySelector({selector!r}); s.value = {value!r};
@@ -633,7 +602,8 @@ class ConvertDropdownTests(UiTestCase):
             self.select("#chd-preset", "zstd")
             self.page.wait("!document.getElementById('chd-preset-note').classList.contains('hidden')")
             self.assertIn("older emulators", self.page.eval("document.getElementById('chd-preset-note').textContent"))
-            self.page.goto(self.fx.url + f"#/system/{self.SLUG}/tools")        # saved on the server: survives a reload
+            self.page.goto(self.fx.url + "#/chd")                              # saved on the server: survives a reload
+            self.page.eval("location.reload()")
             self.page.wait("document.getElementById('chdman-line').textContent.length > 5")
             self.page.wait("document.getElementById('chd-preset').value === 'zstd'")
         else:
@@ -647,24 +617,39 @@ class ConvertDropdownTests(UiTestCase):
         self.page.wait("document.getElementById('chd-writer').value === 'auto'")
         self.no_js_errors()
 
-    def test_plan_apply_and_undo_with_the_built_in_writer(self) -> None:
+    def test_the_settings_page_has_the_scan_verification_switch(self) -> None:
         self.tools()
-        self.click("#convert-plan-btn")
-        self.page.wait("document.querySelectorAll('#convert-table tbody tr').length === 1")
-        self.assertIn("Solo (USA).chd", self.page.eval("document.querySelector('#convert-table tbody tr').innerText"))
-        self.click("#convert-apply-btn")
-        self.assertIn("Convert 1 raw set", self.confirm_dialog())
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Converted 1 file')", timeout=120)
+        self.assertFalse(self.page.eval("document.getElementById('chd-verify-scan').checked"))
+        self.page.eval("document.getElementById('chd-verify-scan').click()")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Saved'))")
+        self.page.eval("location.reload()")
+        self.page.wait("document.getElementById('chdman-line').textContent.length > 5")
+        self.page.wait("document.getElementById('chd-verify-scan').checked")
+        self.assertFalse(self.page.eval("!!document.getElementById('tool-convert') || !!document.getElementById('tool-verify')"))
+        self.no_js_errors()
+
+    def test_the_library_converts_raw_discs_first_and_undo_reverts_it(self) -> None:
+        self.open()
+        self.scan(self.PLATFORM, str(self.psx))
+        self.page.goto(self.fx.url + f"#/system/{self.SLUG}/library")
+        self.page.wait("!!document.querySelector('#lib-convert-row:not(.hidden)')")
+        self.assertFalse(self.page.eval("document.getElementById('lib-convert').checked"))
+        self.page.eval("document.getElementById('lib-convert').click()")
+        self.page.wait("[...document.querySelectorAll('#lib-convert-row')].length === 1")
+        self.click("#lib-plan-btn")
+        self.page.wait("document.getElementById('lib-cards').textContent.includes('Raw discs to convert to CHD first')", timeout=60)
+        self.click("#lib-apply-btn")
+        self.assertIn("converted to CHD first", self.confirm_dialog())
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('converted first'))", timeout=180)
         self.idle()
         chd = self.psx / "Solo (USA)" / "Solo (USA).chd"
         self.assertTrue(chd.is_file())
         self.assertTrue((self.psx / "_converted_originals" / "raw" / "t.bin").is_file())
         self.assertFalse((self.psx / "raw" / "t.bin").exists())
-        self.page.wait("document.getElementById('convert-undo-btn').dataset.blocked !== '1'")
-        self.click("#convert-undo-btn")
+        self.page.wait("document.getElementById('lib-undo-btn').dataset.blocked !== '1'")
+        self.click("#lib-undo-btn")
         self.confirm_dialog()
-        self.page.wait("(async () => { const j = await fetch('/api/job').then(r => r.json()); "
-                       "return j && j.status === 'done' && !!j.result; })()")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Reverted'))", timeout=120)
         self.idle()
         self.assertFalse(chd.exists())
         self.assertTrue((self.psx / "raw" / "t.bin").is_file())
