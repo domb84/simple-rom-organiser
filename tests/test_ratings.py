@@ -201,7 +201,11 @@ class IndexTests(TmpDirCase):
         self.build()
         self.assertTrue(st.available())
         self.assertEqual(st.lookup(G, "Alpha Quest"), (9.0, 100))
+        first = ratings.index_path(self.dir).stat()
         self.build(XML.replace("<CommunityRating>4.5</CommunityRating>", "<CommunityRating>2.0</CommunityRating>", 1))
+        idx = ratings.index_path(self.dir)
+        os.utime(idx, ns=(first.st_mtime_ns, first.st_mtime_ns))       # same size, same mtime tick (coarse clocks, tmpfs)
+        self.assertEqual(idx.stat().st_size, first.st_size)
         self.assertEqual(st.lookup(G, "Alpha Quest"), (4.0, 100))      # new file -> caches dropped
 
     def test_default_store_follows_the_data_dir(self) -> None:

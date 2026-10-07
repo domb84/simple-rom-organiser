@@ -418,7 +418,7 @@ class Store:
         p = index_path(self.directory)
         try:
             st = p.stat()
-            sig = (st.st_mtime_ns, st.st_size)
+            sig = (st.st_mtime_ns, st.st_size, st.st_ino)   # os.replace gives a new inode even when size and a coarse mtime tick match
         except OSError:
             sig = None
         if sig != self._sig:
