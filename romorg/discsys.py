@@ -1412,7 +1412,14 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None,
             items.append(library.Item(key=i, dat=u.game.rep.dat, rom=u.game.rep, style=tags.STYLE_REDUMP,
                                       path=u.path, member=None, disc_total=totals.get(u.game.name, 0)))
             key_of[i] = u
-        sel = library.select(items, profile, result_platform(result), ratings=ratings)
+        lang_games = None
+        if getattr(profile, "keep_other_language", False) and profile.languages and index:
+            # the whole DAT decides whether a game has a version in the selected languages
+            lang_games = library.language_games(
+                (library.Item(key=n, dat=g.rep.dat, rom=g.rep, style=tags.STYLE_REDUMP, path=Path(g.name), member=None,
+                              disc_total=totals.get(g.name, 0)) for n, g in enumerate(index.games.values())),
+                profile, result_platform(result))
+        sel = library.select(items, profile, result_platform(result), ratings=ratings, lang_games=lang_games)
     decisions = sel.decisions
     unit_key = {id(u): i for i, u in key_of.items()}
     for u in sorted(keepers, key=lambda x: os.fspath(x.top).casefold()):

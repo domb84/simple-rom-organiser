@@ -130,6 +130,9 @@ class LibraryProfile:
     # Amiga Games: a disk slot nobody has in the same edition may be filled by a disk of another edition
     # (country / language / edition flags / version / year) of the same title, publisher and disk count.
     borrow_other_editions: bool = True
+    # No-Intro / Redump: a game with NO version in the selected languages anywhere in its DAT (e.g. a Japan-only
+    # release) is kept anyway instead of being left out. A game that has a version in a selected language is unchanged.
+    keep_other_language: bool = True
     # Ratings (Amendment 18; LaunchBox community ratings, 0-10). Inactive (nothing changes, no data needed) while
     # both ``min_rating`` and ``top_n`` are None.
     min_rating: Optional[float] = None           # games rated below this are excluded (None = off)
@@ -164,6 +167,7 @@ class LibraryProfile:
                 "rescue_only_dump": self.rescue_only_dump,
                 "region_priority": list(self.region_priority), "one_per_game": self.one_per_game,
                 "borrow_other_editions": self.borrow_other_editions,
+                "keep_other_language": self.keep_other_language,
                 "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
                 "overrides": [list(o) for o in self.overrides]}
@@ -208,6 +212,7 @@ class LibraryProfile:
                    rescue_only_dump=flag("rescue_only_dump", base.rescue_only_dump),
                    region_priority=regions, one_per_game=flag("one_per_game", base.one_per_game),
                    borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions),
+                   keep_other_language=flag("keep_other_language", base.keep_other_language),
                    **{**{"min_rating": base.min_rating, "top_n": base.top_n, "min_votes": base.min_votes,
                          "rank_scope": base.rank_scope}, **rating},
                    keep_unrated=flag("keep_unrated", base.keep_unrated),
@@ -744,15 +749,33 @@ class RatingContext:
 INF_KEY: tuple = (float("inf"),)
 
 
+OTHER_LANGUAGE_STYLES = (STYLE_NOINTRO, STYLE_REDUMP)      # whose game identity does not include the region
+
+
+def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Platform") -> frozenset:
+    """The games (``game_key``) that have at least one variant which passes every rule INCLUDING the language filter.
+    Pass the whole DAT's items: a game that is not in the set has no version in the selected languages, so
+    ``keep_other_language`` keeps what exists of it."""
+    scope = _Scope(platform)
+    out = set()
+    for it in items:
+        if _style(it) not in OTHER_LANGUAGE_STYLES or it.dat not in scope.language:
+            continue
+        if not eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
+                           parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None):
+            out.add(game_key(it))
+    return frozenset(out)
+
+
 def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
-           ratings: Optional[RatingContext] = None) -> Selection:
+           ratings: Optional[RatingContext] = None, lang_games: Optional[frozenset] = None) -> Selection:
     """Decide keep / excluded / superseded / incomplete per item (see the module docstring).
 
     With a rating filter in ``profile`` (``profile.rating_active``) ``ratings`` is required (:class:`RatingsUnavailable`
     otherwise) and the filter is applied last, at game level (:func:`apply_ratings`)."""
     if profile.rating_active and ratings is None:
         raise RatingsUnavailable("a rating filter is set but no rating data was supplied")
-    sel = _select_base(items, profile, platform)
+    sel = _select_base(items, profile, platform, lang_games)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
     apply_overrides(sel, items, profile)
@@ -787,8 +810,9 @@ def apply_overrides(sel: Selection, items: Sequence[Item], profile: LibraryProfi
         sel.sets = [cs for cs in sel.sets if not excluded_keys & set(cs.slots.values())]
 
 
-def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> Selection:
-    """Every rule except the rating filter."""
+def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
+                 lang_games: Optional[frozenset] = None) -> Selection:
+    """Every rule except the rating filter. ``lang_games``: see :func:`language_games` (None = the items themselves)."""
     sel = Selection()
     next_id = [1]
 
@@ -814,8 +838,21 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
                 lang_only.setdefault(it.dat, []).append(it)
         else:
             alive.append(it)
-    # keep-every-version DATs (opt-in): the only dump of a version is not excluded for [m] / [u]
+    # a game that has no version in the selected languages at all: keep what exists of it (No-Intro / Redump)
     rescued: dict[int, str] = {}
+    if profile.keep_other_language and profile.languages:
+        only_lang = [(it, info) for it, info in excluded
+                     if _style(it) in OTHER_LANGUAGE_STYLES and all(code == LANGUAGE_CODE for code, _x in info)]
+        if only_lang:
+            known = lang_games if lang_games is not None else language_games(items, profile, platform)
+            back = {it.key: info for it, info in only_lang if game_key(it) not in known}
+            if back:
+                excluded = [(it, info) for it, info in excluded if it.key not in back]
+                for it, info in only_lang:
+                    if it.key in back:
+                        alive.append(it)
+                        rescued[it.key] = (f"kept although it only exists in {info[0][1]}: no version in your languages exists")
+    # keep-every-version DATs (opt-in): the only dump of a version is not excluded for [m] / [u]
     if profile.rescue_only_dump:
         kept_versions = {(it.dat, _release_key(it)) for it in alive
                          if it.dat not in latest_dats | best_dats and _style(it) == STYLE_TOSEC}
@@ -1602,6 +1639,10 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "Keep only releases playable in the selected languages (first = preferred). A release with no "
         "language and no country tag counts as English; a country implies its language; "
         "(de-en) counts as both.", _ALL, default_value=["En"])
+    opt("other_language", "keep_other_language", "Keep games that exist only in other languages", True,
+        "A game with no version in your languages anywhere in the database (for example a Japan-only release) is kept "
+        "instead of left out. As soon as a version in one of your languages exists, only that one is kept.",
+        [STYLE_NOINTRO, STYLE_REDUMP])
     opt("region_priority", "region_priority", "Region priority", True,
         "Best region first. When one version per game is kept, the first region listed here wins "
         "(unlisted regions follow in alphabetical order).", [STYLE_NOINTRO, STYLE_REDUMP],

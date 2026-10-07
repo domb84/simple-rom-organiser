@@ -197,22 +197,22 @@ Windows build scripts fetch one into `packaging\.cache\native`).
 ## Using it
 
 The app has a **global header** on every screen: the title (click it to go home), the **updates
-line** (`TOSEC 2025-03-13 · No-Intro 2026.08.01 · checked 14:02`) with **Check for updates**
-(it becomes **Cancel update** while running; offline you get a quiet note, with no DATs and no
+line** (`TOSEC 2025-03-13 · No-Intro 2026.08.01 · checked 14:02`) with **Check for updates** (under **More**;
+it becomes **Cancel update** while running; offline you get a quiet note, with no DATs and no
 network a clear error with **Retry**), **Quit**, and - while something runs - the **job bar**
 (scan, verify, build, convert ... with **Cancel**). The address uses `#` routes, so the browser's
 Back / Forward buttons and a reload keep you where you were.
 
-**Home (`#/`)** is a dashboard with one **card per system**, grouped into *Computers*, *Cartridge
-consoles* and *Disc systems* (the list comes from the app, nothing is hard-coded in the page). A
-card shows the system, its DAT (installed version, or *DAT missing / updating*), its folder (or
-*No folder set*), the last known result (have / missing / % complete, *identified* / *verified*
-for disc systems, the time of the last scan) or *Not scanned yet*, and ONE primary button that
-follows the state: **Set folder** -> **Scan** -> **Build library**. A running scan shows live
-progress on its card. The last scan summary of every system is a tiny record in `config.json`
-(counts, time, folder - never file lists), so the cards survive a restart; the full results
-(Browse, Library) exist only for the system scanned last and need a new scan after a restart.
-Click a card to open its system page.
+**The system list** is on the left of every screen (v0.2). **Collection** is at the top, then the systems grouped into
+*Computers*, *Cartridge consoles* and *Disc systems* (the groups come from the app, nothing is hard-coded in the page).
+Each system has a dot (green: scanned, amber: its DAT is missing, hollow: not scanned) and the % you own; hover for the
+folder, DAT and last scan. A running scan shows its progress under the system. **Find a system** filters the list.
+Clicking a system opens it on the right with its **Overview / Library / Browse / Tools** tabs, and the tab you are on stays
+selected when you switch system. **Hide list** collapses the list (remembered); in a narrow window it becomes a **Systems**
+button above the page. **More** in the header holds Databases, Check for updates, Compact rows and Quit. The last scan
+summary of every system is a tiny record in `config.json` (counts, time, folder - never file lists), so the list survives a
+restart; the full results (Browse, Library) exist only for the system scanned last and need a new scan after a restart.
+Opening `#/` goes to the system you used last.
 
 **A system page (`#/system/<slug>/<tab>`)** has a *< Systems* link and four tabs (arrow keys
 move between them):
@@ -391,7 +391,14 @@ language filter. What counts as a language of a release:
   when there is no language / country flag*;
 - TOSEC `(M3)` (multi-language) includes English;
 - `[tr en]` marks an English translation and counts as English (`[tr de]` adds German).
-A title with no version in a ticked language is left out; the **Games that vanish** list
+**No-Intro and Redump (consoles and discs):** a game with no version in your languages *anywhere in its DAT* (a
+Japan-only release, for example) is **kept** by default (option *Keep games that exist only in other languages*, in the
+rules and in Collection). The whole DAT decides, not the files you own: if an English version of the game exists in the DAT,
+your Japanese copy is still left out, and the English one is "missing". Among several versions of such a game the usual
+region and revision order picks one. Turn the option off to have every title without a version in your languages left out.
+TOSEC and WHDLoad keep the rule below.
+
+A TOSEC / WHDLoad title with no version in a ticked language is left out; the **Games that vanish** list
 shows them with the languages they do have, and offers a button to tick one of those languages.
 
 **Keep these dump types** (Amiga Games). Cracks `[cr]`, hacks `[h]`, trainers `[t]`,
@@ -701,6 +708,92 @@ because emulators need the iNES header.
   apply and undo.
 - Closing the app (Quit, SIGTERM from Steam, Ctrl+C) during an apply stops it between two
   moves.
+
+## Build the library in another folder (v0.2)
+
+On the Library tab, **Where to build** chooses between *In this folder* (the classic build: files are moved) and
+*In another folder*: the scanned folder is only **read**, and the files your rules keep are placed in a destination
+folder, laid out exactly as an in-place build would lay them out. Excluded, superseded and unmatched files stay in
+the source and are not copied. The choice is remembered.
+
+- **How files get there:** *Automatic* uses a hard link when the destination is on the same drive (no extra disk
+  space) and a copy otherwise; *Always copy* works across drives and on exFAT SD cards; *Symbolic links* are for
+  people who want links (exFAT cannot hold them: the file is copied instead).
+- **Safe:** the destination may not be inside the source or contain it; a different file already at a target is never
+  overwritten (shown as a conflict); copies are written under a temporary name and renamed when complete; the free
+  space is checked first. Running it again only adds what is missing.
+- **Undo last build** removes only what the build added (recorded in `<destination>/.romorg-library/library.sqlite`),
+  and leaves any file you changed since. Your own files in the destination are never touched.
+- **Keep the destination in sync** (off by default; for one system and for a collection): the build then also brings the
+  destination in line with the source.
+  - A file this app built earlier that your rules no longer keep, or whose source is gone, is **removed**.
+  - A file whose source changed is copied again.
+  - A file you edited in the destination is left alone and reported. Files this app did not build are never touched.
+  - The preview lists the counts (*To remove*, *To replace*, *Edited by you*) before anything is done.
+  - Safety: a sync that would keep nothing (source empty or not mounted) removes nothing. A sync that would remove most of
+    the library (over 20 files and over half) is refused until you confirm it separately.
+  - **Undo last build** also puts removed files back from the source where it still has them. A file replaced by a newer
+    version is not turned back into the old one.
+- Save files and other files lying next to discs stay in the source unless "Also copy save files ..." is ticked.
+- The plan for the next steps is in `docs/V0_2_PLAN.md`.
+
+### A whole ROM root: Collection
+
+In the list on the left, **Collection** (`#/collection`) builds the clean library of *every* system at once.
+
+1. **Where:** the ROM root (the folder that holds one folder per system, e.g. `~/Emulation/roms`) and the destination.
+   **Find the systems** matches the sub-folders to the supported systems by the usual frontend names (`gba`, `snes`,
+   `genesis` / `megadrive`, `psx` / `ps1` ...); correct any folder in the table or untick a system. The destination may not
+   be inside the root or contain it.
+2. **Rules for every system:** one set of rules (exclusions, one version per game, latest versions, languages, region
+   priority, kept variants) applies to all systems; a rule a system does not have (no regions, no language tags) is
+   simply not used there. Tick **Own rules** for a system to use the rules of its own Library tab instead. Nothing set
+   means every system uses its own defaults.
+3. **Preview collection** scans and checks each system against its DATs (one after the other, hashes are cached) and
+   shows per system what would be kept, copied or linked, what is already in the destination and any conflicts, plus the
+   free space. **Build collection** does it: `<destination>/<system folder>/...`, using the transfer mode above.
+   A system that fails (folder missing, no DATs) is reported and the others go on.
+   **Undo last build** removes what the last build added in every system.
+
+The ROM folders are only read. Building again later adds only what is missing.
+
+## RetroArch: saves, states and the config (v0.2)
+
+**RetroArch** in the list on the left (`#/retroarch`). Optional: with no RetroArch found, and none chosen, nothing here matters.
+
+- **Finding it:** the app looks for the Steam build (also in other Steam libraries), Flatpak, a normal Linux install and Snap,
+  on Windows `%APPDATA%\RetroArch`, Steam and the usual portable folders, and on macOS the Application Support folder. You
+  can also point at any `retroarch.cfg` (or its folder) yourself.
+- **Right now:** where RetroArch keeps save files and save states, whether it makes one folder per core, whether saves sit next
+  to the games, the BIOS folder and the games folder, read from `retroarch.cfg`. Core and game override files that set their
+  own save folders are listed, because the global setting does not apply to those.
+- **Saves and states:** choose the folder for save files, the folder for states (the same or separate) and whether each gets one
+  folder per core. **Preview** lists every file that moves. **Move saves and update RetroArch** then
+  1. writes a zip backup of those files (optional; the folder is yours to choose),
+  2. moves the files, never overwriting one (a name already taken is left alone and reported) and removing folders it emptied,
+  3. backs up `retroarch.cfg` and changes only its save settings.
+  Each core keeps its own folder (`bsnes/`, `Flycast/` ...): nothing is merged. States and their `.png` thumbnails go to the
+  state folder, everything else to the save folder.
+- **One folder per core:** turning it off flattens the core folders. Turning it on cannot tell which core a flat file belongs to:
+  those files are moved as they are and listed, since RetroArch will not find them until they are in their core's folder.
+- **Safety:** the app will not change anything while RetroArch is running (it rewrites its config when it closes).
+  **Undo last change** moves the files back and restores the config from its backup.
+- **Shared folders:** assets you keep outside RetroArch (menu assets, content database, cheats, playlists, thumbnails, downloaded
+  core assets, controller remaps, the config browser folder). Name the folder that holds them (the app suggests the one that
+  holds your playlists or saves) and each setting shows whether RetroArch already uses the folder of that name there, uses a
+  different one, or is on its own default. Ticked folders that exist but are unused (for example cheats that RetroArch still
+  looks for in its own empty folder) are set in `retroarch.cfg`; the favourites / history lists follow the playlist folder.
+  Nothing is moved, the config is backed up, and **Undo last change** restores it.
+- **Saves follow the games:** RetroArch finds a save by the game's file name (`<name>.srm`, `<name>.state`, `.state1` ...,
+  `<name>.state1.png`). When a library build renames a game, its saves and states are renamed to match, in the same core
+  folder (cores stay separate). A build into another folder or a collection **copies** them to the new names and leaves the
+  old ones. Nothing is overwritten (a file already at the new name is left alone). Undoing the build undoes the saves too.
+  It waits if RetroArch is running (RetroArch writes its saves back when it closes). The switch is on the RetroArch page.
+- **BIOS and firmware:** pick a system and press **Check**. The app reads the installed cores' `.info` files for that system,
+  lists the BIOS / firmware each wants (required or optional) and compares them with RetroArch's system folder, verified by
+  MD5 where the core gives a checksum. Missing files are looked for in that system's ROM folder (and one more folder you can
+  name): by name, and, when the checksum is known, under any other name. **Place found files** moves (or copies) them to
+  the path the core expects inside the system folder. Nothing is overwritten and **Undo last change** puts them back.
 
 ## M3U playlists (multi-disk games)
 

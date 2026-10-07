@@ -182,14 +182,14 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
 
 
 def compute_user(result: Any, platform: Any, profile: library.LibraryProfile,
-                 ratings: Optional[library.RatingContext] = None) -> UserPart:
-    return compute_user_items(user_items(result), platform, profile, ratings)
+                 ratings: Optional[library.RatingContext] = None, lang_games: Optional[frozenset] = None) -> UserPart:
+    return compute_user_items(user_items(result), platform, profile, ratings, lang_games)
 
 
 def compute_user_items(items: list[Item], platform: Any, profile: library.LibraryProfile,
-                       ratings: Optional[library.RatingContext] = None) -> UserPart:
+                       ratings: Optional[library.RatingContext] = None, lang_games: Optional[frozenset] = None) -> UserPart:
     t0 = time.time()
-    sel = library.select(items, profile, platform, ratings=ratings)
+    sel = library.select(items, profile, platform, ratings=ratings, lang_games=lang_games)
     kept = _kept(items, sel)
     games: dict[tuple, tuple[str, frozenset]] = {}
     for it in items:
@@ -358,6 +358,14 @@ class TotalsManager:
                 return ("user", name, want.ukey)
         return None
 
+    def _lang_games(self, want: _Want) -> Optional[frozenset]:
+        """Games of the whole DAT that have a version in the selected languages (``keep_other_language``); None when the
+        rule is off."""
+        p = want.profile
+        if not (p.keep_other_language and p.languages):
+            return None
+        return library.language_games(target_items(want.platform, self._load_dats(want.platform)), p, want.platform)
+
     def _next_job(self) -> Optional[tuple]:
         for name, want in list(self._want.items()):
             job = self._needs(name, want)
@@ -395,7 +403,8 @@ class TotalsManager:
                             raise library.RatingsUnavailable("the target is not ready")
                         ctx = library.RatingContext(lookup, cut)
                     args = (want.state.result, want.platform, want.profile)
-                    value = compute_user(*args, ctx) if ctx is not None else compute_user(*args)
+                    lg = self._lang_games(want)
+                    value = compute_user(*args, ctx, lg)
             except Exception as exc:  # noqa: BLE001 - reported in the answer, cached so it is not retried in a loop
                 traceback.print_exc()
                 value = exc

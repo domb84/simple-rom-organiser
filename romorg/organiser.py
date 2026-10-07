@@ -634,7 +634,7 @@ class _Core:
 
 def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: bool,
                layout: Optional[str], profile: Optional["library.LibraryProfile"], platform: Any,
-               ratings: Any = None) -> _Core:
+               ratings: Any = None, lang_games: Any = None) -> _Core:
     from . import scanner
 
     root = result.root
@@ -683,7 +683,7 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
             key = len(items)
             owners[key] = (u.op, u)
             items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
-        selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings)
+        selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games)
         for key, (op, u) in owners.items():
             d = selection.decisions.get(key)
             if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
@@ -767,17 +767,17 @@ class LibraryPlan:
 
 def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
                  layout: Optional[str] = None, savedisk: bool = False,
-                 labels: bool = True, platform: Any = None, ratings: Any = None) -> LibraryPlan:
+                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None) -> LibraryPlan:
     """See :func:`_plan_library`; playlists on disk are looked at once for the whole plan (``m3u.one_look``)."""
     from . import m3u
 
     with m3u.one_look():
-        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings)
+        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings, lang_games)
 
 
 def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
                  layout: Optional[str] = None, savedisk: bool = False,
-                 labels: bool = True, platform: Any = None, ratings: Any = None) -> LibraryPlan:
+                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None) -> LibraryPlan:
     """The combined plan: tidy + duplicates + the profile's rules + playlists of the kept multi-disk sets.
 
     Playlists are planned from the disks' FINAL paths (next to disk 1). Our own playlists that go
@@ -786,7 +786,7 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     """
     from . import library, m3u
 
-    core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings)
+    core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings, lang_games)
     root = result.root
     ops = core.ops
     sel = core.selection if core.selection is not None else library.Selection()

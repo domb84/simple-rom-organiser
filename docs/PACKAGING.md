@@ -89,7 +89,7 @@ usr/share/metainfo/simple-rom-organiser.appdata.xml
 
 ```sh
 packaging/install.sh                 # newest AppImage from dist/ (builds one if there is none)
-packaging/install.sh path/to/Simple_ROM_Organiser-0.1.0-x86_64.AppImage
+packaging/install.sh path/to/Simple_ROM_Organiser-0.2.0-x86_64.AppImage
 packaging/install.sh --rebuild       # rebuild first
 packaging/install.sh --pyz           # install the secondary .pyz in ~/.local/bin instead
 packaging/install.sh --uninstall     # remove the app, menu entry and icon (DATs/settings are kept)

@@ -603,6 +603,8 @@
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
     $("kick-native-browse-btn").classList.toggle("hidden", !s.dialog_available);
+    $("lib-export-native-btn").classList.toggle("hidden", !s.dialog_available);
+    if (!state.exportLoaded) { state.exportLoaded = true; loadExportSettings(); }      // once: later loads must not undo an edit
     $("folder-native-btn").classList.toggle("hidden", !s.dialog_available);
   }
 
@@ -762,6 +764,8 @@
         const tab = TABS.includes(parts[2]) ? parts[2] : "overview";
         return { view: "system", slug: decodeURIComponent(parts[1]), tab, params: Object.fromEntries(new URLSearchParams(query)) };
       }
+      if (parts[0] === "collection") return { view: "collection", slug: "", tab: "", params: {} };
+      if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
       return { view: "home", slug: "", tab: "", params: {} };
     },
     build(slug, tab = "overview", params = {}) {
@@ -827,86 +831,59 @@
 
   const scanTime = (rec) => (rec && rec.at ? checkedText(rec.at) : "");
 
-  /** What the card's single primary button does in the system's current state. */
-  function cardAction(p) {
-    const rec = p.last_scan;
-    const live = state.lastScan && state.lastScan.platform === p.name;
-    if (!p.folder) return { label: "Set folder", kind: "folder" };
-    if (!rec && !live) return { label: "Scan", kind: "scan" };
-    if (rec && rec.folder && rec.folder !== p.folder) return { label: "Scan", kind: "scan" };
-    return { label: "Build library", kind: "library" };
-  }
-
-  function systemCard(p) {
+  /** The sidebar: Collection is a fixed link above; below, the systems by group, each with a status dot and the % owned. */
+  function sideItem(p) {
     const rec = p.last_scan;
     const dat = datStatus(p);
-    const action = cardAction(p);
     const stale = !!(rec && rec.folder && p.folder && rec.folder !== p.folder);
-    const disc = rec && rec.chd_files !== undefined;
     const have = rec ? rec.have : 0, total = rec ? rec.total : 0;
-    const pct = rec ? (rec.pct !== undefined ? rec.pct : (total ? (100 * have) / total : 0)) : 0;
-    const result = rec ? el("div", { class: "syscard-result" },
-      el("div", { class: "syscard-big" },
-        el("span", { class: "value", text: fmt(have) }), el("span", { class: "muted", text: ` of ${fmt(total)} (${pctText(pct)})` })),
-      progressBar(pct),
-      el("div", { class: "syscard-stats" },
-        el("span", { class: "stat-missing", text: `Missing ${fmt(rec.missing)}` }),
-        ...(disc ? [el("span", { text: `Identified ${fmt(rec.identified)}` }), el("span", { text: `Verified ${fmt(rec.verified)}` })] : [])))
-      : el("div", { class: "syscard-result muted", text: "Not scanned yet" });
-    const when = rec ? `Scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "";
-    const job = el("div", { class: "card-job hidden" },
-      el("div", { class: "cj-msg small" }), el("div", { class: "progress" }, el("div", { class: "progress-bar" })));
-    const button = el("button", {
-      class: "btn btn-primary syscard-action", text: action.label, "data-action": action.kind,
-      on: { click: (e) => { e.stopPropagation(); cardPrimary(p, action.kind); } },
-    });
-    if (action.kind === "scan" || action.kind === "library") button.setAttribute("data-needs-idle", "");
-    if (action.kind === "scan") button.setAttribute("data-scan", "");
-    return el("article", { class: `syscard ${dat.kind === "missing" ? "dat-missing" : ""}`, "data-platform": p.name },
-      el("h3", { class: "syscard-title" }, el("a", { class: "syscard-link", href: Route.build(slugOf(p), "overview"), text: p.name })),
-      el("div", { class: "syscard-meta" },
-        el("span", { class: `badge src-${p.source}`, text: sourceLabel(p.source) }),
-        el("span", { class: `dat-chip ${dat.kind}`, text: dat.text, title: dat.title || null })),
-      p.folder ? el("div", { class: "mono syscard-folder", title: p.folder }, el("bdi", { text: p.folder }))
-        : el("div", { class: "muted syscard-nofolder", text: "No folder set" }),
-      result, job,
-      el("div", { class: "syscard-foot" }, el("span", { class: "muted small syscard-when", text: when }), button));
+    const pct = rec ? (rec.pct !== undefined ? rec.pct : (total ? (100 * have) / total : 0)) : null;
+    const kind = dat.kind === "missing" ? "warn" : rec && !stale ? "ok" : "off";
+    const tip = [p.name, p.folder || "No folder set", dat.text,
+      rec ? `${fmt(have)} of ${fmt(total)} (${pctText(pct)}), scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "Not scanned yet"].join("\n");
+    return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "overview" : "overview"),
+      "data-platform": p.name, "data-kind": kind, title: tip,
+      "aria-current": inSystem() && state.platform === p.name ? "true" : null },
+      el("span", { class: `dot ${kind}` }),
+      el("span", { class: "nav-name", text: p.name }),
+      el("span", { class: "nav-pct num", text: pct === null ? "" : `${Math.round(pct)}%` }),
+      el("span", { class: "nav-job hidden" }, el("span", { class: "nav-job-msg" }), el("span", { class: "progress" }, el("span", { class: "progress-bar" }))));
   }
 
   function renderHome() {
     const box = $("home-groups");
     if (!state.platforms.length) { box.replaceChildren(el("div", { class: "empty", text: "No systems defined." })); return; }
-    const groups = GROUPS.map(([key, title, test]) => {
-      const list = state.platforms.filter((p) => groupOf(p) === key);
-      return list.length ? el("section", { class: "group", "aria-label": title },
-        el("h2", { class: "group-title", text: title }), el("div", { class: "syscards" }, list.map(systemCard))) : null;
-    });
-    box.replaceChildren(...groups.filter(Boolean));
+    const q = $("side-q").value.trim().toLowerCase();
+    const groups = GROUPS.map(([key, title]) => {
+      const list = state.platforms.filter((p) => groupOf(p) === key && (!q || p.name.toLowerCase().includes(q)));
+      return list.length ? el("section", { class: "side-group", "aria-label": title },
+        el("h2", { class: "side-title", text: title }), ...list.map(sideItem)) : null;
+    }).filter(Boolean);
+    box.replaceChildren(...(groups.length ? groups : [el("div", { class: "muted small side-none", text: "No system matches." })]));
+    $("collection-link").setAttribute("aria-current", state.route && state.route.view === "collection" ? "true" : "false");
+    $("retroarch-link").setAttribute("aria-current", state.route && state.route.view === "retroarch" ? "true" : "false");
     Jobs.setRunning(Jobs.running);
     if (Jobs.last) renderCardJob(Jobs.last);
   }
 
-  /** The card's primary button. Scan: also start it. Set folder: choose it right here. Build library: open the tab. */
-  function cardPrimary(p, kind) {
-    if (kind === "folder") chooseFolder(p);
-    else if (kind === "scan") scanPlatform(p.name);
-    else gotoSystem(p, "library");
+  /** Narrow windows show the system list on demand; wide ones keep it (the choice is remembered). */
+  const wideLayout = () => window.matchMedia("(min-width: 901px)").matches;
+  function setSide(open, remember = false) {
+    $("shell").dataset.side = open ? "open" : "closed";
+    $("side-toggle").setAttribute("aria-expanded", open ? "true" : "false");
+    $("side-toggle").textContent = wideLayout() ? (open ? "\u2039 Hide list" : "Systems \u203A") : (open ? "Hide systems" : "\u2039 Systems");
+    if (remember && wideLayout()) { try { localStorage.setItem("romorg.side", open ? "open" : "closed"); } catch (_) { /* optional */ } }
+  }
+  function initSide() {
+    let saved = null;
+    try { saved = localStorage.getItem("romorg.side"); } catch (_) { /* optional */ }
+    setSide(wideLayout() ? saved !== "closed" : false);
+    $("side-toggle").addEventListener("click", () => setSide($("shell").dataset.side !== "open", true));
+    $("side-q").addEventListener("input", () => renderHome());
+    window.matchMedia("(min-width: 901px)").addEventListener("change", () => setSide(wideLayout() ? saved !== "closed" : false));
   }
 
-  /** Choose a system's folder (native dialog when there is one, else the in-app browser); saved immediately. */
-  function chooseFolder(p) {
-    const holder = el("input", { type: "text", value: p.folder || "" });
-    holder.addEventListener("change", async () => {
-      state.drafts[p.name] = holder.value;
-      await commitFolder(p);
-      renderHome();
-    });
-    const title = `Choose the ${p.name} folder`;
-    if (state.status && state.status.dialog_available) nativeBrowse(null, holder, title);
-    else FolderBrowser.open(holder, title);
-  }
-
-  /** Live progress of the running job on the card of its system (the other cards stay as they are). */
+  /** Live progress of the running job under its system in the list (the other items stay as they are). */
   function renderCardJob(job, msg, countText, pct) {
     if (!job) return;
     if (msg === undefined) {
@@ -914,13 +891,13 @@
       msg = pr.message || "";
       pct = pr.total > 0 ? Math.min(100, (100 * pr.done) / pr.total) : null;
     }
-    document.querySelectorAll(".syscard").forEach((card) => {
-      const box = card.querySelector(".card-job");
-      const mine = job.status === "running" && !!job.platform && card.dataset.platform === job.platform;
-      card.classList.toggle("running", mine);
+    document.querySelectorAll(".nav-item[data-platform]").forEach((item) => {
+      const box = item.querySelector(".nav-job");
+      const mine = job.status === "running" && !!job.platform && item.dataset.platform === job.platform;
+      item.classList.toggle("running", mine);
       box.classList.toggle("hidden", !mine);
       if (!mine) return;
-      box.querySelector(".cj-msg").textContent = `${JOB_LABEL[job.kind] || job.kind}: ${msg}${pct !== null && pct !== undefined ? ` (${pct.toFixed(0)}%)` : ""}`;
+      box.querySelector(".nav-job-msg").textContent = `${JOB_LABEL[job.kind] || job.kind}: ${msg}${pct !== null && pct !== undefined ? ` (${pct.toFixed(0)}%)` : ""}`;
       const bar = box.querySelector(".progress");
       bar.classList.toggle("indeterminate", pct === null || pct === undefined);
       box.querySelector(".progress-bar").style.width = pct === null || pct === undefined ? "0%" : `${pct}%`;
@@ -1141,11 +1118,41 @@
   function applyRoute() {
     state.route = Route.parse(location.hash);
     const r = state.route;
+    const collection = r.view === "collection";
+    if (r.view === "home" && state.platforms.length && wideLayout()) {     // a wide window always shows a system or Collection
+      history.replaceState(null, "", Route.build(slugOf(currentPlatform() || state.platforms[0]), "overview"));
+      state.route = Route.parse(location.hash);
+      return applyRoute();
+    }
+    if (!wideLayout()) setSide(r.view === "home");
+    $("view-collection").classList.toggle("hidden", !collection);
+    $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
+    if (r.view === "retroarch") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "RetroArch - Simple ROM Organiser";
+      state.viewWas = "retroarch";
+      RetroArch.show();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (collection) {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "Collection - Simple ROM Organiser";
+      state.viewWas = "collection";
+      Collection.show();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
     const home = r.view === "home" || !state.platforms.length;
     let p = home ? null : platformBySlug(r.slug);
     if (!home && !p) { if (state.platforms.length) history.replaceState(null, "", "#/"); state.route = Route.parse("#/"); p = null; }
     $("view-home").classList.toggle("hidden", !!p);
     $("view-system").classList.toggle("hidden", !p);
+    $("shell").classList.toggle("in-system", !!p);
     if (!p) { document.title = "Simple ROM Organiser"; state.viewWas = "home"; renderHome(); window.scrollTo(0, 0); return; }
     document.title = `${p.name} - Simple ROM Organiser`;
     if (p.name !== state.platform) selectPlatform(p.name);
@@ -1154,6 +1161,7 @@
     state.viewWas = "system";
     renderSystemHead();
     showTab(r.tab);
+    renderHome();                                  // the open system is marked in the list
     window.scrollTo(0, 0);
     if (r.tab !== state.tab) history.replaceState(null, "", Route.build(slugOf(p), state.tab));
   }
@@ -2276,6 +2284,40 @@
     labels: $("lib-labels").checked, savedisk: $("lib-savedisk").checked,
   });
 
+  // "Where to build": in the scanned folder (moves) or in another folder (the source is only read)
+  const exportActive = () => $("lib-where-other").checked && !!$("lib-export-dest").value.trim();
+  const exportOptions = () => (exportActive()
+    ? { export_to: $("lib-export-dest").value.trim(), export_mode: $("lib-export-mode").value, export_sidecars: $("lib-export-sidecars").checked, export_sync: $("lib-export-sync").checked }
+    : {});
+  const buildOptions = () => ({ ...libOptions(), ...exportOptions() });
+  const saveExportSettings = debounce(async () => {
+    try {
+      await post("/api/library/export/settings", { enabled: $("lib-where-other").checked, dest: $("lib-export-dest").value.trim(),
+        mode: $("lib-export-mode").value, sidecars: $("lib-export-sidecars").checked, sync: $("lib-export-sync").checked });
+    } catch (_) { /* a convenience only */ }
+  }, 300);
+  function exportSettingsChanged() {
+    $("lib-export-opts").classList.toggle("hidden", !$("lib-where-other").checked);
+    $("lib-apply-btn").textContent = $("lib-where-other").checked ? "Build library in destination" : "Build library";
+    $("lib-undo-btn").textContent = $("lib-where-other").checked ? "Undo last build" : "Undo last";
+    saveExportSettings();
+    if (Previews.has("lib")) resetLibraryPreview();
+    refreshUndo();
+    updateActionState();
+  }
+  function loadExportSettings() {
+    const e = (state.status && state.status.library_export) || {};
+    $("lib-where-other").checked = !!e.enabled;
+    $("lib-where-here").checked = !e.enabled;
+    $("lib-export-dest").value = e.dest || "";
+    $("lib-export-mode").value = e.mode || "auto";
+    $("lib-export-sidecars").checked = !!e.sidecars;
+    $("lib-export-sync").checked = !!e.sync;
+    $("lib-export-opts").classList.toggle("hidden", !e.enabled);
+    $("lib-apply-btn").textContent = e.enabled ? "Build library in destination" : "Build library";
+    $("lib-undo-btn").textContent = e.enabled ? "Undo last build" : "Undo last";
+  }
+
   async function loadLibraryProfile() {
     const name = state.platform;
     if (!name) return;
@@ -3078,7 +3120,18 @@
     const r = plan.reasons || {}, pl = plan.playlists || {}, vanish = plan.vanish || {}, cats = plan.categories || {};
     // the cards count what this build moves; files a previous build already set aside are named next to it
     const aside = (label, moving, all) => ((all || 0) > (moving || 0) ? `${label} now (${fmt(all - (moving || 0))} already set aside)` : label);
+    const ex = plan.export;
+    $("lib-export-note").textContent = ex ? `Library goes to ${ex.dest}. ${(ex.notes || []).join(" ")}` : "";
     $("lib-cards").replaceChildren(
+      ...(ex ? [card(fmt((ex.counts.copy || 0)), `To copy (${fmtBytes(ex.bytes_copy)})`, ex.counts.copy ? "info" : ""),
+        ...(ex.counts.hardlink ? [card(fmt(ex.counts.hardlink), "To link (no extra space)", "info")] : []),
+        ...(ex.counts.symlink ? [card(fmt(ex.counts.symlink), "To link symbolically", "info")] : []),
+        card(fmt(ex.counts.exists || 0), "Already in the destination", "ok"),
+        ...(ex.counts.replace ? [card(fmt(ex.counts.replace), "To replace (source changed)", "info")] : []),
+        ...(ex.counts.remove ? [card(fmt(ex.counts.remove), "To remove (no longer kept)", "warn")] : []),
+        ...(ex.counts.kept_edited ? [card(fmt(ex.counts.kept_edited), "Edited by you: stay", "warn")] : []),
+        ...(ex.counts.conflict ? [card(fmt(ex.counts.conflict), "Conflicts (left alone)", "bad")] : []),
+        ...(ex.enough_space ? [] : [card(fmtBytes(ex.free || 0), "Free space is not enough", "bad")])] : []),
       card(fmt(r.kept), "Kept", "ok"),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
       card(fmt(r.excluded), aside("Excluded", r.excluded, cats.excluded), r.excluded ? "warn" : ""),
@@ -3271,7 +3324,7 @@
         },
         fetch: Previews.wrap("lib", async ({ offset, limit, q, refresh }) => {
           const data = await post("/api/library/plan", {
-            ...libOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q, refresh,
+            ...buildOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q, refresh,
             sort: state.libSort, checksums: state.showChecksums ? true : undefined,
           });
           libPlan = data;
@@ -3321,7 +3374,62 @@
     await libTable.load();
   }
 
+  async function applyLibraryExport() {
+    let plan;
+    try {
+      plan = await post("/api/library/plan", { ...buildOptions(), limit: 1 });
+    } catch (err) { toast(err.message, "error"); return; }
+    const ex = plan.export;
+    if (plan.empty) { toast("Nothing to do - the destination already has the library.", "ok"); return; }
+    if (!ex.enough_space) { toast(`Not enough free space on the destination (${fmtBytes(ex.bytes_copy)} needed, ${fmtBytes(ex.free || 0)} free).`, "error", 10000); return; }
+    const line = (n, text) => (n ? el("li", { text: `${fmt(n)} ${text}` }) : null);
+    const body = el("div", {},
+      ...(ex.notes || []).map((w) => el("p", { class: "notice", text: w })),
+      el("p", { text: `Build the library in ${ex.dest} from ${state.scan.root}:` }),
+      el("ul", {},
+        line(ex.counts.copy, `file(s) copied (${fmtBytes(ex.bytes_copy)})`),
+        line(ex.counts.hardlink, "file(s) hard-linked (no extra space)"),
+        line(ex.counts.symlink, "file(s) linked symbolically"),
+        line(ex.counts.exists, "file(s) already there (skipped)"),
+        line(ex.counts.conflict, "file(s) skipped: a different file is already at that name"),
+        line(ex.counts.replace, "file(s) copied again because the source changed"),
+        line(ex.counts.remove, "file(s) REMOVED from the destination: the rules no longer keep them"),
+        line(ex.counts.kept_edited, "file(s) you edited stay where they are"),
+        line(ex.playlists, "playlist(s) written")),
+      el("ul", {},
+        el("li", { text: "The source folder is not changed in any way." }),
+        el("li", { text: "Only the files your rules keep are built; excluded, superseded and unmatched files stay in the source." }),
+        el("li", { text: "\"Undo last build\" removes what this build added (nothing else)." })));
+    if (!(await confirmDialog({ title: ex.sync ? "Build and sync library" : "Build library in another folder", body, okText: `Build (${fmt(plan.actionable)} items)` }))) return;
+    if (ex.mass_removal && !(await confirmDialog({
+      title: "Remove most of the library?",
+      body: `${(ex.notes || []).join(" ")} ${fmt(ex.counts.remove)} files would be removed. Only do this if you changed the rules on purpose and the source is complete.`,
+      okText: "Yes, remove them", danger: true }))) return;
+    Jobs.start("/api/library/apply", { ...buildOptions(), plan_id: plan.plan_id, allow_mass_removal: ex.mass_removal ? true : undefined });
+  }
+
+  async function undoLibraryExport() {
+    const dest = $("lib-export-dest").value.trim();
+    let runs;
+    try { runs = (await get(`/api/library/export/runs?${qs({ dest })}`)).runs || []; } catch (err) { toast(err.message, "error"); return; }
+    const run = runs[0];
+    if (!run) { toast("No library build is recorded in the destination.", "info"); return; }
+    const ok = await confirmDialog({
+      title: "Undo last build",
+      body: `Remove the ${fmt(run.files)} file(s) added to ${dest} on ${run.started.replace("T", " ")}? Files you changed since are left in place. The source is not touched.`,
+      okText: "Undo", danger: true,
+    });
+    if (!ok) return;
+    try {
+      const r = await post("/api/library/export/undo", { dest, run: run.id });
+      toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length ? "error" : "ok", 8000);
+      if (libTable) { libTable.offset = 0; showLibraryPlan(); }
+    } catch (err) { toast(err.message, "error"); }
+  }
+
   async function applyLibrary() {
+    if (exportActive()) return applyLibraryExport();
+    if ($("lib-where-other").checked) { toast("Choose the folder to build the library in first.", "error"); return; }
     let plan;
     try {
       plan = await post("/api/library/plan", { ...libOptions(), limit: 1 });
@@ -3357,6 +3465,10 @@
   }
 
   async function undoLibrary() {
+    if ($("lib-where-other").checked) {
+      if (!$("lib-export-dest").value.trim()) { toast("Choose the destination folder first.", "error"); return; }
+      return undoLibraryExport();
+    }
     await refreshUndo();
     const log = undoLogs[0];
     if (!log) { toast("No undo log found in this folder.", "info"); return; }
@@ -3374,12 +3486,17 @@
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
       const isUndo = r.action === "undo";
+      const isExport = r.action === "library_export";
       const failed = Array.isArray(r.failed) ? r.failed : [];
       const n = (v) => (Array.isArray(v) ? v.length : v || 0);
       const text = isUndo
         ? `Reverted ${fmt(n(r.restored))} file(s)${r.created_removed ? `, removed ${fmt(r.created_removed)} playlist/converted file(s)` : ""}`
-        : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
-      toast(text + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
+        : isExport
+          ? `Built ${fmt(r.created || 0)} file(s) in ${r.dest} (${fmt(r.copied || 0)} copied, ${fmt((r.linked || 0) + (r.symlinked || 0))} linked), ${fmt(r.playlists || 0)} playlist(s)${r.removed ? `, removed ${fmt(r.removed)}` : ""}${r.cancelled ? " - cancelled" : ""}`
+          : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
+      const sv = r.saves || {};
+      const saveText = (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
+      toast(text + saveText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
       showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move / write:",
         failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
@@ -3389,6 +3506,10 @@
           r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
     }
     const wasOpen = !$("lib-output").classList.contains("hidden");
+    if (job.result && job.result.action === "library_export") {      // the source did not change: no re-scan
+      if (wasOpen && state.scan && libTable) { libTable.offset = 0; await showLibraryPlan(); }
+      return;
+    }
     await refreshScan();
     if (wasOpen && state.scan) { vanishTable = null; if (libTable) libTable.offset = 0; await showLibraryPlan(); }
   };
@@ -3539,7 +3660,7 @@
     undoLogs = logs;
     for (const id of ["undo-btn", "convert-undo-btn", "lib-undo-btn"]) {
       const btn = $(id);
-      btn.dataset.blocked = undoLogs.length ? "0" : "1";
+      btn.dataset.blocked = undoLogs.length || (id === "lib-undo-btn" && $("lib-where-other").checked && state.scan) ? "0" : "1";
       btn.title = undoLogs.length ? `Undo ${undoLogs[0].name}` : "No undo logs in this folder";
     }
     Jobs.setRunning(Jobs.running);
@@ -3993,6 +4114,465 @@
     if (kickReady(currentPlatform()) && $("kick-dest").value.trim()) await showKickPlan();
   };
 
+
+
+  // ------------------------------------------------------------------ RetroArch: saves and config (v0.2)
+  const RetroArch = {
+    info: null,
+    loaded: false,
+    last: null,
+
+    async show() {
+      await this.load();
+      this.render();
+      if (this.info && this.info.settings && !this.sharedShown) { this.sharedShown = true; this.sharedCheck(); }
+    },
+
+    async load() {
+      try { this.info = await get("/api/retroarch"); } catch (err) { toast(err.message, "error"); return; }
+      this.loaded = true;
+    },
+
+    render() {
+      const info = this.info;
+      if (!info) return;
+      const nat = !!(state.status && state.status.dialog_available);
+      for (const id of ["ra-custom-native", "ra-save-native", "ra-state-native", "ra-shared-native"]) $(id).classList.toggle("hidden", !nat);
+      $("ra-none").classList.toggle("hidden", info.installs.length > 0);
+      $("ra-install").replaceChildren(...info.installs.map((i) => el("option", { value: i.cfg, text: `${i.label} - ${i.cfg}`, selected: i.cfg === info.selected })));
+      $("ra-install").disabled = !info.installs.length;
+      $("ra-running").classList.toggle("hidden", !info.running);
+      $("ra-change-panel").classList.toggle("hidden", !info.settings);
+      $("ra-follow-panel").classList.toggle("hidden", !info.settings);
+      $("ra-shared-panel").classList.toggle("hidden", !info.settings);
+      $("ra-bios-panel").classList.toggle("hidden", !info.settings);
+      $("ra-current-panel").classList.toggle("hidden", !info.settings);
+      if (!info.settings) return;
+      const s = info.settings;
+      const where = (k) => s[k] || "(RetroArch's default: next to the games)";
+      const yes = (v) => (v ? "yes" : "no");
+      $("ra-current").replaceChildren(
+        ...[["Save files", where("savefile_path")], ["Save states", where("savestate_path")],
+          ["One folder per core (saves / states)", `${yes(s.sort_savefiles_enable)} / ${yes(s.sort_savestates_enable)}`],
+          ["Saves next to the games (saves / states)", `${yes(s.savefiles_in_content_dir)} / ${yes(s.savestates_in_content_dir)}`],
+          ["BIOS / system files", where("system_path")], ["Games folder RetroArch opens at", s.content_path || "-"],
+          ["Config file", s.cfg]]
+          .map(([k, v]) => el("tr", {}, el("th", { text: k }), el("td", { class: "mono", text: v }))));
+      const ov = $("ra-overrides");
+      ov.classList.toggle("hidden", !info.overrides.length);
+      ov.replaceChildren(el("div", { text: "These override files change the save folders for one core or game, so the setting here does not apply to them:" }),
+        ...info.overrides.slice(0, 8).map((o) => el("div", { class: "mono small", text: o })));
+      if (!this.filled) {
+        this.filled = true;
+        $("ra-save-dir").value = s.savefile_path || "";
+        $("ra-state-dir").value = s.savestate_path || "";
+        $("ra-sort-saves").checked = !!s.sort_savefiles_enable;
+        $("ra-sort-states").checked = !!s.sort_savestates_enable;
+      }
+      $("ra-follow").checked = info.follow;
+      $("ra-follow-panel").classList.remove("hidden");
+      $("ra-bios-panel").classList.remove("hidden");
+      if (!$("ra-bios-platform").options.length) {
+        $("ra-bios-platform").replaceChildren(...state.platforms.map((p) => el("option", { value: p.name, text: p.name })));
+        if (state.platform) $("ra-bios-platform").value = state.platform;
+      }
+      $("ra-backup").checked = info.backup.enabled;
+      if (document.activeElement !== $("ra-backup-dir")) $("ra-backup-dir").value = info.backup.dir;
+      $("ra-undo-btn").dataset.blocked = info.undo.length ? "0" : "1";
+      Jobs.setRunning(Jobs.running);
+    },
+
+    body() {
+      return { save_dir: $("ra-save-dir").value.trim(), state_dir: $("ra-state-dir").value.trim() || $("ra-save-dir").value.trim(),
+        sort_saves: $("ra-sort-saves").checked, sort_states: $("ra-sort-states").checked, backup: $("ra-backup").checked };
+    },
+
+    async select(body) {
+      try { this.info = await post("/api/retroarch/select", body); this.filled = false; this.render(); } catch (err) { toast(err.message, "error"); }
+    },
+
+    async plan() {
+      try {
+        const p = await post("/api/retroarch/plan", this.body());
+        this.last = p;
+        const c = p.counts;
+        $("ra-output").classList.remove("hidden");
+        $("ra-cards").replaceChildren(
+          card(fmt(c.move + c.needs_core), "Files to move", c.move + c.needs_core ? "info" : "ok"),
+          card(fmtBytes(p.bytes), "Size", ""),
+          ...(c.ok ? [card(fmt(c.ok), "Already in place", "ok")] : []),
+          ...(c.conflict ? [card(fmt(c.conflict), "In the way (left alone)", "bad")] : []),
+          ...(c.needs_core ? [card(fmt(c.needs_core), "Need their core's folder", "warn")] : []));
+        const notes = [...p.notes, ...(p.running ? ["RetroArch is running. Close it before applying."] : []),
+          ...(this.body().backup && p.free !== null && p.bytes > p.free ? ["The backup folder does not have enough free space."] : [])];
+        $("ra-notes").classList.toggle("hidden", !notes.length);
+        $("ra-notes").replaceChildren(...notes.map((n) => el("div", { text: n })));
+        const cfgRows = Object.entries(p.cfg_changes).map(([k, v]) => el("tr", {}, el("td", { text: "retroarch.cfg" }),
+          el("td", { class: "mono", text: k }), el("td", { class: "mono", text: String(v) }), el("td", { class: "small muted", text: "setting" })));
+        $("ra-table").replaceChildren(...cfgRows, ...p.items.map((i) => el("tr", {}, el("td", { text: i.kind === "state" ? "state" : "save" }),
+          el("td", { class: "mono small", text: i.from }), el("td", { class: "mono small", text: i.to }), el("td", { class: "small muted", text: i.note || i.status }))));
+        return p;
+      } catch (err) { toast(err.message, "error"); return null; }
+    },
+
+    async apply() {
+      const p = await this.plan();
+      if (!p) return;
+      if (p.empty) { toast("Nothing to change: the files and the config already match.", "ok"); return; }
+      if (p.running) { toast("Close RetroArch first.", "error"); return; }
+      const c = p.counts;
+      const ok = await confirmDialog({
+        title: "Move saves and update RetroArch",
+        body: el("div", {},
+          el("p", { text: `${fmt(c.move + c.needs_core)} file(s) (${fmtBytes(p.bytes)}) move to ${p.new.save}${p.new.state !== p.new.save ? ` and ${p.new.state}` : ""}.` }),
+          el("ul", {},
+            el("li", { text: this.body().backup ? "A zip backup of those files is made first." : "No backup: the files are only moved (Undo can move them back)." }),
+            el("li", { text: "Nothing is overwritten. Folders left empty are removed." }),
+            el("li", { text: "retroarch.cfg is backed up, then its save settings are changed." }),
+            ...(c.needs_core ? [el("li", { text: `${fmt(c.needs_core)} file(s) have no core folder yet; RetroArch will not find them until they are in one.` })] : []))),
+        okText: "Move and update" });
+      if (!ok) return;
+      await post("/api/retroarch/select", { backup: $("ra-backup").checked, backup_dir: $("ra-backup-dir").value.trim() }).catch(() => null);
+      this.filled = false;
+      Jobs.start("/api/retroarch/apply", this.body());
+    },
+
+    async sharedCheck(base) {
+      try {
+        const r = await post("/api/retroarch/shared", base ? { base } : {});
+        if (!$("ra-shared-base").value.trim() || base === undefined) $("ra-shared-base").value = r.base;
+        const LABEL = { ok: "already used", set: "points elsewhere", unset: "not set (RetroArch's own folder)", none: "no such folder here" };
+        $("ra-shared-table").replaceChildren(...r.rows.map((x) => el("tr", {},
+          el("td", {}, el("input", { type: "checkbox", "data-key": x.key, checked: x.status === "unset", disabled: !x.want || x.status === "ok",
+            "aria-label": `Use the shared folder for ${x.label}` })),
+          el("td", { text: x.label }), el("td", { class: "mono small", text: x.current_path || x.current || "-" }),
+          el("td", { class: "mono small", text: x.want || "-" }),
+          el("td", {}, badge(x.status === "ok" ? "ok" : x.status === "unset" ? "warn" : x.status === "set" ? "info" : "skip", LABEL[x.status]),
+            x.status === "unset" && x.want_has_files && !x.current_has_files ? el("span", { class: "small muted", text: "  has files, unused" }) : null))));
+        $("ra-shared-note").textContent = r.rows.some((x) => x.status === "unset" && x.want_has_files)
+          ? "Ticked: folders that have files but that RetroArch is not using yet." : "";
+        return r;
+      } catch (err) { toast(err.message, "error"); return null; }
+    },
+
+    async sharedApply() {
+      const keys = [...document.querySelectorAll("#ra-shared-table input[type=checkbox]:checked")].map((c) => c.dataset.key);
+      if (!keys.length) { toast("Tick the folders to use.", "info"); return; }
+      if (this.info && this.info.running) { toast("Close RetroArch first.", "error"); return; }
+      if (!(await confirmDialog({ title: "Use shared folders", body: `Change ${keys.length} setting(s) in retroarch.cfg to the shared folders? The config is backed up first, files are not moved, and Undo restores the old settings.`, okText: "Change settings" }))) return;
+      try {
+        const r = await post("/api/retroarch/shared/apply", { base: $("ra-shared-base").value.trim(), keys });
+        toast(`Changed ${r.changed.length} setting(s)`, "ok", 6000);
+        await this.show();
+        this.sharedCheck($("ra-shared-base").value.trim());
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    async biosCheck() {
+      const platform = $("ra-bios-platform").value;
+      if (!platform) return null;
+      try {
+        const r = await post("/api/retroarch/bios", { platform, search_dir: $("ra-bios-search").value.trim() });
+        this.bios = r;
+        const c = r.counts;
+        $("ra-bios-out").classList.remove("hidden");
+        $("ra-bios-cards").replaceChildren(
+          card(fmt(r.cores.length), "Cores", "info"), card(fmt(c.ok + c.present), "In place", "ok"),
+          ...(c.wrong ? [card(fmt(c.wrong), "Wrong checksum", "bad")] : []),
+          ...(c.found ? [card(fmt(c.found), "Found, not placed yet", "info")] : []),
+          card(fmt(c.missing), "Missing", c.missing ? "warn" : ""),
+          card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"));
+        $("ra-bios-where").textContent = `System folder: ${r.system_dir}. Searched: ${r.searched.length ? r.searched.join(", ") : "nothing (set a folder for this system, or add one above)"}`;
+        const LABEL = { ok: "verified", present: "there (no checksum to compare)", wrong: "there, wrong checksum", found: "found - not in place", missing: "missing" };
+        $("ra-bios-table").replaceChildren(...r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
+          el("td", { text: core.core }), el("td", { class: "mono small", text: f.path }), el("td", { text: f.optional ? "optional" : "required" }),
+          el("td", {}, badge(f.status === "ok" || f.status === "present" ? "ok" : f.status === "found" ? "info" : f.status === "wrong" ? "bad" : f.optional ? "skip" : "warn", LABEL[f.status])),
+          el("td", { class: "mono small", text: f.source || "" })))));
+        return r;
+      } catch (err) { toast(err.message, "error"); return null; }
+    },
+
+    async biosApply() {
+      const r = await this.biosCheck();
+      if (!r) return;
+      if (!r.counts.found) { toast("No file to place: nothing missing was found in the folders searched.", "info"); return; }
+      const mode = $("ra-bios-mode").value;
+      if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} file(s) into ${r.system_dir}? Nothing is overwritten; Undo puts them back.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
+      Jobs.start("/api/retroarch/bios/apply", { platform: $("ra-bios-platform").value, search_dir: $("ra-bios-search").value.trim(), mode });
+    },
+
+    async undo() {
+      const u = (this.info && this.info.undo) || [];
+      if (!u.length) { toast("Nothing to undo.", "info"); return; }
+      const what = { follow: "Give the saves their old names back (or remove the copies)?", bios: "Move the BIOS files back where they came from?",
+        config: "Restore RetroArch's config from before? Close RetroArch first." }[u[0].kind]
+        || "Move the saves back and restore RetroArch's config from before? Close RetroArch first.";
+      if (!(await confirmDialog({ title: "Undo last change", body: `${fmt(u[0].files)} file(s). ${what}`, okText: "Undo", danger: true }))) return;
+      try {
+        const r = await post("/api/retroarch/undo", { journal: u[0].journal });
+        toast(`Moved ${fmt(r.restored)} file(s) back${r.cfg_restored ? " and restored the config" : ""}${r.skipped.length ? `; ${fmt(r.skipped.length)} left` : ""}`, r.skipped.length ? "error" : "ok", 8000);
+        this.filled = false;
+        await this.show();
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    bind() {
+      $("ra-install").addEventListener("change", () => this.select({ cfg: $("ra-install").value }));
+      $("ra-custom-add").addEventListener("click", () => { const v = $("ra-custom").value.trim(); if (v) this.select({ custom: v }); });
+      $("ra-custom-browse").addEventListener("click", () => FolderBrowser.open($("ra-custom"), "Choose the RetroArch folder"));
+      $("ra-custom-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-custom"), "Choose the RetroArch folder"));
+      $("ra-save-browse").addEventListener("click", () => FolderBrowser.open($("ra-save-dir"), "Choose the folder for save files"));
+      $("ra-save-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-save-dir"), "Choose the folder for save files"));
+      $("ra-state-browse").addEventListener("click", () => FolderBrowser.open($("ra-state-dir"), "Choose the folder for save states"));
+      $("ra-state-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-state-dir"), "Choose the folder for save states"));
+      $("ra-backup-browse").addEventListener("click", () => FolderBrowser.open($("ra-backup-dir"), "Choose the backup folder"));
+      $("ra-follow").addEventListener("change", async () => { try { this.info = await post("/api/retroarch/follow", { follow: $("ra-follow").checked }); } catch (err) { toast(err.message, "error"); } });
+      $("ra-shared-check").addEventListener("click", () => this.sharedCheck($("ra-shared-base").value.trim()));
+      $("ra-shared-apply").addEventListener("click", () => this.sharedApply());
+      $("ra-shared-browse").addEventListener("click", () => FolderBrowser.open($("ra-shared-base"), "Choose the folder that holds the shared assets"));
+      $("ra-shared-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-shared-base"), "Choose the folder that holds the shared assets"));
+      $("ra-bios-check").addEventListener("click", () => this.biosCheck());
+      $("ra-bios-apply").addEventListener("click", () => this.biosApply());
+      $("ra-bios-browse").addEventListener("click", () => FolderBrowser.open($("ra-bios-search"), "Choose a folder to look for BIOS files in"));
+      $("ra-plan-btn").addEventListener("click", () => this.plan());
+      $("ra-apply-btn").addEventListener("click", () => this.apply());
+      $("ra-undo-btn").addEventListener("click", () => this.undo());
+    },
+  };
+
+  Jobs.handlers.retroarch = async (job) => {
+    if ((job.status === "done" || job.status === "cancelled") && job.result) {
+      const r = job.result;
+      if (r.action === "retroarch_bios") {
+        toast(`Placed ${fmt(r.placed)} file(s)${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}`, r.failed.length ? "error" : "ok", 8000);
+        showFailures("ra-failures", "Could not place:", r.failed, (f) => `${f.path}: ${f.error}`);
+        await RetroArch.load();
+        RetroArch.render();
+        RetroArch.biosCheck();
+        return;
+      }
+      toast(`Moved ${fmt(r.moved)} file(s)${r.cfg_backup ? " and updated retroarch.cfg" : ""}${r.failed.length ? `, ${fmt(r.failed.length)} failed` : ""}`, r.failed.length ? "error" : "ok", 9000);
+      showFailures("ra-failures", "Could not move:", r.failed, (f) => `${f.path}: ${f.error}`,
+        [r.failed.length ? "The RetroArch config was not changed." : ""]);
+    }
+    RetroArch.filled = false;
+    await RetroArch.show();
+    $("ra-output").classList.add("hidden");
+  };
+
+  // ------------------------------------------------------------------ collection (v0.2): a whole ROM root
+  const Collection = {
+    info: null,
+    loaded: false,
+    last: null,           // the last preview / build answer
+
+    async show() {
+      if (!this.loaded) {
+        try { this.info = await get("/api/collection"); } catch (err) { toast(err.message, "error"); return; }
+        this.loaded = true;
+        $("col-root").value = this.info.root || "";
+        $("col-dest").value = this.info.dest || "";
+        $("col-mode").value = this.info.mode;
+        $("col-sidecars").checked = !!this.info.sidecars;
+        $("col-sync").checked = !!this.info.sync;
+        $("col-root-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
+        $("col-dest-native").classList.toggle("hidden", !(state.status && state.status.dialog_available));
+      }
+      this.render();
+    },
+
+    adopt(info) { this.info = info; this.render(); },
+
+    async save(changes) {
+      try { this.adopt(await post("/api/collection/save", changes)); } catch (err) { toast(err.message, "error"); }
+    },
+
+    async detect() {
+      const root = $("col-root").value.trim();
+      if (!root) { toast("Choose the ROM root folder first.", "error"); return; }
+      try {
+        this.adopt(await post("/api/collection/detect", { root }));
+        const n = Object.values(this.info.systems).filter((e) => e.enabled).length;
+        toast(n ? `Found ${n} system folder${n === 1 ? "" : "s"}.` : "No system folders found in that folder - check the name of each folder below.", n ? "ok" : "info", 6000);
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    render() {
+      const info = this.info;
+      if (!info) return;
+      const names = info.platforms;
+      const known = names.filter((p) => info.systems[p.name]);
+      $("col-systems").replaceChildren(...(known.length ? known : []).map((p) => {
+        const e = info.systems[p.name];
+        const path = el("input", { type: "text", class: "input mono", value: e.path, spellcheck: "false", "aria-label": `${p.name} folder` });
+        path.addEventListener("change", () => this.save({ systems: { [p.name]: { path: path.value.trim() } } }));
+        return el("tr", {},
+          el("td", {}, el("input", { type: "checkbox", checked: e.enabled, "aria-label": `Build ${p.name}`,
+            on: { change: (ev) => this.save({ systems: { [p.name]: { enabled: ev.target.checked } } }) } })),
+          el("td", { text: p.name }),
+          el("td", {}, path),
+          el("td", {}, el("input", { type: "checkbox", checked: e.own_rules, "aria-label": `${p.name} uses its own rules`,
+            on: { change: (ev) => this.save({ systems: { [p.name]: { own_rules: ev.target.checked } } }) } })));
+      }));
+      if (!known.length) $("col-systems").replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "Choose the ROM root and press \"Find the systems\"." })));
+      this.renderRules();
+      $("col-undo-btn").dataset.blocked = info.last && info.last.runs && Object.keys(info.last.runs).length ? "0" : "1";
+      Jobs.setRunning(Jobs.running);
+    },
+
+    rulesBody(extra = {}) {
+      const p = this.info.profile;
+      return { exclude: p.exclude, latest_only: p.latest_only, one_per_game: p.one_per_game, keep_other_language: p.keep_other_language, languages: p.languages,
+        region_priority: p.region_priority, keep_flags: p.keep_flags, ...extra };
+    },
+
+    setRules(changes) { return this.save({ global: this.rulesBody(changes) }); },
+
+    renderRules() {
+      const info = this.info, p = info.profile;
+      const tickRow = (label, checked, onChange, hint = "") => el("label", { class: "check rule-check" },
+        el("input", { type: "checkbox", checked, on: { change: (e) => onChange(e.target.checked) } }),
+        el("span", { class: "rule-text" }, el("span", { class: "rule-line" }, el("span", { class: "rule-label", text: label })),
+          hint ? el("span", { class: "sub", text: hint }) : null));
+      const toggle = (list, key, on) => (on ? [...list, key] : list.filter((x) => x !== key));
+      const groups = [];
+      groups.push(el("div", { class: "rules-group" },
+        el("div", { class: "rules-head", text: "Leave out (never copied)" }),
+        el("div", { class: "rules-grid" }, info.rules.map((r) => tickRow(r.label, p.exclude.includes(r.key), (on) => this.setRules({ exclude: toggle(p.exclude, r.key, on) }))))));
+      groups.push(el("div", { class: "rules-group" },
+        el("div", { class: "rules-head", text: "Options" }),
+        el("div", { class: "rules-grid" },
+          tickRow("One version per game", p.one_per_game, (on) => this.setRules({ one_per_game: on }), "Systems with regions (No-Intro / Redump): the best region wins."),
+          tickRow("Keep games that exist only in other languages", p.keep_other_language, (on) => this.setRules({ keep_other_language: on }), "No-Intro and Redump: a game with no version in your languages anywhere in the database (a Japan-only release) is kept instead of left out."),
+          tickRow("Latest versions only", p.latest_only, (on) => this.setRules({ latest_only: on }), "Older revisions are left out where the DAT has versions."))));
+      const langs = Object.entries(info.languages);
+      groups.push(el("div", { class: "rules-group" },
+        el("div", { class: "rules-head", text: "Languages" }),
+        el("div", { class: "sub note", text: "Games with no version in a ticked language are left out. Nothing ticked: every language stays. Applies to systems with language tags." }),
+        el("div", { class: "lang-grid" }, langs.map(([code, name]) => el("label", { class: "check lang-check" },
+          el("input", { type: "checkbox", checked: p.languages.includes(code),
+            on: { change: (e) => this.setRules({ languages: toggle(p.languages, code, e.target.checked) }) } }),
+          el("span", { text: name })))),
+        p.languages.length > 1 ? el("div", { class: "lang-order" }, el("span", { class: "muted small", text: "Preferred first:" }),
+          ...p.languages.map((c, i) => el("span", { class: "lang-pill" }, el("span", { text: `${i + 1}. ${info.languages[c] || c}` }),
+            el("button", { class: "btn btn-icon", text: "▲", disabled: i === 0, "aria-label": `Move ${info.languages[c] || c} up`, on: { click: () => this.setRules({ languages: moved(p.languages, i, -1) }) } }),
+            el("button", { class: "btn btn-icon", text: "▼", disabled: i === p.languages.length - 1, "aria-label": `Move ${info.languages[c] || c} down`, on: { click: () => this.setRules({ languages: moved(p.languages, i, 1) }) } })))) : null));
+      const ui = sortableList({ items: info.regions, label: "Region priority, best region first", noun: "region", prioCount: 4,
+        prioLabel: "Prioritised (tried first)", restLabel: "Everything else (alphabetical unless you move it up)",
+        onCommit: (order) => this.setRules({ region_priority: order }) });
+      groups.push(el("div", { class: "rules-group", id: "col-regions" },
+        el("div", { class: "rules-head", text: "Region priority" }),
+        el("div", { class: "sub note", text: "Which region's version is kept when a game has several. Applies to No-Intro and Redump systems." }), ui.root));
+      if (info.keep_flags.length) {
+        groups.push(el("div", { class: "rules-group" },
+          el("div", { class: "rules-head", text: "Keep these kinds of variants (Amiga TOSEC)" }),
+          el("div", { class: "rules-grid" }, info.keep_flags.map((f) => tickRow(f.label, p.keep_flags.includes(f.id), (on) => this.setRules({ keep_flags: toggle(p.keep_flags, f.id, on) }))))));
+      }
+      $("col-rules").replaceChildren(...groups);
+      const custom = Object.keys(info.global).length > 0;
+      $("col-rules-note").textContent = custom ? "Shared rules are set." : "Nothing set: every system uses its own defaults.";
+      $("col-rules-summary").textContent = custom ? `${p.exclude.length} exclusions \u00B7 ${p.languages.length ? p.languages.join(", ") : "all languages"} \u00B7 ${p.region_priority.slice(0, 2).join(" > ")} first` : "defaults";
+    },
+
+    async run(path, body = {}) {
+      if (!$("col-root").value.trim() || !$("col-dest").value.trim()) { toast("Choose the ROM root and the destination folder first.", "error"); return false; }
+      await this.save({ dest: $("col-dest").value.trim(), mode: $("col-mode").value, sidecars: $("col-sidecars").checked, sync: $("col-sync").checked });
+      Jobs.start(path, body);
+      return true;
+    },
+
+    async apply() {
+      const sure = await confirmDialog({
+        title: "Build the collection",
+        body: el("div", {},
+          el("p", { text: `Build ${Object.values(this.info.systems).filter((e) => e.enabled).length} system(s) from ${$("col-root").value.trim()} into ${$("col-dest").value.trim()}.` }),
+          el("ul", {},
+            el("li", { text: "The ROM folders are not changed in any way." }),
+            el("li", { text: "Each system is scanned and checked against its DATs again, then only what the rules keep is built." }),
+            el("li", { text: "Nothing in the destination is overwritten. Running it again adds only what is missing." }),
+            ...($("col-sync").checked ? [el("li", { text: "SYNC is on: files built before that the rules no longer keep (or whose source is gone) are removed from the destination. Preview first to see how many." })] : []),
+            el("li", { text: "\"Undo last build\" removes what this build added." }))),
+        okText: "Build collection" });
+      if (!sure) return;
+      const mass = this.last && this.last.sync && this.last.systems.some((x) => x.mass_removal);
+      if (mass && !(await confirmDialog({ title: "Remove most of a library?", danger: true, okText: "Yes, remove them",
+        body: `The last preview shows a sync that removes most of the files built before in: ${this.last.systems.filter((x) => x.mass_removal).map((x) => x.platform).join(", ")}. Only do this if you changed the rules on purpose and the source is complete.` }))) return;
+      this.run("/api/collection/apply", mass ? { allow_mass_removal: true } : {});
+    },
+
+    async undo() {
+      const runs = (this.info.last || {}).runs || {};
+      const n = Object.keys(runs).length;
+      if (!n) { toast("There is no collection build to undo.", "info"); return; }
+      if (!(await confirmDialog({ title: "Undo last build", body: `Remove what the last build added to ${(this.info.last || {}).dest} (${n} system${n === 1 ? "" : "s"})? Files you changed since are left in place. The ROM folders are not touched.`, okText: "Undo", danger: true }))) return;
+      try {
+        const r = await post("/api/collection/undo", {});
+        toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length || r.errors.length ? "error" : "ok", 8000);
+        this.adopt(await get("/api/collection"));
+        this.last = null;
+        $("col-output").classList.add("hidden");
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    showResult(r) {
+      this.last = r;
+      const t = r.totals;
+      const apply = r.action === "collection_apply";
+      const built = r.systems.reduce((n, x) => n + ((x.result || {}).created || 0), 0);
+      $("col-output").classList.remove("hidden");
+      $("col-cards").replaceChildren(
+        card(fmt(r.systems.length), "Systems", "info"),
+        card(fmt(t.files), "Files kept", "ok"),
+        card(fmtBytes(t.bytes_copy), "To copy", t.bytes_copy ? "info" : ""),
+        ...(t.bytes_linked ? [card(fmtBytes(t.bytes_linked), "Linked (no extra space)", "info")] : []),
+        ...(apply ? [card(fmt(built), "Files built now", "ok")] : [card(fmt(t.pending), "Would be added", t.pending ? "info" : "")]),
+        ...(t.replace ? [card(fmt(t.replace), "To replace (source changed)", "info")] : []),
+        ...(t.remove ? [card(fmt(t.remove), apply ? "Removed by sync" : "To remove (no longer kept)", "warn")] : []),
+        ...(t.conflicts ? [card(fmt(t.conflicts), "Conflicts (left alone)", "bad")] : []),
+        card(fmtBytes(r.free), r.enough_space ? "Free on the destination" : "Free space is NOT enough", r.enough_space ? "" : "bad"));
+      $("col-table").replaceChildren(...r.systems.map((x) => {
+        const counts = x.counts || {};
+        const res = x.result;
+        const resultText = x.status !== "ok" ? x.error || x.status : res ? `built ${fmt(res.created)} (+${fmt(res.playlists)} playlists)${res.removed ? `, removed ${fmt(res.removed)}` : ""}` : x.pending ? `${fmt(x.pending)} to add` : "up to date";
+        return el("tr", {},
+          el("td", { text: x.platform }),
+          el("td", {}, badge(x.status === "ok" ? "ok" : "bad", resultText)),
+          el("td", { class: "num", text: fmt(x.files || 0) }),
+          el("td", { class: "num", text: `${fmt(counts.copy || 0)} (${fmtBytes(x.bytes_copy || 0)})` }),
+          el("td", { class: "num", text: fmt((counts.hardlink || 0) + (counts.symlink || 0)) }),
+          el("td", { class: "num", text: fmt(counts.exists || 0) }),
+          el("td", { class: "notes small", text: [...(x.notes || []), ...((x.counts || {}).remove ? [`${fmt(x.counts.remove)} to remove, e.g. ${x.removals.filter((q) => !q.skip).slice(0, 2).map((q) => q.rel).join(", ")}`] : []), ...(x.conflicts || []).slice(0, 3).map((c) => `${c.rel}: ${c.reason}`),
+            ...(x.failed || []).slice(0, 3).map((f) => `${f.rel}: ${f.error}`)].join(" \u00B7 ") }));
+      }));
+      const failedAny = r.systems.some((x) => x.status !== "ok" || (x.failed || []).length);
+      showFailures("col-failures", "Problems:", r.systems.filter((x) => x.status !== "ok"), (x) => `${x.platform}: ${x.error || x.status}`);
+      if (apply) toast(`Built ${fmt(built)} file(s) in ${r.dest}${r.cancelled ? " - cancelled" : ""}${failedAny ? " (with problems)" : ""}`, failedAny ? "error" : "ok", 9000);
+    },
+
+    bind() {
+      $("col-detect").addEventListener("click", () => this.detect());
+      $("col-root").addEventListener("keydown", (e) => { if (e.key === "Enter") this.detect(); });
+      $("col-root-browse").addEventListener("click", () => FolderBrowser.open($("col-root"), "Choose the ROM root folder"));
+      $("col-root-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-root"), "Choose the ROM root folder"));
+      $("col-dest-browse").addEventListener("click", () => FolderBrowser.open($("col-dest"), "Choose the folder to build the collection in"));
+      $("col-dest-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-dest"), "Choose the folder to build the collection in"));
+      $("col-root").addEventListener("change", () => { if ($("col-root").value.trim() !== (this.info || {}).root) this.detect(); });
+      $("col-dest").addEventListener("change", () => this.save({ dest: $("col-dest").value.trim() }));
+      $("col-mode").addEventListener("change", () => this.save({ mode: $("col-mode").value }));
+      $("col-sidecars").addEventListener("change", () => this.save({ sidecars: $("col-sidecars").checked }));
+      $("col-sync").addEventListener("change", () => this.save({ sync: $("col-sync").checked }));
+      $("col-rules-reset").addEventListener("click", () => this.save({ global: {} }));
+      $("col-plan-btn").addEventListener("click", () => this.run("/api/collection/plan"));
+      $("col-apply-btn").addEventListener("click", () => this.apply());
+      $("col-undo-btn").addEventListener("click", () => this.undo());
+    },
+  };
+
+  Jobs.handlers.collection = async (job) => {
+    if ((job.status === "done" || job.status === "cancelled") && job.result) Collection.showResult(job.result);
+    try { Collection.adopt(await get("/api/collection")); } catch (_) { /* keep what is shown */ }
+  };
+
   // ----------------------------------------------------------- shared UI
   function updateActionState() {
     const hasScan = !!state.scan;
@@ -4025,7 +4605,23 @@
     }
   }
 
+  function bindMoreMenu() {
+    const btn = $("more-btn"), pop = $("more-pop");
+    const close = () => { pop.classList.add("hidden"); btn.setAttribute("aria-expanded", "false"); };
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = pop.classList.contains("hidden");
+      pop.classList.toggle("hidden", !open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    pop.addEventListener("click", close);
+    document.addEventListener("click", (e) => { if (!$("more-menu").contains(e.target)) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  }
+
   function bind() {
+    bindMoreMenu();
+    initSide();
     for (const id of ["scan-btn", "plan-btn", "apply-btn", "undo-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn",
       "convert-plan-btn", "convert-apply-btn", "convert-undo-btn", "m3u-plan-btn", "m3u-apply-btn",
       "kick-plan-btn", "kick-apply-btn", "dc-verify-btn"]) {
@@ -4037,8 +4633,14 @@
     window.addEventListener("focus", () => { if (!Updates.wasRunning) Updates.load(); });
     Previews.bindAll();
     $("lib-vanish-box").addEventListener("toggle", () => { if ($("lib-vanish-box").open && !vanishTable && libPlan) showVanishTable(); });
+    Collection.bind();
+    RetroArch.bind();
     $("lib-apply-btn").addEventListener("click", applyLibrary);
     $("lib-undo-btn").addEventListener("click", undoLibrary);
+    for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
+    $("lib-export-dest").addEventListener("change", exportSettingsChanged);
+    $("lib-export-browse-btn").addEventListener("click", () => FolderBrowser.open($("lib-export-dest"), "Choose the folder to build the library in"));
+    $("lib-export-native-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("lib-export-dest"), "Choose the folder to build the library in"));
     $("library-reset").addEventListener("click", async () => {
       try {
         state.library[state.platform] = await post("/api/library/profile", { platform: state.platform, reset: true });
@@ -4110,7 +4712,7 @@
       if (e.key === "Escape") for (const m of document.querySelectorAll(".col-menu[open]")) m.open = false;
     });
     const dense = $("density-btn");
-    const applyDensity = () => { document.body.classList.toggle("dense", Prefs.dense); dense.setAttribute("aria-pressed", Prefs.dense ? "true" : "false"); dense.textContent = Prefs.dense ? "Roomy" : "Compact"; };
+    const applyDensity = () => { document.body.classList.toggle("dense", Prefs.dense); dense.setAttribute("aria-pressed", Prefs.dense ? "true" : "false"); dense.textContent = Prefs.dense ? "Roomy rows" : "Compact rows"; };
     dense.addEventListener("click", () => { Prefs.dense = !Prefs.dense; applyDensity(); });
     applyDensity();
   }

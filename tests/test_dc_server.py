@@ -224,10 +224,12 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual(info["style"], "redump")
         ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
         self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "languages",
-                               "region_priority"])
+                               "other_language", "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
         self.assertFalse(info["available"]["keep_flags"])
         self.assertEqual(info["profile"]["languages"], ["En"])
+        self.assertTrue(info["profile"]["keep_other_language"])
+        self.call("/api/library/profile", {"platform": PLAT, "keep_other_language": False})   # this test is about the exclusion
         self.scan()
         plan = self.call("/api/library/plan", {"platform": PLAT})
         self.assertEqual((plan["reasons"]["excluded"], plan["reasons"]["superseded"], plan["reasons"]["kept"]), (2, 1, 3))

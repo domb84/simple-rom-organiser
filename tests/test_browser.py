@@ -149,7 +149,7 @@ class UiTestCase(unittest.TestCase):
 class StartupTests(UiTestCase):
     def test_the_page_asks_for_status_and_platforms_once(self) -> None:
         self.open()
-        self.page.wait("document.querySelectorAll('.syscard').length > 3")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
         names = self.page.eval("performance.getEntriesByType('resource').map(e => new URL(e.name).pathname)")
         self.assertEqual(names.count("/api/status"), 1)
         self.assertEqual(names.count("/api/platforms"), 1)
@@ -232,6 +232,203 @@ class LibraryListTests(UiTestCase):
         self.assertIn("always excluded by you", self.page.eval(
             "[...document.querySelectorAll('#lib-table tbody tr')].find(r => r.textContent.includes('Beta Blaster')).innerText").lower())
         self.no_js_errors()
+
+
+class BuildElsewhereTests(UiTestCase):
+    def confirm_dialog(self) -> str:
+        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
+        text = self.page.eval("document.getElementById('confirm-body').innerText")
+        self.page.eval("document.getElementById('confirm-yes').click()")
+        return text
+
+    def test_build_in_another_folder_leaves_the_source_alone_and_undoes(self) -> None:
+        dest = Path(tempfile.mkdtemp(prefix="romorg-ui-lib-"))
+        self.addCleanup(shutil.rmtree, dest, True)
+        before = sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*"))
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#lib-where-other')?.offsetParent")
+        self.assertTrue(self.page.eval("document.getElementById('lib-export-opts').classList.contains('hidden')"))
+        self.page.eval("document.getElementById('lib-where-other').click()")
+        self.page.eval(f"""(() => {{ const i = document.getElementById('lib-export-dest'); i.value = {str(dest)!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+        self.assertEqual(self.page.eval("document.getElementById('lib-apply-btn').textContent"), "Build library in destination")
+        self.click("#lib-plan-btn")
+        self.page.wait("document.getElementById('lib-cards').textContent.includes('To copy')")
+        self.click("#lib-apply-btn")
+        self.assertIn("The source folder is not changed", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=60)
+        built = [p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts]
+        self.assertTrue(built)
+        self.assertEqual(sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*")), before)
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")   # the choice is remembered
+        self.page.wait("document.getElementById('lib-where-other').checked")
+        self.assertEqual(self.page.eval("document.getElementById('lib-export-dest').value"), str(dest))
+        self.click("#lib-undo-btn")
+        self.assertIn("Remove the", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Removed ')", timeout=30)
+        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
+        self.no_js_errors()
+
+
+class CollectionTests(UiTestCase):
+    def confirm_dialog(self) -> str:
+        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
+        text = self.page.eval("document.getElementById('confirm-body').innerText")
+        self.page.eval("document.getElementById('confirm-yes').click()")
+        return text
+
+    def fill(self, id_: str, value: str) -> None:
+        self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+
+    def test_root_to_clean_library_and_undo(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-col-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        roms, dest = base / "roms", base / "library"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
+        before = sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*"))
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.assertFalse(self.page.eval("document.getElementById('view-home').offsetParent !== null"))
+        self.fill("col-root", str(roms))
+        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
+        self.assertTrue(self.page.eval("[...document.querySelectorAll('#col-systems tr')].find(r => r.textContent.includes('Commodore Amiga')).querySelector('input').checked"))
+        self.fill("col-dest", str(dest))
+        self.click("#col-plan-btn")
+        self.page.wait("document.getElementById('col-table').textContent.includes('Commodore Amiga')", timeout=60)
+        self.assertFalse(dest.exists())
+        self.click("#col-apply-btn")
+        self.assertIn("ROM folders are not changed", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=90)
+        self.assertTrue([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
+        self.assertEqual(sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*")), before)
+        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
+        self.click("#col-undo-btn")
+        self.assertIn("Remove what the last build added", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Removed ')", timeout=30)
+        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
+        self.no_js_errors()
+
+    def test_sync_removes_what_the_source_lost(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sync-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        roms, dest = base / "roms", base / "library"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.fx.root, target_is_directory=True)
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.fill("col-root", str(roms))
+        self.page.wait("document.querySelectorAll('#col-systems input[type=checkbox]').length >= 2")
+        self.fill("col-dest", str(dest))
+        self.click("#col-apply-btn")
+        self.confirm_dialog()
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built ')", timeout=90)
+        built = sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
+        self.assertGreater(len(built), 2)
+        victim = self.fx.root / "Zeta Zone (1995)(Zed).adf"
+        victim.unlink()
+        self.page.eval("document.getElementById('col-sync').click()")
+        self.page.wait("document.getElementById('col-sync').checked")
+        self.click("#col-plan-btn")
+        self.page.wait("document.getElementById('col-cards').textContent.includes('To remove')", timeout=60)
+        self.assertEqual(sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts), built)
+        self.click("#col-apply-btn")
+        self.assertIn("SYNC is on", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Built 0 ')", timeout=90)
+        after = sorted(p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
+        self.assertEqual(len(after), len(built) - 1)
+        self.no_js_errors()
+
+    def test_shared_rules_are_saved_and_the_home_page_links_here(self) -> None:
+        self.open()
+        self.assertEqual(self.page.eval("document.getElementById('collection-link').getAttribute('href')"), "#/collection")
+        self.page.goto(self.fx.url + "#/collection")
+        self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
+        self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').click()")
+        self.page.wait("document.getElementById('col-rules-note').textContent.includes('set')")
+        self.page.goto(self.fx.url + "#/collection")
+        self.page.eval("location.reload()")
+        self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
+        self.assertFalse(self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').checked"))
+        self.no_js_errors()
+
+
+class RetroArchTests(UiTestCase):
+    def confirm_dialog(self) -> str:
+        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
+        text = self.page.eval("document.getElementById('confirm-body').innerText")
+        self.page.eval("document.getElementById('confirm-yes').click()")
+        return text
+
+    def fill(self, id_: str, value: str) -> None:
+        self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+
+    def test_move_saves_and_update_the_config_then_undo(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-ra-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        ra, old, new = base / "ra", base / "old", base / "new"
+        ra.mkdir()
+        (old / "bsnes").mkdir(parents=True)
+        (old / "bsnes" / "Mario (USA).srm").write_bytes(b"s")
+        (old / "bsnes" / "Mario (USA).state1").write_bytes(b"t")
+        cfg = ra / "retroarch.cfg"
+        cfg.write_text(f'savefile_directory = "{old}"\nsavestate_directory = "{old}"\nsort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        self.open("#/retroarch")
+        self.page.wait("!document.getElementById('view-retroarch').classList.contains('hidden')")
+        self.fill("ra-custom", str(ra))
+        self.click("#ra-custom-add")
+        self.page.wait(f"document.getElementById('ra-install').value === {str(cfg)!r}")
+        self.assertEqual(self.page.eval("document.getElementById('ra-save-dir').value"), str(old))
+        self.fill("ra-save-dir", str(new / "saves"))
+        self.fill("ra-state-dir", str(new / "states"))
+        self.click("#ra-plan-btn")
+        self.page.wait("document.getElementById('ra-cards').textContent.includes('Files to move')")
+        self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())
+        self.click("#ra-apply-btn")
+        self.assertIn("A zip backup", self.confirm_dialog())
+        self.page.wait("document.querySelector('.toast')?.textContent.includes('Moved 2')", timeout=60)
+        self.assertTrue((new / "saves" / "bsnes" / "Mario (USA).srm").is_file())
+        self.assertTrue((new / "states" / "bsnes" / "Mario (USA).state1").is_file())
+        self.assertIn(str(new / "saves"), cfg.read_text())
+        self.page.wait("document.getElementById('ra-undo-btn').dataset.blocked !== '1'")
+        self.click("#ra-undo-btn")
+        self.confirm_dialog()
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('back'))", timeout=30)
+        self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())
+        self.no_js_errors()
+
+    def test_bios_check_finds_a_file_and_places_it(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-bios-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        ra = base / "ra"
+        (ra / "cores").mkdir(parents=True)
+        (ra / "retroarch.cfg").write_text(f'system_directory = "{ra}/system"\n')
+        (ra / "cores" / "x_libretro.info").write_text('display_name = "Commodore - Amiga (X)"\ncorename = "X"\nsupported_extensions = "adf"\n'
+                                                      'firmware_count = 1\nfirmware0_path = "kick34005.A500"\nfirmware0_opt = "false"\n')
+        (self.fx.root / "kick34005.A500").write_bytes(b"kick")
+        self.open("#/retroarch")
+        self.page.wait("!document.getElementById('view-retroarch').classList.contains('hidden')")
+        self.page.eval("""(async()=>{const t=document.querySelector('meta[name=romorg-token]').content;
+         const h={'Content-Type':'application/json','X-Romorg-Token':t};
+         await fetch('/api/folders',{method:'POST',headers:h,body:JSON.stringify({platform:'Commodore Amiga',path:%r})});})()""" % str(self.fx.root))
+        self.fill("ra-custom", str(ra))
+        self.click("#ra-custom-add")
+        self.page.wait(f"document.getElementById('ra-install').value === {str(ra / 'retroarch.cfg')!r}")
+        self.page.eval("document.getElementById('ra-bios-platform').value = 'Commodore Amiga'")
+        self.click("#ra-bios-check")
+        self.page.wait("document.getElementById('ra-bios-table').textContent.includes('found - not in place')")
+        self.page.eval("document.getElementById('ra-bios-mode').value = 'copy'")
+        self.click("#ra-bios-apply")
+        self.confirm_dialog()
+        self.page.wait("document.getElementById('ra-bios-table').textContent.includes('there (no checksum')", timeout=30)
+        self.assertEqual((ra / "system" / "kick34005.A500").read_bytes(), b"kick")
+        self.no_js_errors()
+
+
 
 
 class RememberedViewTests(UiTestCase):

@@ -339,7 +339,7 @@ class ManagerTests(unittest.TestCase):
     def test_user_part_waits_for_a_scan_and_follows_its_serial(self) -> None:
         real_user = totals.compute_user
         with mock.patch.object(totals, "compute_user",
-                               lambda result, platform, profile: totals.compute_user_items(self.cur.items, platform, profile)):
+                               lambda result, platform, profile, *rest: totals.compute_user_items(self.cur.items, platform, profile)):
             self.cur = self.state([ALPHA, "Solo (1992)(Pub)"], 1)
             self.mgr.request(AMIGA, EN, "d1")
             self.assertTrue(self.mgr.wait_idle(10))

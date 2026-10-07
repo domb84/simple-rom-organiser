@@ -1129,6 +1129,232 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertEqual((self.root / rel).read_bytes(), data, rel)
 
 
+    def test_library_built_in_another_folder(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        dest = self.tmp / "clean-library"
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        opts = {"export_to": str(dest), "export_mode": "copy"}
+        plan = self.call("POST", "/api/library/plan", {"limit": 50, **opts})
+        ex = plan["export"]
+        self.assertEqual(ex["dest"], str(dest))
+        self.assertGreaterEqual(ex["counts"]["copy"], 3)       # 2 game disks + Workbench
+        self.assertFalse(ex["conflicts"])
+        self.assertFalse(dest.exists())                          # a preview writes nothing
+        res = self.job("/api/library/apply", {**opts, "plan_id": plan["plan_id"]})["result"]
+        self.assertEqual(res["action"], "library_export")
+        self.assertFalse(res["failed"], res)
+        built = sorted(p.name for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
+        self.assertIn("Game (1990)(Pub)(Disk 1 of 2).adf", built)
+        self.assertNotIn("readme.txt", built)                    # not a ROM: stays in the source
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)  # source untouched
+        again = self.call("POST", "/api/library/plan", {"limit": 5, **opts})
+        self.assertEqual(again["export"]["pending"], 0)
+        runs = self.call("GET", f"/api/library/export/runs?dest={urllib.request.quote(str(dest))}")["runs"]
+        self.assertEqual(len(runs), 1)
+        undone = self.call("POST", "/api/library/export/undo", {"dest": str(dest)})
+        self.assertEqual(undone["removed"], res["created"] + res["playlists"])
+        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
+
+    def test_collection_from_a_rom_root(self) -> None:
+        roms = self.tmp / "roms"                    # the ROM root holds the system folder (a link to the fixture)
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
+        info = self.call("POST", "/api/collection/detect", {"root": str(roms)})
+        amiga = info["systems"]["Commodore Amiga"]
+        self.assertTrue(amiga["enabled"])
+        self.assertEqual(amiga["path"], str(roms / "amiga"))
+        self.assertEqual([n for n, e in info["systems"].items() if e["enabled"]], ["Commodore Amiga"])
+        dest = self.tmp / "collection"
+        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy", "global": {"latest_only": True}})
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        plan = self.job("/api/collection/plan", {})["result"]
+        row = plan["systems"][0]
+        self.assertEqual((row["platform"], row["status"]), ("Commodore Amiga", "ok"))
+        self.assertGreaterEqual(row["counts"]["copy"], 3)
+        self.assertFalse(dest.exists())
+        res = self.job("/api/collection/apply", {})["result"]
+        built = res["systems"][0]
+        self.assertFalse(built["failed"], built)
+        self.assertEqual(built["dest"], str(dest / "amiga"))
+        self.assertTrue((dest / "amiga" / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
+        undone = self.call("POST", "/api/collection/undo", {})
+        self.assertGreaterEqual(undone["removed"], 3)
+        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
+
+    def test_collection_refuses_a_destination_inside_the_root(self) -> None:
+        self.call("POST", "/api/collection/detect", {"root": str(self.tmp)})
+        self.call("POST", "/api/collection/save", {"dest": str(self.tmp / "inside")})
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/collection/plan", method="POST", data=b"{}",
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json",
+                                              "X-Romorg-Token": "t"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_collection_sync_removes_what_is_gone_from_the_source(self) -> None:
+        roms = self.tmp / "roms"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
+        self.call("POST", "/api/collection/detect", {"root": str(roms)})
+        dest = self.tmp / "synced"
+        self.call("POST", "/api/collection/save", {"dest": str(dest), "mode": "copy"})
+        self.job("/api/collection/apply", {})
+        wb = dest / "amiga" / WB / "Workbench v1.3 (1988)(Commodore).adf"
+        self.assertTrue(wb.is_file())
+        (self.root / "incoming" / "deep" / "wb.adf").unlink()
+        self.job("/api/collection/apply", {})                       # no sync: the old file stays
+        self.assertTrue(wb.is_file())
+        self.call("POST", "/api/collection/save", {"sync": True})
+        plan = self.job("/api/collection/plan", {})["result"]
+        self.assertEqual(plan["systems"][0]["counts"]["remove"], 1)
+        self.assertTrue(wb.is_file())                                # a preview removes nothing
+        res = self.job("/api/collection/apply", {})["result"]
+        self.assertEqual(res["systems"][0]["result"]["removed"], 1)
+        self.assertFalse(wb.exists())
+        undone = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(undone["removed"], 0)
+        self.assertEqual(undone["skipped"], [{"system": "Commodore Amiga", "rel": WB + "/Workbench v1.3 (1988)(Commodore).adf",
+                                              "reason": "the source file is gone - cannot restore"}])
+
+    def test_retroarch_saves_are_moved_and_the_config_updated(self) -> None:
+        ra_dir = self.tmp / "ra"
+        ra_dir.mkdir()
+        old = self.tmp / "old-saves"
+        (old / "bsnes").mkdir(parents=True)
+        (old / "bsnes" / "Mario (USA).srm").write_bytes(b"save")
+        (old / "bsnes" / "Mario (USA).state1").write_bytes(b"state")
+        cfg = ra_dir / "retroarch.cfg"
+        cfg.write_text(f'savefile_directory = "{old}"\nsavestate_directory = "{old}"\nsort_savefiles_enable = "true"\n'
+                       'sort_savestates_enable = "true"\nsavefiles_in_content_dir = "false"\nvideo_vsync = "true"\n')
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            info = self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+            self.assertEqual(info["selected"], str(cfg))
+            self.assertEqual(info["settings"]["savefile_path"], str(old))
+            new_saves, new_states = self.tmp / "new" / "saves", self.tmp / "new" / "states"
+            body = {"save_dir": str(new_saves), "state_dir": str(new_states), "sort_saves": True, "sort_states": True}
+            plan = self.call("POST", "/api/retroarch/plan", body)
+            self.assertEqual(plan["counts"]["move"], 2)
+            self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())          # a preview moves nothing
+            res = self.job("/api/retroarch/apply", {**body, "backup": True})["result"]
+            self.assertEqual((res["moved"], res["failed"]), (2, []))
+            self.assertTrue((new_saves / "bsnes" / "Mario (USA).srm").is_file())
+            self.assertTrue((new_states / "bsnes" / "Mario (USA).state1").is_file())
+            self.assertIn(str(new_saves), cfg.read_text())
+            self.assertIn('video_vsync = "true"', cfg.read_text())
+            self.assertTrue(Path(res["backup"]).is_file())
+            info = self.call("GET", "/api/retroarch")
+            self.assertEqual(len(info["undo"]), 1)
+            undone = self.call("POST", "/api/retroarch/undo", {"journal": info["undo"][0]["journal"]})
+            self.assertEqual((undone["restored"], undone["skipped"], undone["cfg_restored"]), (2, [], True))
+            self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())
+
+    def _retroarch_with_saves(self) -> tuple[Path, Path]:
+        ra_dir, saves = self.tmp / "ra-follow", self.tmp / "ra-saves"
+        (saves / "PUAE").mkdir(parents=True)
+        ra_dir.mkdir()
+        (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{saves}"\nsavestate_directory = "{saves}"\n'
+                                              'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        (saves / "PUAE" / "game_d1.srm").write_bytes(b"s1")
+        (saves / "PUAE" / "game_d1.state1").write_bytes(b"s2")
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        return ra_dir, saves
+
+    def test_saves_follow_a_library_build_in_place_and_come_back_on_undo(self) -> None:
+        _ra, saves = self._retroarch_with_saves()
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            res = self.job("/api/library/apply", {})["result"]
+            self.assertEqual(res["saves"]["followed"], 2, res.get("saves"))
+            new = "Game (1990)(Pub)(Disk 1 of 2)"
+            self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
+            self.assertTrue((saves / "PUAE" / f"{new}.state1").is_file())
+            self.assertFalse((saves / "PUAE" / "game_d1.srm").exists())
+            self.job("/api/library/undo", {"log": res["undo_log"]})
+            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())
+            self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
+
+    def test_saves_are_copied_to_the_new_names_in_a_collection_build(self) -> None:
+        _ra, saves = self._retroarch_with_saves()
+        roms = self.tmp / "roms2"
+        roms.mkdir()
+        (roms / "amiga").symlink_to(self.root, target_is_directory=True)
+        self.call("POST", "/api/collection/detect", {"root": str(roms)})
+        self.call("POST", "/api/collection/save", {"dest": str(self.tmp / "lib2"), "mode": "copy"})
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            res = self.job("/api/collection/apply", {})["result"]
+            self.assertEqual(res["systems"][0]["saves"]["copied"], 2)
+            new = "Game (1990)(Pub)(Disk 1 of 2)"
+            self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
+            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())              # the old name stays
+            self.call("POST", "/api/collection/undo", {})
+            self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
+            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())
+
+    def test_retroarch_bios_check_and_place_over_http(self) -> None:
+        ra_dir = self.tmp / "ra-bios"
+        (ra_dir / "cores").mkdir(parents=True)
+        (ra_dir / "retroarch.cfg").write_text(f'system_directory = "{ra_dir}/system"\n')
+        (ra_dir / "cores" / "x_libretro.info").write_text(
+            'display_name = "Commodore - Amiga (X)"\ncorename = "X"\nsupported_extensions = "adf"\nfirmware_count = 1\n'
+            'firmware0_path = "kick34005.A500"\nfirmware0_opt = "false"\n')
+        (self.root / "kick34005.A500").write_bytes(b"kick")          # the Amiga folder holds it
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        self.call("POST", "/api/folders", {"platform": "Commodore Amiga", "path": str(self.root)})
+        chk = self.call("POST", "/api/retroarch/bios", {"platform": "Commodore Amiga"})
+        self.assertEqual(chk["counts"]["found"], 1, chk)
+        self.job("/api/retroarch/bios/apply", {"platform": "Commodore Amiga", "mode": "copy"})
+        self.assertEqual((ra_dir / "system" / "kick34005.A500").read_bytes(), b"kick")
+        self.assertEqual(self.call("POST", "/api/retroarch/bios", {"platform": "Commodore Amiga"})["required_missing"], 0)
+
+    def test_retroarch_shared_folders_over_http(self) -> None:
+        ra_dir, assets = self.tmp / "ra-shared", self.tmp / "shared-assets"
+        ra_dir.mkdir()
+        (assets / "cht").mkdir(parents=True)
+        (assets / "cht" / "x.cht").write_text("c")
+        (ra_dir / "retroarch.cfg").write_text('cheat_database_path = ":/cheats"\nvideo_vsync = "true"\n')
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        out = self.call("POST", "/api/retroarch/shared", {"base": str(assets)})
+        row = next(r for r in out["rows"] if r["key"] == "cheat_database_path")
+        self.assertEqual((row["status"], row["want"]), ("unset", str(assets / "cht")))
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            res = self.call("POST", "/api/retroarch/shared/apply", {"base": str(assets), "keys": ["cheat_database_path"]})
+        self.assertEqual(res["changed"], ["cheat_database_path"])
+        self.assertIn(str(assets / "cht"), (ra_dir / "retroarch.cfg").read_text())
+        self.assertIn('video_vsync = "true"', (ra_dir / "retroarch.cfg").read_text())
+        self.assertEqual(next(r for r in res["rows"] if r["key"] == "cheat_database_path")["status"], "ok")
+
+    def test_retroarch_is_not_touched_while_it_runs(self) -> None:
+        ra_dir = self.tmp / "ra2"
+        ra_dir.mkdir()
+        (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{self.tmp}/s"\nsavestate_directory = "{self.tmp}/s"\n')
+        (self.tmp / "s").mkdir()
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/retroarch/apply", method="POST",
+                                     data=json.dumps({"save_dir": str(self.tmp / "t")}).encode(),
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+        with mock.patch("romorg.retroarch.is_running", return_value=True):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(ctx.exception.code, 409)
+
+    def test_library_export_refuses_bad_destinations(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        for bad in (str(self.root), str(self.root / "sub")):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/library/plan", method="POST",
+                data=json.dumps({"export_to": bad}).encode(),
+                headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=10)
+            self.assertEqual(ctx.exception.code, 400)
+
+    def test_export_settings_are_remembered(self) -> None:
+        self.call("POST", "/api/library/export/settings", {"enabled": True, "dest": "/x/y", "mode": "symlink"})
+        saved = self.call("GET", "/api/status")["library_export"]
+        self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "symlink", "sidecars": False, "sync": False})
+
+
 class ReviewFixTests(ServerTestCase):
     @unittest.skipUnless(os.name == "posix", "undecodable (bytes) file names only exist on POSIX")
     def test_undecodable_filenames_serialise(self) -> None:
@@ -1777,7 +2003,7 @@ class LibraryServerTests(ServerTestCase):
 
         def plan_library(result: Any, profile: Any, missing_dats: Any = (),
                          layout: Any = None, savedisk: bool = False, labels: bool = True,
-                         platform: Any = None) -> LPlan:
+                         platform: Any = None, lang_games: Any = None) -> LPlan:
             test.calls["plan_library"].append({"profile": profile, "savedisk": savedisk, "labels": labels,
                                                "platform": getattr(platform, "name", None)})
             ops = [
@@ -2447,7 +2673,7 @@ class UiStructureTests(unittest.TestCase):
 
     def test_html_has_home_tabs_and_global_header(self) -> None:
         html = server.read_static("index.html").decode()
-        for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups",
+        for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups", "side", "side-toggle", "more-btn",
                            "view-system", "back-link", "sys-tabs", "tabbtn-overview", "tabbtn-library", "tabbtn-browse",
                            "tabbtn-tools", "tab-overview", "tab-library", "tab-browse", "tab-tools", "folder-input",
                            "scan-btn", "summary-cards", "library-rules-summary", "tool-convert", "tool-verify",
@@ -2463,7 +2689,7 @@ class UiStructureTests(unittest.TestCase):
         js = server.read_static("app.js").decode()
         for needle in ("#/system/", "const Route", "parse(hash)", 'addEventListener("hashchange"', "function applyRoute",
                        "function renderBrowse", "browseDirty", "history.replaceState", "/api/scan/checksums", "checksums:",
-                       "function checksumPanel", "Show checksums", "ArrowRight", "function systemCard", "p.last_scan"):
+                       "function checksumPanel", "Show checksums", "ArrowRight", "function sideItem", "p.last_scan"):
             self.assertIn(needle, js)
         for system in ("Dreamcast", "PlayStation", "Nintendo 64", "WHDLoad\"", "Game Boy"):   # systems come from /api/platforms
             self.assertNotIn(f'"{system}', js.replace('"WHDLoad"', ""))

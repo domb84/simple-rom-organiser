@@ -58,6 +58,13 @@ CSP = (
 )
 
 
+def _existing_parent(path: Path) -> Path:
+    """``path`` itself, or its nearest ancestor that exists (for a free-space check on a folder yet to be created)."""
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    return path
+
+
 def _mod(name: str) -> Any:
     """Import a sibling module lazily (looked up in sys.modules first)."""
     return importlib.import_module(f"{PACKAGE}.{name}")
@@ -249,7 +256,7 @@ LIBRARY_REASONS = ("kept", "excluded", "superseded", "incomplete", "duplicate", 
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions",
-                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope")
+                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -799,6 +806,7 @@ class App:
         self._undo_counts: dict[tuple[str, int, int], int] = {}
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
+        self._lang_cache_games: dict[str, tuple[tuple, frozenset]] = {}   # platform -> games that have a version in your languages
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
         self._totals_mgr: Any = None                           # totals.TotalsManager (library totals, Amendment 17)
         self._cutoffs: dict[str, tuple[tuple, Any]] = {}       # platform -> (key, rank key of the N-th best game) (Amendment 18)
@@ -1359,7 +1367,9 @@ class App:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Parent folder does not exist: {path.parent}")
         return path
 
-    def _run_scan(self, job: Job, root: Path, platform: Any, cancellable: bool = True) -> ScanState | None:
+    def _run_scan(self, job: Job, root: Path, platform: Any, cancellable: bool = True,
+                  keep: bool = True) -> ScanState | None:
+        """Scan ``root``. ``keep=False`` (collection builds) returns the state without making it the current scan."""
         # DATs are kept current automatically: a platform whose DATs are not installed yet waits for
         # (or starts) the update here, with its progress shown as this job's progress.
         try:
@@ -1379,7 +1389,8 @@ class App:
                                "reached. Connect to the internet and press Retry.", "offline_no_dats") from None
             raise ApiError(HTTPStatus.BAD_GATEWAY, f"Updating the {platform.name} DATs failed: {exc}",
                            "update_failed") from None
-        self._shed_scan_caches()
+        if keep:
+            self._shed_scan_caches()
         job.report(0, 0, f"Loading {platform.name} DATs...")
         dats, missing = self._platform_dats(platform)
         sig = self._dats_signature(platform)  # what this scan parsed (see _scan_is_stale)
@@ -1413,9 +1424,10 @@ class App:
         state = ScanState(result=result, root=root, platform=platform, dat_names=dat_names,
                           missing_dats=list(missing), layout=_enum_str(getattr(result, "layout", None), layout),
                           dats_sig=sig)
-        with self._lock:
-            self._scan = state
-        self._record_scan(state)
+        if keep:
+            with self._lock:
+                self._scan = state
+            self._record_scan(state)
         return state
 
     def _record_scan(self, state: ScanState) -> None:
@@ -1617,6 +1629,44 @@ class App:
         return self._kick_plan(state, dest), {"source": "dat", "root": str(state.root),
                                               "kickstart_dat": platform.kickstart_dat}
 
+    def _lang_games(self, platform: Any, prof: Any) -> frozenset | None:
+        """Games of the platform's whole DAT with a version in the selected languages (``keep_other_language``), cached
+        per rules and DAT versions; None when the rule is off."""
+        if not (getattr(prof, "keep_other_language", False) and prof.languages):
+            return None
+        totals = _mod("totals")
+        key = (platform.name, totals.profile_signature(prof), totals.signature_text(self._dats_signature(platform)))
+        cached = self._lang_cache_games.get(platform.name)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        dats, _missing = self._platform_dats(platform)
+        value = self._library_mod().language_games(totals.target_items(platform, list(dats)), prof, platform)
+        self._lang_cache_games[platform.name] = (key, value)
+        return value
+
+    def _make_library_plan(self, state: ScanState, prof: Any, savedisk: bool, labels: bool) -> Any:
+        """A fresh ``LibraryPlan`` of the scan for the given rules (not cached)."""
+        rctx = self._rating_context(state.platform, prof)
+        if self._is_dc(state):
+            plan = _mod("discsys").plan_library(state.result, prof, savedisk=savedisk, labels=labels,
+                                                **({"ratings": rctx} if rctx is not None else {}))
+            plan.ops.sort(key=_order_key(ORGANISE_ORDER))
+            return plan
+        organiser = _mod("organiser")
+        planner = getattr(organiser, "plan_library", None)
+        if planner is None:
+            raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "Build library is not available in this version")
+        plan = _call(planner, state.result, prof,
+                     missing_dats=list(state.missing_dats),
+                     layout=state.layout, savedisk=savedisk, labels=labels, platform=state.platform,
+                     lang_games=self._lang_games(state.platform, prof),
+                     **({"ratings": rctx} if rctx is not None else {}))
+        try:
+            plan.ops.sort(key=_order_key(ORGANISE_ORDER))  # stable: keeps organiser order per status
+        except AttributeError:
+            pass
+        return plan
+
     def _library_plan(self, state: ScanState, savedisk: bool = False,
                       labels: bool = True) -> Any:
         """The cached ``organiser.LibraryPlan`` for the platform's current profile."""
@@ -1625,29 +1675,8 @@ class App:
         if cached is not None and getattr(cached, "profile", None) not in (None, self._profile(state.platform)):
             # the rules changed behind our back (config.json edited, another client): never serve an old plan
             self._drop_plans(state)
-        if key not in state.library_plans and self._is_dc(state):
-            prof = self._profile(state.platform)
-            rctx = self._rating_context(state.platform, prof)
-            plan = _mod("discsys").plan_library(state.result, prof, savedisk=savedisk, labels=labels,
-                                                **({"ratings": rctx} if rctx is not None else {}))
-            plan.ops.sort(key=_order_key(ORGANISE_ORDER))
-            state.library_plans[key] = plan
         if key not in state.library_plans:
-            organiser = _mod("organiser")
-            planner = getattr(organiser, "plan_library", None)
-            if planner is None:
-                raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "Build library is not available in this version")
-            prof = self._profile(state.platform)
-            rctx = self._rating_context(state.platform, prof)
-            plan = _call(planner, state.result, prof,
-                         missing_dats=list(state.missing_dats),
-                         layout=state.layout, savedisk=savedisk, labels=labels, platform=state.platform,
-                         **({"ratings": rctx} if rctx is not None else {}))
-            try:
-                plan.ops.sort(key=_order_key(ORGANISE_ORDER))  # stable: keeps organiser order per status
-            except AttributeError:
-                pass
-            state.library_plans[key] = plan
+            state.library_plans[key] = self._make_library_plan(state, self._profile(state.platform), savedisk, labels)
         return state.library_plans[key]
 
     @staticmethod
@@ -1892,6 +1921,10 @@ class App:
         out["folders"] = self._folders(cfg)
         out["last_platform"] = cfg.get("last_platform")
         out["last_dir"] = out["folders"].get(out["last_platform"]) or cfg.get("last_dir")
+        exp = cfg.get("library_export") if isinstance(cfg.get("library_export"), dict) else {}
+        out["library_export"] = {"enabled": bool(exp.get("enabled")), "dest": str(exp.get("dest") or ""),
+                                 "mode": exp.get("mode") if exp.get("mode") in _mod("libexport").MODES else "auto",
+                                 "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync"))}
         out["kickstart_dest"] = _kick_dest(cfg, LEGACY_KICKSTART_PLATFORM)     # the TOSEC Amiga's (legacy key)
         dests = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
         out["kickstart_dests"] = {k: v for k, v in dests.items() if isinstance(v, str)}
@@ -2057,7 +2090,7 @@ class App:
         if "region_priority" in body:
             changes["region_priority"] = tuple(names("region_priority", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions"):
+                    "borrow_other_editions", "keep_other_language"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -2659,6 +2692,9 @@ class App:
             job.report(0, 0, "Undoing moves...")
             res = dict(_call(_mod("organiser").undo, log, root=state.root))
             res["action"] = "undo"
+            saves = self._ra_undo_follow(str(log))
+            if saves:
+                res["saves"] = saves
             return self._rescan_into(job, state, res)
 
         return {"job": self.jobs.start(kind, work, cancellable=False, platform=state.platform.name).to_dict()}
@@ -2846,6 +2882,12 @@ class App:
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
             reserved_dirs=list(RESERVED_DIRS))
         page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
+        export_to = _str_arg(body.get("export_to"))
+        if export_to:
+            page["export"] = self._export_summary(state, plan, export_to, _str_arg(body.get("export_mode")) or "auto",
+                                                  _bool_arg(body.get("export_sidecars")), _bool_arg(body.get("export_sync")))
+            page["actionable"] = page["export"].get("pending", 0)
+            page["empty"] = page["actionable"] == 0
         if _bool_arg(body.get("checksums")):     # only this page's rows, from the scan in memory
             for it in page["items"]:
                 if it.get("cs_kind"):
@@ -2894,9 +2936,39 @@ class App:
                 ref = ("games", game["id"])
             item["cs_kind"], item["cs_id"] = ref if ref else (None, None)
 
+    def _export_plan(self, state: ScanState, plan: Any, export_to: str, mode: str, sidecars: bool,
+                     sync: bool = False) -> Any:
+        libexport = _mod("libexport")
+        try:
+            return libexport.plan_export(plan, state.root, Path(export_to), mode, sidecars, sync)
+        except libexport.ExportError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc), "bad_destination")
+
+    def _export_summary(self, state: ScanState, plan: Any, export_to: str, mode: str, sidecars: bool,
+                        sync: bool = False) -> dict[str, Any]:
+        ep = self._export_plan(state, plan, export_to, mode, sidecars, sync)
+        problems = [{"rel": t.rel, "reason": t.reason, "src": str(t.src)} for t in ep.items if t.action == "conflict"]
+        try:
+            free = shutil.disk_usage(_existing_parent(ep.dest)).free
+        except OSError:
+            free = None
+        need = ep.bytes_to_copy()
+        notes = list(ep.notes)
+        if free is not None and need > free:
+            notes.append(f"Not enough space on the destination: {need} bytes needed, {free} free.")
+        return {"dest": str(ep.dest), "mode": ep.mode, "counts": ep.counts(), "pending": ep.pending(),
+                "bytes_copy": need, "bytes_linked": ep.bytes_linked(), "free": free, "enough_space": free is None or need <= free,
+                "playlists": len([p for p in ep.playlists if p.action == "write"]),
+                "conflicts": problems[:200], "notes": notes, "runs": _mod("libexport").list_runs(ep.dest),
+                "sync": sync, "mass_removal": ep.mass_removal(),
+                "removals": [{"rel": r.rel, "reason": r.reason, "skip": r.skip} for r in ep.removals[:200]]}
+
     def library_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
         key = self._library_flags(body)
+        export_to = _str_arg(body.get("export_to"))
+        if export_to:
+            return self._library_export_apply(state, key, body, export_to)
         sent = _str_arg(body.get("plan_id"))
         if sent and sent != self._plan_id(state, key):
             raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
@@ -2912,9 +2984,569 @@ class App:
             res = dict(_call(apply, plan.ops, state.root, progress=job.report,
                              cancel=job.cancel, playlists=list(plan.playlists)))
             res["action"] = "library"
+            moved = self._moved_pairs(plan.ops)
+            if moved:
+                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")})
+                if follow:
+                    res["saves"] = follow
             return self._rescan_into(job, state, res)
 
         return {"job": self.jobs.start("library", work, cancellable=False, platform=state.platform.name).to_dict()}
+
+    @staticmethod
+    def _moved_pairs(ops: Any) -> list[tuple[Any, Any]]:
+        """``(old, new)`` of every file a build actually moved (the new place exists, the old one does not)."""
+        pairs: list[tuple[Any, Any]] = []
+        for op in ops:
+            if getattr(op, "status", "") not in ("move", "rename"):
+                continue
+            for src, dst in (getattr(op, "moves", None) or [(op.src, op.dst)]):
+                if os.path.lexists(dst) and not os.path.lexists(src):
+                    pairs.append((src, dst))
+        return pairs
+
+    def _library_export_apply(self, state: ScanState, key: Any, body: dict[str, Any], export_to: str) -> dict[str, Any]:
+        sent = _str_arg(body.get("plan_id"))
+        if sent and sent != self._plan_id(state, key):
+            raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
+                           "recalculate the preview and check it again", "stale_plan")
+        mode = _str_arg(body.get("export_mode")) or "auto"
+        sidecars = _bool_arg(body.get("export_sidecars"))
+        sync, allow_mass = _bool_arg(body.get("export_sync")), _bool_arg(body.get("allow_mass_removal"))
+        self._export_plan(state, self._library_plan(state, *key), export_to, mode, sidecars, sync)   # errors before the job
+
+        def work(job: Job) -> Any:
+            libexport = _mod("libexport")
+            ep = self._export_plan(state, self._library_plan(state, *key), export_to, mode, sidecars, sync)
+            if ep.bytes_to_copy() and shutil.disk_usage(_existing_parent(ep.dest)).free < ep.bytes_to_copy():
+                raise ApiError(HTTPStatus.CONFLICT, "Not enough free space on the destination for this build.", "no_space")
+            job.report(0, ep.pending(), "Building library in " + str(ep.dest))
+            try:
+                res = libexport.apply_export(ep, progress=lambda done, total, name: job.report(done, total, name),
+                                             cancel=job.cancel, allow_mass=allow_mass)
+            except libexport.ExportError as exc:
+                raise ApiError(HTTPStatus.CONFLICT, str(exc), "mass_removal")
+            res["action"] = "library_export"
+            res["dest"] = str(ep.dest)
+            return res
+
+        return {"job": self.jobs.start("library", work, platform=state.platform.name).to_dict()}
+
+    def library_export_settings(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/library/export/settings``: remember where the library is built (``enabled, dest, mode, sidecars``)."""
+        mode = _str_arg(body.get("mode")) or "auto"
+        if mode not in _mod("libexport").MODES:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown transfer mode: {mode}")
+        value = {"enabled": _bool_arg(body.get("enabled")), "dest": _str_arg(body.get("dest")), "mode": mode,
+                 "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync"))}
+        self._config_update(library_export=value)
+        return value
+
+    # ---------------------------------------------------------------- RetroArch (v0.2): saves and config
+    def _ra_state(self) -> tuple[Any, list[Any], dict[str, Any]]:
+        """``(retroarch module, installs, saved settings)``: the detected installs plus the custom ones the user added."""
+        ra = _mod("retroarch")
+        cfg = self._config()
+        saved = cfg.get("retroarch") if isinstance(cfg.get("retroarch"), dict) else {}
+        custom = [c for c in saved.get("custom", []) if isinstance(c, str)]
+        return ra, ra.detect_installs(custom=custom), saved
+
+    def _ra_selected(self, installs: list[Any], saved: dict[str, Any]) -> Any:
+        want = saved.get("selected")
+        for inst in installs:
+            if str(inst.cfg) == want:
+                return inst
+        return installs[0] if installs else None
+
+    def _ra_dirs(self, saved: dict[str, Any]) -> tuple[Path, Path]:
+        base = _mod("paths").data_dir()
+        return base / "retroarch-undo", Path(saved.get("backup_dir") or (base / "save-backups"))
+
+    def _ra_info(self) -> dict[str, Any]:
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        journal_dir, backup_dir = self._ra_dirs(saved)
+        out: dict[str, Any] = {"installs": [i.to_dict() for i in installs], "selected": str(sel.cfg) if sel else "",
+                               "custom": list(saved.get("custom", [])), "running": ra.is_running(),
+                               "backup": {"enabled": saved.get("backup", True) is not False, "dir": str(backup_dir)},
+                               "follow": saved.get("follow", True) is not False,
+                               "undo": ra.list_undo(journal_dir), "settings": None, "overrides": []}
+        if sel is not None:
+            out["settings"] = ra.settings_of(sel)
+            out["overrides"] = ra.override_warnings(sel)
+        return out
+
+    def retroarch_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        return self._ra_info()
+
+    def retroarch_select(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/select {cfg}`` picks a detected install; ``{custom}`` adds a retroarch.cfg (or its folder)."""
+        ra, installs, saved = self._ra_state()
+        changes: dict[str, Any] = {}
+        custom = _str_arg(body.get("custom"))
+        if custom:
+            probe = ra.detect_installs(platform="none", custom=[custom])
+            if not probe:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"No retroarch.cfg found in {custom}")
+            changes["custom"] = list(dict.fromkeys([*saved.get("custom", []), custom]))
+            changes["selected"] = str(probe[0].cfg)
+        elif _str_arg(body.get("cfg")):
+            if _str_arg(body.get("cfg")) not in {str(i.cfg) for i in installs}:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "That RetroArch is not in the list")
+            changes["selected"] = _str_arg(body.get("cfg"))
+        if "backup" in body:
+            changes["backup"] = _bool_arg(body.get("backup"))
+        if "backup_dir" in body:
+            changes["backup_dir"] = _str_arg(body.get("backup_dir"))
+        self._config_update(retroarch={**saved, **changes})
+        return self._ra_info()
+
+    def _ra_relocation(self, body: dict[str, Any]) -> tuple[Any, Any, Any]:
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        save_dir = _str_arg(body.get("save_dir"))
+        state_dir = _str_arg(body.get("state_dir")) or save_dir
+        if not save_dir:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder for save files.")
+        paths = []
+        for raw in (save_dir, state_dir):
+            p = Path(os.path.abspath(os.path.expanduser(raw)))
+            for bad in (sel.base,):
+                if p == bad:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "Choose a folder for the saves, not RetroArch's own folder.")
+            paths.append(p)
+        try:
+            rel = ra.plan_relocation(sel, paths[0], paths[1], _bool_arg(body.get("sort_saves")),
+                                     _bool_arg(body.get("sort_states")))
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, str(exc), "saves_in_content_dir") from None
+        return ra, sel, rel
+
+    def retroarch_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, sel, rel = self._ra_relocation(body)
+        _j, backup_dir = self._ra_dirs(self._ra_state()[2])
+        try:
+            free = shutil.disk_usage(_existing_parent(backup_dir)).free
+        except OSError:
+            free = None
+        shown = [m for m in rel.moves if m.status != "ok"][:300]
+        return {"counts": rel.counts(), "bytes": rel.bytes_to_move(), "old": rel.old, "new": rel.new, "notes": rel.notes,
+                "running": ra.is_running(), "free": free, "overrides": ra.override_warnings(sel),
+                "cfg_changes": {k: (v if isinstance(v, bool) else str(v)) for k, v in rel.changes.items()},
+                "items": [{"from": str(m.src), "to": str(m.dst), "kind": m.kind, "status": m.status, "note": m.note}
+                          for m in shown],
+                "empty": rel.counts()["move"] + rel.counts()["needs_core"] == 0 and not self._ra_cfg_differs(sel, rel)}
+
+    @staticmethod
+    def _ra_cfg_differs(sel: Any, rel: Any) -> bool:
+        cur = _mod("retroarch").read_cfg(sel.cfg)
+        for k, v in rel.changes.items():
+            have = cur.get(k, "")
+            want = "true" if v is True else "false" if v is False else str(v)
+            if have != want:
+                return True
+        return False
+
+    def retroarch_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, sel, rel = self._ra_relocation(body)
+        if ra.is_running():
+            raise ApiError(HTTPStatus.CONFLICT, "RetroArch is running. Close it first: it rewrites its config when it closes.",
+                           "retroarch_running")
+        saved = self._ra_state()[2]
+        journal_dir, backup_dir = self._ra_dirs(saved)
+        want_backup = _bool_arg(body.get("backup"), saved.get("backup", True) is not False)
+        zip_path = backup_dir / f"saves-{time.strftime('%Y%m%d-%H%M%S')}.zip" if want_backup else None
+
+        def work(job: Job) -> Any:
+            job.report(0, 0, "Moving saves...")
+            res = ra.apply_relocation(sel, rel, journal_dir, zip_path, progress=lambda d, t, m: job.report(d, t, m))
+            res["action"] = "retroarch"
+            return res
+
+        return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
+
+    def retroarch_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, installs, saved = self._ra_state()
+        journal_dir, _b = self._ra_dirs(saved)
+        journal = _str_arg(body.get("journal"))
+        known = {x["journal"] for x in ra.list_undo(journal_dir)}
+        if journal not in known:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "That change cannot be undone (it was already undone, or is unknown).")
+        try:
+            return ra.undo_relocation(Path(journal))
+        except RuntimeError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
+
+    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any]) -> dict[str, Any] | None:
+        """Saves and states follow ROMs that got new names (``pairs_from``: ``(old path, new path)``). ``mode`` ``move`` for
+        a build in place, ``copy`` for a build into another folder. None when RetroArch is not in use or the option is off."""
+        try:
+            ra, installs, saved = self._ra_state()
+            sel = self._ra_selected(installs, saved)
+            if sel is None or saved.get("follow", True) is False:
+                return None
+            pairs = ra.pairs_from_moves(pairs_from)
+            if not pairs:
+                return None
+            ops = ra.plan_follow(sel, pairs, mode)
+            res = ra.apply_follow(ops, self._ra_dirs(saved)[0], extra, sel)
+            res["conflicts"] = sum(1 for o in ops if o.status == "conflict")
+            return res
+        except Exception as exc:  # noqa: BLE001 - saves are a courtesy of the build: never fail it
+            traceback.print_exc()
+            return {"error": str(exc), "followed": 0, "copied": 0, "failed": []}
+
+    def _ra_undo_follow(self, library_log: str) -> dict[str, Any] | None:
+        """Undoing a library build also gives the saves their old names back (the follow journal made by that build)."""
+        try:
+            ra, _installs, saved = self._ra_state()
+            journal_dir = self._ra_dirs(saved)[0]
+            for item in ra.list_undo(journal_dir):
+                if item["kind"] != "follow":
+                    continue
+                data = json.loads(Path(item["journal"]).read_text(encoding="utf-8"))
+                if data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
+                    return ra.undo_relocation(Path(item["journal"]))
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            return {"error": str(exc)}
+        return None
+
+    def retroarch_shared(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/shared {base?}``: the asset folders RetroArch uses against those in ``base`` (default: the
+        folder that holds its playlists / saves now)."""
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        base = _str_arg(body.get("base")) or saved.get("shared_base") or ra.shared_base(sel)
+        return {"base": base, "rows": ra.shared_folders(sel, base)}
+
+    def retroarch_shared_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        base = _str_arg(body.get("base"))
+        rows = ra.shared_folders(sel, base)
+        keys = [k for k in (body.get("keys") or []) if isinstance(k, str)]
+        try:
+            res = ra.apply_shared(sel, rows, keys, self._ra_dirs(saved)[0])
+        except RuntimeError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
+        self._config_update(retroarch={**saved, "shared_base": base})
+        res["rows"] = ra.shared_folders(sel, base)
+        return res
+
+    def retroarch_follow(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/follow {follow: bool}`` remembers whether saves follow ROM renames."""
+        saved = self._ra_state()[2]
+        self._config_update(retroarch={**saved, "follow": _bool_arg(body.get("follow"), True)})
+        return self._ra_info()
+
+    def _ra_bios_target(self, body: dict[str, Any]) -> tuple[Any, Any, Any, list[Path]]:
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        platform = self._resolve_platform(body.get("platform"))
+        dirs: list[Path] = []
+        folder = self._folders().get(platform.name)
+        if folder:
+            dirs.append(Path(folder))
+        extra = _str_arg(body.get("search_dir"))
+        if extra:
+            dirs.append(Path(os.path.expanduser(extra)))
+        return ra, sel, platform, dirs
+
+    def retroarch_bios(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/bios {platform, search_dir?}``: the firmware the system's cores expect, what is in place and
+        where the missing files lie (in the system's ROM folder and ``search_dir``)."""
+        ra, sel, platform, dirs = self._ra_bios_target(body)
+        out = ra.check_bios(sel, platform, dirs)
+        out["platform"] = platform.name
+        out["searched"] = [str(d) for d in dirs]
+        return out
+
+    def retroarch_bios_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        ra, sel, platform, dirs = self._ra_bios_target(body)
+        mode = "copy" if _str_arg(body.get("mode")) == "copy" else "move"
+        wanted = set(body.get("paths") or [])
+        journal_dir = self._ra_dirs(self._ra_state()[2])[0]
+
+        def work(job: Job) -> Any:
+            job.report(0, 0, "Looking for the files...")
+            check = ra.check_bios(sel, platform, dirs)
+            items = [{"target": i["target"], "source": i["source"]} for c in check["cores"] for i in c["firmware"]
+                     if i["status"] == "found" and (not wanted or i["path"] in wanted)]
+            items = list({i["target"]: i for i in items}.values())
+            job.report(0, len(items), "Placing files...")
+            res = ra.apply_bios(sel, items, journal_dir, mode)
+            res["action"] = "retroarch_bios"
+            return res
+
+        return {"job": self.jobs.start("retroarch", work, cancellable=False, platform=platform.name).to_dict()}
+
+    # ---------------------------------------------------------------- collection (v0.2): a whole ROM root
+    def _collection_cfg(self, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The saved collection settings, normalised: ``root, dest, mode, sidecars, systems{name:{path, enabled,
+        own_rules}}, global{rule fields}, last{dest, runs{name:{dest, run}}}``."""
+        cfg = self._config() if cfg is None else cfg
+        raw = cfg.get("collection") if isinstance(cfg.get("collection"), dict) else {}
+        known = {p.name for p in _mod("platforms").list_platforms()}
+        systems: dict[str, dict[str, Any]] = {}
+        for name, entry in (raw.get("systems") if isinstance(raw.get("systems"), dict) else {}).items():
+            if name in known and isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                systems[name] = {"path": entry["path"], "enabled": bool(entry.get("enabled", True)),
+                                 "own_rules": bool(entry.get("own_rules", False))}
+        mode = raw.get("mode")
+        return {"root": str(raw.get("root") or ""), "dest": str(raw.get("dest") or ""),
+                "mode": mode if mode in _mod("libexport").MODES else "auto", "sidecars": bool(raw.get("sidecars")),
+                "sync": bool(raw.get("sync")), "systems": systems, "global": _mod("collection").clean_global(raw.get("global") or {}),
+                "last": raw.get("last") if isinstance(raw.get("last"), dict) else {}}
+
+    def _collection_save(self, **changes: Any) -> dict[str, Any]:
+        def mutate(cfg: dict[str, Any]) -> None:
+            cur = cfg.get("collection") if isinstance(cfg.get("collection"), dict) else {}
+            cur.update(changes)
+            cfg["collection"] = cur
+        try:
+            _mod("paths").update_config(mutate)
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save the settings: {exc}") from None
+        return self._collection_cfg()
+
+    def _collection_info(self) -> dict[str, Any]:
+        library = self._library_mod()
+        labels = self._rule_labels()
+        tags = getattr(library, "tags", None) or _optional_mod("tags")
+        cfg = self._collection_cfg()
+        shown = library.LibraryProfile.from_dict(cfg["global"], library.LibraryProfile())
+        return {**cfg, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
+                "rules": [{"key": k, "label": labels.get(k, k)} for k in self._rule_keys()],
+                "languages": dict(getattr(tags, "LANGUAGES", {}) or {}),
+                "regions": list(tags.region_order(shown.region_priority)),
+                "keep_flags": [{"id": e["id"], "label": e["label"]} for e in library.rule_catalog("tosec")
+                               if e.get("kind") == "keep_flag"],
+                "platforms": [{"name": p.name, "hint": p.folder_hint, "source": getattr(p, "source", "")}
+                              for p in _mod("platforms").list_platforms()]}
+
+    def collection_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        return self._collection_info()
+
+    def collection_detect(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/detect {root}``: find the system folders in a ROM root and remember the root. A system
+        the user already set up keeps its choices while its folder is still inside the root."""
+        root = self._validate_dir(_str_arg(body.get("root")))
+        saved = self._collection_cfg()["systems"]
+        systems: dict[str, dict[str, Any]] = {}
+        for found in _mod("collection").detect_systems(root, _mod("platforms").list_platforms()):
+            old = saved.get(found["platform"])
+            if old and Path(old["path"]).is_dir() and str(root) in (old["path"], *map(str, Path(old["path"]).parents)):
+                systems[found["platform"]] = old
+            else:
+                systems[found["platform"]] = {"path": found["path"], "enabled": found["found"], "own_rules": False}
+        self._collection_save(root=str(root), systems=systems)
+        return self._collection_info()
+
+    def collection_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/save``: any of ``dest, mode, sidecars, systems, global`` (``global`` replaces the rules)."""
+        changes: dict[str, Any] = {}
+        if "dest" in body:
+            changes["dest"] = _str_arg(body.get("dest"))
+        if "mode" in body:
+            if _str_arg(body.get("mode")) not in _mod("libexport").MODES:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown transfer mode: {body.get('mode')}")
+            changes["mode"] = _str_arg(body.get("mode"))
+        if "sidecars" in body:
+            changes["sidecars"] = _bool_arg(body.get("sidecars"))
+        if "sync" in body:
+            changes["sync"] = _bool_arg(body.get("sync"))
+        if "global" in body:
+            if not isinstance(body["global"], dict):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "global must be an object")
+            changes["global"] = _mod("collection").clean_global(body["global"])
+        if "systems" in body:
+            known = {p.name for p in _mod("platforms").list_platforms()}
+            if not isinstance(body["systems"], dict) or not set(body["systems"]) <= known:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "systems must map known system names to settings")
+            current = self._collection_cfg()["systems"]
+            for name, entry in body["systems"].items():
+                if not isinstance(entry, dict):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "each system needs an object")
+                merged = {**current.get(name, {"path": "", "enabled": True, "own_rules": False}),
+                          **{k: entry[k] for k in ("path", "enabled", "own_rules") if k in entry}}
+                merged["path"], merged["enabled"], merged["own_rules"] = (
+                    _str_arg(merged["path"]), bool(merged["enabled"]), bool(merged["own_rules"]))
+                current[name] = merged
+            changes["systems"] = current
+        if "root" in body:
+            changes["root"] = _str_arg(body.get("root"))
+        self._collection_save(**changes)
+        return self._collection_info()
+
+    def _collection_targets(self, cfg: dict[str, Any]) -> tuple[Path, Path, list[tuple[Any, dict[str, Any], str]]]:
+        """``(root, dest, [(platform, system settings, destination folder name)])`` of the enabled systems; raises a 400
+        when the settings cannot be used."""
+        if not cfg["root"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM root folder first.", "no_root")
+        root = self._validate_dir(cfg["root"])
+        if not cfg["dest"].strip():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder to build the collection in.", "no_destination")
+        dest = Path(os.path.abspath(os.path.expanduser(cfg["dest"])))
+        problem = _mod("collection").check_folders(root, dest)
+        if problem:
+            raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
+        picked: list[tuple[Any, dict[str, Any], str]] = []
+        used: set[str] = set()
+        for plat in _mod("platforms").list_platforms():
+            entry = cfg["systems"].get(plat.name)
+            if not entry or not entry["enabled"] or not entry["path"].strip():
+                continue
+            name = Path(entry["path"]).name or plat.folder_hint
+            if name.casefold() in used:
+                name = plat.folder_hint or plat.name
+            used.add(name.casefold())
+            picked.append((plat, entry, name))
+        if not picked:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "No system is switched on. Detect the folders and tick the systems to build.",
+                           "no_systems")
+        return root, dest, picked
+
+    def _collection_run(self, job: Job, apply: bool, allow_mass: bool = False) -> dict[str, Any]:
+        """Scan, plan and (apply) export every enabled system, one after the other; a failing system is reported and the
+        others go on."""
+        cfg = self._collection_cfg()
+        root, dest, picked = self._collection_targets(cfg)
+        libexport, collection = _mod("libexport"), _mod("collection")
+        rows: list[dict[str, Any]] = []
+        runs: dict[str, dict[str, Any]] = {}
+        for i, (plat, entry, name) in enumerate(picked):
+            if job.cancel.is_set():
+                break
+            row: dict[str, Any] = {"platform": plat.name, "path": entry["path"], "dest": str(dest / name),
+                                   "own_rules": entry["own_rules"], "status": "ok"}
+            rows.append(row)
+            job.report(i, len(picked), f"{plat.name}: scanning")
+            folder = Path(entry["path"])
+            if not folder.is_dir():
+                row.update(status="missing", error="The folder does not exist.")
+                continue
+            try:
+                state = self._run_scan(job, folder.resolve(), plat, cancellable=True, keep=False)
+                if state is None:
+                    break
+                job.report(i, len(picked), f"{plat.name}: choosing what to keep")
+                prof = self._profile(plat) if entry["own_rules"] else collection.effective_profile(plat, cfg["global"])
+                plan = self._make_library_plan(state, prof, False, not self._is_dc(state))
+                ep = libexport.plan_export(plan, state.root, dest / name, cfg["mode"], cfg["sidecars"], cfg["sync"])
+                row.update(files=len(ep.items), counts=ep.counts(), mass_removal=ep.mass_removal(),
+                           removals=[{"rel": r.rel, "skip": r.skip} for r in ep.removals[:20]], bytes_copy=ep.bytes_to_copy(),
+                           bytes_linked=ep.bytes_linked(), playlists=len([p for p in ep.playlists if p.action == "write"]),
+                           pending=ep.pending(), notes=list(ep.notes),
+                           conflicts=[{"rel": t.rel, "reason": t.reason} for t in ep.items if t.action == "conflict"][:20],
+                           unmatched=sum(1 for op in plan.ops if getattr(op, "unmatched", False)))
+                if apply and ep.mass_removal() and not allow_mass:
+                    row.update(status="needs_confirm", error=f"This sync would remove {len(ep.to_remove())} of the "
+                               f"{ep.owned_total} files built before - not done. Check the rules and the source, then confirm.")
+                    continue
+                if apply and ep.pending():
+                    free = shutil.disk_usage(_existing_parent(ep.dest)).free
+                    if ep.bytes_to_copy() > free:
+                        row.update(status="no_space", error=f"Not enough free space ({ep.bytes_to_copy()} needed, {free} free).")
+                        continue
+                    job.report(i, len(picked), f"{plat.name}: building")
+                    res = libexport.apply_export(
+                        ep, progress=lambda d, t, n, _p=plat.name: job.report(message=f"{_p}: {n}" if n else f"{_p}: building"),
+                        cancel=job.cancel)
+                    row["result"] = {k: res[k] for k in ("created", "copied", "linked", "symlinked", "playlists", "skipped",
+                                                         "replaced", "removed")}
+                    row["failed"] = res["failed"][:20]
+                    follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy",
+                                             {"collection": str(dest)})
+                    if follow:
+                        row["saves"] = {k: follow.get(k) for k in ("copied", "failed", "conflicts", "skipped_running", "error")}
+                    if res["run"] is not None:
+                        runs[plat.name] = {"dest": str(ep.dest), "run": res["run"],
+                                           **({"follow": follow["journal"]} if follow and follow.get("journal") else {})}
+                    if res["cancelled"]:
+                        break
+            except ApiError as exc:
+                row.update(status="error", error=exc.message)
+            except libexport.ExportError as exc:
+                row.update(status="error", error=str(exc))
+            except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
+                traceback.print_exc()
+                row.update(status="error", error=str(exc) or type(exc).__name__)
+            finally:
+                state = None
+        total = {k: sum(r.get(k, 0) for r in rows) for k in ("files", "bytes_copy", "bytes_linked", "pending", "playlists")}
+        total["conflicts"] = sum(len(r.get("conflicts", ())) for r in rows)
+        total["remove"] = sum((r.get("counts") or {}).get("remove", 0) for r in rows)
+        total["replace"] = sum((r.get("counts") or {}).get("replace", 0) for r in rows)
+        free = shutil.disk_usage(_existing_parent(dest)).free
+        out = {"action": "collection_apply" if apply else "collection_plan", "root": str(root), "dest": str(dest),
+               "mode": cfg["mode"], "sync": cfg["sync"], "systems": rows, "totals": total, "free": free,
+               "enough_space": total["bytes_copy"] <= free, "cancelled": job.cancel.is_set()}
+        if apply:
+            previous = cfg["last"].get("runs") if cfg["last"].get("dest") == str(dest) else {}
+            if runs:
+                self._collection_save(last={"dest": str(dest), "runs": runs})
+            out["runs"] = runs or previous
+        return out
+
+    def collection_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        self._collection_targets(self._collection_cfg())                  # a 400 before the job starts
+        return {"job": self.jobs.start("collection", lambda job: self._collection_run(job, False)).to_dict()}
+
+    def collection_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        self._collection_targets(self._collection_cfg())
+        allow = _bool_arg(body.get("allow_mass_removal"))
+        return {"job": self.jobs.start("collection", lambda job: self._collection_run(job, True, allow)).to_dict()}
+
+    def collection_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/undo``: take back the last collection build (the run each system got in it)."""
+        libexport = _mod("libexport")
+        runs = (self._collection_cfg()["last"].get("runs") or {})
+        if not runs:
+            raise ApiError(HTTPStatus.CONFLICT, "There is no collection build to undo.", "nothing_to_undo")
+        removed, restored, left, errors = 0, 0, [], []
+        for name, rec in runs.items():
+            try:
+                res = libexport.undo_run(Path(rec["dest"]), int(rec["run"]))
+                if rec.get("follow") and Path(rec["follow"]).is_file():
+                    try:
+                        _mod("retroarch").undo_relocation(Path(rec["follow"]))        # the copied saves go again
+                    except Exception:  # noqa: BLE001 - e.g. RetroArch is running: the saves stay, harmless
+                        traceback.print_exc()
+                removed += res["removed"]
+                restored += res.get("restored", 0)
+                left += [{"system": name, **x} for x in res["skipped"]]
+            except libexport.ExportError as exc:
+                errors.append({"system": name, "error": str(exc)})
+        self._collection_save(last={})
+        return {"removed": removed, "restored": restored, "skipped": left, "errors": errors}
+
+    def library_export_runs(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``GET /api/library/export/runs?dest=``: the builds recorded in a destination folder."""
+        dest = _str_arg(query.get("dest"))
+        if not dest:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "dest is required")
+        return {"dest": dest, "runs": _mod("libexport").list_runs(Path(dest))}
+
+    def library_export_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/library/export/undo``: ``{dest, run?}`` removes what a build put in the destination."""
+        dest = _str_arg(body.get("dest"))
+        if not dest:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "dest is required")
+        libexport = _mod("libexport")
+        run = body.get("run")
+        try:
+            return libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
+        except libexport.ExportError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, str(exc), "nothing_to_undo")
 
     def convert_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
@@ -3233,6 +3865,25 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/library/vanished"): App.library_vanished,
     ("POST", "/api/library/apply"): App.library_apply,
     ("POST", "/api/library/undo"): App.library_undo,
+    ("GET", "/api/library/export/runs"): App.library_export_runs,
+    ("GET", "/api/retroarch"): App.retroarch_get,
+    ("POST", "/api/retroarch/select"): App.retroarch_select,
+    ("POST", "/api/retroarch/plan"): App.retroarch_plan,
+    ("POST", "/api/retroarch/apply"): App.retroarch_apply,
+    ("POST", "/api/retroarch/undo"): App.retroarch_undo,
+    ("POST", "/api/retroarch/follow"): App.retroarch_follow,
+    ("POST", "/api/retroarch/shared"): App.retroarch_shared,
+    ("POST", "/api/retroarch/shared/apply"): App.retroarch_shared_apply,
+    ("POST", "/api/retroarch/bios"): App.retroarch_bios,
+    ("POST", "/api/retroarch/bios/apply"): App.retroarch_bios_apply,
+    ("GET", "/api/collection"): App.collection_get,
+    ("POST", "/api/collection/detect"): App.collection_detect,
+    ("POST", "/api/collection/save"): App.collection_save,
+    ("POST", "/api/collection/plan"): App.collection_plan,
+    ("POST", "/api/collection/apply"): App.collection_apply,
+    ("POST", "/api/collection/undo"): App.collection_undo,
+    ("POST", "/api/library/export/settings"): App.library_export_settings,
+    ("POST", "/api/library/export/undo"): App.library_export_undo,
     ("POST", "/api/folders"): App.folders_save,
     ("POST", "/api/platforms/options"): App.platform_options,
     ("GET", "/api/fs/list"): App.fs_list,

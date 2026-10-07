@@ -2,6 +2,7 @@
 Verify fully, undo - on synthetic discs (see chdtestlib)."""
 
 from __future__ import annotations
+import dataclasses
 
 import contextlib
 import hashlib
@@ -391,7 +392,13 @@ class LibraryTest(unittest.TestCase):
         w.chd("Delta (USA) (Demo)", "delta/d.chd")
         w.chd("Big Game (USA) (Disc 1)", "big1/b1.chd", ["b1.state"])
         w.chd("Big Game (USA) (Disc 2)", "big2/b2.chd", ["b2.state"])
-        self.profile = library.default_profile(w.platform())
+        # these tests are about the language exclusion; the "keep what only exists in another language" default has its own test
+        self.profile = dataclasses.replace(library.default_profile(w.platform()), keep_other_language=False)
+
+    def test_a_game_that_only_exists_in_another_language_is_kept_by_default(self) -> None:
+        c = self.codes(self.plan(library.default_profile(self.w.platform())))
+        self.assertEqual(c["Gamma (Japan)"], "kept")
+        self.assertEqual(c["Delta (USA) (Demo)"], "excluded")
 
     def plan(self, profile=None, **kw):
         return dreamcast.plan_library(self.w.scan(), profile or self.profile, **kw)

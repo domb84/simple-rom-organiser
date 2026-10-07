@@ -2153,3 +2153,44 @@ Not done: no real ROM set was scanned (the checks are the real DATs plus generat
 
 **Not done:** Wii (partition data is stored decrypted without hashes: rebuilding it means recomputing the H0-H3 hash tree and AES-encrypting with the partition key, which needs OpenSSL's libcrypto through ctypes), WIA, GCZ, CISO, NKit; matching a GameCube game by the ID in the RVZ header (Redump's DAT has no serials).
 
+
+# Amendment 25 - Build the library in another folder (v0.2)
+
+`romorg/libexport.py` is a second *apply stage* for the unchanged library plan. `plan_export(plan, root, dest, mode)`
+derives the kept files from the plan's ops (see `kept_files`) and the destination path from the in-place target;
+`apply_export` transfers them (hard link / copy / symlink, `.part` + `os.replace`) and records every created file
+and folder in `<dest>/.romorg-library/library.sqlite`; `undo_run` removes only what is still unchanged. The server
+adds `export_to` / `export_mode` / `export_sidecars` to `/api/library/plan|apply` and the `/api/library/export/*`
+endpoints; `library_export` in `config.json` remembers the choice. The source is read only, so no re-scan follows.
+The plan for ROM roots with global settings is `docs/V0_2_PLAN.md`.
+
+
+# Amendment 26 - Collection: a ROM root as one library (v0.2)
+
+`romorg/collection.py` finds the system folders of a ROM root and merges the collection's global rule fields with a
+system's defaults (`effective_profile`). The server job `collection` runs, per enabled system, a scan that does not
+replace the current one (`_run_scan(keep=False)`), `_make_library_plan` (the plan builder split out of `_library_plan`) and
+the Amendment 25 export into `<dest>/<folder>/`. Endpoints: `/api/collection` (+ `/detect`, `/save`, `/plan`, `/apply`,
+`/undo`); settings in `config.json["collection"]`. The UI is the `#/collection` view. Details: `docs/V0_2_PLAN.md`.
+
+
+# Amendment 27 - Sync (v0.2)
+
+`libexport.plan_export(sync=True)` adds `Removal`s and `replace` transfers from the manifest; `apply_export` performs
+them after the transfers, re-checking each file, and records removals in the manifest's `removed` table so `undo_run` can
+put them back. Guards: an empty plan never removes anything; a mass removal needs `allow_mass`. `export_sync` /
+`allow_mass_removal` on `/api/library/plan|apply`, `sync` in the collection settings. See `docs/V0_2_PLAN.md`.
+
+
+# Amendment 28 - RetroArch saves and config (v0.2)
+
+`romorg/retroarch.py`: `detect_installs`, `read_cfg` / `settings_of` / `write_cfg` (key-preserving edit with a timestamped backup),
+`plan_relocation` / `apply_relocation` / `undo_relocation` (files move by hard link + unlink or rename, never over an existing
+file; one JSON journal per run in `<data dir>/retroarch-undo/`; optional zip backup), `is_running`, `override_warnings`.
+Server: `/api/retroarch` (+ `/select`, `/plan`, `/apply` job, `/undo`), settings in `config.json["retroarch"]`.
+
+Stages 2 and 3: `plan_follow` / `apply_follow` rename (in place) or copy (builds elsewhere, collections) the files whose content name
+matches a renamed game, keeping each core folder; the journal (`kind: follow`, `library_log`) is undone with the library build.
+`core_infos` / `cores_for_platform` / `check_bios` / `apply_bios` read the cores' `.info` firmware lists (`firmwareN_path`, `_opt`,
+md5 from `notes`) and fill the system folder from the system's ROM folder. Endpoints `/api/retroarch/follow`, `/bios`, `/bios/apply`.
+

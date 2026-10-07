@@ -769,8 +769,25 @@ class OnePerGame(unittest.TestCase):
         self.assertEqual(self.kept(names), ["G (USA)"])
         prof = replace(library.default_profile(GBA), languages=("Ja",))
         self.assertEqual(self.kept(names, prof), ["G (Japan)"])
-        sel, by = ni_run(["G (Europe) (Fr,De)"])
+        off = replace(library.default_profile(GBA), keep_other_language=False)
+        sel, by = ni_run(["G (Europe) (Fr,De)"], off)
         self.assertEqual(by["G (Europe) (Fr,De)"].codes, ("language",))
+
+    def test_a_game_that_only_exists_in_other_languages_is_kept(self) -> None:
+        sel, by = ni_run(["Only JP (Japan)", "Only JP (Japan) (Rev 1)", "Both (Japan)", "Both (USA)"])
+        self.assertEqual(by["Only JP (Japan)"].action, "superseded")        # one per game: the newest revision wins
+        self.assertEqual(by["Only JP (Japan) (Rev 1)"].action, "keep")
+        self.assertIn("no version in your languages", by["Only JP (Japan) (Rev 1)"].reason)
+        self.assertEqual(by["Both (USA)"].action, "keep")
+        self.assertEqual(by["Both (Japan)"].codes, ("language",))          # an English version exists: unchanged
+
+    def test_other_language_rule_follows_the_whole_dat_not_the_files_you_own(self) -> None:
+        owned = ni_items(["G (Japan)"], GBA_DAT)
+        dat = ni_items(["G (Japan)", "G (USA)"], GBA_DAT)
+        prof = library.default_profile(GBA)
+        lg = library.language_games(dat, prof, GBA)
+        self.assertEqual(library.select(owned, prof, GBA, lang_games=lg).decisions[owned[0].key].codes, ("language",))
+        self.assertEqual(library.select(owned, prof, GBA).decisions[owned[0].key].action, "keep")   # no DAT given: files only
 
     def test_distinct_products_are_not_merged(self) -> None:
         names = ["P (USA)", "P (USA) (Unl)", "P (USA) (Aftermarket)", "P (Europe) (Unl)", "P (USA) (Tengen)",
