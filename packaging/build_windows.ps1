@@ -12,9 +12,18 @@ $root = Split-Path -Parent $PSScriptRoot
 $version = (Select-String -Path "$root\romorg\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
 $cache = "$root\packaging\.cache"; New-Item -ItemType Directory -Force $cache | Out-Null
 $zipName = "python-$PyVersion-embed-amd64.zip"
-if (-not (Test-Path "$cache\$zipName")) {
-    Invoke-WebRequest "https://www.python.org/ftp/python/$PyVersion/$zipName" -OutFile "$cache\$zipName" -UseBasicParsing
+# SHA-256 of the python.org embeddable zip, per version (a version not listed here is used unchecked, with a warning)
+$pins = @{ "3.14.8" = "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310" }
+$zipOk = {
+    if (-not (Test-Path "$cache\$zipName")) { return $false }
+    if (-not $pins.ContainsKey($PyVersion)) { return $true }
+    return (Get-FileHash "$cache\$zipName" -Algorithm SHA256).Hash -eq $pins[$PyVersion]
 }
+if (-not (& $zipOk)) {
+    Invoke-WebRequest "https://www.python.org/ftp/python/$PyVersion/$zipName" -OutFile "$cache\$zipName" -UseBasicParsing
+    if (-not (& $zipOk)) { throw "$zipName does not match its pinned SHA-256" }
+}
+if (-not $pins.ContainsKey($PyVersion)) { Write-Warning "no pinned SHA-256 for $zipName" }
 
 $stage = "$root\build\windows\Simple_ROM_Organiser"
 if (Test-Path "$root\build\windows") { Remove-Item -Recurse -Force "$root\build\windows" }
@@ -51,7 +60,7 @@ if (-not $NoFlac) {
     Copy-Item (Join-Path (Split-Path $flac) "mingw-w64-runtime-COPYING") "$stage\licenses\mingw-w64-runtime-COPYING.txt"
 }
 Get-ChildItem "$stage\app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
-& "$stage\python\python.exe" -m compileall -q --invalidation-mode unchecked-hash "$stage\app\romorg"
+& "$stage\python\python.exe" -m compileall -q -d "app\romorg" --invalidation-mode unchecked-hash "$stage\app\romorg"
 if ($LASTEXITCODE) { throw "compileall failed" }
 
 # Launcher: no console window; output goes to %LOCALAPPDATA%\simple-rom-organiser\app.log

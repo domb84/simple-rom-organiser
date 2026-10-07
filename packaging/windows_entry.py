@@ -46,7 +46,11 @@ if len(sys.argv) > 1 and sys.argv[1] == "--self-check":
         from romorg import paths
 
         report = str(paths.data_dir() / "selfcheck.log")
-    stream = open(report, "w", encoding="utf-8", buffering=1) if report else sys.stdout
+    try:
+        stream = open(report, "w", encoding="utf-8", buffering=1) if report else sys.stdout
+    except OSError:
+        # an unwritable --report path: a windowed exe would show a blocking fatal-error box, so exit instead
+        sys.exit(2)
     sys.stdout = sys.stderr = stream
     from romorg import selfcheck
 

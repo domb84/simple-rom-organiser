@@ -186,7 +186,8 @@ find "$SITE/romorg" -name '*.py[co]' -delete
 if [[ "$PRECOMPILE" == "1" ]]; then
   log "Precompiling bytecode"
   # unchecked-hash: the image is read-only, so never stat sources to revalidate.
-  "$PY" -I -m compileall -q -j 0 --invalidation-mode unchecked-hash "$STDLIB" >/dev/null
+  # -d: recorded source paths (tracebacks) start with a fixed prefix, not the build machine's directory.
+  "$PY" -I -m compileall -q -j 0 -d "/usr/lib/python$PYVER" --invalidation-mode unchecked-hash "$STDLIB" >/dev/null
 fi
 
 # ---------------------------------------------------------------- libFLAC (not in git)
