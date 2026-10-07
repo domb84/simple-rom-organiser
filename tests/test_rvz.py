@@ -230,6 +230,19 @@ class RefusalTest(unittest.TestCase):
             rvz.Rvz(self.dir / "x.rvz")
         self.assertFalse(rvz.is_rvz(self.dir / "missing.rvz"))
 
+    def test_implausible_sizes_are_refused_before_any_table_is_read(self) -> None:
+        p = self.dir / "ok.rvz"
+        R.build_rvz(p, self.iso, self.runs, compression=R.NONE)
+        with mock.patch.object(rvz, "MAX_ISO", len(self.iso) - 1), self.assertRaises(rvz.RvzError):
+            rvz.Rvz(p)
+        with mock.patch.object(rvz, "MAX_CHUNK", CHUNK // 2), self.assertRaises(rvz.RvzError):
+            rvz.Rvz(p)
+        with mock.patch.object(rvz.Rvz, "_table", side_effect=AssertionError("read a table")):
+            with mock.patch.object(rvz, "MAX_ISO", 1):
+                with self.assertRaises(rvz.RvzError):
+                    rvz.Rvz(p)
+        rvz.Rvz(p).close()
+
     def test_wii_wia_and_damage(self) -> None:
         R.build_rvz(self.dir / "wii.rvz", self.iso, self.runs, compression=R.NONE, disc_type=2)
         with self.assertRaises(rvz.RvzUnsupported) as cm:
@@ -331,6 +344,17 @@ class PlatformTest(unittest.TestCase):
                       + [Path(m.entry.path).name for m in r.matched])
         r = run(())
         self.assertNotIn("a.rvz", [Path(m.entry.path).name for m in r.matched])
+
+    def test_a_plain_scan_does_not_poison_the_container_scan(self) -> None:
+        cache = self.base / "hash.db"
+        plain = scanner.scan(self.root, platforms.load_platform_dats(self.plat)[0], containers=(),
+                             use_cache=True, cache_path=cache)
+        self.assertNotIn("a.rvz", [m.entry.path.name for m in plain.matched])
+        res = self.scan(use_cache=True, cache_path=cache)
+        self.assertIn("a.rvz", [m.entry.path.name for m in res.matched])
+        again = scanner.scan(self.root, platforms.load_platform_dats(self.plat)[0], containers=(),
+                             use_cache=True, cache_path=cache)
+        self.assertNotIn("a.rvz", [m.entry.path.name for m in again.matched])
 
     def test_the_platform(self) -> None:
         p = self.plat
