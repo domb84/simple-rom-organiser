@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
+from unittest import mock
 
 from romorg import libexport
 
@@ -222,6 +226,130 @@ class Sync(Export):
         libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True))
         self.assertFalse((self.dest / "Sub").exists())
         self.assertTrue((self.dest / libexport.MANIFEST_DIR).exists())
+
+
+def _other_drive():
+    """``os.replace`` / ``os.rename`` as they behave when the target is on another drive."""
+    def refuse(src, dst, *a, **k):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+    stack = contextlib.ExitStack()
+    real_replace = os.replace
+
+    def replace(src, dst, *a, **k):
+        if str(src).endswith(libexport.PART_SUFFIX):         # the finished copy gets its name (same folder)
+            return real_replace(src, dst, *a, **k)
+        refuse(src, dst)
+
+    stack.enter_context(mock.patch.object(libexport.os, "replace", replace))
+    stack.enter_context(mock.patch.object(libexport.sortroot.os, "rename", refuse))
+    return stack
+
+
+class MoveSafety(unittest.TestCase):
+    """Move: a rename on one drive, copy + delete only to another drive; a file that cannot be moved is not copied instead."""
+    setUp = Export.setUp
+
+    def files(self, folder: Path) -> list:
+        return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file() and libexport.MANIFEST_DIR not in p.parts)
+
+    def test_a_file_another_program_holds_open_is_not_copied_instead(self) -> None:
+        ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
+        with open(self.root / "a.gba", "rb"), mock.patch.object(libexport.sortroot, "RETRY_SLEEP", 0.01):
+            res = libexport.apply_export(ep)
+        if os.name == "nt":                                    # Windows: the open file can be neither renamed nor deleted
+            self.assertEqual((res["moved"], res["copied"]), (1, 0))
+            self.assertEqual([f["rel"] for f in res["failed"]], ["Game A.gba"])
+            self.assertTrue((self.root / "a.gba").is_file())
+            self.assertEqual(self.files(self.dest), ["b.gba"], "the held file must not be in two places")
+            again = libexport.plan_export(self.plan, self.root, self.dest, "move")       # free now: the next build takes it
+            self.assertEqual(libexport.apply_export(again)["moved"], 1)
+            self.assertFalse((self.root / "a.gba").exists())
+        else:
+            self.assertEqual((res["moved"], res["failed"]), (2, []))
+
+    def test_a_rename_that_fails_for_another_reason_than_another_drive_is_not_turned_into_a_copy(self) -> None:
+        def denied(src, dst, *a, **k):
+            raise PermissionError(errno.EACCES, "Permission denied", str(src))
+
+        ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
+        with mock.patch.object(libexport.os, "replace", denied):
+            res = libexport.apply_export(ep)
+        self.assertEqual((res["moved"], res["copied"], len(res["failed"])), (0, 0, 2))
+        self.assertEqual(self.files(self.dest), [])
+        self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
+        self.assertEqual(libexport.list_runs(self.dest), [])
+
+    def test_to_another_drive_the_file_is_copied_then_removed_and_undo_brings_it_back(self) -> None:
+        os.chmod(self.root / "a.gba", stat.S_IREAD)             # read-only: Windows refuses a plain delete
+        self.addCleanup(lambda: [os.chmod(p, stat.S_IREAD | stat.S_IWRITE) for p in (self.root / "a.gba", self.dest / "Game A.gba") if p.exists()])
+        with _other_drive():
+            ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
+            res = libexport.apply_export(ep)
+            self.assertEqual((res["moved"], res["copied"], res["failed"]), (2, 0, []))
+            self.assertEqual(self.files(self.root), ["c.gba"])
+            self.assertEqual((self.dest / "Game A.gba").read_bytes(), b"A" * 1000)
+            out = libexport.undo_run(self.dest)
+        self.assertEqual((out["removed"], out["skipped"]), (2, []))
+        self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
+        self.assertEqual((self.root / "a.gba").read_bytes(), b"A" * 1000)
+        self.assertEqual(self.files(self.dest), [])
+
+    def test_to_another_drive_an_original_that_cannot_be_removed_is_recorded_as_a_copy_and_reported(self) -> None:
+        real = os.unlink
+
+        def unlink(p, *a, **k):
+            if Path(p) == self.root / "a.gba":
+                raise PermissionError(errno.EACCES, "in use", str(p))
+            return real(p, *a, **k)
+
+        with _other_drive(), mock.patch.object(libexport.sortroot.os, "unlink", unlink), mock.patch.object(libexport.sortroot, "RETRY_SLEEP", 0):
+            res = libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "move"))
+        self.assertEqual((res["moved"], res["copied"]), (1, 1))
+        self.assertEqual([f["rel"] for f in res["failed"]], ["Game A.gba"])
+        self.assertIn("could not be removed", res["failed"][0]["error"])
+        out = libexport.undo_run(self.dest)                       # the copy goes, the moved one returns: as it was
+        self.assertEqual(out["skipped"], [])
+        self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
+        self.assertEqual(self.files(self.dest), [])
+
+
+@unittest.skipUnless(os.environ.get("ROMORG_TEST_OTHER_DRIVE"), "set ROMORG_TEST_OTHER_DRIVE to a folder on another drive")
+class RealOtherDrive(unittest.TestCase):
+    def setUp(self) -> None:
+        Export.setUp(self)
+        self._far = tempfile.TemporaryDirectory(dir=os.environ["ROMORG_TEST_OTHER_DRIVE"])
+        self.addCleanup(self._far.cleanup)
+        self.dest = Path(self._far.name) / "lib"
+        self.assertNotEqual(os.stat(self.root).st_dev, os.stat(self._far.name).st_dev, "not another drive")
+
+    def test_move_and_undo(self) -> None:
+        os.chmod(self.root / "a.gba", stat.S_IREAD)
+        self.addCleanup(lambda: [os.chmod(p, stat.S_IREAD | stat.S_IWRITE) for p in (self.root / "a.gba", self.dest / "Game A.gba") if p.exists()])
+        ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
+        self.assertFalse(ep.same_fs)
+        self.assertEqual(ep.bytes_to_copy(), 1500)
+        res = libexport.apply_export(ep)
+        self.assertEqual((res["moved"], res["copied"], res["failed"]), (2, 0, []))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["c.gba"])
+        self.assertEqual((self.dest / "Game A.gba").read_bytes(), b"A" * 1000)
+        out = libexport.undo_run(self.dest)
+        self.assertEqual((out["removed"], out["skipped"]), (2, []))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["a.gba", "b.gba", "c.gba"])
+        self.assertFalse([p for p in self.dest.rglob("*") if p.is_file() and libexport.MANIFEST_DIR not in p.parts])
+
+    def test_copy_sync_and_cancel(self) -> None:
+        ep = libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True)
+        res = libexport.apply_export(ep, cancel=lambda: (self.dest / "Game A.gba").exists())    # stops after the first file
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(res["created"], 1)
+        self.assertFalse(list(self.dest.rglob("*" + libexport.PART_SUFFIX)))
+        res = libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True))
+        self.assertEqual((res["created"], res["failed"]), (1, []))
+        self.plan.ops = [self.plan.ops[0]]
+        res = libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True))
+        self.assertEqual(res["removed"], 1)
+        self.assertFalse((self.dest / "b.gba").exists())
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["a.gba", "b.gba", "c.gba"])
 
 
 if __name__ == "__main__":

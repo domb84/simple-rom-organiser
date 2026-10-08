@@ -27,14 +27,13 @@ from __future__ import annotations
 
 import dataclasses
 import os
-import shutil
 import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence
 
-from . import meter
+from . import meter, sortroot
 
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
            "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
@@ -408,11 +407,13 @@ def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
         if os.path.lexists(target):
             raise FileExistsError("a file appeared there")
         try:
-            os.replace(src, target)
+            sortroot._retry(os.replace, src, target)    # (Windows: a file held for a moment is tried again)
             tick(t.size)
             return "move"                               # same drive: a rename, nothing is written again
-        except OSError:
-            pass                                        # another drive: copy, check, then remove the original
+        except OSError as exc:
+            if not sortroot._cross_device(exc):
+                raise                                   # e.g. in use by another program: not moved, and NOT copied instead
+            # another drive: copy, check, then remove the original
     done = [0]
 
     def count(n: int) -> None:
@@ -438,7 +439,7 @@ def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
         raise
     if t.action == "move":
         try:
-            os.unlink(src)
+            sortroot.remove_file(src)                   # (Windows: also a read-only original)
             return "move"
         except OSError as exc:
             t.reason = f"copied, but the original could not be removed: {exc}"
@@ -651,7 +652,7 @@ def undo_run(dest: Path, run: Optional[int] = None) -> dict:
                 else:
                     try:
                         Path(src).parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(p), src)
+                        sortroot.move_path(p, Path(src))    # a rename; a copy only back to another drive
                         removed += 1
                         db.execute("DELETE FROM files WHERE path = ?", (rel,))
                     except OSError as exc:
