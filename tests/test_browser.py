@@ -15,6 +15,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

@@ -22,6 +22,7 @@ from dataclasses import replace
 from email.utils import format_datetime
 from pathlib import Path
 from unittest import mock
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 from romorg import autoupdate, library, paths, platforms, ratings, server, tags, totals
 from romorg.datfile import DatFile, Rom

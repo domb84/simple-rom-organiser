@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 from types import ModuleType
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 sys.path.insert(0, os.path.dirname(__file__))
 from chdtestlib import bash_env, find_bash  # noqa: E402

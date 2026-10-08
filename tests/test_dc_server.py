@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from unittest import mock
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 sys.path.insert(0, os.path.dirname(__file__))
 

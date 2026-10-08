@@ -22,6 +22,7 @@ import zlib
 from pathlib import Path
 from unittest import mock
 from xml.sax.saxutils import quoteattr
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 from romorg import convert, kickstart, library, m3u, organiser, paths, platforms, scanner
 

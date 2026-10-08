@@ -20,6 +20,7 @@ import zlib
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
 from romorg import library, platforms, server, totals
 from romorg.datfile import DatFile, Rom

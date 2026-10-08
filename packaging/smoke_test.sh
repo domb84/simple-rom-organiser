@@ -32,6 +32,7 @@ grep -q '^OK    libzstd .*/tools/lib/' <<<"$SELF" \
   || { echo "libzstd was not loaded from the bundle" >&2; exit 1; }
 grep -q '^OK    the scheduler' <<<"$SELF" || { echo "scheduler check missing" >&2; exit 1; }
 grep -q '^OK    the writer ' <<<"$SELF" || { echo "CHD writer check missing" >&2; exit 1; }
+grep -q '^OK    the app is complete' <<<"$SELF" || { echo "a module or a file of the web UI is missing from the package" >&2; exit 1; }
 
 # Minimal environment proves we do not depend on host Python (or its modules).
 # ROMORG_OFFLINE=1: the startup DAT update must not download anything during a smoke test.
@@ -56,6 +57,10 @@ grep -q '"version"' <<<"$STATUS" || { echo "status missing version" >&2; exit 1;
 grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >&2; exit 1; }
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
+# the pages of v0.2 (also checked by packaging/smoke_test.ps1 on Windows)
+for view in view-home view-system view-collection view-retroarch view-chd; do
+  grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
+done
 
 TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$INDEX" | head -n1)"
 if [[ -n "$TOKEN" ]]; then
@@ -82,6 +87,9 @@ if [[ -n "$TOKEN" ]]; then
   grep -q '"native": true' <<<"$CH" || { echo "/api/chdman does not report native FLAC: $CH" >&2; exit 1; }
   grep -q '"writer": "auto"' <<<"$CH" || { echo "/api/chdman does not report the built-in writer: $CH" >&2; exit 1; }
   echo "GET /api/chdman -> built-in writer, native FLAC"
+  grep -q '"rules"' <<<"$(curl -fsS "$URL/api/collection")" || { echo "/api/collection missing" >&2; exit 1; }
+  grep -q '"installs"' <<<"$(curl -fsS "$URL/api/retroarch")" || { echo "/api/retroarch missing" >&2; exit 1; }
+  echo "GET /api/collection, /api/retroarch -> ok"
 fi
 if [[ -n "$TOKEN" ]] && curl -fsS -X POST -H "X-Romorg-Token: $TOKEN" -H 'Content-Type: application/json' \
      -d '{}' "$URL/api/quit" >/dev/null; then
