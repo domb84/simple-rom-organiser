@@ -113,8 +113,7 @@ This is the one run that cannot be done anywhere else: the real RetroArch config
 2. **Scan SNES** (`~/Emulation/roms/snes`). Overview, "Saves (RetroArch)": expect `9 save sets` of the user's two SNES cores
    (`bsnes`, `Snes9x`): 3 with a kept ROM, 4 with a ROM the default rules would archive (Super Mario World (USA), Zelda ALttP
    (Switch Online), Star Fox (Japan), Yoshi's Island (Europe) (En,Fr,De)), 2 without a ROM here (Super Mario Collection (Japan)
-   (Rev 1), Yoshi's Island (USA, Asia) (Rev 1)); on Windows this was "29 save files for 9 games (7 with a ROM here, 0 without, 2
-   unmatched)" in the first pass of the numbers below - report what the Deck says. Browse > Saves lists every set with its
+   (Rev 1), Yoshi's Island (USA, Asia) (Rev 1)); on Windows this was "27 save files for 9 games (7 with a ROM here, 0 without, 2 unmatched)" - report what the Deck says. Browse > Saves lists every set with its
    title; Browse > Games has the Saves column (sort it, use "Games with saves"). The core folders of the user's other systems
    (Flycast, Mupen64Plus-Next, PCSX-ReARMed ...) must not add anything to the SNES numbers.
 3. **Library > Preview** with the default (Keep both ROMs): kept 2,266, excluded 853, superseded 924 (it was 2,262 / 854 / 927
