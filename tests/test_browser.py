@@ -25,6 +25,7 @@ from uifixture import Fixture  # noqa: E402
 
 _browser: Browser | None = None
 _proc: subprocess.Popen | None = None
+_profile = ""            # the browser's throw-away profile folder (removed when the module is done)
 _unavailable = ""
 
 
@@ -36,11 +37,13 @@ def _free_port() -> int:
 
 def _flags(port: int, profile: str) -> list[str]:
     return ["--headless=new", "--no-sandbox", "--disable-gpu", f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile}", "--no-first-run", "about:blank"]
+            f"--user-data-dir={profile}", "--no-first-run",
+            # the test browser stays offline: no component downloads (they also leave folders in the temp folder)
+            "--disable-component-update", "--disable-background-networking", "about:blank"]
 
 
 def setUpModule() -> None:
-    global _browser, _proc, _unavailable
+    global _browser, _proc, _profile, _unavailable
     if os.environ.get("ROMORG_NO_BROWSER"):
         _unavailable = "ROMORG_NO_BROWSER is set"
         return
@@ -49,7 +52,7 @@ def setUpModule() -> None:
         _browser = Browser.connect(int(port))
         return
     port_n = _free_port()
-    profile = tempfile.mkdtemp(prefix="romorg-browser-")
+    profile = _profile = tempfile.mkdtemp(prefix="romorg-browser-")
     cmd = None
     for exe in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser"):
         if shutil.which(exe):
@@ -95,6 +98,14 @@ def tearDownModule() -> None:
         except subprocess.TimeoutExpired:
             _proc.kill()
             _proc.wait()
+    if _profile:
+        # every run made a new profile (30 to 40 MB) and none was ever removed. The browser's helper processes let
+        # go of their files a moment after the main one exits (Windows refuses to delete an open file).
+        for _ in range(20):
+            shutil.rmtree(_profile, ignore_errors=True)
+            if not os.path.exists(_profile):
+                break
+            time.sleep(0.25)
 
 
 class UiTestCase(unittest.TestCase):
@@ -653,6 +664,251 @@ class ConvertDropdownTests(UiTestCase):
         self.idle()
         self.assertFalse(chd.exists())
         self.assertTrue((self.psx / "raw" / "t.bin").is_file())
+        self.no_js_errors()
+
+
+# Runs in the page before its own script: answers some API calls itself (``rules``) and notes every call in
+# ``window.__calls``, so a test can show the page a Windows server, a server without a folder dialog, or a failing one.
+_FETCH_STUB = r"""(() => {
+  const real = window.fetch.bind(window);
+  const rules = %s;
+  window.__calls = [];
+  window.fetch = async (url, opts = {}) => {
+    const u = new URL(url, location.href), method = (opts.method || 'GET').toUpperCase();
+    let sent = null;
+    try { sent = opts.body ? JSON.parse(opts.body) : null; } catch (_) { sent = null; }
+    window.__calls.push({ method, path: u.pathname, body: sent });
+    const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+    for (const r of rules) {
+      if (r.path !== u.pathname || (r.method || 'GET') !== method) continue;
+      if (r.patch) { const res = await real(url, opts); return json(res.status, Object.assign(await res.json(), r.patch)); }
+      if (r.pick) return json(200, { path: r.pick + ((sent || {}).title || '') });
+      return json(r.status || 200, r.body);
+    }
+    return real(url, opts);
+  };
+})()"""
+
+# every "Browse..." button of the UI (the native folder dialog) and the field its answer belongs in
+NATIVE_BUTTONS = {
+    "folder-native-btn": "folder-input", "lib-export-native-btn": "lib-export-dest", "lib-aside-native": "lib-aside-dir",
+    "col-root-native": "col-root", "col-dest-native": "col-dest", "col-aside-native": "col-aside",
+    "ra-custom-native": "ra-custom", "ra-save-native": "ra-save-dir", "ra-state-native": "ra-state-dir",
+    "ra-backup-native": "ra-backup-dir", "ra-shared-native": "ra-shared-base", "ra-bios-native": "ra-bios-search",
+}
+LINUX_ONLY = r"~/|/home/deck|/run/media|Steam Deck|Discover|[Ff]latpak|fusermount|/path/to"
+
+
+class PlatformTests(UiTestCase):
+    """What differs between a Windows server and a Linux one, and what must not: wording, example paths, the folder
+    dialog buttons, the layout of a narrow window. The page learns the platform from ``/api/status`` (``os``)."""
+
+    def stub(self, *rules: dict) -> None:
+        import json
+        self.page.call("Page.addScriptToEvaluateOnNewDocument", source=_FETCH_STUB % json.dumps(list(rules)))
+
+    def show(self, hash_: str) -> None:
+        self.page.eval(f"location.hash = {hash_!r}")
+        self.page.wait(f"location.hash === {hash_!r}")
+        time.sleep(0.5)
+
+    def test_a_windows_server_shows_windows_paths_and_no_linux_wording(self) -> None:
+        self.stub({"path": "/api/status", "patch": {"os": "windows", "dialog_available": True}},
+                  {"path": "/api/chdman", "patch": {"os": "windows"}})
+        self.open("#/collection")
+        self.page.wait("document.getElementById('col-root').placeholder.includes('Emulation')")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.assertEqual(self.page.eval("document.getElementById('col-root').placeholder"), "D:\\Emulation\\roms")
+        self.assertEqual(self.page.eval("document.getElementById('col-dest').placeholder"), "D:\\Emulation\\library")
+        found = []
+        for view in ("#/collection", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
+                     "#/system/commodore-amiga/library", "#/system/sony-playstation/overview"):
+            self.show(view)
+            found += self.page.eval(r"""(() => { const bad = new RegExp(%r), out = [];
+              for (const e of document.querySelectorAll('input[placeholder]')) if (bad.test(e.placeholder)) out.push(e.id + ': ' + e.placeholder);
+              for (const e of document.querySelectorAll('[title]')) if (bad.test(e.title)) out.push('title: ' + e.title);
+              const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+              while (w.nextNode()) if (bad.test(w.currentNode.textContent)) out.push(w.currentNode.textContent.trim().slice(0, 120));
+              return out; })()""" % LINUX_ONLY)
+        self.assertEqual(sorted(set(found)), [])
+        self.assertIn("D:\\Emulation\\roms\\psx", self.page.eval("document.getElementById('folder-input').placeholder"))
+        self.no_js_errors()
+
+    def test_a_linux_server_keeps_its_own_example_paths(self) -> None:
+        self.stub({"path": "/api/status", "patch": {"os": "linux"}}, {"path": "/api/chdman", "patch": {"os": "linux"}})
+        self.open("#/collection")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.assertEqual(self.page.eval("document.getElementById('col-root').placeholder"), "~/Emulation/roms")
+        self.assertEqual(self.page.eval("document.getElementById('col-dest').placeholder"), "~/Emulation/library")
+        self.show("#/system/commodore-amiga/overview")
+        self.assertEqual(self.page.eval("document.getElementById('folder-input').placeholder"), "/run/media/deck/<SD>/roms/amiga")
+        self.show("#/chd")
+        self.page.wait("document.getElementById('chdman-path').placeholder.includes('chdman')")
+        self.assertIn("/path/to/chdman", self.page.eval("document.getElementById('chdman-path').placeholder"))
+        self.no_js_errors()
+
+    def test_every_browse_button_opens_the_dialog_for_its_own_field(self) -> None:
+        ra = self.fx.tmp / "ra"
+        ra.mkdir()
+        (ra / "retroarch.cfg").write_text('savefile_directory = "default"\n')
+        self.stub({"path": "/api/status", "patch": {"dialog_available": True}},
+                  {"path": "/api/fs/pick", "method": "POST", "pick": "X:\\picked\\"},
+                  {"path": "/api/folders", "method": "POST", "body": {"folders": {}}},
+                  {"path": "/api/collection/save", "method": "POST", "status": 400, "body": {"error": "not saved in this test"}})
+        self.open("#/retroarch")
+        self.page.wait("!document.getElementById('view-retroarch').classList.contains('hidden')")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.page.eval(f"(() => {{ const i = document.getElementById('ra-custom'); i.value = {str(ra)!r}; }})()")
+        self.click("#ra-custom-add")
+        self.page.wait("!document.getElementById('ra-change-panel').classList.contains('hidden')")
+        self.show("#/collection")
+        self.show("#/system/commodore-amiga/overview")
+        ids = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...').map(b => b.id).sort()")
+        self.assertEqual(ids, sorted(NATIVE_BUTTONS))                      # no Browse button this test does not know
+        hidden = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...' "
+                                "&& b.classList.contains('hidden')).map(b => b.id)")
+        self.assertEqual(hidden, [])                                       # the server has a dialog: all of them show
+        # every field with a "Folders..." button (the in-app browser) has the native one next to it
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Folders...').length"),
+                         len(NATIVE_BUTTONS))
+        for button, field in NATIVE_BUTTONS.items():
+            with self.subTest(button=button):
+                self.page.eval(f"""(() => {{ window.__calls.length = 0; document.getElementById({field!r}).value = 'start of {field}';
+                    document.getElementById({button!r}).click(); }})()""")
+                self.page.wait(f"document.getElementById({field!r}).value.startsWith('X:')")
+                asked = self.page.eval("window.__calls.filter(c => c.path === '/api/fs/pick')")
+                self.assertEqual(len(asked), 1)
+                self.assertEqual(asked[0]["body"]["start"], f"start of {field}")       # the dialog opens where the field points
+                self.assertTrue(asked[0]["body"]["title"].startswith("Choose"), asked[0])
+                got = self.page.eval(f"document.getElementById({field!r}).value")
+                self.assertEqual(got, "X:\\picked\\" + asked[0]["body"]["title"])
+                others = self.page.eval(f"""{list(NATIVE_BUTTONS.values())!r}.filter(id => id !== {field!r}
+                    && document.getElementById(id).value === {got!r})""")
+                self.assertEqual(others, [])                                           # and only that field got the answer
+        self.no_js_errors()
+
+    def test_browse_buttons_are_hidden_without_a_dialog_and_a_refusal_is_a_message(self) -> None:
+        self.stub({"path": "/api/status", "patch": {"dialog_available": False}},
+                  {"path": "/api/fs/pick", "method": "POST", "status": 409, "body": {"error": "A folder dialog is already open"}})
+        self.open("#/collection")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.show("#/retroarch")
+        shown = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...' "
+                               "&& !b.classList.contains('hidden')).map(b => b.id)")
+        self.assertEqual(shown, [])
+        # a dialog that is already open (HTTP 409): a message, and the field keeps its text
+        self.page.eval("document.getElementById('col-root').value = 'kept'; document.getElementById('col-root-native').click();")
+        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('already open'))")
+        self.assertEqual(self.page.eval("document.getElementById('col-root').value"), "kept")
+        self.assertFalse(self.page.eval("document.getElementById('col-root-native').disabled"))
+        self.no_js_errors()
+
+    def test_a_narrow_window_fits_every_page_and_the_system_list_opens_and_closes(self) -> None:
+        self.open()
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.scan()
+        for width in (700, 420):
+            self.page.call("Emulation.setDeviceMetricsOverride", width=width, height=900, deviceScaleFactor=1, mobile=False)
+            for view in ("#/", "#/collection", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
+                         "#/system/commodore-amiga/library", "#/system/commodore-amiga/browse"):
+                with self.subTest(width=width, view=view):
+                    self.show(view)
+                    over = self.page.eval("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+                    self.assertLessEqual(over, 0, "the page is wider than the window")
+        self.show("#/collection")                                       # a page is open: the list is folded away
+        self.assertEqual(self.page.eval("document.getElementById('shell').dataset.side"), "closed")
+        self.click("#side-toggle")
+        self.page.wait("document.getElementById('shell').dataset.side === 'open'")
+        self.assertEqual(self.page.eval("document.querySelectorAll('.nav-item[data-platform]').length"), 18)
+        last = "[...document.querySelectorAll('.nav-item[data-platform]')].pop()"
+        self.assertTrue(self.page.eval(f"(() => {{ const r = {last}.getBoundingClientRect(); return r.width > 100 && r.right <= innerWidth; }})()"))
+        self.page.eval(f"{last}.click()")                                # picking a system closes the list again
+        self.page.wait("document.getElementById('shell').dataset.side === 'closed' && location.hash.startsWith('#/system/')")
+        self.page.call("Emulation.clearDeviceMetricsOverride")
+        self.no_js_errors()
+
+
+class RobustnessTests(UiTestCase):
+    """Double clicks, failing answers and hostile names: a message, never an exception, never markup."""
+
+    stub = PlatformTests.stub
+
+    def test_a_double_click_on_scan_starts_one_job_and_a_single_step_shows_its_percentage(self) -> None:
+        self.stub()
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
+            const b = document.getElementById('col-scan-btn'); b.click(); b.click(); b.click(); }})()""")
+        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
+        self.assertEqual(self.page.eval("window.__calls.filter(c => c.path === '/api/collection/scan').length"), 1)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#toasts .toast.error')].map(t => t.textContent)"), [])
+        self.page.wait("document.querySelector('#job-bar .job-msg')?.textContent === 'Finished'")
+        self.assertNotIn("/ 1", self.page.eval("document.querySelector('#job-bar .job-count').textContent"))   # not "1 / 1"
+        self.assertEqual(self.page.eval("document.querySelector('#job-bar .progress-bar').style.width"), "100%")
+        self.assertRegex(self.page.eval("document.querySelector('#job-bar .job-time').textContent"), r"^took \d+s · [\d.]+ KB scanned$")
+        self.no_js_errors()
+
+    def test_a_failing_server_gives_messages_not_exceptions(self) -> None:
+        self.stub({"path": "/api/collection", "status": 500, "body": {"error": "RuntimeError: boom"}},
+                  {"path": "/api/retroarch", "status": 500, "body": {"error": "RuntimeError: bang"}},
+                  {"path": "/api/chdman", "status": 500, "body": {"error": "RuntimeError: crash"}})
+        self.open("#/collection")
+        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('boom'))")
+        # the page has no settings, but Scan still works; when the job ends the page must cope with having none
+        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
+            document.getElementById('col-scan-btn').click(); }})()""")
+        self.page.wait("document.querySelector('#job-bar .job-msg')?.textContent === 'Finished'", timeout=90)
+        time.sleep(0.5)
+        self.page.eval("location.hash = '#/retroarch'")
+        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('bang'))")
+        self.page.eval("document.getElementById('ra-custom-add').click()")
+        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('retroarch.cfg'))")
+        self.page.eval("location.hash = '#/chd'")
+        time.sleep(0.5)
+        self.no_js_errors()
+
+    def test_names_from_a_dat_are_shown_as_text_never_as_markup(self) -> None:
+        import hashlib
+        import zlib
+        from uifixture import GBA_DAT
+        evil = '<img src=x onerror=window.__xss=1><b id=xss-b>bold</b> & <script>window.__xss=2</script>'
+        data = b"evil rom " * 500
+        (self.fx.data / "nointro" / f"{GBA_DAT}.dat").write_text(
+            f'clrmamepro (\n\tname "{GBA_DAT}"\n\tdescription "{GBA_DAT}"\n\tversion "20250101-000000"\n)\n'
+            f'game (\n\tname "{evil} (USA)"\n\tdescription "{evil} (USA)"\n\trom ( name "{evil} (USA).gba" size {len(data)} '
+            f'crc {zlib.crc32(data):08x} md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} )\n)\n')
+        odd = self.fx.gba / ("it's odd & co; x=1" if os.name == "nt" else "it's \"odd\" & <i>co</i>")
+        odd.mkdir()
+        (odd / "dump.gba").write_bytes(data)
+        self.open()
+        self.scan("Nintendo Game Boy Advance", str(self.fx.gba))
+        shown = "document.querySelector('main').innerText.includes('<img src=x onerror')"
+        for view in ("overview", "browse?view=games", "browse?view=unmatched", "browse?view=matched"):
+            self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/" + view)
+            self.page.wait("!document.getElementById('view-system').classList.contains('hidden')")
+            if view.startswith("browse"):
+                self.page.wait("document.querySelector('#result-table table, #result-table .empty')")
+        self.page.wait(shown)
+        self.click("#result-table .cs-toggle")
+        self.page.wait("document.querySelector('#result-table .detail-row:not(.hidden) .cs-sums table')")
+        self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/library")
+        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.click("#lib-plan-btn")
+        # the new file name is made safe for the file system; the row and its details still carry the DAT's name
+        self.page.wait("document.querySelector('#lib-table').innerText.includes('dump.gba')")
+        self.click("#lib-table .cs-toggle")
+        self.page.wait("document.querySelector('#lib-table .detail-row:not(.hidden) .cs-sums table')")
+        self.page.goto(self.fx.url + "#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
+            document.getElementById('col-scan-btn').click(); }})()""")
+        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
+        self.click("#col-plan-btn")
+        self.page.wait("!document.getElementById('col-output').classList.contains('hidden')", timeout=60)
+        self.assertIsNone(self.page.eval("window.__xss === undefined ? null : window.__xss"))
+        self.assertEqual(self.page.eval("document.querySelectorAll('img, #xss-b, main script').length"), 0)
         self.no_js_errors()
 
 
