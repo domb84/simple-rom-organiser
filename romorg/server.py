@@ -258,7 +258,7 @@ class JobManager:
 # --------------------------------------------------------------------- app state
 
 from . import folders  # noqa: E402  (the reserved folder names live in folders.py only)
-from .folders import CONVERTED_DIR, RESERVED_DIRS, SUPERSEDED_DIR, UNMATCHED_DIR  # noqa: E402
+from .folders import CONVERTED_DIR, RESERVED_DIRS, SAVES_DIR, SUPERSEDED_DIR, UNMATCHED_DIR  # noqa: E402
 # Organiser statuses that mean "this op changes something on disk".
 ACTIONABLE = ("move", "rename", "delete")
 # Display / sort order for organiser statuses ("grouped by status").
@@ -292,7 +292,7 @@ LIBRARY_REASONS = ("kept", "excluded", "superseded", "incomplete", "duplicate", 
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions",
-                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language")
+                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -1727,12 +1727,34 @@ class App:
         self._lang_cache_games[platform.name] = (key, value)
         return value
 
+    def _save_files(self, platform: Any) -> list[tuple[Path, Path]]:
+        """``[(file, save root)]``: the RetroArch save and state files that can belong to games of ``platform`` (empty when
+        no RetroArch is found or it keeps its saves beside the games). The save folders are read once per plan."""
+        try:
+            ra, installs, saved = self._ra_state()
+            sel = self._ra_selected(installs, saved)
+            return ra.list_saves(sel, platform) if sel is not None else []
+        except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken RetroArch folder never stops a plan
+            traceback.print_exc()
+            return []
+
     def _make_library_plan(self, state: ScanState, prof: Any, savedisk: bool, labels: bool) -> Any:
-        """A fresh ``LibraryPlan`` of the scan for the given rules (not cached)."""
+        """A fresh ``LibraryPlan`` of the scan for the given rules (not cached). The plan carries ``save_files`` (see
+        :meth:`_save_files`) for the preview and for archiving saves; with ``saved_games == "keep"`` the games they belong
+        to are not set aside."""
         rctx = self._rating_context(state.platform, prof)
+        files = self._save_files(state.platform)
+        saved = _mod("retroarch").save_name_keys(f.name for f, _root in files) if files and prof.saved_games == "keep" else None
+        saved_arg = {"saved": saved} if saved else {}
+        plan = self._make_library_plan_core(state, prof, savedisk, labels, rctx, saved_arg)
+        plan.save_files = files
+        return plan
+
+    def _make_library_plan_core(self, state: ScanState, prof: Any, savedisk: bool, labels: bool, rctx: Any,
+                                saved_arg: dict[str, Any]) -> Any:
         if self._is_dc(state):
             plan = _mod("discsys").plan_library(state.result, prof, savedisk=savedisk, labels=labels,
-                                                **({"ratings": rctx} if rctx is not None else {}))
+                                                **({"ratings": rctx} if rctx is not None else {}), **saved_arg)
             plan.ops.sort(key=_order_key(ORGANISE_ORDER))
             return plan
         organiser = _mod("organiser")
@@ -1743,7 +1765,7 @@ class App:
                      missing_dats=list(state.missing_dats),
                      layout=state.layout, savedisk=savedisk, labels=labels, platform=state.platform,
                      lang_games=self._lang_games(state.platform, prof),
-                     **({"ratings": rctx} if rctx is not None else {}))
+                     **({"ratings": rctx} if rctx is not None else {}), **saved_arg)
         try:
             plan.ops.sort(key=_order_key(ORGANISE_ORDER))  # stable: keeps organiser order per status
         except AttributeError:
@@ -2195,6 +2217,10 @@ class App:
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
+        if "saved_games" in body:
+            if body["saved_games"] not in library.SAVED_GAMES:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"saved_games must be one of: {', '.join(library.SAVED_GAMES)}")
+            changes["saved_games"] = body["saved_games"]
         self._save_profile(platform, dataclasses.replace(profile, **changes))
         return self._profile_info(platform)
 
@@ -2820,7 +2846,7 @@ class App:
     def _plan_id(self, state: ScanState, key: tuple[bool, bool]) -> str:
         """Identity of the Build library plan for this scan + these rules + these options (``plan_id``)."""
         profile = self._profile(state.platform)
-        sig = _mod("totals").profile_signature(profile)
+        sig = _mod("totals").profile_signature(profile) + "-" + profile.saved_games[:1]     # (the totals do not look at saves)
         if profile.rating_active:                     # a rebuilt ratings index changes the plan
             sig += "-" + _mod("totals").signature_text([self._ratings_sig()])[:6]
         return f"{state.serial}.{sig}.{int(key[0])}{int(key[1])}"
@@ -2962,6 +2988,17 @@ class App:
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
             reserved_dirs=list(RESERVED_DIRS))
         page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
+        export_asked = _str_arg(body.get("export_to"))
+        try:
+            page["saves"] = self._saves_plan_info(
+                plan, plan.profile, state.root,
+                self._library_aside_dir(state, body) if _str_arg(body.get("aside_to")) and not export_asked else None,
+                bool(export_asked))
+        except ApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the saves line is a courtesy of the preview
+            traceback.print_exc()
+            page["saves"] = {"found": False, "error": str(exc)}
         if self._convert_on_build(state.platform, self._config()):
             ops = self._convert_plan(state, self._latest_arg(state, {}))
             page["convert"] = {"count": sum(1 for op in ops if op.status == "convert"), "kind": "chd" if self._is_dc(state) else "clean"}
@@ -3104,6 +3141,9 @@ class App:
                                                     keep=[st.root, aside], cancel=job.cancel)
                 res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
                                                            playlists=list(plan.playlists)))
+                if arch_out and arch_out.get("journal") and not res.get("undo_log"):
+                    # (only the archive moves changed anything: the undo log is the handle "Undo" takes, with no steps of its own)
+                    res["undo_log"] = str(_mod("organiser").write_marker_log(st.root))
                 if arch_out and arch_out.get("journal") and res.get("undo_log"):      # one undo takes both back
                     jp = Path(arch_out["journal"])
                     data = json.loads(jp.read_text(encoding="utf-8"))
@@ -3121,9 +3161,12 @@ class App:
                     self._link_undo(res["undo_log"], conv_res["undo_log"])
                 elif conv_res.get("undo_log"):                           # the build itself changed nothing: undo the conversion
                     res["undo_log"] = conv_res["undo_log"]
+            saves_moves, _saves_info = self._saves_moves(plan, plan.profile, st.root, aside)
+            if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
+                res["saves_archived"] = self._apply_saves_moves(saves_moves, res.get("undo_log", ""))
             moved = self._moved_pairs(plan.ops)
             if moved:
-                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")})
+                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")}, st.platform)
                 if follow:
                     res["saves"] = follow
             if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
@@ -3343,9 +3386,11 @@ class App:
         except RuntimeError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
 
-    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any]) -> dict[str, Any] | None:
+    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any],
+                   platform: Any = None) -> dict[str, Any] | None:
         """Saves and states follow ROMs that got new names (``pairs_from``: ``(old path, new path)``). ``mode`` ``move`` for
-        a build in place, ``copy`` for a build into another folder. None when RetroArch is not in use or the option is off."""
+        a build in place, ``copy`` for a build into another folder. None when RetroArch is not in use or the option is off.
+        With ``platform`` only the files of the cores that play it are looked at."""
         try:
             ra, installs, saved = self._ra_state()
             sel = self._ra_selected(installs, saved)
@@ -3354,13 +3399,105 @@ class App:
             pairs = ra.pairs_from_moves(pairs_from)
             if not pairs:
                 return None
-            ops = ra.plan_follow(sel, pairs, mode)
+            ops = ra.plan_follow(sel, pairs, mode, files=ra.list_saves(sel, platform) if platform is not None else None)
             res = ra.apply_follow(ops, self._ra_dirs(saved)[0], extra, sel)
             res["conflicts"] = sum(1 for o in ops if o.status == "conflict")
             return res
         except Exception as exc:  # noqa: BLE001 - saves are a courtesy of the build: never fail it
             traceback.print_exc()
             return {"error": str(exc), "followed": 0, "copied": 0, "failed": []}
+
+    # ---- saves are part of the build (Amendment 30)
+    @staticmethod
+    def _plan_stems(plan: Any) -> tuple[dict[str, str], set[str]]:
+        """``({content name: reason code}, {content names})``: the games (as RetroArch names their saves, see
+        ``retroarch.fold_name``) this plan sets aside, and those of the files that stay. A name that a file in its place
+        also has is not set aside: its saves belong to that file too."""
+        ra = _mod("retroarch")
+        gone: dict[str, str] = {}
+        stay: set[str] = set()
+        for op in plan.ops:
+            if getattr(op, "status", "") == "delete" or getattr(op, "kind", "") == "m3u":
+                continue
+            unit = getattr(op, "unit", None)
+            stem = ra.fold_name(Path(getattr(unit, "path", None) or op.src).stem)
+            if op.code:
+                if op.status in ("move", "rename"):
+                    gone[stem] = op.code
+            elif not op.unmatched:
+                stay.add(stem)
+        for stem in stay:
+            gone.pop(stem, None)
+        return gone, stay
+
+    @staticmethod
+    def _planned_pairs(plan: Any) -> list[tuple[str, str]]:
+        """``(old content name, new content name)`` of every file the plan renames (what ``_moved_pairs`` finds afterwards)."""
+        moves: list[tuple[Any, Any]] = []
+        for op in plan.ops:
+            if getattr(op, "status", "") not in ("move", "rename") or getattr(op, "kind", "") == "m3u":
+                continue
+            moves.extend(getattr(op, "moves", None) or [(op.src, op.dst)])
+        return _mod("retroarch").pairs_from_moves(moves)
+
+    def _saves_moves(self, plan: Any, prof: Any, folder: Path, aside: Path | None) -> tuple[list[Any], dict[str, Any]]:
+        """With ``saved_games == "archive"``: the moves that take the saves and states of the games the plan sets aside to
+        ``<archive>/<system folder name>/_saves/<path below the save folder>`` (inside the ROM folder, ``<folder>/_saves``,
+        while no archive folder is used). Never over an existing file (the name gets `` (2)``). ``([], {})`` otherwise."""
+        files = getattr(plan, "save_files", None) or []
+        if prof.saved_games != "archive" or not files:
+            return [], {}
+        gone, _stay = self._plan_stems(plan)
+        found = _mod("retroarch").saves_of(files, gone) if gone else []
+        if not found:
+            return [], {}
+        sortroot = _mod("sortroot")
+        base = (aside / folder.name if aside is not None else folder) / SAVES_DIR
+        names = sortroot.Names()
+        moves = [sortroot.SMove(s.src, names.free(base / s.rel), SAVES_DIR, size=s.size) for s in found]
+        return moves, {"files": len(moves), "games": len({s.stem for s in found}),
+                       "states": sum(1 for s in found if s.kind == "state"), "to": str(base)}
+
+    def _apply_saves_moves(self, moves: list[Any], library_log: str) -> dict[str, Any]:
+        """Do :meth:`_saves_moves` (journalled like a sweep, linked to the build's undo log). Skipped, with a note, while
+        RetroArch runs: it writes its saves back when it exits."""
+        if not moves:
+            return {}
+        if _mod("retroarch").is_running():
+            return {"skipped_running": True, "moved": 0, "planned": len(moves), "failed": []}
+        keep = [m.src.parent for m in moves] + [m.dst.parent.parent for m in moves]
+        res = _mod("sortroot").apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=keep,
+                                           extra={"library_log": library_log})
+        return {"moved": res["moved"], "planned": len(moves), "failed": res["failed"][:20], "journal": res["journal"],
+                "skipped_running": False}
+
+    def _saves_plan_info(self, plan: Any, prof: Any, folder: Path, aside: Path | None, elsewhere: bool = False) -> dict[str, Any]:
+        """What a build does with RetroArch's saves, from the plan (nothing is looked at after the build): ``kept`` games
+        kept because of their saves, ``rename`` save files that follow renamed ROMs (a dry run of the real thing),
+        ``archive`` save files that go with the games the rules archive."""
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        files = getattr(plan, "save_files", None) or []
+        info: dict[str, Any] = {
+            "found": sel is not None and bool(files), "install": sel is not None, "mode": prof.saved_games, "files": len(files),
+            "follow": saved.get("follow", True) is not False, "kept": plan.selection.saved_kept(), "running": ra.is_running(),
+            "elsewhere": elsewhere, "rename": {"files": 0, "games": 0, "conflicts": 0},
+            "archive": {"files": 0, "games": 0, "states": 0, "to": ""}}
+        if sel is None or not files:
+            return info
+        gone, _stay = self._plan_stems(plan)
+        if info["follow"] and not elsewhere:
+            skip = set(gone) if prof.saved_games == "archive" else set()
+            pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in skip]
+            ops = ra.plan_follow(sel, pairs, "move", files=files)
+            hits = ra.saves_of(files, {a for a, _b in pairs})
+            info["rename"] = {"files": sum(1 for o in ops if o.status == "move"),
+                              "games": len({s.stem for s in hits}), "conflicts": sum(1 for o in ops if o.status == "conflict")}
+        if prof.saved_games == "archive" and not elsewhere:
+            _moves, arch = self._saves_moves(plan, prof, folder, aside)
+            if arch:
+                info["archive"] = arch
+        return info
 
     def _link_undo(self, library_log: str, convert_log: str) -> None:
         folder = _mod("paths").data_dir() / "collection-undo"
@@ -3930,6 +4067,8 @@ class App:
                 for dirpath, _dirs, files in os.walk(m.src):
                     for f in sorted(files):
                         src = Path(dirpath) / f
+                        if src in m.leave:                     # a save of the game: moved on its own to _other
+                            continue
                         put(src, m.dst / src.relative_to(m.src))
         from_sort = {id(op) for op in ops}
         ops += [op for op in flat_ops if op.status != "move" or op.src not in used]
@@ -4006,6 +4145,8 @@ class App:
             # system's folder is part of the library's own moves. (A system that converts first has been converted from where
             # its raw files lie, see _collection_convert_first.)
             now_moves: list[Any] = []                       # moved before the libraries run (journalled as the "sort")
+            saves_moves: dict[str, tuple[list[Any], dict[str, Any]]] = {}
+            saves_skipped = False
             by_system: dict[str, list[Any]] = {}
             for m in layout["moves"]:
                 (by_system.setdefault(m.bucket, []) if m.bucket in rs.systems else now_moves).append(m)
@@ -4018,11 +4159,24 @@ class App:
                                                                    plan, root, aside, cfg["sweep"])
                 prepared[sysobj.name] = (state, plan, ops, sorted_n)
                 now_moves += arch
+                smoves, sinfo = self._saves_moves(plan, plan.profile, layout["folder_of"][sysobj.name], aside if cfg["sweep"] else None)
+                if smoves:
+                    saves_moves[sysobj.name] = (smoves, sinfo)
+                    now_moves += smoves
+            if saves_moves and _mod("retroarch").is_running():        # RetroArch writes its saves back when it exits: they stay
+                held = {id(m) for smoves, _i in saves_moves.values() for m in smoves}
+                now_moves = [m for m in now_moves if id(m) not in held]
+                saves_skipped = True
+            keep += [m.src.parent for smoves, _i in saves_moves.values() for m in smoves]       # (the user's save folders stay)
             if now_moves:
                 res = sortroot.apply_moves(now_moves, undo_dir, "sort", keep=keep, started=note("sort"),
                                            progress=_staged(job, 0, steps, "moving files out of the ROM folders"), cancel=job.cancel)
                 last["sort"] = res["journal"] or ""
                 out["sort"]["result"] = {"moved": res["moved"], "failed": res["failed"][:30]}
+            if saves_moves:
+                out["saves_archived"] = {"files": 0 if saves_skipped else sum(len(sm) for sm, _i in saves_moves.values()),
+                                         "planned": sum(len(sm) for sm, _i in saves_moves.values()),
+                                         "games": sum(i["games"] for _sm, i in saves_moves.values()), "skipped_running": saves_skipped}
             if prepared:
                 done = out["sort"].setdefault("result", {"moved": 0, "failed": []})
                 done["moved"] += sum(v[3] for v in prepared.values())     # sorted by the libraries' own moves
@@ -4052,6 +4206,11 @@ class App:
                                                                              "incomplete", "duplicates", "unmatched", "conflict", "playlists_write")},
                                    "actionable": actionable, "files": len(plan.ops)}
             rows.append(row)
+            if not apply:
+                try:
+                    row["saves_plan"] = self._saves_plan_info(plan, plan.profile, state.root, aside if cfg["sweep"] else None)
+                except Exception:  # noqa: BLE001 - the saves line is a courtesy of the preview
+                    traceback.print_exc()
             if apply and actionable:
                 try:
                     rep(0, 1, "reorganising")
@@ -4064,7 +4223,8 @@ class App:
                     row["result"] = {"moved": len(moved) if isinstance(moved, (list, tuple)) else (moved or 0),
                                      "playlists": res.get("playlists_written", 0)}
                     row["failed"] = list(res.get("failed") or [])[:20]
-                    follow = self._ra_follow(self._moved_pairs(apply_ops if apply_ops is not None else plan.ops), "move", {"library_log": res.get("undo_log") or ""})
+                    follow = self._ra_follow(self._moved_pairs(apply_ops if apply_ops is not None else plan.ops), "move",
+                                             {"library_log": res.get("undo_log") or ""}, sysobj.platform)
                     if follow:
                         row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
                     if res.get("undo_log"):
@@ -4142,6 +4302,8 @@ class App:
                            playlists=len([p for p in ep.playlists if p.action == "write"]), pending=ep.pending(),
                            notes=list(ep.notes),
                            conflicts=[{"rel": t.rel, "reason": t.reason} for t in ep.items if t.action == "conflict"][:20])
+                if not apply:
+                    row["saves_plan"] = self._saves_plan_info(plan, plan.profile, state.root, None, True)
                 if apply and ep.mass_removal() and not allow_mass:
                     row.update(status="needs_confirm", error=f"This sync would remove {len(ep.to_remove())} of the "
                                f"{ep.owned_total} files built before - not done. Check the rules and the source, then confirm.")
@@ -4154,7 +4316,8 @@ class App:
                     res = libexport.apply_export(ep, progress=lambda d, t, n: rep(d, t, n or "building"), cancel=job.cancel)
                     row["result"] = {k: res[k] for k in ("created", "copied", "moved", "playlists", "skipped", "replaced", "removed")}
                     row["failed"] = res["failed"][:20]
-                    follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy", {"collection": str(dest)})
+                    follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy", {"collection": str(dest)},
+                                             sysobj.platform)
                     if follow:
                         row["saves"] = {k: follow.get(k) for k in ("copied", "failed", "conflicts", "skipped_running", "error")}
                     if res["run"] is not None:

@@ -450,6 +450,93 @@ class RetroArchTests(UiTestCase):
 
 
 
+class SavesOptionTests(UiTestCase):
+    """"Games you have saves for" (Amendment 30): in the Library rules and in the Collection rules, stored, shown in the preview."""
+
+    def api(self, method: str, path: str, body: dict | None = None) -> dict:
+        import json
+        import urllib.request
+        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+                                     headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+
+    def select(self, id_: str, value: str) -> None:
+        self.page.eval(f"""(() => {{ const s = document.getElementById({id_!r}); s.value = {value!r}; s.dispatchEvent(new Event('change')); }})()""")
+
+    def retroarch_with_saves(self) -> Path:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sv-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        ra, saves = base / "ra", base / "saves"
+        (saves / "PUAE").mkdir(parents=True)
+        ra.mkdir()
+        (ra / "retroarch.cfg").write_text(f'savefile_directory = "{saves}"\nsavestate_directory = "{saves}"\n'
+                                          'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        (saves / "PUAE" / "Alpha Quest v1.0 (1990)(Acme).srm").write_bytes(b"s")        # the older edition: v1.1 supersedes it
+        (saves / "PUAE" / "Alpha Quest v1.0 (1990)(Acme).state1").write_bytes(b"t")
+        self.api("POST", "/api/retroarch/select", {"custom": str(ra)})
+        return saves
+
+    def test_the_library_rules_have_the_option_it_is_saved_and_the_follow_switch_is_the_same_setting(self) -> None:
+        self.retroarch_with_saves()              # (the RetroArch page shows its switch when an install is known)
+        self.open("#/system/commodore-amiga/library")
+        self.page.wait("!!document.getElementById('lib-saved-games')")
+        self.assertEqual(self.page.eval("document.getElementById('lib-saved-games').value"), "keep")
+        self.assertEqual(self.page.eval("[...document.getElementById('lib-saved-games').options].map(o => o.textContent)"),
+                         ["Keep them (default)", "Archive their saves with them", "Leave the saves alone"])
+        self.assertIn("never archived by the rules", self.page.eval("document.getElementById('lib-saved-games-note').textContent"))
+        self.assertTrue(self.page.eval("document.getElementById('lib-saves-follow').checked"))
+        self.select("lib-saved-games", "archive")
+        self.page.wait("document.getElementById('lib-saved-games-note').textContent.includes('saves and save states move to the archive')")
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_games"], "archive")
+        self.assertIn("saves archived with their games", self.page.eval("document.getElementById('library-rules-summary').textContent"))
+        self.page.eval("location.reload()")
+        self.page.wait("!!document.getElementById('lib-saved-games') && document.getElementById('lib-saved-games').value === 'archive'")
+        self.page.eval("document.getElementById('lib-saves-follow').click()")
+        self.page.wait("!document.getElementById('lib-saves-follow').checked")
+        for _ in range(50):                                                              # (the click saves in the background)
+            if not self.api("GET", "/api/retroarch")["follow"]:
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.api("GET", "/api/retroarch")["follow"])                    # the RetroArch page's own switch
+        self.page.goto(self.fx.url + "#/retroarch")
+        self.page.wait("!!document.getElementById('ra-follow')")
+        self.page.wait("document.getElementById('ra-follow').checked === false", timeout=10)
+        self.no_js_errors()
+
+    def test_the_collection_rules_have_it_too(self) -> None:
+        self.open("#/collection")
+        self.page.wait("!!document.getElementById('col-saved-games')")
+        self.assertEqual(self.page.eval("document.getElementById('col-saved-games').value"), "keep")
+        self.select("col-saved-games", "leave")
+        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
+        self.assertEqual(self.api("GET", "/api/collection")["profile"]["saved_games"], "leave")
+        self.assertEqual(self.api("GET", "/api/collection")["global"]["saved_games"], "leave")
+        self.assertIn("Building into another folder archives nothing", self.page.eval("document.getElementById('col-rules').textContent"))
+        self.page.eval("location.reload()")
+        self.page.wait("!!document.getElementById('col-saved-games') && document.getElementById('col-saved-games').value === 'leave'")
+        self.assertTrue(self.page.eval("document.getElementById('col-saves-follow').checked"))
+        self.no_js_errors()
+
+    def test_the_preview_says_which_games_are_kept_for_their_saves_and_what_happens_to_the_saves(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.getElementById('lib-cards').textContent.includes('Kept: you have saves for them')", timeout=30)
+        self.assertRegex(self.page.eval("document.getElementById('lib-cards').textContent"), r"1\s*Kept: you have saves for them")
+        self.assertEqual(self.api("POST", "/api/library/plan", {"limit": 1})["reasons"]["kept_saved"], 1)
+        # archive: the same game goes, and the preview counts the save files that go with it
+        self.select("lib-saved-games", "archive")
+        self.page.wait("document.getElementById('lib-saved-games').value === 'archive'")
+        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.getElementById('lib-cards').textContent.includes('Save files to archive with their games (1 game)')", timeout=30)
+        self.assertRegex(self.page.eval("document.getElementById('lib-cards').textContent"), r"2\s*Save files to archive")
+        self.no_js_errors()
+
+
 class TidyFolderTests(UiTestCase):
     def confirm_dialog(self) -> str:
         self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")

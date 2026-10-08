@@ -115,6 +115,86 @@ class Ps2EndpointTests(PsServerCase):
         self.assertTrue((self.roms / "_converted_originals" / "raw" / "a.iso").is_file())
 
 
+class DiscSavesTests(PsServerCase):
+    """A disc game with saves beside / apart from its CHD: kept, or archived with its saves (Amendment 30)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.iso.update({"Gamma (USA)": T.make_iso(33, 5), "Gamma (Europe)": T.make_iso(34, 6)})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03-41-38")
+        self.call("/api/chdman", {"engine": "python"})
+        self.saves = self.base / "saves"
+        ra_dir = self.base / "RetroArch"
+        (ra_dir / "info").mkdir(parents=True)
+        (ra_dir / "info" / "play_libretro.info").write_text('display_name = "Sony - PlayStation 2 (Play!)"\ncorename = "Play!"\n'
+                                                            'supported_extensions = "elf|iso|cso|bin|isz"\n')
+        (self.saves / "Play!").mkdir(parents=True)
+        (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{self.saves}"\nsavestate_directory = "{self.saves}"\n'
+                                              'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        self.call("/api/retroarch/select", {"custom": str(ra_dir)})
+        self.put_iso("Gamma (USA)", "Gamma (USA)/Gamma (USA).chd")
+        self.put_iso("Gamma (Europe)", "Gamma (Europe)/Gamma (Europe).chd")
+        for n in ("Gamma (USA).srm", "Gamma (USA).state1", "Gamma (USA).state1.png"):
+            (self.saves / "Play!" / n).write_bytes(n.encode())
+        self.scan_ps2()
+        patcher = mock.patch("romorg.retroarch.is_running", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def games(self) -> list[str]:
+        return sorted(p.relative_to(self.roms).as_posix() for p in self.roms.rglob("*.chd"))
+
+    def test_keep_is_the_default_and_the_disc_game_stays(self) -> None:
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["kept"]), (1, 1))
+        self.assertEqual((plan["reasons"]["superseded"], plan["reasons"]["excluded"]), (0, 0))
+        self.call("/api/library/apply", {})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
+
+    def test_archive_takes_the_saves_along_and_undo_brings_them_back(self) -> None:
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
+        aside = self.base / "archive"
+        plan = self.call("/api/library/plan", {"platform": PS2, "aside_to": str(aside)})
+        self.assertEqual(plan["saves"]["archive"]["files"], 3)
+        self.call("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})
+        res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        self.assertEqual(res["result"]["saves_archived"]["moved"], 3)
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])
+        self.assertEqual(sorted(p.name for p in (aside / "ps2" / "_saves" / "Play!").iterdir()),
+                         ["Gamma (USA).srm", "Gamma (USA).state1", "Gamma (USA).state1.png"])
+        self.assertEqual(list((self.saves / "Play!").iterdir()), [])
+        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
+        back = self.job()
+        self.assertEqual(back["status"], "done", back)
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
+        self.assertEqual(len(list((self.saves / "Play!").iterdir())), 3)
+
+    def test_collection_sort_a_disc_games_folder_keeps_the_redump_files_and_sends_only_its_saves_to_other(self) -> None:
+        """The user's real shape (psx/Spider - The Video Game (USA)/ with .srm .state .state1 beside the CHD) in a folder that
+        has to be sorted: the folder moves into the system's folder, the CHD and the Redump .zip stay in it, the saves go to _other."""
+        mixed = self.base / "mixed"
+        game = mixed / "Dump" / "Gamma (Europe)"
+        game.mkdir(parents=True)
+        T.build_dvd_chd(game / "Gamma (Europe).chd", self.iso["Gamma (Europe)"])
+        for n in ("Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1"):
+            (game / n).write_bytes(n.encode())
+        self.call("/api/collection/save", {"root": str(mixed)})
+        self.run_job("/api/collection/scan", {})
+        res = self.run_job("/api/collection/apply", {})
+        self.assertEqual(res["sort"]["result"]["failed"], [])
+        there = mixed / "ps2" / "Gamma (Europe)"
+        self.assertEqual(sorted(p.name for p in there.iterdir()), ["Gamma (Europe).chd", "Gamma (Europe).md5", "Gamma (Europe).zip"])
+        other = self.base / "mixed-archive" / "_other" / "Dump" / "Gamma (Europe)"
+        self.assertEqual(sorted(p.name for p in other.iterdir()), ["Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1"])
+        self.call("/api/collection/undo", {})
+        self.assertEqual(sorted(p.name for p in game.iterdir()),
+                         sorted(["Gamma (Europe).chd", "Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm",
+                                 "Gamma (Europe).state", "Gamma (Europe).state1"]))
+
+
 if __name__ == "__main__":
     unittest.main()
 
