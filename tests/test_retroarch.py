@@ -8,7 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from romorg import retroarch as ra
+os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")       # no test ever works on the user's own RetroArch
+
+from romorg import retroarch as ra  # noqa: E402
 
 CFG = '''# comment
 savefile_directory = "~/MEGA/saves"
