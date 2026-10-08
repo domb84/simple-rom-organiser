@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -258,6 +259,11 @@ class Bios(World):
 
 
 class Shared(World):
+    def written(self, rel: str) -> str:
+        """How a folder under the home folder is written in the cfg: ``~/...``, but absolute on Windows (RetroArch
+        there does not expand ``~``; see ``ra.to_cfg_path``)."""
+        return str(self.home / rel) if os.name == "nt" else "~/" + rel
+
     def setUp(self) -> None:
         super().setUp()
         self.assets = self.home / "MEGA" / "assets"
@@ -275,7 +281,7 @@ class Shared(World):
         self.assertEqual(rows["playlist_directory"]["status"], "ok")
         self.assertEqual(rows["thumbnails_directory"]["status"], "set")
         self.assertEqual(rows["content_database_path"]["status"], "none")          # no rdb folder in the base
-        self.assertEqual(rows["cheat_database_path"]["want_cfg"], "~/MEGA/assets/cht")
+        self.assertEqual(rows["cheat_database_path"]["want_cfg"], self.written("MEGA/assets/cht"))
         self.assertEqual(ra.shared_base(self.inst, self.home), str(self.assets))
 
     def test_apply_changes_only_the_ticked_settings_and_undo_restores_them(self) -> None:
@@ -283,7 +289,7 @@ class Shared(World):
         res = ra.apply_shared(self.inst, rows, ["cheat_database_path", "content_database_path"], self.home / "j", self.home)
         self.assertEqual(res["changed"], ["cheat_database_path"])
         cfg = ra.read_cfg(self.inst.cfg)
-        self.assertEqual(cfg["cheat_database_path"], "~/MEGA/assets/cht")
+        self.assertEqual(cfg["cheat_database_path"], self.written("MEGA/assets/cht"))
         self.assertEqual(cfg["thumbnails_directory"], "/somewhere/else")            # not ticked: untouched
         out = ra.undo_relocation(Path(res["journal"]))
         self.assertTrue(out["cfg_restored"])
@@ -297,7 +303,8 @@ class Shared(World):
                 ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home / "j", self.home)
         res = ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home / "j", self.home)
         self.assertEqual(res["changed"], ["content_history_path", "playlist_directory"])
-        self.assertEqual(ra.read_cfg(self.inst.cfg)["content_history_path"], "~/MEGA/assets/playlists/builtin/content_history.lpl")
+        self.assertEqual(ra.read_cfg(self.inst.cfg)["content_history_path"],
+                         self.written("MEGA/assets/playlists/builtin/content_history.lpl"))
 
 
 class BiosAll(Bios):
