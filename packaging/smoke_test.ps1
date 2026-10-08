@@ -128,9 +128,13 @@ try {
     Assert-Match $chdman '"writer": "auto"' "/api/chdman does not report the built-in writer: $chdman"
     Write-Host "GET /api/chdman -> built-in writer, native FLAC"
     # the pages v0.2 added answer with JSON (their modules are imported by name, on first use)
-    $collection = Get-Text "/api/collection" | ConvertFrom-Json
+    $collectionText = Get-Text "/api/collection"
+    Assert-Match $collectionText '"rules"' "/api/collection missing"
+    $collection = $collectionText | ConvertFrom-Json
     if ($null -eq $collection.profile -or $null -eq $collection.rules) { throw "smoke test failed: /api/collection lacks the rules" }
-    $retroarch = Get-Text "/api/retroarch" | ConvertFrom-Json
+    $retroarchText = Get-Text "/api/retroarch"
+    Assert-Match $retroarchText '"installs"' "/api/retroarch missing"
+    $retroarch = $retroarchText | ConvertFrom-Json
     if ($null -eq $retroarch.PSObject.Properties["installs"]) { throw "smoke test failed: /api/retroarch lacks the installs" }
     Write-Host "GET /api/collection, /api/retroarch -> ok"
 
