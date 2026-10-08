@@ -367,6 +367,58 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
     return out
 
 
+# Every module of the package and every file of the web UI. A package (the PyInstaller exe, the Windows .zip, the
+# AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
+# modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
+APP_MODULES = (
+    "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
+    "collection", "convert", "datfile", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders",
+    "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nointro", "organiser", "paths",
+    "platforms", "playstation", "ratings", "redump", "retroarch", "rvz", "scanner", "selfcheck", "server", "sevenzip",
+    "sortroot", "tags", "tempspace", "tosec", "totals", "whdload", "winproc", "zstddec", "zstdnative",
+)
+STATIC_FILES = ("index.html", "app.js", "style.css")
+# the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added
+UI_VIEWS = ("view-home", "view-system", "view-collection", "view-retroarch", "view-chd")
+
+
+def check_app() -> Tuple[bool, str]:
+    """Every module imports and the web UI's files are in the package, read the way the server reads them."""
+    import importlib
+    missing: List[str] = []
+    for name in APP_MODULES:
+        try:
+            importlib.import_module(f"{__package__}.{name}")
+        except Exception as exc:  # noqa: BLE001 - reported
+            missing.append(f"module {name} ({type(exc).__name__}: {exc})")
+    files: dict = {}
+    try:
+        from .server import STATIC_TYPES, read_static
+    except Exception:  # noqa: BLE001 - the server module is already listed as missing
+        STATIC_TYPES, read_static = {}, None
+    for name in STATIC_FILES:
+        try:
+            files[name] = read_static(name) if read_static else b""
+        except Exception as exc:  # noqa: BLE001 - reported
+            missing.append(f"static/{name} ({type(exc).__name__})")
+            continue
+        if not files[name]:
+            missing.append(f"static/{name} (empty)")
+        elif name not in STATIC_TYPES:
+            missing.append(f"static/{name} (the server does not serve it)")
+    page = files.get("index.html", b"").decode("utf-8", "replace")
+    missing += [f"the page {view}" for view in UI_VIEWS if page and f'id="{view}"' not in page]
+    if page:
+        import re
+        for ref in re.findall(r'(?:src|href)="/static/([^"]+)"', page):
+            if ref not in STATIC_FILES:
+                missing.append(f"static/{ref} (index.html asks for it; it is not in the list of UI files)")
+    if missing:
+        return False, "the app is incomplete: " + "; ".join(missing)
+    return True, (f"the app is complete: {len(APP_MODULES)} modules import, the web UI has its {len(STATIC_FILES)} "
+                  f"files and {len(UI_VIEWS)} pages")
+
+
 def check_chdman() -> Tuple[str, str]:
     """``("OK" | "WARN" | "SKIP", text)``"""
     from . import bundle, chdtool
@@ -415,14 +467,14 @@ def main(argv: List[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         status, text = "WARN", f"Zstandard check: {type(exc).__name__}: {exc}"
     lines.append(("FAIL" if require_native and status != "OK" else status, text))
-    for fn in (check_flac, check_scheduler, check_writer, check_rvz):
+    for fn in (check_flac, check_scheduler, check_writer, check_rvz, check_app):
         try:
             ok, text = check_writer(require_native) if fn is check_writer else fn()
         except Exception as exc:  # noqa: BLE001
             ok, text = False, f"{type(exc).__name__}: {exc}"
         # inside the bundle (or a package: --require-native) libFLAC is REQUIRED; elsewhere its absence only means
         # slower decoding (libsndfile or the pure-Python decoder) and audio stored without FLAC
-        required = fn in (check_scheduler, check_rvz) or root is not None or require_native
+        required = fn in (check_scheduler, check_rvz, check_app) or root is not None or require_native
         lines.append(("OK" if ok else ("FAIL" if required else "WARN"), text))
     for status, text in lines:
         print(f"{status:5} {text}")

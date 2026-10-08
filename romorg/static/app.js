@@ -495,11 +495,16 @@
     },
 
     async start(path, body) {
+      // one start at a time: a double click must not ask for two jobs (the second would only answer "a job is running")
+      if (this.starting) return;
+      this.starting = true;
       try {
         const res = await post(path, body);
         this.track(res.job);
       } catch (err) {
         toast(err.message, "error");
+      } finally {
+        this.starting = false;
       }
     },
 
@@ -538,7 +543,8 @@
       const pct = total > 0 ? Math.min(100, (100 * done) / total) : null;
       const isBytes = total > 1e6 && /download|updat/i.test(message || "");
       let countText = "";
-      if (total > 0) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(Math.floor(done))} / ${fmt(total)}`;
+      // a job of one step (a Collection scan) reports a fraction of 1: "0 / 1" says nothing, the percentage does
+      if (total > 1) countText = isBytes ? `${fmtBytes(done)} / ${fmtBytes(total)}` : `${fmt(Math.floor(done))} / ${fmt(total)}`;
       let msg = message || "";
       if (job.status === "done") msg = "Finished";
       if (job.status === "error") msg = `Error: ${job.error}`;
@@ -617,10 +623,20 @@
     $("app-version").textContent = `v${s.version}`;
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
-    $("lib-export-native-btn").classList.toggle("hidden", !s.dialog_available);
-    $("lib-aside-native").classList.toggle("hidden", !s.dialog_available);
+    // every "Browse..." button (the native folder dialog) shows only where the server has such a dialog
+    document.querySelectorAll('button[id*="-native"]').forEach((b) => b.classList.toggle("hidden", !s.dialog_available));
     if (!state.exportLoaded) { state.exportLoaded = true; loadExportSettings(); }      // once: later loads must not undo an edit
-    $("folder-native-btn").classList.toggle("hidden", !s.dialog_available);
+    paintExamplePaths();
+  }
+
+  /** The example paths in the empty folder fields, written the way this platform writes paths. The page's own
+   *  placeholders are the Linux ones (~/Emulation/...); a Windows server gets drive-letter examples instead. */
+  function paintExamplePaths() {
+    if (serverOs() !== "windows") return;
+    $("col-root").placeholder = "D:\\Emulation\\roms";
+    $("col-dest").placeholder = "D:\\Emulation\\library";
+    $("lib-export-dest").placeholder = "Folder to build the library in, e.g. D:\\Emulation\\library";
+    $("ra-shared-base").placeholder = "The folder that holds them, e.g. D:\\Emulation\\assets";
   }
 
   // ------------------------------------------------ DAT updates (automatic)
@@ -3659,7 +3675,7 @@
       const info = this.info;
       if (!info) return;
       const nat = !!(state.status && state.status.dialog_available);
-      for (const id of ["ra-custom-native", "ra-save-native", "ra-state-native", "ra-shared-native"]) $(id).classList.toggle("hidden", !nat);
+      for (const id of ["ra-custom-native", "ra-save-native", "ra-state-native", "ra-backup-native", "ra-shared-native", "ra-bios-native"]) $(id).classList.toggle("hidden", !nat);
       $("ra-none").classList.toggle("hidden", info.installs.length > 0);
       $("ra-install").replaceChildren(...info.installs.map((i) => el("option", { value: i.cfg, text: `${i.label} - ${i.cfg}`, selected: i.cfg === info.selected })));
       $("ra-install").disabled = !info.installs.length;
@@ -3845,7 +3861,10 @@
 
     bind() {
       $("ra-install").addEventListener("change", () => this.select({ cfg: $("ra-install").value }));
-      $("ra-custom-add").addEventListener("click", () => { const v = $("ra-custom").value.trim(); if (v) this.select({ custom: v }); });
+      $("ra-custom-add").addEventListener("click", () => {
+        const v = $("ra-custom").value.trim();
+        if (v) this.select({ custom: v }); else toast("Enter the RetroArch folder, or the path of its retroarch.cfg, first.", "info");
+      });
       $("ra-custom-browse").addEventListener("click", () => FolderBrowser.open($("ra-custom"), "Choose the RetroArch folder"));
       $("ra-custom-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-custom"), "Choose the RetroArch folder"));
       $("ra-save-browse").addEventListener("click", () => FolderBrowser.open($("ra-save-dir"), "Choose the folder for save files"));
@@ -3853,6 +3872,7 @@
       $("ra-state-browse").addEventListener("click", () => FolderBrowser.open($("ra-state-dir"), "Choose the folder for save states"));
       $("ra-state-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-state-dir"), "Choose the folder for save states"));
       $("ra-backup-browse").addEventListener("click", () => FolderBrowser.open($("ra-backup-dir"), "Choose the backup folder"));
+      $("ra-backup-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-backup-dir"), "Choose the backup folder"));
       $("ra-follow").addEventListener("change", async () => { try { this.info = await post("/api/retroarch/follow", { follow: $("ra-follow").checked }); } catch (err) { toast(err.message, "error"); } });
       $("ra-shared-check").addEventListener("click", () => this.sharedCheck($("ra-shared-base").value.trim()));
       $("ra-shared-apply").addEventListener("click", () => this.sharedApply());
@@ -3861,6 +3881,7 @@
       $("ra-bios-check").addEventListener("click", () => this.biosCheck());
       $("ra-bios-apply").addEventListener("click", () => this.biosApply());
       $("ra-bios-browse").addEventListener("click", () => FolderBrowser.open($("ra-bios-search"), "Choose a folder to look for BIOS files in"));
+      $("ra-bios-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-bios-search"), "Choose a folder to look for BIOS files in"));
       $("ra-plan-btn").addEventListener("click", () => this.plan());
       $("ra-apply-btn").addEventListener("click", () => this.apply());
       $("ra-undo-btn").addEventListener("click", () => this.undo());
@@ -3957,7 +3978,7 @@
         $("col-scan-notes").classList.add("hidden");
       } else {
         const games = scan.systems.reduce((n, x) => n + x.games, 0);
-        $("col-scan-info").textContent = `Scanned ${fmt(scan.files)} files (${fmtBytes(scan.bytes)}) in ${fmtDuration(scan.seconds)}: ${fmt(games)} games in ${scan.systems.length} system${scan.systems.length === 1 ? "" : "s"}${scan.unmatched ? `, ${fmt(scan.unmatched)} files match nothing` : ""}${scan.other ? `, ${fmt(scan.other)} are not ROMs` : ""}${scan.ambiguous ? `, ${fmt(scan.ambiguous)} fit more than one system` : ""}. Scan again after you add or remove files.`;
+        $("col-scan-info").textContent = `Scanned ${fmt(scan.files)} files (${fmtBytes(scan.bytes)}) in ${fmtDuration(scan.seconds)}: ${fmt(games)} games in ${scan.systems.length} system${scan.systems.length === 1 ? "" : "s"}${scan.unmatched ? `, ${fmt(scan.unmatched)} ${scan.unmatched === 1 ? "file matches" : "files match"} nothing` : ""}${scan.other ? `, ${fmt(scan.other)} ${scan.other === 1 ? "is not a ROM" : "are not ROMs"}` : ""}${scan.ambiguous ? `, ${fmt(scan.ambiguous)} ${scan.ambiguous === 1 ? "fits" : "fit"} more than one system` : ""}. Scan again after you add or remove files.`;
         $("col-scan-notes").classList.toggle("hidden", !scan.notes.length);
         $("col-scan-notes").replaceChildren(...scan.notes.map((n) => el("div", { text: n })));
         $("col-systems").replaceChildren(...scan.systems.map((x) => {
@@ -3968,7 +3989,7 @@
               on: { change: (e) => this.save({ systems: { [x.name]: { own_rules: e.target.checked } } }) } })));
         }));
         $("col-leftovers").textContent = scan.unmatched || scan.other
-          ? `${fmt(scan.unmatched)} files match no game and ${fmt(scan.other)} are not ROMs: they are listed in the preview.` : "";
+          ? `${fmt(scan.unmatched)} ${scan.unmatched === 1 ? "file matches" : "files match"} no game and ${fmt(scan.other)} ${scan.other === 1 ? "is not a ROM" : "are not ROMs"}: they are listed in the preview.` : "";
       }
       $("col-aside").placeholder = info.aside_default ? `Default: ${info.aside_default}` : "Default: next to the ROM folder, named like it with -archive";
       $("col-undo-btn").dataset.blocked = info.last && Object.keys(info.last).length && (info.last.runs && Object.keys(info.last.runs).length || info.last.sort || (info.last.archive && info.last.archive.length) || info.last.rename || info.last.sweep) ? "0" : "1";
@@ -4034,11 +4055,11 @@
       const root = $("col-root").value.trim();
       if (!root) { toast("Choose the folder with your ROMs first.", "error"); return; }
       $("col-output").classList.add("hidden");
-      try { Jobs.track((await post("/api/collection/scan", { root })).job); } catch (err) { toast(err.message, "error"); }
+      await Jobs.start("/api/collection/scan", { root });
     },
 
     async run(path, body = {}) {
-      if (!this.info.scan) { toast("Scan the folder first.", "error"); return false; }
+      if (!this.info || !this.info.scan) { toast("Scan the folder first.", "error"); return false; }
       if (this.inplace()) {
         await this.save({ place: "inplace", aside: $("col-aside").value.trim(), sweep: $("col-sweep").checked });
       } else {
@@ -4225,7 +4246,7 @@
     const r = job.result;
     if ((job.status === "done" || job.status === "cancelled") && r && r.action !== "collection_scan") Collection.showResult(r);
     try { Collection.adopt(await get("/api/collection")); } catch (_) { /* keep what is shown */ }
-    if (job.status === "done" && r && r.action === "collection_scan" && Collection.info.scan) {
+    if (job.status === "done" && r && r.action === "collection_scan" && Collection.info && Collection.info.scan) {
       toast(`Scanned: ${fmt(Collection.info.scan.systems.reduce((n, x) => n + x.games, 0))} games in ${Collection.info.scan.systems.length} systems`, "ok", 6000);
     }
   };

@@ -212,6 +212,50 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('"--report"', entry)
         self.assertIn('"--chd-worker"', entry)
 
+    def test_the_windows_smoke_test_asserts_what_the_linux_one_does(self) -> None:
+        """packaging/smoke_test.ps1 (run by both Windows builds) checks everything packaging/smoke_test.sh checks, plus
+        the pages v0.2 added, and leaves no process behind."""
+        sh = (PKG / "smoke_test.sh").read_text(encoding="utf-8")
+        ps = (PKG / "smoke_test.ps1").read_text(encoding="utf-8")
+        for text in (self.zip_ps1, self.exe_ps1):
+            self.assertIn('& "$PSScriptRoot\\smoke_test.ps1"', text)
+            self.assertIn("-SelfCheck", text)                     # the self-check's lines are asserted there too
+            self.assertNotIn("Invoke-WebRequest \"http://127.0.0.1", text)   # no second, weaker smoke test of its own
+        # every URL the Linux test asks for
+        urls = set(re.findall(r'\$URL(/[A-Za-z0-9/_%?=.-]*)', sh))
+        self.assertGreaterEqual(urls, {"/", "/api/status", "/api/platforms", "/api/updates", "/api/chdman", "/api/quit",
+                                       "/api/library/profile?platform=Commodore%20Amiga",
+                                       "/api/library/profile?platform=Sega%20Dreamcast"})
+        for url in urls:
+            self.assertTrue(f'{url}"' in ps, f"the Windows smoke test never asks for {url}")
+        # every string the Linux test greps an answer for (grep -q '...' <<<"$X"), except its self-check lines
+        greps = [g for g in re.findall(r"grep -q '([^']+)' <<<", sh) if not g.startswith("^OK")]
+        self.assertGreaterEqual(len(greps), 9)
+        for needle in greps:
+            self.assertIn(f"'{needle}'", ps, needle)
+        for needle in ("^OK    the scheduler", "^OK    the writer ", "^OK    package libFLAC", "^OK    package Zstandard",
+                       "^OK    the app is complete", "^SELF-CHECK PASSED"):
+            self.assertIn(needle, ps)
+        # all 18 systems by name, and the count
+        names = re.search(r'for name in (.*?); do', sh, re.S).group(1)
+        systems = re.findall(r'"([^"]+)"', names)
+        self.assertEqual(len(systems), 18)
+        for name in systems:
+            self.assertIn(f'"{name}"', ps)
+        self.assertIn("$count -ne 18", ps)
+        # v0.2: the three new pages are in the HTML, their endpoints answer, the page's own files are served
+        for needle in ('"view-collection"', '"view-retroarch"', '"view-chd"', '"/api/collection"', '"/api/retroarch"',
+                       "/static/"):
+            self.assertIn(needle, ps)
+        # a miss fails the build; the app is quit through the API and the whole process tree is gone either way
+        self.assertIn('$ErrorActionPreference = "Stop"', ps)
+        self.assertIn("-Method Post", ps)
+        self.assertIn("POST /api/quit did not stop the app", ps)
+        self.assertRegex(ps, r"(?s)finally \{.*Stop-Tree \$p\.Id \$image")
+        self.assertIn("ParentProcessId", ps)                       # children of the onefile exe are found and stopped
+        self.assertIn('$env:ROMORG_OFFLINE = "1"', ps)             # never downloads DATs
+        self.assertIn("$env:ROMORG_DATA_DIR = $DataDir", ps)       # never the builder's own data folder
+
     def test_shipped_bytecode_does_not_record_the_builders_path(self) -> None:
         # compileall stores the source path it was given in every .pyc (tracebacks): -d replaces the build directory
         self.assertRegex(self.zip_ps1, r'compileall [^\n]*-d "app\\romorg"')
@@ -262,6 +306,68 @@ class WindowsPackagingTests(unittest.TestCase):
                 # shutil.which (used by ctypes.util) takes a Windows-only branch and fails on the missing _winapi
                 os.environ.pop(flacnative.ENV_LIB, None)
                 self.assertIn(str(dll), flacnative._candidates())
+
+    def test_self_check_knows_every_module_and_every_file_of_the_ui(self) -> None:
+        """The lists the self-check walks are the source tree's: a module or UI file added later cannot be forgotten."""
+        from romorg import selfcheck, server
+        modules = sorted(p.stem for p in (ROOT / "romorg").glob("*.py") if p.stem not in ("__init__", "__main__"))
+        self.assertEqual(sorted(selfcheck.APP_MODULES), modules)
+        static = sorted(p.name for p in (ROOT / "romorg" / "static").iterdir() if p.is_file())
+        self.assertEqual(sorted(selfcheck.STATIC_FILES), static)
+        self.assertEqual(sorted(server.STATIC_TYPES), static)                  # and the server serves each of them
+        page = (ROOT / "romorg" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(sorted(re.findall(r'<section class="view[^"]*" id="(view-[a-z]+)"', page)), sorted(selfcheck.UI_VIEWS))
+        for name in ("collection", "libexport", "meter", "retroarch", "sortroot"):   # the modules v0.2 added
+            self.assertIn(name, selfcheck.APP_MODULES)
+        ok, text = selfcheck.check_app()
+        self.assertTrue(ok, text)
+        self.assertIn(f"{len(modules)} modules import", text)
+
+    def test_self_check_fails_on_a_missing_module_or_ui_file(self) -> None:
+        import contextlib
+        import importlib
+        import io
+        from unittest import mock
+
+        from romorg import bundle, selfcheck, server
+        real_import, real_read = importlib.import_module, server.read_static
+
+        def no_retroarch(name: str, *args: object) -> object:
+            if name == "romorg.retroarch":
+                raise ModuleNotFoundError("No module named 'romorg.retroarch'")
+            return real_import(name, *args)
+
+        with mock.patch.object(importlib, "import_module", no_retroarch):
+            ok, text = selfcheck.check_app()
+        self.assertFalse(ok)
+        self.assertIn("module retroarch", text)
+
+        def no_script(name: str) -> bytes:
+            if name == "app.js":
+                raise FileNotFoundError(name)
+            return real_read(name)
+
+        with mock.patch.object(server, "read_static", no_script):
+            ok, text = selfcheck.check_app()
+        self.assertFalse(ok)
+        self.assertIn("static/app.js", text)
+        old_page = real_read("index.html").replace(b'id="view-collection"', b'id="view-old"')
+        with mock.patch.object(server, "read_static", lambda name: old_page if name == "index.html" else real_read(name)):
+            ok, text = selfcheck.check_app()
+        self.assertFalse(ok)
+        self.assertIn("view-collection", text)
+        # an incomplete app fails the whole self-check, in a source tree too
+        with mock.patch.object(bundle, "bundle_root", return_value=None), \
+                mock.patch.object(selfcheck, "check_chdman", return_value=("SKIP", "-")), \
+                mock.patch.object(selfcheck, "check_zstd", return_value=("OK", "z")), \
+                mock.patch.object(selfcheck, "check_flac", return_value=(True, "f")), \
+                mock.patch.object(selfcheck, "check_scheduler", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_writer", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_rvz", return_value=(True, "ok")), \
+                mock.patch.object(selfcheck, "check_app", return_value=(False, "the app is incomplete: x")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(selfcheck.main([]), 1)
+        self.assertIn("FAIL  the app is incomplete", out.getvalue())
 
     def test_require_native_makes_the_libraries_required(self) -> None:
         import contextlib

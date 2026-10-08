@@ -178,8 +178,9 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   stub; `fetch_sndfile.ps1` and `build_pyz.sh` also go through `py` / skip interpreters that do not run.
   The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs the pinned PyInstaller
   (`-PyInstallerVersion`, default 6.22.3) into a build venv (`packaging\.cache\venv-pyinstaller-3.14`), bundles
-  libFLAC (`-NoFlac` leaves it out), then runs the finished exe's import check, its CHD engine self-check and checks
-  that the UI answers. The licence texts go inside the exe (`licenses\`) and next to it (`dist\licenses`,
+  libFLAC (`-NoFlac` leaves it out), then runs the finished exe's import check, its self-check and the smoke
+  test (below). Every run of the exe during the build uses a throw-away data folder (`ROMORG_DATA_DIR`) and
+  `ROMORG_OFFLINE=1`. The licence texts go inside the exe (`licenses\`) and next to it (`dist\licenses`,
   `dist\THIRD_PARTY_NOTICES.txt`, written by every build): ship them with the exe. A Python without its
   `LICENSE.txt` stops the build.
 - **Zip (about 14 MB):** the official embeddable CPython 3.14 (`-PyVersion`, default 3.14.8) plus the `romorg`
@@ -187,7 +188,24 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   run time and it never trips antivirus.
 - **Why Python 3.14:** its `compression.zstd` reads Zstandard CHDs at library speed and makes the Zstandard preset
   available, with no `libzstd.dll` to ship.
-- **Self-check.** Both builds fail unless the package's own CHD engine self-check passes with `--require-native`:
+- **Smoke test.** Both builds end with `packaging\smoke_test.ps1`, the Windows counterpart of
+  `packaging/smoke_test.sh` with the same checks (`tests/test_packaging.py` compares the two scripts): the
+  self-check's lines (libFLAC from the package, `compression.zstd`, the scheduler, the writer, the app is complete),
+  then the package is started with `--no-browser --port N` and asked for `/`, the files the page loads
+  (`/static/app.js`, `/static/style.css`), `/api/status` (version, No-Intro, Redump, updates, `"os": "windows"`),
+  `/api/platforms` (all 18 systems by name, and exactly 18), `/api/updates`, `/api/library/profile` (Amiga rules,
+  Dreamcast `"style": "redump"`), `/api/chdman` (built-in writer, native FLAC), the pages of the UI in the HTML
+  (`view-home`, `view-system`, `view-collection`, `view-retroarch`, `view-chd`), `GET /api/collection` and
+  `GET /api/retroarch` (JSON), and finally `POST /api/quit`, after which no process of the package may be left. A
+  miss fails the build. Whatever happens, the whole process tree is stopped (the onefile exe runs the app in a child
+  process; a child left behind would keep `dist\*.exe` locked). By hand:
+  `powershell -ExecutionPolicy Bypass -File packaging\smoke_test.ps1 -Exe dist\Simple_ROM_Organiser-<version>-win64.exe -DataDir build\smoke-data`
+  (the zip: `-Exe <unzipped>\python\python.exe -ExeArgs "-I -u -m romorg"`).
+- **Self-check.** Besides the CHD engine the self-check verifies that the app is complete (`selfcheck.check_app`, on
+  every platform): each `romorg` module imports and the web UI's files and pages are there, read the way the server
+  reads them. The lists (`selfcheck.APP_MODULES`, `STATIC_FILES`, `UI_VIEWS`) are kept equal to the source tree by
+  `tests/test_packaging.py`, so a module or UI file added later cannot be left out of a package unnoticed.
+  Both builds fail unless the package's own self-check passes with `--require-native`:
   libFLAC loads from the package and encodes, Zstandard comes from `compression.zstd`, a shipped libsndfile loads
   (the Windows package check, `selfcheck.check_windows_package`, which runs whenever the app is frozen or its
   `app\native` folder exists), the scheduler runs worker processes and the writer makes a CHD with FLAC (`cdfl`)
@@ -197,7 +215,11 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   console, so the report goes to the file; without `--report` to `selfcheck.log` in the data folder; the exit code
   is 0 when it passed).
 - Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
-- The folder dialog is a native Windows dialog opened through PowerShell.
+- The folder dialog is a native Windows dialog opened through PowerShell (`FolderBrowserDialog`, in its own hidden
+  process, so it works from the windowed exe and from the zip's hidden `python.exe`; shown topmost; the path comes
+  back as UTF-8). One dialog at a time: a second request is answered 409 while one is open. It opens in the folder
+  the field names, or that folder's nearest existing parent. An unanswered dialog is closed after 5 minutes, and an
+  open one is closed when the app quits.
 
 ### Windows: chdman, 7-Zip and speed
 

@@ -93,6 +93,9 @@ $exe = "$root\dist\Simple_ROM_Organiser-$version-win64.exe"
 # build must notice if a new release stops doing so). Windows then honours the LongPathsEnabled setting for the exe.
 $manifest = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($exe))
 if ($manifest -notmatch '<longPathAware[^>]*>\s*true\s*</longPathAware>') { throw "the exe's manifest lacks longPathAware" }
+# Every run of the exe below uses a throw-away data folder and never downloads: the builder's own settings, DATs and
+# app.log (%LOCALAPPDATA%\simple-rom-organiser) are not touched.
+$env:ROMORG_DATA_DIR = "$work\smoke-data"; $env:ROMORG_OFFLINE = "1"
 $mods = (Get-ChildItem "$root\romorg\*.py" | Where-Object { $_.BaseName -ne "__init__" } | ForEach-Object { $_.BaseName }) -join ","
 $st = Start-Process $exe "--selftest $mods" -Wait -PassThru
 if ($st.ExitCode -ne 0) { throw "self-test failed: $($st.ExitCode) romorg module(s) are missing from the exe" }
@@ -108,24 +111,12 @@ if ($st.ExitCode -ne 0) { throw "CHD engine self-check of the exe failed ($($st.
 if (-not $NoFlac -and -not ($lines | Where-Object { $_ -match '^OK    libFLAC .*\\native\\libFLAC\.dll' })) {
     throw "libFLAC was not loaded from the exe's bundle"
 }
-$data = "$work\smoke-data"
-$env:ROMORG_DATA_DIR = $data; $env:ROMORG_OFFLINE = "1"
-$port = Get-Random -Minimum 20000 -Maximum 50000
-$p = Start-Process $exe "--no-browser --port $port" -PassThru
+# Smoke test (the checks of packaging/smoke_test.sh): the exe serves the UI and the API, every system and the v0.2
+# pages are there, and Quit stops it. Nothing of it is left running afterwards (a leftover would lock dist\*.exe).
 try {
-    $ok = $false
-    for ($i = 0; $i -lt 150 -and -not $ok; $i++) {
-        Start-Sleep -Milliseconds 200
-        try { $r = Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing; $ok = $r.Content -match "<html" } catch {}
-    }
-    if (-not $ok) { throw "smoke test failed: UI did not answer" }
-    $s = Invoke-WebRequest "http://127.0.0.1:$port/api/status" -UseBasicParsing
-    Write-Host "smoke test ok: $($s.Content.Substring(0, [Math]::Min(100, $s.Content.Length)))"
+    & "$PSScriptRoot\smoke_test.ps1" -Exe $exe -DataDir "$work\smoke-data" -SelfCheck $lines -NoFlac:$NoFlac
 } finally {
-    Get-Process | Where-Object { $_.Path -eq $exe } | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    Remove-Item Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE
-    Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
+    Remove-Item Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE -ErrorAction SilentlyContinue
 }
 # The notices and licence texts also go next to the exe: ship dist\THIRD_PARTY_NOTICES.txt and dist\licenses with it.
 $distLic = "$root\dist\licenses"
