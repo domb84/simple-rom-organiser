@@ -3933,6 +3933,11 @@ class App:
                 self._collection_save(last=last)
             return started
 
+        for name, log in conv_logs.items():             # "Convert first" is part of this build: it can be undone from now
+            last["runs"][name] = {"log": "", "root": str(root), "convert_log": log}        # on, also when the rest is stopped
+        if conv_logs:
+            noted[0] = True
+            self._collection_save(last=last)
         keep = [root, aside, *layout["folder_of"].values()]
         prepared: dict[str, tuple[Any, Any, list[Any], int]] = {}
         if apply:
@@ -4094,6 +4099,7 @@ class App:
                     if res["run"] is not None:
                         runs[sysobj.name] = {"dest": str(ep.dest), "run": res["run"],
                                              **({"follow": follow["journal"]} if follow and follow.get("journal") else {})}
+                        self._collection_save(last={"place": "elsewhere", "runs": runs})     # (known even if a later system dies)
                     if res["cancelled"]:
                         break
             except libexport.ExportError as exc:

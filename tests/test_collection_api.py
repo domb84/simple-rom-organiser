@@ -526,6 +526,28 @@ class Failures(CollectionCase):
         self.assertEqual(len(seen["journal"]["moves"]), 4)             # three made, the fourth written down and not made
         self.assertEqual(len([x for x in tree(self.tmp / "roms-archive") if x.endswith(".gba")]), 3)
 
+    def test_a_build_stopped_after_convert_first_can_undo_the_conversion(self) -> None:
+        root = self.tmp / "roms"
+        put(root / "Dump" / "delta.smc", bytes(512) + self.rom["Delta (USA)"])         # a copier header in front
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        before = tree(root)
+        self.scan(root, convert=True)
+        app = self.srv.app
+        real = app._collection_layout
+
+        def stop_here(*a: Any, **k: Any) -> Any:                   # the conversion is done; the user presses Stop
+            app.jobs.cancel()
+            return real(*a, **k)
+
+        with mock.patch.object(app, "_collection_layout", stop_here):
+            self.call("POST", "/api/collection/apply", {})
+            self.assertEqual(self.wait()["status"], "cancelled")
+        self.assertEqual((root / "snes" / "Delta (USA).sfc").read_bytes(), self.rom["Delta (USA)"])
+        self.assertTrue((root / "snes" / "_converted_originals" / "Dump" / "delta.smc").is_file())
+        self.assertTrue((root / "Dump" / "alpha.sfc").is_file())       # the rest was not started
+        self.undo()
+        self.assertEqual(tree(root), before)
+
     def test_undo_and_restore_wait_for_a_running_job(self) -> None:
         root = self.make()
         self.build(root)                                           # a first build: there is something to undo

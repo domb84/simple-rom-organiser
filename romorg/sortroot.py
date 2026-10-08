@@ -216,6 +216,11 @@ _WIN_NOT_SAME_DEVICE = 17
 _budget = [RETRY_BUDGET]
 
 
+def reset_retries() -> None:
+    """A new run: it may wait for files held by other programs again (see ``RETRY_BUDGET``)."""
+    _budget[0] = RETRY_BUDGET
+
+
 def _cross_device(exc: OSError) -> bool:
     return exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == _WIN_NOT_SAME_DEVICE
 
@@ -514,7 +519,7 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
     done: List[dict] = []
     emptied: set = set()
     journal = _Journal(journal_dir, kind, extra, started)
-    _budget[0] = RETRY_BUDGET
+    reset_retries()
     try:
         for i, m in enumerate(moves):
             if cancel and cancel():
@@ -559,7 +564,7 @@ def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
     partial = bool(d.pop("partial", False))
     restored, skipped, dirs = 0, [], set()
     left: List[dict] = []
-    _budget[0] = RETRY_BUDGET
+    reset_retries()
     for m in reversed(d.get("moves", [])):
         src, dst = Path(m["to"]), Path(m["from"])
         if not os.path.lexists(src):

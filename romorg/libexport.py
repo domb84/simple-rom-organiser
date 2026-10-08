@@ -506,6 +506,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
         meter.add(n)
 
     cancelled = lambda: bool(cancel and cancel())   # noqa: E731
+    sortroot.reset_retries()
     try:
         for t in todo:
             if cancelled():
@@ -640,6 +641,7 @@ def undo_run(dest: Path, run: Optional[int] = None) -> dict:
         raise ExportError("There is no library build recorded in that folder.")
     removed = 0
     skipped: List[dict] = []
+    sortroot.reset_retries()
     try:
         if run is None:
             row = db.execute("SELECT MAX(id) FROM runs WHERE undone = 0").fetchone()
