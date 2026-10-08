@@ -635,7 +635,7 @@ class _Core:
 
 def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: bool,
                layout: Optional[str], profile: Optional["library.LibraryProfile"], platform: Any,
-               ratings: Any = None, lang_games: Any = None) -> _Core:
+               ratings: Any = None, lang_games: Any = None, saved: Any = None) -> _Core:
     from . import scanner
 
     root = result.root
@@ -684,11 +684,14 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
             key = len(items)
             owners[key] = (u.op, u)
             items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
-        selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games)
+        selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games,
+                                   saved=saved)
         for key, (op, u) in owners.items():
             d = selection.decisions.get(key)
             if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
                 _add_reason(op, d.reason.split("; ")[-1])      # "borrowed as disk N of <set> (...)"
+            if d is not None and d.action == library.KEEP and library.SAVED_KEEP in d.codes:
+                _add_reason(op, d.reason)                      # "kept: you have saves or save states for it"
             if d is None or d.action == library.KEEP:
                 continue
             code = d.action
@@ -768,17 +771,19 @@ class LibraryPlan:
 
 def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
                  layout: Optional[str] = None, savedisk: bool = False,
-                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None) -> LibraryPlan:
+                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None,
+                 saved: Any = None) -> LibraryPlan:
     """See :func:`_plan_library`; playlists on disk are looked at once for the whole plan (``m3u.one_look``)."""
     from . import m3u
 
     with m3u.one_look():
-        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings, lang_games)
+        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings, lang_games, saved)
 
 
 def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),
                  layout: Optional[str] = None, savedisk: bool = False,
-                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None) -> LibraryPlan:
+                 labels: bool = True, platform: Any = None, ratings: Any = None, lang_games: Any = None,
+                 saved: Any = None) -> LibraryPlan:
     """The combined plan: tidy + duplicates + the profile's rules + playlists of the kept multi-disk sets.
 
     Playlists are planned from the disks' FINAL paths (next to disk 1). Our own playlists that go
@@ -787,7 +792,7 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     """
     from . import library, m3u
 
-    core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings, lang_games)
+    core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings, lang_games, saved)
     root = result.root
     ops = core.ops
     sel = core.selection if core.selection is not None else library.Selection()
@@ -1016,6 +1021,7 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
     out.update(dict.fromkeys((f"excluded_{c}" for c in library.ALL_CODES), 0))
     borrow = plan.selection.borrow_summary()
     out["borrowed_sets"], out["borrowed_disks"] = borrow["sets"], borrow["disks"]
+    out["kept_saved"] = plan.selection.saved_kept()
     for op in plan.ops:
         if op.status == DELETE_STATUS:
             out["playlists_remove"] += 1
@@ -1210,6 +1216,17 @@ class _Journal:
                 pass
             return None
         return self.path
+
+
+def write_marker_log(root: Path) -> Path:
+    """An undo log without a single step: the handle that "Undo" of a Build library run takes when everything the run
+    did was done by the archive moves (``sortroot``) and nothing was renamed inside the folder."""
+    journal = _Journal(Path(root))
+    journal._open()
+    journal.useful = True
+    path = journal.close()
+    assert path is not None
+    return path
 
 
 def _new_log_path(root: Path) -> Path:

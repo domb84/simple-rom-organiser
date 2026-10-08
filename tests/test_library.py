@@ -875,6 +875,93 @@ class ProfilePersistence(unittest.TestCase):
                          (("En",), True, ("Europe", "USA", "World", "Japan")))
 
 
+class SavedGames(unittest.TestCase):
+    """"Games you have saves for" (Amendment 30): keep / archive / leave."""
+
+    NAMES = ["Zed (USA)", "Zed (Europe)", "Solo (USA)"]
+
+    @staticmethod
+    def keys(*names: str) -> frozenset:
+        """What the build passes: the content names as RetroArch's saves spell them (``retroarch.fold_name``)."""
+        from romorg.retroarch import fold_name
+        return frozenset(fold_name(n) for n in names)
+
+    def sel(self, saved, profile=None):
+        items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
+        prof = profile or library.default_profile(GBA)
+        sel = library.select(items, prof, GBA, saved=saved)
+        return {self.NAMES[k - 1]: d for k, d in sel.decisions.items()}, sel
+
+    def test_the_field_defaults_to_keep_and_round_trips(self) -> None:
+        self.assertEqual(LibraryProfile().saved_games, "keep")
+        for v in ("keep", "archive", "leave"):
+            p = LibraryProfile(saved_games=v)
+            self.assertEqual(p.to_dict()["saved_games"], v)
+            self.assertEqual(LibraryProfile.from_dict(p.to_dict()).saved_games, v)
+        self.assertEqual(LibraryProfile.from_dict({"saved_games": "archive"}, LibraryProfile(saved_games="leave")).saved_games, "archive")
+
+    def test_a_bad_value_falls_back_and_an_old_profile_loads_with_keep(self) -> None:
+        self.assertEqual(LibraryProfile(saved_games="sometimes").saved_games, "keep")
+        self.assertEqual(LibraryProfile.from_dict({"saved_games": 3}).saved_games, "keep")
+        self.assertEqual(LibraryProfile.from_dict({"saved_games": "nope"}, LibraryProfile(saved_games="archive")).saved_games, "archive")
+        old = {"exclude": ["demo"], "latest_only": True, "best_variant": True, "complete_only": True}        # saved before the field
+        self.assertEqual(LibraryProfile.from_dict(old, library.default_profile(GBA)).saved_games, "keep")
+        self.assertEqual(library.load_profile({"library": {GBA.name: old}}, GBA).saved_games, "keep")
+
+    def test_nothing_changes_without_saves(self) -> None:
+        by, sel = self.sel(None)
+        self.assertEqual(by["Zed (USA)"].action, SUPERSEDED)
+        self.assertEqual(self.sel(frozenset())[0]["Zed (USA)"].action, SUPERSEDED)
+        self.assertEqual(sel.saved_kept(), 0)
+
+    def test_keep_keeps_the_game_the_rules_would_set_aside(self) -> None:
+        by, sel = self.sel(self.keys("Zed (USA)"))
+        self.assertEqual((by["Zed (USA)"].action, by["Zed (USA)"].codes), (KEEP, (library.SAVED_KEEP,)))
+        self.assertIn("saves", by["Zed (USA)"].reason)
+        self.assertEqual((by["Zed (Europe)"].action, by["Solo (USA)"].action), (KEEP, KEEP))
+        self.assertEqual(sel.saved_kept(), 1)
+        self.assertEqual(sel.vanished, [])
+
+    def test_a_game_all_of_whose_editions_are_excluded_is_not_gone_when_it_has_saves(self) -> None:
+        names = ["Beta (USA) (Beta)"]
+        items = ni_items(names, "Nintendo - Game Boy Advance")
+        prof = library.default_profile(GBA)
+        self.assertEqual(library.select(items, prof, GBA).decisions[1].action, EXCLUDED)
+        sel = library.select(items, prof, GBA, saved=self.keys("Beta (USA) (Beta)"))
+        self.assertEqual(sel.decisions[1].action, KEEP)
+        self.assertEqual(sel.vanished, [])
+
+    def test_archive_and_leave_do_not_keep_anything(self) -> None:
+        for mode in ("archive", "leave"):
+            by, sel = self.sel(self.keys("Zed (USA)"), replace(library.default_profile(GBA), saved_games=mode))
+            self.assertEqual(by["Zed (USA)"].action, SUPERSEDED, mode)
+            self.assertEqual(sel.saved_kept(), 0)
+
+    def test_the_users_own_always_exclude_beats_the_saves(self) -> None:
+        prof = replace(library.default_profile(GBA), overrides=(("Nintendo - Game Boy Advance", "Zed (USA)", "exclude"),))
+        by, _sel = self.sel(self.keys("Zed (USA)"), prof)
+        self.assertEqual(by["Zed (USA)"].codes, (library.OVERRIDE_EXCLUDE,))
+
+    def test_the_disks_of_a_set_are_left_to_their_rules(self) -> None:
+        names = ["Two (1990)(P)(Disk 1 of 2)", "Two (1990)(P)(Disk 2 of 2)", "Old v1 (1990)(P)", "Old v2 (1991)(P)"]
+        items = [replace(it, path=Path(it.path.name + ".adf")) for it in amiga_items(names)]
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA, saved=self.keys(*names))
+        by = {names[k - 1]: d for k, d in sel.decisions.items()}
+        self.assertEqual(by["Old v1 (1990)(P)"].codes, (library.SAVED_KEEP,))                     # a single disk: kept by its saves
+        self.assertEqual(len(sel.sets), 1)                                                         # the set is untouched
+        self.assertEqual(actions(by)["Two (1990)(P)(Disk 1 of 2)"], KEEP)
+
+    def test_the_archive_member_name_counts_too(self) -> None:
+        items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
+        items = [replace(it, path=Path("pack.zip"), member=it.path.name + ".gba") for it in items]
+        sel = library.select(items, library.default_profile(GBA), GBA, saved=self.keys("Zed (USA)"))
+        self.assertEqual(sel.decisions[1].codes, (library.SAVED_KEEP,))
+
+    def test_totals_do_not_depend_on_it(self) -> None:
+        from romorg import totals
+        self.assertEqual(totals.profile_signature(LibraryProfile(saved_games="keep")), totals.profile_signature(LibraryProfile(saved_games="leave")))
+
+
 class BorrowTests(unittest.TestCase):
     """Amendment 12: disks of other editions complete a set (``borrow_other_editions``)."""
 

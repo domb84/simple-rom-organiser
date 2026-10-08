@@ -33,7 +33,9 @@ HAVE, INCOMPLETE_OWNED, EXCLUDED_OWNED = "have", "incomplete", "excluded"
 
 def profile_signature(profile: library.LibraryProfile) -> str:
     """Short stable digest of every rule of a profile (changes whenever a rule / option / language changes)."""
-    blob = json.dumps(profile.to_dict(), sort_keys=True, separators=(",", ":"))
+    rules = profile.to_dict()
+    rules.pop("saved_games", None)          # (what happens to games you have saves for does not change the totals)
+    blob = json.dumps(rules, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 

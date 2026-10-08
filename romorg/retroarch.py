@@ -955,18 +955,77 @@ def split_save(name: str) -> Optional[tuple]:
     return None
 
 
+def fold_name(name: str) -> str:
+    """A content name as it is compared with a save's name: Windows ignores case, everywhere else it matters (RetroArch
+    writes the name exactly as the content file has it)."""
+    return name.casefold() if os.name == "nt" else name
+
+
+_SUFFIX_BAD = " ()"            # a core's suffix never has spaces (or the brackets of a game's name)
+
+
+class SaveMatcher:
+    """Finds the game a save or state file name belongs to (see :func:`match_save`); build it once for many names."""
+
+    def __init__(self, wanted: Iterable[str]) -> None:
+        self.wanted = wanted if isinstance(wanted, (set, dict, frozenset)) else set(wanted)
+        self.fold = {name.casefold(): name for name in self.wanted} if os.name == "nt" else None
+
+    def match(self, name: str) -> Optional[tuple]:
+        cut = name.rfind(".")
+        while cut > 0:
+            head = name[:cut]
+            hit = head if head in self.wanted else (self.fold.get(head.casefold()) if self.fold is not None else None)
+            if hit is not None and not any(ch in name[cut:] for ch in _SUFFIX_BAD):
+                return hit, name[cut:]
+            cut = name.rfind(".", 0, cut)
+        return None
+
+
 def match_save(name: str, wanted: Iterable[str]) -> Optional[tuple]:
     """``(content name, suffix)`` when ``name`` is a save or state file of one of the ``wanted`` games: the game's name, then a
     dot, then whatever the core adds (``.srm``, ``.state1.png``, Flycast's ``.A1.bin`` memory cards, ``.1.srm``, ``.eep`` ...).
     The longest game name wins, so ``Game (USA).A1.bin`` belongs to ``Game (USA)`` and not to a shorter ``Game``; a dot
-    inside a name (``Dr. Mario``) is only a cut where the part before it is itself one of the games and what follows is a plain suffix (no spaces)."""
-    wanted = wanted if isinstance(wanted, (set, dict, frozenset)) else set(wanted)
-    cut = name.rfind(".")
-    while cut > 0:
-        if name[:cut] in wanted and not any(ch in name[cut:] for ch in " ()"):     # a core's suffix never has spaces
-            return name[:cut], name[cut:]
-        cut = name.rfind(".", 0, cut)
-    return None
+    inside a name (``Dr. Mario``) is only a cut where the part before it is itself one of the games and what follows is a plain suffix (no spaces).
+    On Windows the names are compared without regard to case; the returned name is the one in ``wanted``."""
+    return SaveMatcher(wanted).match(name)
+
+
+def save_name_keys(names: Iterable[str]) -> frozenset:
+    """Every content name (as :func:`fold_name` writes it) the file names in ``names`` could be a save of: the part before
+    each dot whose rest is a plain suffix. Looking a game up in this set tells whether any save belongs to it, without
+    knowing the games when the saves are read."""
+    out: set = set()
+    for name in names:
+        cut = name.rfind(".")
+        while cut > 0:
+            if not any(ch in name[cut:] for ch in _SUFFIX_BAD):
+                out.add(fold_name(name[:cut]))
+            cut = name.rfind(".", 0, cut)
+    return frozenset(out)
+
+
+# What a core writes after the game's name. Used where a save has to be told from the ROM's other companions (the Redump
+# .zip / .md5 / .cue of a disc game's folder), which match_save cannot do: it accepts any suffix.
+_SAVE_EXTS = frozenset(("srm", "sav", "mcr", "mcd", "eep", "sra", "fla", "mpk", "nvr", "rtc", "uss"))
+_STATE_SUFFIX_RE = re.compile(r"^\.state(\d*|\.auto)(\.png)?$", re.IGNORECASE)
+_CARD_SUFFIX_RE = re.compile(r"^\.[A-D][1-6]\.bin$", re.IGNORECASE)         # Flycast: Game.A1.bin .. Game.D6.bin
+_NUMBERED_RE = re.compile(r"^\.\d+\.(srm|sav)$", re.IGNORECASE)             # some cores: Game.1.srm
+
+
+def is_save_suffix(suffix: str) -> bool:
+    """True for what follows the game's name in an emulator save or state file: ``.srm .sav .mcr .mcd .eep .sra .fla .mpk
+    .nvr .rtc .uss``, ``.state``, ``.state<N>``, ``.state.auto`` (each state also with ``.png``), a numbered ``.<N>.srm`` and
+    Flycast's ``.A1.bin`` ... ``.D6.bin`` memory cards."""
+    if _STATE_SUFFIX_RE.match(suffix) or _CARD_SUFFIX_RE.match(suffix) or _NUMBERED_RE.match(suffix):
+        return True
+    return suffix.count(".") == 1 and suffix[1:].lower() in _SAVE_EXTS
+
+
+def is_save_of(name: str, stem: str) -> bool:
+    """``name`` is a save or state file of the game ``stem``: it starts with the stem and a dot, and what follows is a
+    :func:`is_save_suffix` suffix."""
+    return len(name) > len(stem) + 1 and name[:len(stem)] == stem and name[len(stem)] == "." and is_save_suffix(name[len(stem):])
 
 
 def pairs_from_moves(moves: Iterable[tuple]) -> List[tuple]:
@@ -990,6 +1049,63 @@ def save_roots(install: Install, home: Optional[Path] = None) -> List[Path]:
     return roots
 
 
+def list_saves(install: Install, platform: Any = None, home: Optional[Path] = None) -> List[tuple]:
+    """``[(file, save root)]`` for every save and state file that can belong to a game of ``platform`` (all of them when
+    ``platform`` is None): the save roots are walked ONCE. When RetroArch sorts the files into a sub-folder per core, only
+    the folders of the cores that play the platform count, so a Genesis save never belongs to a same-named SNES game. A
+    sub-folder that is no core's name (sorted by content folder, or files directly in the root) counts for every system."""
+    roots = save_roots(install, home)
+    if not roots:
+        return []
+    known: set = set()
+    mine: Optional[set] = None
+    if platform is not None:
+        infos = core_infos(install, home, firmware_only=False)
+        known = {fold_name(c["core"]) for c in infos}
+        mine = {fold_name(c["core"]) for c in cores_for_platform(infos, platform)}
+    out: List[tuple] = []
+    seen: set = set()
+    for root in roots:
+        for f in _walk(root):
+            key = os.path.normcase(str(f))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                parts = f.relative_to(root).parts
+            except ValueError:
+                parts = (f.name,)
+            if mine is not None and len(parts) > 1 and fold_name(parts[0]) in known and fold_name(parts[0]) not in mine:
+                continue
+            out.append((f, root))
+    return out
+
+
+@dataclass
+class SaveFile:
+    src: Path
+    rel: Path                 # the path below its save root (``bsnes/Game (USA).srm``)
+    stem: str                 # the game it belongs to
+    kind: str                 # save | state
+    size: int = 0
+
+
+def saves_of(files: Iterable[tuple], stems: Iterable[str]) -> List[SaveFile]:
+    """The files of :func:`list_saves` that belong to one of the games ``stems`` (a longer name wins, see :func:`match_save`)."""
+    matcher = SaveMatcher(set(stems))
+    out: List[SaveFile] = []
+    for f, root in files:
+        hit = matcher.match(f.name)
+        if hit is None:
+            continue
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        out.append(SaveFile(f, f.relative_to(root), hit[0], "state" if re.match(r"^\.state", hit[1], re.IGNORECASE) else "save", size))
+    return out
+
+
 @dataclass
 class Follow:
     src: Path
@@ -1000,37 +1116,42 @@ class Follow:
     size: int = 0
 
 
-def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", home: Optional[Path] = None) -> List[Follow]:
+def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", home: Optional[Path] = None,
+                files: Optional[Iterable[tuple]] = None) -> List[Follow]:
     """Where saves and states go when games get new names: each file stays in its own folder (core folders are kept apart)
-    and only the content name part changes. ``mode`` is ``move`` (the old name goes) or ``copy`` (both names stay)."""
+    and only the content name part changes. ``mode`` is ``move`` (the old name goes) or ``copy`` (both names stay).
+    ``files``: the files to look at, ``[(file, save root)]`` as :func:`list_saves` gives them (default: every file of
+    every save root)."""
     wanted = dict(pairs)
     out: List[Follow] = []
     if not wanted:
         return out
     claimed: set = set()
-    for root in save_roots(install, home):
-        for f in _walk(root):
-            hit = match_save(f.name, wanted)
-            if hit is None:
+    matcher = SaveMatcher(wanted)
+    if files is None:
+        files = [(f, root) for root in save_roots(install, home) for f in _walk(root)]
+    for f, _root in files:
+        hit = matcher.match(f.name)
+        if hit is None:
+            continue
+        stem, suffix = hit
+        kind = "state" if re.match(r"^\.state", suffix, re.IGNORECASE) else "save"
+        dst = f.with_name(wanted[stem] + suffix)
+        status, note = mode, ""
+        key = os.path.normcase(str(dst))
+        if _same_file_other_case(f, dst):
+            # the new name differs only by case and the file system ignores case: it is this very file, not a
+            # file in the way. A move gives it the new spelling; a copy has nothing to do.
+            if mode != "move":
                 continue
-            stem, suffix = hit
-            kind = "state" if re.match(r"^\.state", suffix, re.IGNORECASE) else "save"
-            dst = f.with_name(wanted[stem] + suffix)
-            status, note = mode, ""
-            key = os.path.normcase(str(dst))
-            if _same_file_other_case(f, dst):
-                # the new name differs only by case and the file system ignores case: it is this very file, not a
-                # file in the way. A move gives it the new spelling; a copy has nothing to do.
-                if mode != "move":
-                    continue
-            elif os.path.lexists(dst) or key in claimed:
-                status, note = "conflict", "a file with the new name is already there - left alone"
-            claimed.add(key)
-            try:
-                size = f.stat().st_size
-            except OSError:
-                size = 0
-            out.append(Follow(f, dst, kind, status, note, size))
+        elif os.path.lexists(dst) or key in claimed:
+            status, note = "conflict", "a file with the new name is already there - left alone"
+        claimed.add(key)
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        out.append(Follow(f, dst, kind, status, note, size))
     return out
 
 
@@ -1092,8 +1213,8 @@ def md5_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def core_infos(install: Install, home: Optional[Path] = None) -> List[dict]:
-    """Every installed core's ``.info`` that lists firmware: ``{core, display, extensions, firmware:[{path, optional, md5}]}``."""
+def core_infos(install: Install, home: Optional[Path] = None, firmware_only: bool = True) -> List[dict]:
+    """Every installed core's ``.info`` that lists firmware (every core with ``firmware_only=False``): ``{core, display, extensions, firmware:[{path, optional, md5}]}``."""
     cfg = read_cfg(install.cfg)
     dirs = [d for d in (resolve(cfg.get("libretro_info_path", ""), install, home), install.base / "cores", install.base / "info") if d]
     seen: set = set()
@@ -1108,7 +1229,7 @@ def core_infos(install: Install, home: Optional[Path] = None) -> List[dict]:
                 n = int(info.get("firmware_count", "0") or 0)
             except ValueError:
                 n = 0
-            if n <= 0:
+            if n <= 0 and firmware_only:
                 continue
             md5s = {m.group(1).replace("\\", "/").split("/")[-1].casefold(): m.group(2).lower()
                     for m in re.finditer(r"\(!\)\s*([^|]*?)\s*\(md5\):\s*([0-9a-fA-F]{32})", info.get("notes", ""))}

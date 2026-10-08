@@ -39,7 +39,7 @@ def _snapshot(root: Path) -> tuple[dict[str, bytes], set[str]]:
 class FoldersModuleTests(unittest.TestCase):
     def test_reserved_names_are_one_constant(self) -> None:
         self.assertEqual(set(folders.RESERVED_DIRS), {"_unmatched", "_excluded", "_superseded", "_incomplete",
-                                                      "_duplicates", "_converted_originals"})
+                                                      "_duplicates", "_converted_originals", "_saves"})
         self.assertIs(organiser.RESERVED_DIRS, folders.RESERVED_DIRS)
         self.assertIs(organiser.REASON_DIRS, folders.REASON_DIRS)
         self.assertIs(scanner.RESERVED_DIRS, folders.RESERVED_DIRS)

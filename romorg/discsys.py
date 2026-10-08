@@ -1478,7 +1478,7 @@ def _reason_mapping(unit: DcUnit, root: Path, reason_dir: str, plan: _Plan) -> d
             return cand
 
 
-def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None,
+def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, saved: Any = None,
                ) -> tuple[list[DcOp], Any, dict[int, DcOp]]:
     """The game-level ops for tidy (``profile`` None) or Build library; returns ``(ops, selection, owners)``."""
     from . import library
@@ -1528,7 +1528,7 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None,
                 (library.Item(key=n, dat=g.rep.dat, rom=g.rep, style=tags.STYLE_REDUMP, path=Path(g.name), member=None,
                               disc_total=totals.get(g.name, 0)) for n, g in enumerate(index.games.values())),
                 profile, result_platform(result))
-        sel = library.select(items, profile, result_platform(result), ratings=ratings, lang_games=lang_games)
+        sel = library.select(items, profile, result_platform(result), ratings=ratings, lang_games=lang_games, saved=saved)
     decisions = sel.decisions
     unit_key = {id(u): i for i, u in key_of.items()}
     for u in sorted(keepers, key=lambda x: os.fspath(x.top).casefold()):
@@ -1672,10 +1672,10 @@ def plan_tidy(result: DcScanResult) -> list[DcOp]:
 
 
 def plan_library(result: DcScanResult, profile: Any, savedisk: bool = False,
-                 labels: bool = False, ratings: Any = None) -> Any:
+                 labels: bool = False, ratings: Any = None, saved: Any = None) -> Any:
     """Build library: the profile's rules plus tidy plus playlists of the kept multi-disc games."""
     from . import m3u
-    ops, sel, owners = plan_units(result, profile, ratings)
+    ops, sel, owners = plan_units(result, profile, ratings, saved)
     root = Path(result.root)
     if result.system is not None and not result.system.playlists:
         # PlayStation 2: PCSX2 does not read .m3u files - no playlist is written and none is touched

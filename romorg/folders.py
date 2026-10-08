@@ -8,6 +8,9 @@
       _superseded/           older versions / worse variants
       _incomplete/           multi-disk games with missing disks
       _duplicates/           extra copies of the same ROM
+      _saves/                RetroArch saves / states of the games the rules archive (Amendment 30; only when the
+                             "games you have saves for" rule is "archive" and no archive folder is set: with one, the
+                             saves go to <archive>/<this folder's name>/_saves/ with the ROMs)
       _converted_originals/  originals kept by "Convert to No-Intro format"
 
 Each folder keeps the file's path relative to the root inside it. The names are compared
@@ -28,6 +31,7 @@ SUPERSEDED_DIR = "_superseded"
 INCOMPLETE_DIR = "_incomplete"
 DUPLICATES_DIR = "_duplicates"
 CONVERTED_DIR = "_converted_originals"
+SAVES_DIR = "_saves"
 
 # Folders the app never touches inside a platform folder (a PROTECTED name, not a reason folder):
 # a ``Kickstarts/`` folder of the WHDLoad system holds the user's Kickstart ROMs for its own Kickstart
@@ -37,7 +41,7 @@ KICKSTARTS_DIR = "Kickstarts"
 PROTECTED_DIRS = (KICKSTARTS_DIR,)
 
 # The reserved app folders (every one is a direct child of the platform folder).
-RESERVED_DIRS = (UNMATCHED_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, INCOMPLETE_DIR, DUPLICATES_DIR, CONVERTED_DIR)
+RESERVED_DIRS = (UNMATCHED_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, INCOMPLETE_DIR, DUPLICATES_DIR, CONVERTED_DIR, SAVES_DIR)
 # Folders a library rule / duplicate check sends a matched file to.
 REASON_DIRS = (EXCLUDED_DIR, SUPERSEDED_DIR, INCOMPLETE_DIR, DUPLICATES_DIR)
 # Reserved folders that used to be sub-folders of _unmatched/ (the legacy layout).

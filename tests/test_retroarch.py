@@ -354,5 +354,83 @@ class BiosAll(Bios):
         self.assertEqual(r["cores"][0]["firmware"][0]["status"], "missing")
 
 
+class SaveRecogniser(unittest.TestCase):
+    """One definition of "an emulator save or state file" (the build, the sort and the preview all use it)."""
+
+    def test_suffixes(self) -> None:
+        for s in (".srm", ".sav", ".state", ".state1", ".state12", ".state.auto", ".state1.png", ".state.png", ".mcr", ".mcd",
+                  ".eep", ".sra", ".fla", ".mpk", ".nvr", ".rtc", ".uss", ".A1.bin", ".D6.bin", ".b2.bin", ".1.srm", ".SRM"):
+            self.assertTrue(ra.is_save_suffix(s), s)
+        for s in (".zip", ".md5", ".cue", ".chd", ".bin", ".gdi", ".txt", ".png", ".E1.bin", ".A7.bin", ".srm.bak", ".state1.txt", "srm", ""):
+            self.assertFalse(ra.is_save_suffix(s), s)
+
+    def test_a_save_of_a_game_starts_with_its_name_and_a_dot(self) -> None:
+        stem = "Spider - The Video Game (USA)"
+        for n in (".srm", ".state", ".state1", ".A1.bin"):
+            self.assertTrue(ra.is_save_of(stem + n, stem), n)
+        for n in (stem + ".zip", stem + ".cue", stem + " (Disc 2).srm", "Other.srm", stem + "srm", stem + ".", stem):
+            self.assertFalse(ra.is_save_of(n, stem), n)
+
+    def test_name_keys_cover_every_possible_game_name(self) -> None:
+        keys = ra.save_name_keys(["Game (USA).srm", "Game (USA).state1.png", "Dr. Mario (USA).srm", "Game (USA).A1.bin"])
+        self.assertTrue({"Game (USA)", "Dr. Mario (USA)"} <= {k for k in keys} or os.name == "nt")
+        self.assertNotIn("Dr", keys)
+        self.assertNotIn(ra.fold_name("Mario (USA)"), keys)
+
+    @unittest.skipUnless(os.name == "nt", "Windows ignores case, everywhere else RetroArch's names are exact")
+    def test_windows_compares_names_without_case(self) -> None:
+        self.assertEqual(ra.match_save("MARIO (usa).SRM", {"Mario (USA)"}), ("Mario (USA)", ".SRM"))
+        self.assertIn(ra.fold_name("Mario (USA)"), ra.save_name_keys(["MARIO (USA).srm"]))
+
+    @unittest.skipIf(os.name == "nt", "Windows ignores case")
+    def test_elsewhere_case_matters(self) -> None:
+        self.assertIsNone(ra.match_save("MARIO (usa).srm", {"Mario (USA)"}))
+        self.assertNotIn("Mario (USA)", ra.save_name_keys(["MARIO (USA).srm"]))
+
+
+class SavesPerSystem(World):
+    """When RetroArch sorts the saves into a folder per core, only the cores that play a system count for it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        info = self.base / "info"
+        info.mkdir()
+        (info / "bsnes_libretro.info").write_text('display_name = "Nintendo - SNES / SFC (bsnes)"\ncorename = "bsnes"\n'
+                                                  'supported_extensions = "smc|sfc"\n')
+        (info / "gpgx_libretro.info").write_text('display_name = "Sega - MS/GG/MD/CD (Genesis Plus GX)"\ncorename = "Genesis Plus GX"\n'
+                                                 'supported_extensions = "md|smd|gen"\n')
+        for rel in ("Genesis Plus GX/Mario (USA).srm", "Mario (USA).sav", "by content folder/Mario (USA).rtc"):
+            p = self.saves / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+
+    def names(self, platform) -> list[str]:
+        return sorted(f.relative_to(self.saves).as_posix() for f, _root in ra.list_saves(self.inst, platform, self.home))
+
+    def test_a_system_sees_its_own_cores_and_the_unsorted_files_only(self) -> None:
+        from romorg import platforms
+        snes = self.names(platforms.get_platform("Super Nintendo Entertainment System"))
+        self.assertIn("bsnes/Mario (USA).srm", snes)
+        self.assertNotIn("Genesis Plus GX/Mario (USA).srm", snes)          # a Mega Drive save is not a SNES save
+        self.assertIn("Mario (USA).sav", snes)
+        self.assertIn("by content folder/Mario (USA).rtc", snes)
+        md = self.names(platforms.get_platform("Sega Mega Drive - Genesis"))
+        self.assertIn("Genesis Plus GX/Mario (USA).srm", md)
+        self.assertNotIn("bsnes/Mario (USA).srm", md)
+        self.assertEqual(len(self.names(None)), len(ra.list_saves(self.inst, None, self.home)))     # no system: all of them
+
+    def test_the_folders_are_walked_once_and_the_games_found_in_that_list(self) -> None:
+        from romorg import platforms
+        files = ra.list_saves(self.inst, platforms.get_platform("Super Nintendo Entertainment System"), self.home)
+        found = ra.saves_of(files, {"Mario (USA)"})
+        self.assertEqual(sorted(s.rel.as_posix() for s in found if s.kind == "state"),
+                         ["bsnes/Mario (USA).state1", "bsnes/Mario (USA).state1.png"])
+        self.assertEqual({s.stem for s in found}, {"Mario (USA)"})
+        # the plan for renames takes the same list: only the files of this system follow
+        ops = ra.plan_follow(self.inst, [("Mario (USA)", "Mario - New")], "move", self.home, files=files)
+        self.assertFalse([o for o in ops if "Genesis" in str(o.src)])
+        self.assertTrue([o for o in ops if "bsnes" in str(o.src)])
+
+
 if __name__ == "__main__":
     unittest.main()

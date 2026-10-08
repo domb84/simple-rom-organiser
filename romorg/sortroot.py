@@ -3,8 +3,9 @@
 Two jobs, both plain moves with a journal (so they can be undone) and neither ever overwrites a file:
 
 * :func:`plan_sort`: files that were identified (by checksum, against every system's DAT) go to their system's folder,
-  wherever they were; files that match nothing, and files that are not ROMs at all, go to an "aside" folder OUTSIDE the ROM
-  folder (``<aside>/_unmatched/...`` and ``<aside>/_other/...``, with their folders kept).
+  wherever they were; files that match nothing, and files that are not ROMs at all (a save, a note), go to an "aside" folder
+  OUTSIDE the ROM folder (``<aside>/_unmatched/...`` and ``<aside>/_other/...``, with their folders kept). Saves are kept
+  by RetroArch in its own folders; the build looks after them there (``retroarch.py``), never next to a ROM.
 * :func:`plan_sweep`: what a library build set aside inside a system's folder (``_excluded``, ``_superseded``,
   ``_incomplete``, ``_duplicates``, ``_unmatched``) moves to ``<aside>/<system folder>/<same folder>``, so the ROM folder only
   holds what you keep.
@@ -20,14 +21,15 @@ import os
 import shutil
 import stat
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
+from .retroarch import is_save_of
 
-__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
+__all__ = ["SMove", "ASIDE_FOLDERS", "unit_saves", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
            "default_aside", "rom_like", "remove_empty_tree", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
            "read_journal"]
 
@@ -48,6 +50,7 @@ class SMove:
     note: str = ""
     kind: str = "file"          # file | folder
     size: int = 0
+    leave: frozenset = frozenset()   # folder: files inside it that go elsewhere (a save in a disc game's folder -> _other)
 
 
 def default_aside(root: Path) -> Path:
@@ -103,6 +106,16 @@ def _size(path: Path) -> int:
         return 0
 
 
+def unit_saves(files: Iterable[Any]) -> List[Path]:
+    """The emulator saves and states among the files of one disc game (``files`` as the disc scan lists them: the image, the
+    Redump ``.zip`` / ``.md5`` / ``.cue`` that go with it, and whatever starts with the image's name): the files that start with
+    an image's name and a dot and end like a save (``retroarch.is_save_of``). They are not part of the game; a sort sends
+    them to ``_other``."""
+    files = [Path(f) for f in files]
+    stems = {f.stem for f in files if f.suffix.lower() in DISC_EXTS | ARCHIVE_EXTS}
+    return [f for f in files if any(is_save_of(f.name, st) for st in stems)]
+
+
 def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path, Optional[str]],
               discs: Sequence[dict], unmatched: Iterable[Path], other: Iterable[Path],
               exists: Optional[Callable[[Path], bool]] = None) -> List[SMove]:
@@ -112,17 +125,24 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
     left for the user). ``discs``: ``{"platform", "top", "folder": bool, "files": [...]}`` per identified disc game.
     ``unmatched``: ROM-like files that match nothing; ``other``: everything else.
 
-    Rules: an identified file already inside its own system's folder stays; elsewhere it moves to that folder (flat). A
-    file next to a moved ROM with the same name (a save, a note) moves with it. Unmatched files that lie loose (outside every
-    system folder) go to ``<aside>/_unmatched``; those inside a system folder are left for that system's library build.
-    Other files go to ``<aside>/_other`` unless they belong to a disc game or to a ROM that stays."""
+    Rules: an identified file already inside its own system's folder stays; elsewhere it moves to that folder (flat).
+    Unmatched files that lie loose (outside every system folder) go to ``<aside>/_unmatched``; those inside a system folder
+    are left for that system's library build. Every other file goes to ``<aside>/_other`` (with its path kept): a save or a
+    note beside a ROM is no ROM and does not follow it into the system's folder. The one exception is a disc game's own
+    folder: what is in it stays (the Redump ``.zip``, ``.md5``, ``.cue`` that the verification uses) except the emulator
+    saves and states of that game (``retroarch.is_save_of``), which go to ``_other``."""
     root, aside = Path(root), Path(aside)
     names = Names(exists)
     moves: List[SMove] = []
     sys_dirs = list(folders.values())
     unit_tops = [Path(d["top"]) for d in discs if d.get("folder")]
-    stays_stem: set = set()
-    moved_stem: Dict[tuple, Path] = {}        # (folder, stem) -> the folder the ROM went to
+    unit_stems: Dict[Path, set] = {}          # a disc game's folder -> the names of its images without extension
+    saves_of_unit: Dict[Path, List[Path]] = {}    # a disc game -> its emulator saves and states (they are not part of it)
+    for d in discs:
+        if d.get("folder"):
+            unit_stems.setdefault(Path(d["top"]), set()).update(
+                Path(f).stem for f in d["files"] if Path(f).suffix.lower() in DISC_EXTS | ARCHIVE_EXTS)
+        saves_of_unit[Path(d["top"])] = unit_saves(d["files"])
 
     def rel(p: Path) -> Path:
         try:
@@ -135,12 +155,9 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
         if plat is None or plat not in folders:
             continue
         target = folders[plat]
-        key = (path.parent, path.stem.casefold())
         if inside(path, target):
-            stays_stem.add(key)
             continue
         dst = names.free(target / path.name)
-        moved_stem[key] = target
         moves.append(SMove(path, dst, plat, size=_size(path)))
     for d in discs:
         plat = d["platform"]
@@ -154,19 +171,28 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
             moves.append(SMove(top, names.free(target / top.name, folder=True), plat, kind="folder"))
         else:
             for f in d["files"]:
-                moves.append(SMove(Path(f), names.free(target / Path(f).name), plat, size=_size(Path(f))))
+                if Path(f) not in saves_of_unit[top]:
+                    moves.append(SMove(Path(f), names.free(target / Path(f).name), plat, size=_size(Path(f))))
     for path in sorted(unmatched, key=lambda p: p.as_posix().lower()):
         if any(inside(path, s) for s in sys_dirs) or any(inside(path, t) for t in unit_tops):
             continue
         moves.append(SMove(path, names.free(aside / UNMATCHED / rel(path)), UNMATCHED, size=_size(path)))
+    leaving: Dict[Path, set] = {}
+    for d in discs:                                                # the saves a disc game carries in its own file list
+        for save in saves_of_unit[Path(d["top"])] if d["platform"] in folders else ():
+            moves.append(SMove(save, names.free(aside / OTHER / rel(save)), OTHER, size=_size(save)))
+            if d.get("folder"):
+                leaving.setdefault(Path(d["top"]), set()).add(save)
     for path in sorted(other, key=lambda p: p.as_posix().lower()):
-        key = (path.parent, path.stem.casefold())
-        if any(inside(path, t) for t in unit_tops) or key in stays_stem:
-            continue
-        if key in moved_stem:                                      # a save / note beside a ROM that moved: goes along
-            moves.append(SMove(path, names.free(moved_stem[key] / path.name), "sidecar", size=_size(path)))
-            continue
+        unit = next((t for t in unit_tops if inside(path, t)), None)
+        if unit is not None:
+            if not any(is_save_of(path.name, st) for st in unit_stems.get(unit, ())):
+                continue                                           # the disc game's own files stay with it
+            leaving.setdefault(unit, set()).add(path)
         moves.append(SMove(path, names.free(aside / OTHER / rel(path)), OTHER, size=_size(path)))
+    if leaving:                                                    # (a folder that moves must not take them along)
+        moves = [replace(m, leave=frozenset(leaving.get(m.src, ()))) if m.kind == "folder" and m.src in leaving else m
+                 for m in moves]
     return moves
 
 

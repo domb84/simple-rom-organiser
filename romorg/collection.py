@@ -42,7 +42,7 @@ ALIASES = {
 # The rule fields a collection can set for every system (the rest stay each system's default).
 GLOBAL_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n", "min_votes",
-               "keep_unrated", "rank_scope")
+               "keep_unrated", "rank_scope", "saved_games")
 _CAPABILITY_FLAGS = ("latest_only", "best_variant", "complete_only", "one_per_game", "borrow_other_editions")
 
 
@@ -251,11 +251,13 @@ def virtual_flat(sys_: Sys, mapper: Mapper, layout: str, root: Path) -> "scanner
 
 def virtual_disc(sys_: Sys, mapper: Mapper, root: Path) -> Any:
     """The same for a disc system: the units under their new paths."""
-    from . import discsys
+    from . import discsys, sortroot
 
     def unit(u: Any) -> Any:
+        # (the saves of a disc game are sent to _other by the sort: they are not in its folder afterwards)
+        gone = set(sortroot.unit_saves(u.files))
         return dataclasses.replace(u, path=mapper(u.path), folder=(mapper(u.folder) if u.folder is not None else None),
-                                   files=[mapper(f) for f in u.files])
+                                   files=[mapper(f) for f in u.files if Path(f) not in gone])
 
     units = [unit(u) for u in sys_.units]
     matched = []
