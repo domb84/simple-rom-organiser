@@ -259,9 +259,11 @@ class CaseInsensitivePaths(CollectionCase):
         self.assertEqual(lower(tree(root)), ["snes/", "snes/alpha (usa).sfc", "snes/gamma (usa).sfc"])
         self.assertEqual(len([d for d in root.iterdir() if d.is_dir()]), 1)
         archive = self.tmp / "roms-archive"
+        # (where case matters SNES/ is not the system's folder: what.sfc is then an unknown file of a loose folder)
+        what = "snes/_unmatched/what.sfc" if os.name == "nt" else "_unmatched/snes/_unmatched/what.sfc"
         self.assertEqual(lower([x for x in tree(archive) if not x.endswith("/")]),
-                         ["_unmatched/snes/loose-unknown.sfc", "snes/_duplicates/alpha again.sfc", "snes/_duplicates/alpha copy.sfc",
-                          "snes/_unmatched/what.sfc"])
+                         sorted(["_unmatched/snes/loose-unknown.sfc", "snes/_duplicates/alpha again.sfc",
+                                 "snes/_duplicates/alpha copy.sfc", what]))
         self.assertEqual(self.job("/api/collection/plan")["totals"]["actionable"], 0)
         self.undo()
         self.assertEqual(tree(root), before)
@@ -278,6 +280,381 @@ class CaseInsensitivePaths(CollectionCase):
         self.assert_one_move_per_file(typed)
         self.undo()
         self.assertEqual(tree(root), before)
+
+
+NASTY = ["CON", "NUL", "aux", "Ends with dot.", "Ends with space ", "What? (USA)", "A: B <C> (USA)", "com1.v2 (USA)"]
+
+
+class MixedFolder(CollectionCase):
+    """The manual run of the handover: a mixed folder with odd names, a duplicate, an unknown ROM and a picture."""
+    GAMES = {"snes": ["Alpha (USA)", "Beta (USA)", "Delta Dash (USA)", "ゼルダの伝説 (Japan)", "Pokémon – Édition (France)"] + NASTY,
+             "gba": ["Run (USA)", "Bash & Smash 100% (USA)", "It's Here (USA)"],
+             "gb": ["Tetra (World)"]}
+
+    def make(self) -> Path:
+        root = self.tmp / "My ROMs & stuff 100% (it's here)"
+        r = self.rom
+        put(root / "Dump one" / "alpha.sfc", r["Alpha (USA)"])
+        put(root / "Dump one" / "alpha copy.sfc", r["Alpha (USA)"])
+        put(root / "Dump one" / "Sub & more" / "beta's.sfc", r["Beta (USA)"])
+        put(root / "Dump one" / "日本語 フォルダ" / "ぜるだ.sfc", r["ゼルダの伝説 (Japan)"])
+        put(root / "Dump one" / "accentué" / "pokemon.sfc", r["Pokémon – Édition (France)"])
+        put(root / "Odd % name" / "run.gba", r["Run (USA)"])
+        put(root / "Odd % name" / "bash.gba", r["Bash & Smash 100% (USA)"])
+        put(root / "Odd % name" / "its.gba", r["It's Here (USA)"])
+        put(root / "gb stuff" / "tetra.gb", r["Tetra (World)"])
+        put(root / "Dump one" / "mystery.gba", b"not in any DAT")
+        put(root / "Dump one" / "cover art.png", b"\x89PNG picture")
+        put(root / "Dump one" / "delta.smc", bytes(512) + r["Delta Dash (USA)"])       # a copier header in front
+        for i, name in enumerate(NASTY):                       # names from a DAT that Windows refuses as they are
+            put(root / "nasty" / f"n{i}.sfc", r[name])
+        return root
+
+    KEPT = ["gb/Tetra (World).gb", "gba/Bash & Smash 100% (USA).gba", "gba/It's Here (USA).gba", "gba/Run (USA).gba",
+            "snes/A_ B _C_ (USA).sfc", "snes/Alpha (USA).sfc", "snes/Beta (USA).sfc", "snes/Ends with dot..sfc",
+            "snes/Ends with space .sfc", "snes/Pokémon – Édition (France).sfc", "snes/What_ (USA).sfc", "snes/_CON.sfc",
+            "snes/_NUL.sfc", "snes/_aux.sfc", "snes/_com1.v2 (USA).sfc", "snes/ゼルダの伝説 (Japan).sfc"]
+    ARCHIVED = ["_other/Dump one/cover art.png", "_unmatched/Dump one/mystery.gba", "snes/_duplicates/alpha copy.sfc"]
+
+    def files(self, folder: Path) -> list[str]:
+        return [x for x in tree(folder) if not x.endswith("/")]
+
+    def test_scan_preview_build_rescan_undo(self) -> None:
+        root = self.make()
+        archive = root.with_name(root.name + "-archive")
+        before = tree(root)
+        scan = self.scan(root)
+        self.assertEqual([(s["hint"], s["games"], s["files"], Path(s["folder"]).name) for s in scan["systems"]],
+                         [("gb", 1, 1, "gb"), ("gba", 3, 3, "gba"), ("snes", 13, 14, "snes")])
+        self.assertEqual((scan["unmatched"], scan["other"]), (1, 1))
+        plan = self.job("/api/collection/plan")
+        self.assertEqual(plan["sort"]["counts"], {SNES: 14, GB: 1, GBA: 3, "_unmatched": 1, "_other": 1})
+        self.assertEqual(tree(root), before)                       # a preview moves nothing
+        res = self.job("/api/collection/apply")
+        self.assert_clean(res)
+        self.assertEqual(res["sort"]["result"]["moved"], 20)       # every file once (not one more for the duplicate)
+        self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).smc"]))
+        self.assertEqual(self.files(archive), self.ARCHIVED)
+        self.assertEqual([d.name for d in root.iterdir() if d.is_dir()], ["gb", "gba", "snes"])     # the old folders are gone
+        self.assert_one_move_per_file(root)
+        self.assertEqual(len(self.moves(root)), 20)
+        logs = [p.name for p in root.glob(".romorg-undo-*.json")]
+        self.assertEqual(len(logs), 3)
+        scan2 = self.scan(root)                                    # the undo logs in the root are not files of the collection
+        self.assertEqual((scan2["files"], scan2["unmatched"], scan2["other"]), (17, 0, 0))
+        again = self.job("/api/collection/plan")
+        self.assertEqual((again["sort"]["total"], again["totals"]["actionable"]), (0, 0))
+        self.assertEqual(sorted(p.name for p in root.glob(".romorg-undo-*.json")), sorted(logs))
+        self.undo()
+        self.assertEqual(tree(root), before)
+        self.assertEqual(self.files(archive), [])
+
+    def test_convert_first_cleans_the_headered_dump_from_where_it_lies(self) -> None:
+        root = self.make()
+        before = tree(root)
+        res = self.build(root, convert=True)
+        self.assert_clean(res)
+        self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).sfc", "snes/_converted_originals/Dump one/delta.smc"]))
+        self.assertEqual((root / "snes" / "Delta Dash (USA).sfc").read_bytes(), self.rom["Delta Dash (USA)"])
+        self.assertEqual(self.files(root.with_name(root.name + "-archive")), self.ARCHIVED)
+        self.assert_one_move_per_file(root)
+        self.undo()
+        self.assertEqual(tree(root), before)
+
+    def test_read_only_files_and_folders(self) -> None:
+        root = self.make()
+        marked = [root / "Dump one" / n for n in ("alpha.sfc", "alpha copy.sfc", "mystery.gba", "cover art.png", "delta.smc")] \
+            + [root / "Odd % name" / "run.gba"]
+        for p in marked:
+            os.chmod(p, stat.S_IREAD)
+        if os.name == "nt":                                    # (elsewhere a folder one cannot write to is another matter)
+            os.chmod(root / "Odd % name", stat.S_IREAD)
+        before = tree(root)
+        res = self.build(root, convert=True)
+        self.assert_clean(res)
+        self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).sfc", "snes/_converted_originals/Dump one/delta.smc"]))
+        self.assertEqual(self.files(root.with_name(root.name + "-archive")), self.ARCHIVED)
+        self.assertFalse(os.access(root / "snes" / "Alpha (USA).sfc", os.W_OK))        # still read-only
+        self.undo()
+        self.assertEqual(tree(root), before)
+        self.assertEqual([p for p in marked if os.access(p, os.W_OK)], [])
+
+
+class Failures(CollectionCase):
+    """One file that cannot be moved is reported; the job goes on, nothing is duplicated, and undo still works."""
+
+    def make(self) -> Path:
+        root = self.tmp / "roms"
+        put(root / "in use" / "alpha.sfc", self.rom["Alpha (USA)"])
+        put(root / "in use" / "beta.sfc", self.rom["Beta (USA)"])
+        put(root / "in use" / "unknown.gba", b"unknown 1")
+        put(root / "in use" / "unknown2.gba", b"unknown 2")
+        put(root / "cwd here" / "run.gba", self.rom["Run (USA)"])
+        put(root / "free" / "tetra.gb", self.rom["Tetra (World)"])
+        return root
+
+    def files(self, folder: Path) -> list[str]:
+        return [x for x in tree(folder) if not x.endswith("/")]
+
+    def test_files_held_open_and_a_folder_in_use(self) -> None:
+        import subprocess
+        import sys
+        root = self.make()
+        archive = self.tmp / "roms-archive"
+        before = tree(root)
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write('up'); sys.stdout.flush(); sys.stdin.read()"],
+                                cwd=str(root / "cwd here"), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            self.assertEqual(proc.stdout.read(2), b"up")
+            self.scan(root)
+            with open(root / "in use" / "alpha.sfc", "rb"), open(root / "in use" / "unknown.gba", "rb"), \
+                    mock.patch.object(sortroot, "RETRY_SLEEP", 0.01):
+                res = self.job("/api/collection/apply")
+            snes = next(r for r in res["systems"] if r["platform"] == SNES)
+            if os.name == "nt":                                # held open: neither renamed nor deleted nor copied
+                self.assertEqual([Path(f["path"]).name for f in res["sort"]["result"]["failed"]], ["unknown.gba"])
+                self.assertEqual([Path(f["src"]).name for f in snes["failed"]], ["alpha.sfc"])
+                self.assertEqual(self.files(root), ["gb/Tetra (World).gb", "gba/Run (USA).gba", "in use/alpha.sfc",
+                                                    "in use/unknown.gba", "snes/Beta (USA).sfc"])
+                self.assertEqual(self.files(archive), ["_unmatched/in use/unknown2.gba"])
+                self.assertTrue((root / "cwd here").is_dir())          # in use: stays, silently
+                self.assertFalse((root / "free").exists())
+            else:
+                self.assert_clean(res)
+                self.assertEqual(self.files(root), ["gb/Tetra (World).gb", "gba/Run (USA).gba", "snes/Alpha (USA).sfc", "snes/Beta (USA).sfc"])
+        finally:
+            proc.communicate(b"")
+            proc.stdout.close()
+        plan = self.job("/api/collection/plan")                    # released: the next build finishes the job
+        self.assertEqual(plan["sort"]["total"], 2 if os.name == "nt" else 0)
+        self.undo()
+        self.assertEqual(tree(root), before)
+        self.assertEqual(self.files(archive), [])
+
+    def test_a_move_the_system_refuses_fails_for_that_file_only(self) -> None:
+        root = self.make()
+        before = tree(root)
+        self.scan(root)
+        real = os.rename
+
+        def rename(src: Any, dst: Any, *a: Any, **k: Any) -> None:
+            if Path(src).name in ("alpha.sfc", "unknown.gba"):     # what Windows answers for a path over 260 characters
+                raise OSError(2, "The system cannot find the path specified", str(src), 3, str(dst))
+            real(src, dst, *a, **k)
+
+        from romorg import organiser
+        with mock.patch.object(sortroot.os, "rename", rename), mock.patch.object(organiser.os, "rename", rename), \
+                mock.patch.object(organiser.os, "link", side_effect=OSError(1, "no hard links here")):
+            res = self.job("/api/collection/apply")
+        snes = next(r for r in res["systems"] if r["platform"] == SNES)
+        self.assertEqual([Path(f["path"]).name for f in res["sort"]["result"]["failed"]], ["unknown.gba"])
+        self.assertEqual([Path(f["src"]).name for f in snes["failed"]], ["alpha.sfc"])
+        self.assertEqual(self.files(root), ["gb/Tetra (World).gb", "gba/Run (USA).gba", "in use/alpha.sfc", "in use/unknown.gba",
+                                            "snes/Beta (USA).sfc"])
+        self.undo()
+        self.assertEqual(tree(root), before)
+
+    @unittest.skipUnless(os.name == "nt", "the 260 character limit is a Windows matter")
+    def test_windows_a_path_that_is_too_long_gets_the_hint(self) -> None:
+        from romorg import organiser
+        deep = self.tmp / ("d" * 120) / ("e" * 120)
+        a = put(self.tmp / "in" / "a.sfc", b"a")
+        b = put(self.tmp / "in" / "b.sfc", b"b")
+
+        def rename(src: Any, dst: Any, *args: Any, **k: Any) -> None:
+            raise OSError(2, "The system cannot find the path specified", str(src), 3, str(dst))
+
+        with mock.patch.object(sortroot.os, "rename", rename), mock.patch.object(organiser.os, "rename", rename), \
+                mock.patch.object(organiser.os, "link", side_effect=OSError(1, "no hard links here")):
+            res = sortroot.apply_moves([sortroot.SMove(a, deep / "a.sfc", "x")], self.tmp / "j", "sort")
+            res2 = organiser.apply_renames([organiser.RenameOp(b, deep / "b.sfc", "move", "", "", "move")], self.tmp)
+        self.assertIn("LongPathsEnabled", res["failed"][0]["error"])
+        self.assertIn("LongPathsEnabled", res2["failed"][0]["error"])
+        self.assertTrue(a.is_file() and b.is_file())
+
+    def test_cancel_in_the_middle_keeps_a_journal_and_undo_restores(self) -> None:
+        root = self.tmp / "roms"
+        for i in range(12):
+            put(root / "Dump" / f"mystery{i:02}.gba", b"not in any DAT %d" % i)
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        before = tree(root)
+        self.scan(root)
+        real, n = sortroot.move_path, [0]
+
+        def counting(src: Path, dst: Path) -> None:
+            n[0] += 1
+            if n[0] == 5:
+                self.call("POST", "/api/job/cancel", {})
+            real(src, dst)
+
+        with mock.patch.object(sortroot, "move_path", counting):
+            self.call("POST", "/api/collection/apply", {})
+            job = self.wait()
+        self.assertEqual(job["status"], "cancelled")
+        archive = self.tmp / "roms-archive"
+        self.assertEqual(len([x for x in tree(archive) if x.endswith(".gba")]), 5)
+        self.assertTrue((root / "Dump" / "alpha.sfc").is_file())       # the systems were not started
+        last = self.call("GET", "/api/collection")["last"]
+        self.assertEqual(len(json.loads(Path(last["sort"]).read_text(encoding="utf-8"))["moves"]), 5)
+        self.assertEqual(self.undo()["restored"], 5)
+        self.assertEqual(tree(root), before)
+        self.assertEqual(tree(archive), [])
+
+    def test_a_build_that_dies_is_still_the_one_undo_takes_back(self) -> None:
+        # the journal is written move by move and the build is remembered when it starts, not when it ends
+        root = self.tmp / "roms"
+        for i in range(6):
+            put(root / "Dump" / f"mystery{i}.gba", b"not in any DAT %d" % i)
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        before = tree(root)
+        self.scan(root)
+        real, n = sortroot.move_path, [0]
+        seen: dict[str, Any] = {}
+
+        def dying(src: Path, dst: Path) -> None:
+            n[0] += 1
+            if n[0] == 4:                                          # as if the app were killed here: what is on disk now?
+                seen["last"] = self.call("GET", "/api/collection")["last"]
+                seen["journal"] = sortroot.read_journal(Path(seen["last"]["sort"]))
+                raise SystemExit("killed")
+            real(src, dst)
+
+        with mock.patch.object(sortroot, "move_path", dying), mock.patch("threading.excepthook", lambda *a: None):
+            self.call("POST", "/api/collection/apply", {})
+            self.srv.app.jobs.current.thread.join(30)
+        self.assertTrue(seen["journal"]["partial"])
+        self.assertEqual(len(seen["journal"]["moves"]), 4)             # three made, the fourth written down and not made
+        self.assertEqual(len([x for x in tree(self.tmp / "roms-archive") if x.endswith(".gba")]), 3)
+
+    def test_undo_and_restore_wait_for_a_running_job(self) -> None:
+        root = self.make()
+        self.build(root)                                           # a first build: there is something to undo
+        put(root / "new" / "mono.gb", self.rom["Mono (World)"])
+        put(root / "new" / "what.gba", b"unknown 3")
+        self.scan(root)
+        gate, entered = threading.Event(), threading.Event()
+        real = sortroot.move_path
+
+        def slow(src: Path, dst: Path) -> None:
+            entered.set()
+            gate.wait(20)
+            real(src, dst)
+
+        with mock.patch.object(sortroot, "move_path", slow):
+            self.call("POST", "/api/collection/apply", {})
+            self.assertTrue(entered.wait(20))
+            try:
+                for path in ("/api/collection/undo", "/api/collection/aside/restore", "/api/collection/apply", "/api/collection/scan"):
+                    code, out = self.http("POST", path, {})
+                    self.assertEqual(code, 409, (path, out))
+                code, _out = self.http("POST", "/api/library/export/undo", {"dest": str(self.tmp / "nowhere")})
+                self.assertEqual(code, 409)
+            finally:
+                gate.set()
+            self.assertEqual(self.wait()["status"], "done")
+        self.assertTrue((root / "gb" / "Mono (World).gb").is_file())
+        self.undo()
+        self.assertTrue((root / "new" / "mono.gb").is_file())
+
+
+OTHER_DRIVE = os.environ.get("ROMORG_TEST_OTHER_DRIVE")
+
+
+@unittest.skipUnless(OTHER_DRIVE, "set ROMORG_TEST_OTHER_DRIVE to a folder on another drive than the temp folder")
+class OtherDrive(CollectionCase):
+    """The archive folder and the library on a second drive: every move there is a copy and a delete."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.far = Path(tempfile.mkdtemp(prefix="romorg-far-", dir=OTHER_DRIVE)).resolve()
+        self.addCleanup(self._remove, self.far)
+        self.assertNotEqual(os.stat(self.far).st_dev, os.stat(self.tmp).st_dev, "ROMORG_TEST_OTHER_DRIVE is on the same drive")
+
+    def make(self) -> Path:
+        root = self.tmp / "roms"
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        put(root / "Dump" / "alpha copy.sfc", self.rom["Alpha (USA)"])
+        put(root / "Dump" / "deep" / "beta.sfc", self.rom["Beta (USA)"])
+        put(root / "Other stuff" / "run.gba", self.rom["Run (USA)"])
+        put(root / "Other stuff" / "tetra.gb", self.rom["Tetra (World)"])
+        for i in range(12):
+            put(root / "Dump" / f"mystery{i:02}.gba", b"not in any DAT %d" % i)
+        os.chmod(put(root / "Dump" / "pic.png", b"\x89PNG...."), stat.S_IREAD)
+        return root
+
+    LIB = ["gb/Tetra (World).gb", "gba/Run (USA).gba", "snes/Alpha (USA).sfc", "snes/Beta (USA).sfc"]
+
+    def files(self, folder: Path) -> list[str]:
+        return [x for x in tree(folder) if not x.endswith("/")]
+
+    def test_the_archive_on_another_drive(self) -> None:
+        root, archive = self.make(), self.far / "archive"
+        before = tree(root)
+        res = self.build(root, aside=str(archive))
+        self.assert_clean(res)
+        self.assertEqual(self.files(root), self.LIB)
+        self.assertEqual(len(self.files(archive)), 14)
+        self.assertTrue((archive / "snes" / "_duplicates" / "alpha copy.sfc").is_file())
+        self.assertFalse(os.access(archive / "_other" / "Dump" / "pic.png", os.W_OK))      # read-only: moved, still read-only
+        self.assert_one_move_per_file(root)
+        self.undo()
+        self.assertEqual(tree(root), before)
+        self.assertFalse(archive.exists())
+
+    def test_cancel_while_moving_to_the_other_drive(self) -> None:
+        root, archive = self.make(), self.far / "archive"
+        before = tree(root)
+        self.scan(root, aside=str(archive))
+        real, n = sortroot.move_path, [0]
+
+        def counting(src: Path, dst: Path) -> None:
+            n[0] += 1
+            if n[0] == 5:
+                self.call("POST", "/api/job/cancel", {})
+            real(src, dst)
+
+        with mock.patch.object(sortroot, "move_path", counting):
+            self.call("POST", "/api/collection/apply", {})
+            self.assertEqual(self.wait()["status"], "cancelled")
+        self.assertEqual(len(self.files(archive)), 5)
+        self.assertEqual(len(self.files(root)) + 5, len([x for x in before if not x.endswith("/")]))     # each file in one place
+        self.assertEqual(self.undo()["restored"], 5)
+        self.assertEqual(tree(root), before)
+
+    def test_build_elsewhere_copy_then_keep_in_sync(self) -> None:
+        root, dest = self.make(), self.far / "library"
+        before = tree(root)
+        self.scan(root, place="elsewhere", dest=str(dest), mode="copy")
+        plan = self.job("/api/collection/plan")
+        self.assertEqual((plan["totals"]["bytes_copy"], plan["enough_space"]), (4 * 2048, True))
+        res = self.job("/api/collection/apply")
+        self.assertEqual([r for r in res["systems"] if r["status"] != "ok" or r.get("failed")], [])
+        self.assertEqual(self.files(dest), sorted(self.LIB + [f"{d}/.romorg-library/library.sqlite" for d in ("gb", "gba", "snes")]))
+        self.assertEqual(tree(root), before)                       # a copy: the source is untouched
+        (root / "Other stuff" / "run.gba").unlink()
+        put(root / "new" / "bash.gba", self.rom["Bash (USA)"])
+        self.scan(root, sync=True)
+        plan = self.job("/api/collection/plan")
+        self.assertEqual(plan["totals"]["remove"], 1)
+        self.job("/api/collection/apply")
+        self.assertTrue((dest / "gba" / "Bash (USA).gba").is_file())
+        self.assertFalse((dest / "gba" / "Run (USA).gba").exists())
+
+    def test_build_elsewhere_move_and_undo(self) -> None:
+        root, dest = self.make(), self.far / "library"
+        os.chmod(root / "Dump" / "alpha.sfc", stat.S_IREAD)
+        before = tree(root)
+        self.scan(root, place="elsewhere", dest=str(dest), mode="move")
+        plan = self.job("/api/collection/plan")
+        self.assertIn("another drive", " ".join(plan["systems"][0]["notes"]))
+        res = self.job("/api/collection/apply")
+        self.assertEqual([(r["platform"], r.get("failed")) for r in res["systems"] if r["status"] != "ok" or r.get("failed")], [])
+        self.assertEqual(sum(r["result"]["moved"] for r in res["systems"]), 4)
+        self.assertEqual([x for x in self.files(dest) if ".romorg-library" not in x], self.LIB)
+        self.assertEqual(len(self.files(root)), 14)                # the kept files left the source
+        self.undo()
+        self.assertEqual(tree(root), before)
+        self.assertEqual([x for x in self.files(dest) if ".romorg-library" not in x], [])
 
 
 if __name__ == "__main__":

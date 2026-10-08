@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +56,62 @@ class Rules(unittest.TestCase):
         self.assertIsNotNone(collection.check_folders(Path("/a/b"), Path("/a/b/c")))
         self.assertIsNotNone(collection.check_folders(Path("/a/b"), Path("/a")))
         self.assertIsNone(collection.check_folders(Path("/a/b"), Path("/a/c")))
+
+    def test_overlap_is_seen_through_other_spellings_of_the_same_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            root = base / "Rom Folder"
+            (root / "Sub Folder").mkdir(parents=True)
+            self.assertIsNotNone(collection.check_folders(root, Path(str(root) + os.sep)))
+            self.assertIsNotNone(collection.check_folders(root, root / ".." / root.name / "x"))
+            self.assertIsNone(collection.check_folders(root, Path(str(root) + "-archive")))      # a longer name, not inside
+            link = base / "link"
+            try:
+                if os.name == "nt":
+                    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(root / "Sub Folder")], capture_output=True).returncode == 0
+                else:
+                    os.symlink(root / "Sub Folder", link)
+                    made = True
+            except OSError:
+                made = False
+            if made:                                               # a junction / link that leads into the ROM folder
+                self.addCleanup(lambda: os.path.lexists(link) and (os.rmdir(link) if os.name == "nt" else os.unlink(link)))
+                self.assertIsNotNone(collection.check_folders(root, link / "library"))
+                os.rmdir(link) if os.name == "nt" else os.unlink(link)
+            if os.name == "nt":
+                self.assertIsNotNone(collection.check_folders(root, Path(str(root).upper())))
+                self.assertIsNotNone(collection.check_folders(root, Path(str(root).upper() + "\\")))
+                self.assertIsNotNone(collection.check_folders(root, Path(str(root).swapcase()) / "sub folder" / "x"))
+                self.assertIsNotNone(collection.check_folders(root, Path(str(root).replace("\\", "/") + "/x")))
+                import ctypes
+                buf = ctypes.create_unicode_buffer(1024)
+                if ctypes.windll.kernel32.GetShortPathNameW(str(root / "Sub Folder"), buf, 1024) and "~" in buf.value:
+                    self.assertIsNotNone(collection.check_folders(root, Path(buf.value) / "x"))   # an 8.3 short name
+
+
+class StandardFolder(unittest.TestCase):
+    """``SNES`` is the standard folder ``snes`` only where the file system says so."""
+
+    def test_where_case_is_ignored_the_folder_is_named_as_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "SNES").mkdir()
+            (root / "Gameboy").mkdir()
+            same = os.path.exists(root / "snes")                   # Windows, exFAT: yes; ext4: no
+            std = collection.standard_folder(root, "snes", root / "SNES")
+            self.assertEqual(str(std), str(root / ("SNES" if same else "snes")))
+            self.assertEqual(str(collection.standard_folder(root, "gb", root / "Gameboy")), str(root / "gb"))
+            self.assertEqual(str(collection.standard_folder(root, "gba", None)), str(root / "gba"))
+            self.assertEqual(str(collection.standard_folder(root, "snes", root / "snes")), str(root / "snes"))
+
+    @unittest.skipIf(os.name == "nt", "needs a file system where case matters")
+    def test_where_case_matters_two_folders_stay_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "SNES").mkdir()
+            (root / "snes").mkdir()
+            if not os.path.samefile(root / "SNES", root / "snes"):
+                self.assertEqual(str(collection.standard_folder(root, "snes", root / "SNES")), str(root / "snes"))
 
 
 if __name__ == "__main__":

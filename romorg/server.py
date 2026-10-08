@@ -15,6 +15,7 @@ server starts quickly and tests can substitute fakes via ``sys.modules``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import functools
 import importlib
@@ -186,12 +187,15 @@ class JobManager:
         self._lock = threading.Lock()
         self._current: Job | None = None
         self._next_id = 1
+        self._exclusive = ""               # a request that moves files without being a job (an undo) is at work
 
     def start(self, kind: str, fn: Callable[[Job], Any], cancellable: bool = True,
               platform: str | None = None) -> Job:
         with self._lock:
             if self._current is not None and self._current.status == "running":
                 raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is already running")
+            if self._exclusive:
+                raise ApiError(HTTPStatus.CONFLICT, f"Wait: {self._exclusive} is still at work")
             job = Job(self._next_id, kind, cancellable, platform)
             _mod("meter").reset()
             self._next_id += 1
@@ -226,6 +230,22 @@ class JobManager:
     def current(self) -> Job | None:
         with self._lock:
             return self._current
+
+    @contextlib.contextmanager
+    def exclusive(self, what: str) -> Any:
+        """For a request that moves files in its own thread (the undo of a collection build ...): refused while a job runs
+        (they would move the same files at the same time), and no job starts until it is through."""
+        with self._lock:
+            if self._current is not None and self._current.status == "running":
+                raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is running: wait for it to finish, or stop it", "busy")
+            if self._exclusive:
+                raise ApiError(HTTPStatus.CONFLICT, f"Wait: {self._exclusive} is still at work", "busy")
+            self._exclusive = what
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._exclusive = ""
 
     def cancel(self) -> bool:
         job = self.current
@@ -3840,7 +3860,7 @@ class App:
                     for f in sorted(files):
                         src = Path(dirpath) / f
                         put(src, m.dst / src.relative_to(m.src))
-        sorted_n = len(ops)
+        from_sort = {id(op) for op in ops}
         ops += [op for op in flat_ops if op.status != "move" or op.src not in used]
         # (compared as text: on Windows two Path objects that differ only in case are equal, and a rename that only changes
         # the case of a name - "ALPHA.SFC" to "Alpha.sfc" - is a move that has to be made)
@@ -3875,6 +3895,7 @@ class App:
                 else:
                     keep.append(op)
             ops = keep
+        sorted_n = sum(1 for op in ops if id(op) in from_sort)       # (those the rules archive are counted as archive moves)
         return ops, arch, sorted_n
 
     def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, aside: Path, apply: bool) -> dict[str, Any]:
@@ -3891,6 +3912,17 @@ class App:
         out: dict[str, Any] = {"action": "collection_apply" if apply else "collection_plan", "place": "inplace",
                                "renames": layout["renames"], "sort": self._collection_sort_summary(layout["moves"], aside)}
         last: dict[str, Any] = {"place": "inplace", "runs": {}, "sweep": "", "sort": "", "rename": ""}
+        before_last, noted = cfg["last"], [False]
+
+        def note(key: str) -> Callable[[Path], None]:
+            """The build is remembered as soon as it starts to change things, not only when it ends: after a crash (or a
+            killed app) "Undo last" still finds the journal, which is written move by move."""
+            def started(path: Path) -> None:
+                last[key] = str(path)
+                noted[0] = True
+                self._collection_save(last=last)
+            return started
+
         keep = [root, aside, *layout["folder_of"].values()]
         prepared: dict[str, tuple[Any, Any, list[Any], int]] = {}
         if apply:
@@ -3911,7 +3943,7 @@ class App:
                 prepared[sysobj.name] = (state, plan, ops, sorted_n)
                 now_moves += arch
             if now_moves:
-                res = sortroot.apply_moves(now_moves, undo_dir, "sort", keep=keep,
+                res = sortroot.apply_moves(now_moves, undo_dir, "sort", keep=keep, started=note("sort"),
                                            progress=_staged(job, 0, steps, "moving files out of the ROM folders"), cancel=job.cancel)
                 last["sort"] = res["journal"] or ""
                 out["sort"]["result"] = {"moved": res["moved"], "failed": res["failed"][:30]}
@@ -3961,6 +3993,8 @@ class App:
                         row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
                     if res.get("undo_log"):
                         last["runs"][sysobj.name] = {"log": res["undo_log"], "root": str(root), "convert_log": conv_log}
+                        noted[0] = True
+                        self._collection_save(last=last)
                 except Exception as exc:  # noqa: BLE001 - one broken system must not stop the others
                     traceback.print_exc()
                     row.update(status="error", error=str(exc) or type(exc).__name__)
@@ -3972,7 +4006,7 @@ class App:
             sweep = sortroot.plan_sweep({n: f for n, f in layout["folder_of"].items()}, aside)
             out["aside"] = {"path": str(aside), "files": len(sweep), "bytes": sum(m.size for m in sweep)}
             if apply and sweep:
-                res = sortroot.apply_moves(sweep, undo_dir, "sweep", keep=keep,
+                res = sortroot.apply_moves(sweep, undo_dir, "sweep", keep=keep, started=note("sweep"),
                                            progress=_staged(job, steps - 1, steps, "moving the archived files out of the ROM folders"))
                 out["aside"]["moved"], out["aside"]["failed"] = res["moved"], res["failed"][:20]
                 last["sweep"] = res["journal"] or ""
@@ -3983,6 +4017,8 @@ class App:
         if apply:
             if any(last.get(k) for k in ("runs", "sweep", "sort", "rename")):
                 self._collection_save(last=last)
+            elif noted[0]:                                  # nothing was changed after all: the build before stays the last one
+                self._collection_save(last=before_last)
             job.report(steps - 1, steps, "Reading the folder again...")
             rs2 = self._collection_scan_work(job, root)           # the folders changed: the scan is made again (quick: cached)
             self._rootscan = rs2
@@ -4084,6 +4120,10 @@ class App:
 
     def collection_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/collection/undo``: take back the last collection build (every system, the sort, the renames)."""
+        with self.jobs.exclusive("the undo of the collection build"):
+            return self._collection_undo()
+
+    def _collection_undo(self) -> dict[str, Any]:
         libexport, sortroot = _mod("libexport"), _mod("sortroot")
         last = self._collection_cfg()["last"]
         runs = (last.get("runs") or {})
@@ -4137,6 +4177,10 @@ class App:
 
     def collection_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/collection/aside/restore``: bring the archived files back into the systems' folders."""
+        with self.jobs.exclusive("bringing the archived files back"):
+            return self._collection_restore()
+
+    def _collection_restore(self) -> dict[str, Any]:
         sortroot = _mod("sortroot")
         cfg = self._collection_cfg()
         root = self._collection_root(cfg)
@@ -4166,7 +4210,8 @@ class App:
         libexport = _mod("libexport")
         run = body.get("run")
         try:
-            return libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
+            with self.jobs.exclusive("the undo of a library build"):
+                return libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
         except libexport.ExportError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "nothing_to_undo")
 

@@ -84,7 +84,7 @@ if TYPE_CHECKING:
 
 UNDO_PREFIX = ".romorg-undo-"
 UNDONE_SUFFIX = ".undone"
-from . import folders  # noqa: E402  (the reserved folder names live in folders.py only)
+from . import folders, winproc  # noqa: E402  (the reserved folder names live in folders.py only)
 from .folders import (CODE_DIRS, CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, INCOMPLETE_DIR,  # noqa: E402,F401
                       REASON_DIRS, RESERVED_DIRS, SUPERSEDED_DIR, UNMATCHED_DIR)
 
@@ -1616,7 +1616,8 @@ def apply_renames(ops: Iterable[RenameOp], root: Path, progress: Optional[Progre
                 except UndoLogError:
                     raise
                 except (OSError, ValueError) as exc:
-                    failed.append({"src": str(original[id(op)]), "dst": str(op.dst), "error": str(exc)})
+                    failed.append({"src": str(original[id(op)]), "dst": str(op.dst),
+                                   "error": winproc.long_path_hint(exc, op.src, op.dst)})      # (Windows: paths over 260)
                 tick(op.dst.name)
             if cancelled or not blocked:
                 break

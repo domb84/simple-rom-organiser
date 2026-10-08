@@ -345,6 +345,25 @@ class Journal(World):
         self.assertNotIn("partial", done)
         self.assertEqual(set(done["moves"][0]), {"from", "to", "kind"})
 
+    def test_undo_removes_the_folders_it_made_and_not_the_one_the_archive_lies_in(self) -> None:
+        a = self.f("in/a.txt")
+        outer = self.aside.parent / "My archives"                  # the user's own folder, empty but for our archive
+        outer.mkdir()
+        res = sr.apply_moves([sr.SMove(a, outer / "arch" / "_other" / "in" / "a.txt", "_other")], self.aside.parent / "j", "sort",
+                             keep=[self.root])
+        self.assertEqual(res["moved"], 1)
+        self.assertEqual(sr.undo_moves(Path(res["journal"]))["skipped"], [])
+        self.assertTrue(a.is_file())
+        self.assertFalse((outer / "arch").exists())                # made by the move: gone again
+        self.assertTrue(outer.is_dir(), "the folder above the archive is the user's")
+
+    def test_a_failed_move_leaves_no_empty_folder_behind(self) -> None:
+        gone = sr.SMove(self.f("in/a.txt"), self.aside / "_other" / "deep" / "a.txt", "_other")
+        with mock.patch.object(sr, "move_path", side_effect=PermissionError(13, "no")):
+            res = sr.apply_moves([gone], self.aside.parent / "j", "sort", keep=[self.root])
+        self.assertEqual((res["moved"], len(res["failed"])), (0, 1))
+        self.assertFalse(self.aside.exists())
+
     def test_nothing_moved_leaves_no_journal(self) -> None:
         gone = sr.SMove(self.root / "nope.sfc", self.root / "snes" / "nope.sfc", "x")
         res = sr.apply_moves([gone], self.aside.parent / "j", "sort")

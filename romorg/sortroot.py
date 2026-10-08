@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
-from . import meter
+from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
 __all__ = ["SMove", "ASIDE_FOLDERS", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
@@ -354,12 +354,18 @@ def move_path(src: Path, dst: Path) -> None:
         _move_file_across(src, dst)
 
 
-def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path]) -> None:
+def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optional[Iterable[str]] = None) -> None:
+    """Remove the folders that are empty now, and their parents while those are empty too. ``stop`` are never removed;
+    with ``only`` no other folder than these is (an undo removes the folders its moves created, not the user's own empty
+    folder the archive lies in)."""
     stops = {os.path.normcase(os.path.realpath(s)) for s in stop}
+    mine = None if only is None else {os.path.normcase(str(x)) for x in only}
     for d in sorted({Path(x) for x in dirs}, key=lambda p: len(p.parts), reverse=True):
         cur = d
         while True:
             if os.path.normcase(os.path.realpath(cur)) in stops or cur == cur.parent:
+                break
+            if mine is not None and os.path.normcase(str(cur)) not in mine:
                 break
             try:
                 remove_dir(cur)
@@ -381,9 +387,9 @@ def remove_empty_tree(root: Path, keep: Iterable[Path] = ()) -> None:
 
 
 # ---- the journal
-# A finished journal is one JSON document: {"kind", "moves": [{"from", "to", "kind"}], "undone", ...}. While the moves
-# run, the file holds one JSON object per line instead: a header ({"kind", "partial": true, ...}), then each move, written
-# BEFORE it is made. A run that is killed therefore leaves a record of everything it moved (read_journal reads both forms;
+# A finished journal is one JSON document: {"kind", "moves": [{"from", "to", "kind"}], "made": [folders created], "undone",
+# ...}. While the moves run, the file holds one JSON object per line instead: a header ({"kind", "partial": true, ...}),
+# then each folder that is created ({"made": path}) and each move, written BEFORE it is made. A run that is killed therefore leaves a record of everything it moved (read_journal reads both forms;
 # a line whose move never happened is recognised by its file still being where it was).
 def _write_json(path: Path, data: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
@@ -409,6 +415,7 @@ def read_journal(journal: Path) -> dict:
         pass
     head: dict = {}
     moves: List[dict] = []
+    made: List[str] = []
     for n, line in enumerate(text.splitlines()):
         try:
             rec = json.loads(line)
@@ -416,17 +423,20 @@ def read_journal(journal: Path) -> dict:
             continue                                   # a torn last line: that move was not made
         if not isinstance(rec, dict):
             continue
-        if n == 0 and "from" not in rec:
+        if n == 0 and "from" not in rec and "made" not in rec:
             head = rec
         elif "from" in rec and "to" in rec:
             moves.append(rec)
-    return {"undone": False, **head, "partial": True, "moves": moves}
+        elif isinstance(rec.get("made"), str):
+            made.append(rec["made"])
+    return {"undone": False, **head, "partial": True, "moves": moves, "made": made}
 
 
 class _Journal:
     def __init__(self, journal_dir: Path, kind: str, extra: Optional[dict], started: Optional[Callable[[Path], None]]) -> None:
         self.dir, self.kind, self.extra, self.started = Path(journal_dir), kind, dict(extra or {}), started
         self.path: Optional[Path] = None
+        self.made: List[str] = []
         self._f: Any = None
 
     def _open(self) -> None:
@@ -454,6 +464,21 @@ class _Journal:
             self._open()
         self._line(rec)
 
+    def mkdirs(self, folder: Path) -> None:
+        """``mkdir -p``; the folders this creates are written down (an undo removes these, and no others, when empty)."""
+        missing: List[Path] = []
+        d = Path(folder)
+        while not os.path.lexists(d) and d != d.parent:
+            missing.append(d)
+            d = d.parent
+        for d in reversed(missing):
+            try:
+                os.mkdir(d)
+            except FileExistsError:
+                continue
+            self.made.append(str(d))
+            self.intend({"made": str(d)})
+
     def close(self, done: List[dict]) -> Optional[Path]:
         """The finished document (or no file at all when nothing was moved)."""
         if self._f is None:
@@ -464,7 +489,7 @@ class _Journal:
         if not done:
             _drop(self.path)
             return None
-        _write_json(self.path, {"kind": self.kind, "moves": done, "undone": False, **self.extra})
+        _write_json(self.path, {"kind": self.kind, "moves": done, "made": self.made, "undone": False, **self.extra})
         return self.path
 
 
@@ -492,7 +517,7 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
                     raise FileExistsError("a file is already there")
                 if not os.path.lexists(m.src):
                     raise FileNotFoundError("the file is no longer there")
-                m.dst.parent.mkdir(parents=True, exist_ok=True)
+                journal.mkdirs(m.dst.parent)
                 rec = {"from": str(m.src), "to": str(m.dst), "kind": m.kind}
                 journal.intend(rec)
                 move_path(m.src, m.dst)
@@ -500,10 +525,16 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
                 meter.add(m.size)
                 emptied.add(m.src.parent)
                 res["moved"] += 1
-            except (OSError, ValueError) as exc:
-                res["failed"].append({"path": str(m.src), "error": str(exc)})
+            except (OSError, ValueError) as exc:           # (Windows: with the hint when a path is too long)
+                res["failed"].append({"path": str(m.src), "error": winproc.long_path_hint(exc, m.src, m.dst)})
         _remove_empty_dirs(emptied, keep)
     finally:
+        for d in reversed(list(journal.made)):         # a folder made for a move that then failed does not stay behind empty
+            try:
+                os.rmdir(d)
+                journal.made.remove(d)
+            except OSError:
+                pass
         path = journal.close(done)
         res["journal"] = str(path) if path else None
     return res
@@ -533,9 +564,9 @@ def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
                 restored += 1
                 dirs.add(src.parent)
             except OSError as exc:
-                skipped.append({"path": str(src), "reason": str(exc)})
+                skipped.append({"path": str(src), "reason": winproc.long_path_hint(exc, src, dst)})
                 left.append(m)
-    _remove_empty_dirs(dirs, keep)
+    _remove_empty_dirs(dirs, keep, d.get("made") if isinstance(d.get("made"), list) else None)
     if not skipped:
         d["undone"] = True
         _write_json(journal, d)

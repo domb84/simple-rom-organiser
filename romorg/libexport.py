@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence
 
-from . import meter, sortroot
+from . import meter, sortroot, winproc
 
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
            "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
@@ -511,7 +511,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
                 out["cancelled"] = True
                 break
             except (OSError, ValueError) as exc:
-                out["failed"].append({"rel": t.rel, "error": str(exc)})
+                out["failed"].append({"rel": t.rel, "error": winproc.long_path_hint(exc, t.src, target)})
                 continue
             try:
                 mt = os.stat(target).st_mtime_ns
