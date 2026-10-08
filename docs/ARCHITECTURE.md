@@ -2212,3 +2212,75 @@ from `<aside>/<system folder>/`), `apply_moves` / `undo_moves` (journal, never o
   written in the system's folder and the original goes to that folder's `_converted_originals`; the folder is then read again
   and planned as usual. The undo logs of a collection build live in the ROM root.
 
+
+## Windows pass 4 (2026-10-08): v0.2 on Windows
+
+Answer to `docs/HANDOVER_WINDOWS_4.md`. v0.2 had only run on the Steam Deck; this pass ran it on Windows 11 (Python 3.14, 16
+threads), fixed what broke, and fixed the bugs it found on the way, several of which exist on Linux too.
+
+**Numbers, all on commit 648888b.** Tests: 1358 (1238 before the pass). Windows: OK, 58 skipped. WSL Ubuntu 24.04 (Python 3.12):
+OK, 96 skipped. The AppImage's own Python 3.13 in an Arch container without system libzstd / libFLAC, read-only root, uid 1000,
+8 CPUs, no network: OK twice, 97 skipped; the AppImage (20.6 MB) passes `--self-check` through a FUSE mount and
+`packaging/smoke_test.sh`. Windows packages: zip 14.6 MB, exe 12.5 MB, both pass the self-check and the new smoke test.
+The browser tests (30) run on Windows with Edge. Not run: a real Steam Deck.
+
+**What was wrong on Windows only**
+
+* Three RetroArch tests expected `~/...` in `retroarch.cfg`; on Windows the app rightly writes absolute paths (RetroArch there
+  does not expand `~`). The tests now state the form per platform.
+* RetroArch was not found unless it lived in `%APPDATA%`, under Program Files' Steam or one of four fixed folders: a Chocolatey
+  install (`C:\tools\RetroArch-Win64`) was missed. Detection now also reads the Steam path and the installer's uninstall key from
+  the registry, every Steam library, PATH, Chocolatey, Scoop, the usual unpack places and the root of each fixed drive, and the
+  folder of a running `retroarch.exe` (`retroarch.WinSystem`; nothing outside `home` / `env` is read when a caller passes them).
+  `ROMORG_RETROARCH_DETECT=0` switches machine detection off; every test module that starts the server sets it.
+* `is_running` started `tasklist` (a console window from the windowed exe, 165 ms, localised text): now a Toolhelp snapshot
+  through ctypes (16 ms). Folders inside a portable install are written `:\saves`, as RetroArch does.
+* A root that already had `SNES\` crashed the whole Collection job once a rule set a file aside (paths compared as text); a
+  rename that only changes case was dropped; sync deleted a file whose name only changed case (`collection.standard_folder`,
+  `libexport`).
+* Read-only files stayed under both names after a move (link + unlink), and emptied read-only folders stayed.
+* A ROM folder at the top of a drive: `GET /api/collection` answered 500 and overlap checks were wrong.
+* The build scripts' smoke test only asked for one URL: `packaging/smoke_test.ps1` now asserts what `smoke_test.sh` does (a
+  test compares the two scripts), plus that Quit leaves no process. The exe build no longer touches the builder's own data.
+* Windows showed `~/Emulation/roms` example paths; two RetroArch folder fields had no native Browse button.
+
+**What was wrong everywhere (found here)**
+
+* A move that could not rename fell back to copy-and-delete for any reason. A file another program holds open was copied and
+  could not be deleted: two copies, a failed move, no undo record. Now (`sortroot.move_path`, `libexport._transfer`,
+  `retroarch._move`): rename; copy only to another device; the copy is removed if the original cannot be. Sharing violations are
+  retried on Windows (3 x 100 ms, in `sortroot` only).
+* The sort journal was written once at the end, so a killed run lost the record of every move made: now a line before each move.
+* Undo removed every empty folder above the archive, including the user's own folder holding it; folders that were empty before
+  a build were removed and not restored; "Undo last" forgot a build whose files could not all be moved back; a build stopped
+  after "Convert first" left nothing to undo; undo and restore could run while a job was moving files.
+* `retroarch.cfg`: line endings were rewritten, a BOM hid the first key, two changes in one second overwrote the first backup,
+  undo threw away what RetroArch had saved since, a save dated before 1980 killed the zip backup.
+* BIOS check: no core matched the SNES, PSP cores were listed for PlayStation, a firmware entry that is a folder was always
+  "missing". Several server handlers answered 500 on a wrong type.
+* Folder dialog: two clicks opened two dialogs; a dialog stayed open after Quit. UI: a double click started two jobs.
+* The self-check now fails when a module or a file of the web UI is missing from a package (`check_app`); `smoke_test.sh`
+  checks that line and the v0.2 pages (`view-collection`, `view-retroarch`, `view-chd`, `/api/collection`, `/api/retroarch`).
+
+**Checked by hand through the HTTP API on real folders:** the handover's mixed folder (spaces, apostrophes, `&`, `%`, Japanese,
+accents; a duplicate, an unknown ROM, a picture): 20 moves, no path both a source and a destination, the `.romorg-undo-*.json`
+files skipped on a rescan, undo exact; a headered `.smc` with *Convert first*; archive and *Build elsewhere* (Copy, Move, keep in
+sync, cancel then undo) on another physical drive; RetroArch save moves across drives against a copy of a real install
+(291 core info files parse); the built exe in headless Edge (home, 18 systems x 3 tabs, the three new pages: no JavaScript error,
+no failed request, no overflow from 380 to 1280 px); the native folder dialog (appears in front, non-ASCII path, cancel, server
+not blocked); the progress meter over 4.3 GB (monotonic, sane ETA).
+
+**Left as they are (design questions for the user, both platforms)**
+
+* A save next to a ROM follows it into the system folder but is not renamed with it; the next build sends it to `_other`.
+* A library build that only archives (nothing renamed) has no undo in the UI (`undo_log` is `None`).
+* A "build elsewhere" Move records its manifest every 100 files: a killed run can leave up to 99 moved files unrecorded (safe in
+  the destination, not undoable). Per-file recording costs speed on SD cards.
+* *Convert first* converts a headered file lying in `_converted_originals` again when its clean copy is gone.
+* `organiser.apply_renames` has no sharing-violation retry (the handover asked for it in `sortroot` only).
+
+**For the Deck:** shared code changed (`sortroot`, `libexport`, `organiser`, `collection`, `retroarch`, `server`, `app.js`,
+`selfcheck`, `smoke_test.sh`). Run `docs/DECK_RUNBOOK.md` again from step 1, and on the RetroArch page check that the Deck's
+installs are still found, that changing a folder changes only that line of `retroarch.cfg`, and that Undo returns it.
+Not exercised anywhere for real: the registry uninstall key, Scoop, a Steam RetroArch on Windows, RetroBat / LaunchBox /
+EmuDeck layouts (those paths only count when a `retroarch.cfg` is there), a running RetroArch, paths over 260 characters.
