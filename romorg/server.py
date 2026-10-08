@@ -3161,6 +3161,10 @@ class App:
         for inst in installs:
             if str(inst.cfg) == want:
                 return inst
+        if os.name == "nt" and isinstance(want, str) and want:      # Windows: the same file in another spelling
+            for inst in installs:
+                if os.path.normcase(os.path.normpath(str(inst.cfg))) == os.path.normcase(os.path.normpath(want)):
+                    return inst
         return installs[0] if installs else None
 
     def _ra_dirs(self, saved: dict[str, Any]) -> tuple[Path, Path]:
@@ -3217,10 +3221,18 @@ class App:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the folder for save files.")
         paths = []
         for raw in (save_dir, state_dir):
-            p = Path(os.path.abspath(os.path.expanduser(raw)))
+            try:
+                p = Path(os.path.abspath(os.path.expanduser(raw)))
+                is_file, anchored = p.is_file(), _existing_parent(p).exists()
+            except (OSError, ValueError):
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"Not a usable folder: {raw}") from None
             for bad in (sel.base,):
                 if p == bad:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "Choose a folder for the saves, not RetroArch's own folder.")
+            if is_file:
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"That is a file, not a folder: {p}")
+            if not anchored:                                  # Windows: a drive that is not there (on POSIX "/" always is)
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"The drive of that folder does not exist: {p}")
             paths.append(p)
         try:
             rel = ra.plan_relocation(sel, paths[0], paths[1], _bool_arg(body.get("sort_saves")),
@@ -3251,6 +3263,12 @@ class App:
             have = cur.get(k, "")
             want = "true" if v is True else "false" if v is False else str(v)
             if have != want:
+                if os.name == "nt" and k.endswith("_directory") and have and want:
+                    # Windows: the same folder in another spelling (case, slashes, ":\saves" against the full path)
+                    ra = _mod("retroarch")
+                    a, b = ra.resolve(have, sel), ra.resolve(want, sel)
+                    if a is not None and b is not None and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+                        continue
                 return True
         return False
 
@@ -3373,7 +3391,8 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
         base = _str_arg(body.get("base"))
         rows = ra.shared_folders(sel, base)
-        keys = [k for k in (body.get("keys") or []) if isinstance(k, str)]
+        raw_keys = body.get("keys")
+        keys = [k for k in (raw_keys if isinstance(raw_keys, list) else []) if isinstance(k, str)]
         try:
             res = ra.apply_shared(sel, rows, keys, self._ra_dirs(saved)[0])
         except RuntimeError as exc:
@@ -3445,7 +3464,8 @@ class App:
     def retroarch_bios_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         ra, sel, cores, dirs, systems, _label = self._ra_bios_scope(body)
         mode = "copy" if _str_arg(body.get("mode")) == "copy" else "move"
-        wanted = set(body.get("paths") or [])
+        raw_paths = body.get("paths")
+        wanted = {p for p in (raw_paths if isinstance(raw_paths, list) else []) if isinstance(p, str)}
         journal_dir = self._ra_dirs(self._ra_state()[2])[0]
 
         def work(job: Job) -> Any:
