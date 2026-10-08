@@ -101,6 +101,16 @@ Use the UI (or ask the user which folders). For each, say what happened:
 5. Watch for: Task Manager / `ps` showing leftover `romorg` worker processes after a cancel or after a job ends (there must be
    none), the UI wording being the Deck's (the "Discover (Desktop Mode)" hint appears only when chdman is chosen and missing).
 
+### Saves (Amendment 30, added 2026-10-08)
+
+The library rules have a new setting, "Games you have saves for" (keep = default / archive their saves with them / leave the
+saves), and a build shows how many saves it will rename, keep or archive. On the Deck, with RetroArch installed and its
+`saves` folder holding a few `.srm` / `.state` files: (a) in Library > Rules the setting is there; with "Keep them" a game
+that has a save is not archived although the rules would (the preview says "kept: you have saves"); (b) rename a ROM through
+a build and check the save in `saves/<core>/` got the new name (Flycast `.A1.bin` memory cards too); (c) "Archive their saves
+with them" puts them under `<archive>/<system>/_saves/<core>/` and Undo brings ROM and saves back; (d) nothing is ever moved
+next to a ROM. A loose `.srm` beside a ROM now goes to `_other` in the Collection sort.
+
 ## 5. Speed (about 20 minutes; compare with the old numbers)
 
 ```
