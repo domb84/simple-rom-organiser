@@ -2417,3 +2417,16 @@ not blocked); the progress meter over 4.3 GB (monotonic, sane ETA).
 installs are still found, that changing a folder changes only that line of `retroarch.cfg`, and that Undo returns it.
 Not exercised anywhere for real: the registry uninstall key, Scoop, a Steam RetroArch on Windows, RetroBat / LaunchBox /
 EmuDeck layouts (those paths only count when a `retroarch.cfg` is there), a running RetroArch, paths over 260 characters.
+
+## Folder picker and sidebar progress (2026-10-08)
+
+* The native "Browse..." dialog (PowerShell `FolderBrowserDialog` on Windows, `kdialog` / `zenity` on Linux), `POST /api/fs/pick`
+  and `dialog_available` in `/api/status` are removed: one picker, the in-app **Folders...** browser, on every platform. Reason:
+  on Windows the dialog opened behind the browser (not topmost, no taskbar button, owner form never shown), the request kept
+  its one-dialog lock, and the next click answered "already open". Windows kept dropping the topmost flag of a dialog started by
+  the app (it depended on whether the server had a console), and no script variant held it reliably.
+* The bar under a system's name in the sidebar never drew: its pieces were `<span>`s and an inline box has no width, so the fill
+  measured 0 px whatever the progress. It is a block now, never narrower than a sliver while a fraction is known, a sliding
+  bar while the job has not counted its work, and has no text of its own (the job bar at the top says what is happening; the
+  sidebar has it as a tooltip). Percentages below 10 % show a decimal ("0.4%"): a scan of hundreds of gigabytes is below 1 %
+  for minutes.

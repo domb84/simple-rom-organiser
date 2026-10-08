@@ -902,18 +902,18 @@ _FETCH_STUB = r"""(() => {
 })()"""
 
 # every "Browse..." button of the UI (the native folder dialog) and the field its answer belongs in
-NATIVE_BUTTONS = {
-    "folder-native-btn": "folder-input", "lib-export-native-btn": "lib-export-dest", "lib-aside-native": "lib-aside-dir",
-    "col-root-native": "col-root", "col-dest-native": "col-dest", "col-aside-native": "col-aside",
-    "ra-custom-native": "ra-custom", "ra-save-native": "ra-save-dir", "ra-state-native": "ra-state-dir",
-    "ra-backup-native": "ra-backup-dir", "ra-shared-native": "ra-shared-base", "ra-bios-native": "ra-bios-search",
+FOLDER_FIELDS = {          # "Folders..." button -> the field it fills (the in-app folder browser, the same on every platform)
+    "folder-browse-btn": "folder-input", "lib-export-browse-btn": "lib-export-dest", "lib-aside-browse": "lib-aside-dir",
+    "col-root-browse": "col-root", "col-dest-browse": "col-dest", "col-aside-browse": "col-aside",
+    "ra-custom-browse": "ra-custom", "ra-save-browse": "ra-save-dir", "ra-state-browse": "ra-state-dir",
+    "ra-backup-browse": "ra-backup-dir", "ra-shared-browse": "ra-shared-base", "ra-bios-browse": "ra-bios-search",
 }
 LINUX_ONLY = r"~/|/home/deck|/run/media|Steam Deck|Discover|[Ff]latpak|fusermount|/path/to"
 
 
 class PlatformTests(UiTestCase):
     """What differs between a Windows server and a Linux one, and what must not: wording, example paths, the folder
-    dialog buttons, the layout of a narrow window. The page learns the platform from ``/api/status`` (``os``)."""
+    pickers, the layout of a narrow window. The page learns the platform from ``/api/status`` (``os``)."""
 
     def stub(self, *rules: dict) -> None:
         import json
@@ -925,7 +925,7 @@ class PlatformTests(UiTestCase):
         time.sleep(0.5)
 
     def test_a_windows_server_shows_windows_paths_and_no_linux_wording(self) -> None:
-        self.stub({"path": "/api/status", "patch": {"os": "windows", "dialog_available": True}},
+        self.stub({"path": "/api/status", "patch": {"os": "windows"}},
                   {"path": "/api/chdman", "patch": {"os": "windows"}})
         self.open("#/collection")
         self.page.wait("document.getElementById('col-root').placeholder.includes('Emulation')")
@@ -959,14 +959,14 @@ class PlatformTests(UiTestCase):
         self.assertIn("/path/to/chdman", self.page.eval("document.getElementById('chdman-path').placeholder"))
         self.no_js_errors()
 
-    def test_every_browse_button_opens_the_dialog_for_its_own_field(self) -> None:
+    def test_every_folder_field_has_the_one_folder_browser_and_there_is_no_native_dialog(self) -> None:
+        """One way to choose a folder, the same on Windows and Linux: the app's own "Folders..." browser. (A native dialog
+        used to be offered as "Browse..." where the server had one; on Windows it opened behind the browser, so it looked
+        as if nothing happened.)"""
         ra = self.fx.tmp / "ra"
         ra.mkdir()
         (ra / "retroarch.cfg").write_text('savefile_directory = "default"\n')
-        self.stub({"path": "/api/status", "patch": {"dialog_available": True}},
-                  {"path": "/api/fs/pick", "method": "POST", "pick": "X:\\picked\\"},
-                  {"path": "/api/folders", "method": "POST", "body": {"folders": {}}},
-                  {"path": "/api/collection/save", "method": "POST", "status": 400, "body": {"error": "not saved in this test"}})
+        self.stub({"path": "/api/folders", "method": "POST", "body": {"folders": {}}})
         self.open("#/retroarch")
         self.page.wait("!document.getElementById('view-retroarch').classList.contains('hidden')")
         self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
@@ -975,44 +975,16 @@ class PlatformTests(UiTestCase):
         self.page.wait("!document.getElementById('ra-change-panel').classList.contains('hidden')")
         self.show("#/collection")
         self.show("#/system/commodore-amiga/overview")
-        ids = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...').map(b => b.id).sort()")
-        self.assertEqual(ids, sorted(NATIVE_BUTTONS))                      # no Browse button this test does not know
-        hidden = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...' "
-                                "&& b.classList.contains('hidden')).map(b => b.id)")
-        self.assertEqual(hidden, [])                                       # the server has a dialog: all of them show
-        # every field with a "Folders..." button (the in-app browser) has the native one next to it
-        self.assertEqual(self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Folders...').length"),
-                         len(NATIVE_BUTTONS))
-        for button, field in NATIVE_BUTTONS.items():
-            with self.subTest(button=button):
-                self.page.eval(f"""(() => {{ window.__calls.length = 0; document.getElementById({field!r}).value = 'start of {field}';
-                    document.getElementById({button!r}).click(); }})()""")
-                self.page.wait(f"document.getElementById({field!r}).value.startsWith('X:')")
-                asked = self.page.eval("window.__calls.filter(c => c.path === '/api/fs/pick')")
-                self.assertEqual(len(asked), 1)
-                self.assertEqual(asked[0]["body"]["start"], f"start of {field}")       # the dialog opens where the field points
-                self.assertTrue(asked[0]["body"]["title"].startswith("Choose"), asked[0])
-                got = self.page.eval(f"document.getElementById({field!r}).value")
-                self.assertEqual(got, "X:\\picked\\" + asked[0]["body"]["title"])
-                others = self.page.eval(f"""{list(NATIVE_BUTTONS.values())!r}.filter(id => id !== {field!r}
-                    && document.getElementById(id).value === {got!r})""")
-                self.assertEqual(others, [])                                           # and only that field got the answer
-        self.no_js_errors()
-
-    def test_browse_buttons_are_hidden_without_a_dialog_and_a_refusal_is_a_message(self) -> None:
-        self.stub({"path": "/api/status", "patch": {"dialog_available": False}},
-                  {"path": "/api/fs/pick", "method": "POST", "status": 409, "body": {"error": "A folder dialog is already open"}})
-        self.open("#/collection")
-        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
-        self.show("#/retroarch")
-        shown = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...' "
-                               "&& !b.classList.contains('hidden')).map(b => b.id)")
-        self.assertEqual(shown, [])
-        # a dialog that is already open (HTTP 409): a message, and the field keeps its text
-        self.page.eval("document.getElementById('col-root').value = 'kept'; document.getElementById('col-root-native').click();")
-        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('already open'))")
-        self.assertEqual(self.page.eval("document.getElementById('col-root').value"), "kept")
-        self.assertFalse(self.page.eval("document.getElementById('col-root-native').disabled"))
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...').length"), 0)
+        self.assertEqual(self.page.eval("document.querySelectorAll('button[id*=\"-native\"]').length"), 0)
+        ids = self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Folders...').map(b => b.id).sort()")
+        self.assertEqual(ids, sorted(FOLDER_FIELDS))                       # every folder field has it, and nothing else does
+        for button in FOLDER_FIELDS:
+            self.assertFalse(self.page.eval(f"document.getElementById({button!r}).classList.contains('hidden')"), button)
+        # pressing one opens the in-app browser (a modal), for that field
+        self.show("#/collection")
+        self.page.eval("document.getElementById('col-root-browse').click()")
+        self.page.wait("!document.getElementById('folder-modal').classList.contains('hidden')")
         self.no_js_errors()
 
     def test_a_narrow_window_fits_every_page_and_the_system_list_opens_and_closes(self) -> None:
@@ -1121,6 +1093,72 @@ class RobustnessTests(UiTestCase):
         self.page.wait("!document.getElementById('col-output').classList.contains('hidden')", timeout=60)
         self.assertIsNone(self.page.eval("window.__xss === undefined ? null : window.__xss"))
         self.assertEqual(self.page.eval("document.querySelectorAll('img, #xss-b, main script').length"), 0)
+        self.no_js_errors()
+
+
+class SidebarProgressTests(UiTestCase):
+    """The bar under a system's name while it is scanned: it has to be visible and move, and it must not repeat the job bar."""
+
+    def run_job(self, steps):
+        """Start a scan-like job on the fixture's server whose progress the test sets step by step."""
+        import threading
+        app = self.fx.server.app
+        gate, reported = threading.Event(), threading.Event()
+        box = {"step": None}
+
+        def work(job):
+            while not gate.is_set():
+                if box["step"] is not None:
+                    job.report(*box["step"][:2], box["step"][2])
+                    box["step"] = None
+                    reported.set()
+                gate.wait(0.02)
+
+        self.addCleanup(gate.set)
+        app.jobs.start("scan", work, platform="Commodore Amiga")
+
+        def step(done, total, message="Reading a.chd (file 1/9)"):
+            reported.clear()
+            box["step"] = (done, total, message)
+            self.assertTrue(reported.wait(5))
+        return step
+
+    def bar(self):
+        return self.page.eval("""(() => { const it = document.querySelector('.nav-item.running');
+            if (!it) return null; const fill = it.querySelector('.nav-job .progress-bar'), track = it.querySelector('.nav-job .progress');
+            return {fill: fill.getBoundingClientRect().width, track: track.getBoundingClientRect().width,
+                    indeterminate: track.classList.contains('indeterminate'), inline: fill.style.width,
+                    text: it.querySelector('.nav-job').textContent.trim(), tip: it.title,
+                    top: document.getElementById('job-bar').innerText}; })()""")
+
+    def test_the_sidebar_bar_is_visible_and_moves_and_does_not_repeat_the_message(self) -> None:
+        step = self.run_job(None)                       # already running when the page loads, as after a click and a reload
+        self.open()
+        self.page.wait("!!document.querySelector('.nav-item.running')", timeout=20)
+        # the job has not counted its work yet: the bar slides instead of sitting at 0 px
+        b = self.bar()
+        self.assertTrue(b["indeterminate"], b)
+        self.assertGreater(b["fill"], 5, b)
+        self.assertEqual(b["inline"], "", b)
+        # 0.1 % of a very long scan: still a visible sliver, not 0 px
+        step(931, 931469)
+        self.page.wait("document.querySelector('.nav-item.running .progress-bar').style.width !== ''", timeout=10)
+        b = self.bar()
+        self.assertFalse(b["indeterminate"], b)
+        self.assertGreaterEqual(b["fill"], 0.019 * b["track"], b)
+        # half way: half the track
+        step(500, 1000)
+        self.page.wait("""(() => { const f = document.querySelector('.nav-item.running .progress-bar'), t = f.parentElement;
+            return Math.abs(f.getBoundingClientRect().width / t.getBoundingClientRect().width - 0.5) < 0.01; })()""", timeout=10)   # (it eases there)
+        b = self.bar()
+        self.assertAlmostEqual(b["fill"] / b["track"], 0.5, delta=0.02)
+        # the words are the job bar's; the sidebar only has the bar (and the words as a tooltip)
+        self.assertEqual(b["text"], "", b)
+        self.assertIn("Reading a.chd (file 1/9)", b["tip"])
+        self.assertIn("Reading a.chd (file 1/9)", b["top"])
+        # a sliver is written with a decimal in the job bar, not as "0%"
+        step(4, 1000)
+        self.page.wait("document.querySelector('#job-bar .job-count')?.textContent.includes('0.4%')", timeout=10)
         self.no_js_errors()
 
 

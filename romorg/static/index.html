@@ -77,7 +77,6 @@
         <label class="small" for="col-root">The folder with your ROMs (any layout: loose files, mixed folders, one folder per system)</label>
         <div class="row">
           <input type="text" id="col-root" class="input grow mono" placeholder="~/Emulation/roms" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="col-root-native">Browse...</button>
           <button class="btn" id="col-root-browse">Folders...</button>
           <button class="btn btn-primary" id="col-scan-btn" data-needs-idle>Scan folder</button>
         </div>
@@ -107,7 +106,6 @@
           <label class="small" for="col-aside">Archive folder (outside the ROM folders)</label>
           <div class="row">
             <input type="text" id="col-aside" class="input grow mono" placeholder="Default: next to the ROM folder, named like it with -archive" spellcheck="false" autocomplete="off">
-            <button class="btn hidden" id="col-aside-native">Browse...</button>
             <button class="btn" id="col-aside-browse">Folders...</button>
           </div>
           <label class="check"><input type="checkbox" id="col-sweep" checked> Move what the rules archive out of the ROM folders into the archive folder</label>
@@ -117,7 +115,6 @@
           <label class="small" for="col-dest">Build the library in</label>
           <div class="row">
             <input type="text" id="col-dest" class="input grow mono" placeholder="~/Emulation/library" spellcheck="false" autocomplete="off">
-            <button class="btn hidden" id="col-dest-native">Browse...</button>
             <button class="btn" id="col-dest-browse">Folders...</button>
           </div>
           <div class="row">
@@ -227,7 +224,6 @@
         </div>
         <div class="row">
           <input type="text" id="ra-custom" class="input grow mono" placeholder="Another RetroArch: its folder, retroarch.cfg or retroarch.exe" spellcheck="false" autocomplete="off" aria-label="Another RetroArch folder">
-          <button class="btn hidden" id="ra-custom-native">Browse...</button>
           <button class="btn" id="ra-custom-browse">Folders...</button>
           <button class="btn" id="ra-custom-add">Use this one</button>
         </div>
@@ -243,13 +239,11 @@
         <label class="small" for="ra-save-dir">Save files (.srm, .sav ...)</label>
         <div class="row">
           <input type="text" id="ra-save-dir" class="input grow mono" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="ra-save-native">Browse...</button>
           <button class="btn" id="ra-save-browse">Folders...</button>
         </div>
         <label class="small" for="ra-state-dir">Save states (.state, .state1 ...), the same folder or its own</label>
         <div class="row">
           <input type="text" id="ra-state-dir" class="input grow mono" spellcheck="false" autocomplete="off">
-          <button class="btn hidden" id="ra-state-native">Browse...</button>
           <button class="btn" id="ra-state-browse">Folders...</button>
         </div>
         <div class="row">
@@ -259,7 +253,6 @@
         <div class="row">
           <label class="check"><input type="checkbox" id="ra-backup" checked> Back up the files to a zip first</label>
           <input type="text" id="ra-backup-dir" class="input grow mono" spellcheck="false" autocomplete="off" aria-label="Backup folder">
-          <button class="btn hidden" id="ra-backup-native">Browse...</button>
           <button class="btn" id="ra-backup-browse">Folders...</button>
         </div>
         <div class="row">
@@ -283,7 +276,6 @@
         <p class="muted small">Assets you keep outside RetroArch (playlists, thumbnails, cheats, remaps ...). For each setting the app finds the folder of that name inside the folder below and shows whether RetroArch already uses it. Nothing is moved: only the setting changes.</p>
         <div class="row">
           <input type="text" id="ra-shared-base" class="input grow mono" placeholder="The folder that holds them, e.g. ~/MEGA/Emulation/assets" spellcheck="false" autocomplete="off" aria-label="Shared assets folder">
-          <button class="btn hidden" id="ra-shared-native">Browse...</button>
           <button class="btn" id="ra-shared-browse">Folders...</button>
           <button class="btn" id="ra-shared-check">Check</button>
         </div>
@@ -309,7 +301,6 @@
         <div class="row">
           <select id="ra-bios-platform" class="input" aria-label="System"></select>
           <input type="text" id="ra-bios-search" class="input grow mono" placeholder="Also look in this folder (optional)" spellcheck="false" autocomplete="off" aria-label="Another folder to search">
-          <button class="btn hidden" id="ra-bios-native">Browse...</button>
           <button class="btn" id="ra-bios-browse">Folders...</button>
         </div>
         <div class="row">
@@ -353,7 +344,6 @@
           <p class="muted small" id="folder-help">The ROM folder of this system, for example <code id="folder-example"></code>. Subfolders are always included. It is saved the moment you choose it.</p>
           <div class="folder-row">
             <input type="text" id="folder-input" class="input grow mono" spellcheck="false" autocomplete="off" aria-label="System folder">
-            <button class="btn hidden" id="folder-native-btn">Browse...</button>
             <button class="btn" id="folder-browse-btn">Folders...</button>
             <button class="btn" id="folder-clear-btn">Clear</button>
             <span class="folder-state" id="folder-state" data-folder-state=""></span>
@@ -449,14 +439,12 @@
               <label class="check" title="Files the rules archive are moved to a folder next to the ROM folders instead of staying in this one."><input type="checkbox" id="lib-aside-on"> Keep this folder tidy: move what the rules archive (excluded, superseded, incomplete, duplicates, unmatched) to another folder</label>
               <div class="row hidden" id="lib-aside-row">
                 <input type="text" id="lib-aside-dir" class="input grow mono" placeholder="Folder for the archived files" spellcheck="false" autocomplete="off" aria-label="Archive folder">
-                <button class="btn hidden" id="lib-aside-native">Browse...</button>
                 <button class="btn" id="lib-aside-browse">Folders...</button>
               </div>
             </div>
             <div id="lib-export-opts" class="hidden">
               <div class="row">
                 <input type="text" id="lib-export-dest" class="input grow mono" placeholder="Folder to build the library in, e.g. ~/Emulation/roms" spellcheck="false" autocomplete="off" aria-label="Library destination folder">
-                <button class="btn hidden" id="lib-export-native-btn">Browse...</button>
                 <button class="btn" id="lib-export-browse-btn">Folders...</button>
               </div>
               <div class="row">

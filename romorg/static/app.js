@@ -561,7 +561,7 @@
       const head = el("div", { class: "job-head" },
         el("b", { class: "job-what", text: what }),
         el("span", { class: "job-msg", text: msg, title: msg }),
-        el("span", { class: "job-count", text: countText + (pct !== null && job.status === "running" ? `  (${pct.toFixed(0)}%)` : "") }));
+        el("span", { class: "job-count", text: countText + (pct !== null && job.status === "running" ? `  (${fmtPct(pct)})` : "") }));
       if (job.status === "running" && job.cancellable) {
         head.append(el("button", {
           class: "btn btn-small", text: "Cancel",
@@ -586,6 +586,8 @@
     },
   };
 
+  /** "0.4%" for a sliver, "37%" otherwise: a scan of hundreds of gigabytes is below 1 % for minutes. */
+  const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
     m3u: "Playlists", collection: "Collection", retroarch: "RetroArch" };
 
@@ -625,8 +627,6 @@
     $("app-version").textContent = `v${s.version}`;
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
-    // every "Browse..." button (the native folder dialog) shows only where the server has such a dialog
-    document.querySelectorAll('button[id*="-native"]').forEach((b) => b.classList.toggle("hidden", !s.dialog_available));
     if (!state.exportLoaded) { state.exportLoaded = true; loadExportSettings(); }      // once: later loads must not undo an edit
     paintExamplePaths();
   }
@@ -881,7 +881,7 @@
       el("span", { class: `dot ${kind}` }),
       el("span", { class: "nav-name", text: p.name }),
       el("span", { class: "nav-pct num", text: pct === null ? "" : `${Math.round(pct)}%` }),
-      el("span", { class: "nav-job hidden" }, el("span", { class: "nav-job-msg" }), el("span", { class: "progress" }, el("span", { class: "progress-bar" }))));
+      el("span", { class: "nav-job hidden" }, el("span", { class: "progress" }, el("span", { class: "progress-bar" }))));
   }
 
   function renderHome() {
@@ -931,11 +931,20 @@
       const mine = job.status === "running" && !!job.platform && item.dataset.platform === job.platform;
       item.classList.toggle("running", mine);
       box.classList.toggle("hidden", !mine);
-      if (!mine) return;
-      box.querySelector(".nav-job-msg").textContent = `${JOB_LABEL[job.kind] || job.kind}: ${msg}${pct !== null && pct !== undefined ? ` (${pct.toFixed(0)}%)` : ""}`;
-      const bar = box.querySelector(".progress");
-      bar.classList.toggle("indeterminate", pct === null || pct === undefined);
-      box.querySelector(".progress-bar").style.width = pct === null || pct === undefined ? "0%" : `${pct}%`;
+      if (!mine) {                                          // give the item its own tooltip back
+        if (item.dataset.tip !== undefined) { item.title = item.dataset.tip; delete item.dataset.tip; }
+        return;
+      }
+      if (item.dataset.tip === undefined) item.dataset.tip = item.title;
+      // Only the bar here: what the job is doing is written once, in the job bar at the top (this one has it as a tooltip).
+      // A big scan is a tiny fraction for a long time, so a known fraction never draws thinner than a sliver; an unknown one
+      // (the job has not counted its work yet) leaves the width to the stylesheet so the sliding animation shows.
+      const known = pct !== null && pct !== undefined;
+      box.querySelector(".progress").classList.toggle("indeterminate", !known);
+      const fill = box.querySelector(".progress-bar");
+      if (known) fill.style.width = `${Math.max(2, Math.min(100, pct))}%`;
+      else fill.style.removeProperty("width");
+      item.title = `${JOB_LABEL[job.kind] || job.kind}: ${msg}${known ? ` (${fmtPct(pct)})` : ""}`;
     });
   }
 
@@ -1261,19 +1270,6 @@
       this.target.dispatchEvent(new Event("change"));   // a system folder is saved right away
     },
   };
-
-  async function nativeBrowse(btn, target, title) {
-    if (btn) btn.disabled = true;
-    try {
-      const res = await post("/api/fs/pick", { start: target.value.trim(), title });
-      if (res.path) { target.value = res.path; target.dispatchEvent(new Event("input")); target.dispatchEvent(new Event("change")); }
-      else if (res.timeout) toast("The folder dialog did not answer - use \"Folders...\" instead.", "info", 8000);
-    } catch (err) {
-      toast(err.message, "error");
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
 
   // ------------------------------------------------------------- scan + overview
   function renderScanTarget() {
@@ -3910,8 +3906,6 @@
     render() {
       const info = this.info;
       if (!info) return;
-      const nat = !!(state.status && state.status.dialog_available);
-      for (const id of ["ra-custom-native", "ra-save-native", "ra-state-native", "ra-backup-native", "ra-shared-native", "ra-bios-native"]) $(id).classList.toggle("hidden", !nat);
       $("ra-none").classList.toggle("hidden", info.installs.length > 0);
       $("ra-install").replaceChildren(...info.installs.map((i) => el("option", { value: i.cfg, text: `${i.label} - ${i.cfg}`, selected: i.cfg === info.selected })));
       $("ra-install").disabled = !info.installs.length;
@@ -4104,22 +4098,16 @@
         if (v) this.select({ custom: v }); else toast("Enter the RetroArch folder, or the path of its retroarch.cfg, first.", "info");
       });
       $("ra-custom-browse").addEventListener("click", () => FolderBrowser.open($("ra-custom"), "Choose the RetroArch folder"));
-      $("ra-custom-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-custom"), "Choose the RetroArch folder"));
       $("ra-save-browse").addEventListener("click", () => FolderBrowser.open($("ra-save-dir"), "Choose the folder for save files"));
-      $("ra-save-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-save-dir"), "Choose the folder for save files"));
       $("ra-state-browse").addEventListener("click", () => FolderBrowser.open($("ra-state-dir"), "Choose the folder for save states"));
-      $("ra-state-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-state-dir"), "Choose the folder for save states"));
       $("ra-backup-browse").addEventListener("click", () => FolderBrowser.open($("ra-backup-dir"), "Choose the backup folder"));
-      $("ra-backup-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-backup-dir"), "Choose the backup folder"));
       $("ra-follow").addEventListener("change", async () => { try { this.info = await post("/api/retroarch/follow", { follow: $("ra-follow").checked }); state.raFollow = this.info.follow; syncFollowBoxes(); } catch (err) { toast(err.message, "error"); } });
       $("ra-shared-check").addEventListener("click", () => this.sharedCheck($("ra-shared-base").value.trim()));
       $("ra-shared-apply").addEventListener("click", () => this.sharedApply());
       $("ra-shared-browse").addEventListener("click", () => FolderBrowser.open($("ra-shared-base"), "Choose the folder that holds the shared assets"));
-      $("ra-shared-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-shared-base"), "Choose the folder that holds the shared assets"));
       $("ra-bios-check").addEventListener("click", () => this.biosCheck());
       $("ra-bios-apply").addEventListener("click", () => this.biosApply());
       $("ra-bios-browse").addEventListener("click", () => FolderBrowser.open($("ra-bios-search"), "Choose a folder to look for BIOS files in"));
-      $("ra-bios-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("ra-bios-search"), "Choose a folder to look for BIOS files in"));
       $("ra-plan-btn").addEventListener("click", () => this.plan());
       $("ra-apply-btn").addEventListener("click", () => this.apply());
       $("ra-undo-btn").addEventListener("click", () => this.undo());
@@ -4161,7 +4149,7 @@
       if (!this.loaded) {
         try { this.info = await get("/api/collection"); } catch (err) { toast(err.message, "error"); return; }
         this.loaded = true;
-        const i = this.info, nat = !!(state.status && state.status.dialog_available);
+        const i = this.info;
         $("col-root").value = i.root || "";
         $("col-dest").value = i.dest || "";
         $("col-mode").value = i.mode;
@@ -4172,7 +4160,6 @@
         $("col-convert").checked = !!i.convert;
         $("col-place-inplace").checked = i.place !== "elsewhere";
         $("col-place-elsewhere").checked = i.place === "elsewhere";
-        for (const id of ["col-root-native", "col-dest-native", "col-aside-native"]) $(id).classList.toggle("hidden", !nat);
       }
       this.render();
     },
@@ -4468,11 +4455,8 @@
       $("col-root").addEventListener("keydown", (e) => { if (e.key === "Enter") this.scan(); });
       $("col-root").addEventListener("change", () => this.save({ root: $("col-root").value.trim() }));
       $("col-root-browse").addEventListener("click", () => FolderBrowser.open($("col-root"), "Choose the folder with your ROMs"));
-      $("col-root-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-root"), "Choose the folder with your ROMs"));
       $("col-dest-browse").addEventListener("click", () => FolderBrowser.open($("col-dest"), "Choose the folder to build the collection in"));
-      $("col-dest-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-dest"), "Choose the folder to build the collection in"));
       $("col-aside-browse").addEventListener("click", () => FolderBrowser.open($("col-aside"), "Choose the archive folder"));
-      $("col-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("col-aside"), "Choose the archive folder"));
       $("col-dest").addEventListener("change", () => this.save({ dest: $("col-dest").value.trim() }));
       $("col-aside").addEventListener("change", () => this.save({ aside: $("col-aside").value.trim() }));
       $("col-mode").addEventListener("change", () => this.save({ mode: $("col-mode").value }));
@@ -4560,9 +4544,7 @@
     $("lib-aside-on").addEventListener("change", asideChanged);
     $("lib-aside-dir").addEventListener("change", asideChanged);
     $("lib-aside-browse").addEventListener("click", () => FolderBrowser.open($("lib-aside-dir"), "Choose the folder for the archived files"));
-    $("lib-aside-native").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("lib-aside-dir"), "Choose the folder for the archived files"));
     $("lib-export-browse-btn").addEventListener("click", () => FolderBrowser.open($("lib-export-dest"), "Choose the folder to build the library in"));
-    $("lib-export-native-btn").addEventListener("click", (e) => nativeBrowse(e.currentTarget, $("lib-export-dest"), "Choose the folder to build the library in"));
     $("library-reset").addEventListener("click", async () => {
       try {
         state.library[state.platform] = await post("/api/library/profile", { platform: state.platform, reset: true });
@@ -4629,10 +4611,6 @@
     $("folder-browse-btn").addEventListener("click", () => {
       const p = currentPlatform();
       if (p) FolderBrowser.open(input, `Choose the ${p.name} folder`);
-    });
-    $("folder-native-btn").addEventListener("click", (e) => {
-      const p = currentPlatform();
-      if (p) nativeBrowse(e.currentTarget, input, `Choose the ${p.name} folder`);
     });
   }
 

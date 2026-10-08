@@ -215,11 +215,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   console, so the report goes to the file; without `--report` to `selfcheck.log` in the data folder; the exit code
   is 0 when it passed).
 - Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
-- The folder dialog is a native Windows dialog opened through PowerShell (`FolderBrowserDialog`, in its own hidden
-  process, so it works from the windowed exe and from the zip's hidden `python.exe`; shown topmost; the path comes
-  back as UTF-8). One dialog at a time: a second request is answered 409 while one is open. It opens in the folder
-  the field names, or that folder's nearest existing parent. An unanswered dialog is closed after 5 minutes, and an
-  open one is closed when the app quits.
+- Folders are chosen with the app's own folder browser (**Folders...**), the same on every platform. The native
+  PowerShell dialog (`FolderBrowserDialog`) was removed on 2026-10-08: started from a background process it opened
+  behind the browser window, without a taskbar button, so Browse looked dead and a second click said a dialog was
+  already open.
 
 ### Windows: chdman, 7-Zip and speed
 

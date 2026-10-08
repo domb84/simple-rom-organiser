@@ -51,9 +51,8 @@ What it does:
    [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro)
    mirror on GitHub (a few MB each, consoles; only changed files are fetched) and the Redump
    Dreamcast / PlayStation / PlayStation 2 / GameCube DATs (one HEAD request per DAT; the zips only when their date is newer). Nothing to download by hand.
-2. **Systems & folders**: one row per system with its DAT status and folder (native dialog,
-   or the built-in folder browser with shortcuts for Home and SD cards / USB drives under
-   `/run/media`). Each folder is remembered.
+2. **Systems & folders**: one row per system with its DAT status and folder (type it, or use the built-in folder
+   browser, **Folders...**, with shortcuts for Home and drives). Each folder is remembered.
 3. Scans a folder (always including subfolders) and shows how many games / DAT entries you
    have, which are missing and which files matched nothing - with region, language and tag
    chips and filters.
@@ -216,7 +215,7 @@ Opening `#/` goes to the system you used last.
 **A system page (`#/system/<slug>/<tab>`)** has a *< Systems* link and four tabs (arrow keys
 move between them):
 
-* **Overview** - the folder field with **Browse... / Folders... / Clear** (a folder is **saved the
+* **Overview** - the folder field with **Folders... / Clear** (a folder is **saved the
   moment you choose it**, when you leave the field or press Enter / Scan; the chip says *Saved* or
   *Not saved* with the reason), the DAT status (the per-DAT table is in a collapsible *DAT files*),
   the **Scan folder** button, two **totals blocks** side by side - *All DAT entries* (every ROM /
@@ -973,11 +972,9 @@ When you are done, use **Quit** so that Steam sees the "game" exit.
 
 More detail is in [docs/PACKAGING.md](docs/PACKAGING.md).
 
-The UI is sized for the Deck's 1280x800 screen with large touch targets. The native
-**Browse...** button uses `kdialog` (or `zenity`) and is only shown when available
-(Desktop Mode); on Windows it opens the Windows folder dialog. The **Folders...** browser works everywhere.
-Every folder field has both buttons. One native dialog is open at a time (a second **Browse...** says so),
-it opens in the field's folder or its nearest existing parent, and it is closed when the app quits.
+The UI is sized for the Deck's 1280x800 screen with large touch targets. Every folder field has one **Folders...**
+button: the app's own folder browser, the same on Windows and Linux. (There is no native "Browse..." dialog: the one
+Windows offered opened behind the browser, and the Linux one only worked in Desktop Mode.)
 
 **Windows:** two packages, a single `.exe` and a `.zip` (`packaging\build_windows_exe.ps1`,
 `packaging\build_windows.ps1`; see [docs/PACKAGING.md](docs/PACKAGING.md)). Both builds end with
