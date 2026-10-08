@@ -100,26 +100,8 @@ foreach ($v in "ROMORG_LIBFLAC", "ROMORG_SNDFILE", "ROMORG_LIBZSTD", "ROMORG_NO_
     Remove-Item "Env:$v" -ErrorAction SilentlyContinue
 }
 
-# Smoke test: bundled interpreter can serve the UI.
 $data = "$root\build\windows\smoke-data"
 $env:ROMORG_DATA_DIR = $data; $env:ROMORG_OFFLINE = "1"
-$port = Get-Random -Minimum 20000 -Maximum 50000
-$p = Start-Process "$stage\python\python.exe" "-I -u -m romorg --no-browser --port $port" -PassThru -WindowStyle Hidden
-try {
-    $ok = $false
-    for ($i = 0; $i -lt 100 -and -not $ok; $i++) {
-        Start-Sleep -Milliseconds 200
-        try { $r = Invoke-WebRequest "http://127.0.0.1:$port/api/status" -UseBasicParsing; $ok = $r.Content -match '"version"' } catch {}
-    }
-    if (-not $ok) { throw "smoke test failed: /api/status did not answer" }
-    Write-Host "smoke test ok: $($r.Content.Substring(0, [Math]::Min(120, $r.Content.Length)))"
-} finally {
-    if (-not $p.HasExited) { Stop-Process $p.Id -Force }
-    $p.WaitForExit()
-    Remove-Item Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE
-}
-Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
-
 $env:PYTHONDONTWRITEBYTECODE = "1"
 if (-not $NoSndfile) {   # the embedded Python must find and load the bundled libsndfile
     $native = & "$stage\python\python.exe" -I -c "from romorg import nativeflac; print(nativeflac.available())"
@@ -132,12 +114,24 @@ $checkArgs = @("-I", "-m", "romorg", "--self-check")
 if (-not $NoFlac) { $checkArgs += "--require-native" }
 $out = & "$stage\python\python.exe" @checkArgs
 $rc = $LASTEXITCODE
-Remove-Item Env:PYTHONDONTWRITEBYTECODE
 $out | ForEach-Object { Write-Host $_ }
 if ($rc) { throw "CHD engine self-check failed" }
 if (-not $NoFlac) {
     $want = [regex]::Escape("OK    libFLAC $stage\app\native\libFLAC.dll")
     if (-not ($out | Where-Object { $_ -match "^$want" })) { throw "libFLAC was not loaded from app\native" }
+}
+# Smoke test (the checks of packaging/smoke_test.sh): the bundled interpreter serves the UI and the API, every system
+# and the v0.2 pages are there, and Quit stops it. Nothing of it is left running afterwards.
+try {
+    & "$PSScriptRoot\smoke_test.ps1" -Exe "$stage\python\python.exe" -ExeArgs "-I -u -m romorg" -DataDir $data `
+        -SelfCheck $out -NoFlac:$NoFlac
+} finally {
+    Remove-Item Env:PYTHONDONTWRITEBYTECODE, Env:ROMORG_DATA_DIR, Env:ROMORG_OFFLINE -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
+}
+# the package must not carry what the checks wrote: no bytecode caches of this machine's runs, no data folder
+if (Get-ChildItem $stage -Recurse -Directory -Filter __pycache__ | Where-Object { $_.FullName -notlike "$stage\app\romorg\__pycache__*" }) {
+    throw "the checks left a __pycache__ folder in the package"
 }
 
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
