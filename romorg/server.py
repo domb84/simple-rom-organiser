@@ -4067,8 +4067,6 @@ class App:
                 for dirpath, _dirs, files in os.walk(m.src):
                     for f in sorted(files):
                         src = Path(dirpath) / f
-                        if src in m.leave:                     # a save of the game: moved on its own to _other
-                            continue
                         put(src, m.dst / src.relative_to(m.src))
         from_sort = {id(op) for op in ops}
         ops += [op for op in flat_ops if op.status != "move" or op.src not in used]

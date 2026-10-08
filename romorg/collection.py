@@ -251,13 +251,11 @@ def virtual_flat(sys_: Sys, mapper: Mapper, layout: str, root: Path) -> "scanner
 
 def virtual_disc(sys_: Sys, mapper: Mapper, root: Path) -> Any:
     """The same for a disc system: the units under their new paths."""
-    from . import discsys, sortroot
+    from . import discsys
 
     def unit(u: Any) -> Any:
-        # (the saves of a disc game are sent to _other by the sort: they are not in its folder afterwards)
-        gone = set(sortroot.unit_saves(u.files))
         return dataclasses.replace(u, path=mapper(u.path), folder=(mapper(u.folder) if u.folder is not None else None),
-                                   files=[mapper(f) for f in u.files if Path(f) not in gone])
+                                   files=[mapper(f) for f in u.files])
 
     units = [unit(u) for u in sys_.units]
     matched = []

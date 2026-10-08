@@ -79,8 +79,9 @@ class Sort(World):
                              [], [game / "Crash (USA).zip", game / "Crash (USA).md5", game / "Crash (USA).cue"])
         self.assertEqual([(m.src, m.dst, m.kind) for m in moves], [(game, self.root / "psx" / "Crash (USA)", "folder")])
 
-    def test_saves_in_a_disc_games_folder_go_to_other_and_the_folder_move_leaves_them(self) -> None:
-        # the user's real shape: psx/Spider - The Video Game (USA)/ has .srm .state .state1 beside the CHD
+    def test_a_disc_games_folder_keeps_whatever_is_in_it_saves_included(self) -> None:
+        # the user's real shape: psx/Spider - The Video Game (USA)/ has .srm .state .state1 beside the CHD. Saves beside
+        # ROMs are ordinary files: the folder moves as one, nothing in it is sent to _other.
         game = self.root / "Stuff" / "Spider - The Video Game (USA)"
         game.mkdir(parents=True)
         stem = "Spider - The Video Game (USA)"
@@ -91,13 +92,18 @@ class Sort(World):
         other = [game / n for n in names[1:]]
         moves = sr.plan_sort(self.root, self.aside, folders, {},
                              [{"platform": "Sony PlayStation", "top": game, "folder": True, "files": [game / names[0]]}], [], other)
-        by = {m.src.name: m for m in moves}
-        self.assertEqual(sorted(by), sorted([stem, f"{stem}.srm", f"{stem}.state", f"{stem}.state1", f"{stem}.state1.png"]))
-        for n in (".srm", ".state", ".state1", ".state1.png"):
-            self.assertEqual(by[stem + n].dst, self.aside / "_other" / "Stuff" / stem / (stem + n))
-        folder = by[stem]
-        self.assertEqual((folder.kind, folder.dst), ("folder", self.root / "psx" / stem))
-        self.assertEqual({p.name for p in folder.leave}, {stem + n for n in (".srm", ".state", ".state1", ".state1.png")})
+        self.assertEqual([(m.src, m.dst, m.kind) for m in moves], [(game, self.root / "psx" / stem, "folder")])
+        self.assertFalse(hasattr(moves[0], "leave"))
+
+    def test_a_disc_game_without_a_folder_moves_only_its_own_files(self) -> None:
+        img = self.f("Stuff/Crash (USA).chd")
+        save = self.f("Stuff/Crash (USA).srm")
+        folders = {**self.folders, "Sony PlayStation": self.root / "psx"}
+        moves = sr.plan_sort(self.root, self.aside, folders, {},
+                             [{"platform": "Sony PlayStation", "top": img, "folder": False, "files": [img]}], [], [save])
+        self.assertEqual({m.src.name: m.dst for m in moves},
+                         {"Crash (USA).chd": self.root / "psx" / "Crash (USA).chd",
+                          "Crash (USA).srm": self.aside / "_other" / "Stuff" / "Crash (USA).srm"})
 
     def test_a_loose_save_beside_a_rom_that_stays_goes_to_other_too(self) -> None:
         rom = self.f("snes/Game.sfc")

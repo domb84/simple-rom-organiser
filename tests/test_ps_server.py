@@ -172,27 +172,25 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
         self.assertEqual(len(list((self.saves / "Play!").iterdir())), 3)
 
-    def test_collection_sort_a_disc_games_folder_keeps_the_redump_files_and_sends_only_its_saves_to_other(self) -> None:
+    def test_collection_sort_a_disc_games_folder_keeps_everything_in_it_saves_beside_the_chd_included(self) -> None:
         """The user's real shape (psx/Spider - The Video Game (USA)/ with .srm .state .state1 beside the CHD) in a folder that
-        has to be sorted: the folder moves into the system's folder, the CHD and the Redump .zip stay in it, the saves go to _other."""
+        has to be sorted: saves beside a ROM are ordinary files - the whole folder moves into the system's folder."""
         mixed = self.base / "mixed"
         game = mixed / "Dump" / "Gamma (Europe)"
         game.mkdir(parents=True)
         T.build_dvd_chd(game / "Gamma (Europe).chd", self.iso["Gamma (Europe)"])
-        for n in ("Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1"):
+        names = ("Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1")
+        for n in names:
             (game / n).write_bytes(n.encode())
         self.call("/api/collection/save", {"root": str(mixed)})
         self.run_job("/api/collection/scan", {})
         res = self.run_job("/api/collection/apply", {})
         self.assertEqual(res["sort"]["result"]["failed"], [])
         there = mixed / "ps2" / "Gamma (Europe)"
-        self.assertEqual(sorted(p.name for p in there.iterdir()), ["Gamma (Europe).chd", "Gamma (Europe).md5", "Gamma (Europe).zip"])
-        other = self.base / "mixed-archive" / "_other" / "Dump" / "Gamma (Europe)"
-        self.assertEqual(sorted(p.name for p in other.iterdir()), ["Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1"])
+        self.assertEqual(sorted(p.name for p in there.iterdir()), sorted(("Gamma (Europe).chd",) + names))
+        self.assertFalse((self.base / "mixed-archive" / "_other").exists())
         self.call("/api/collection/undo", {})
-        self.assertEqual(sorted(p.name for p in game.iterdir()),
-                         sorted(["Gamma (Europe).chd", "Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm",
-                                 "Gamma (Europe).state", "Gamma (Europe).state1"]))
+        self.assertEqual(sorted(p.name for p in game.iterdir()), sorted(("Gamma (Europe).chd",) + names))
 
 
 if __name__ == "__main__":
