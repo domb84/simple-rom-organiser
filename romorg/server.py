@@ -3645,8 +3645,8 @@ class App:
         def system(name: str) -> Any:
             if name not in sys_of:
                 plat = by_name[name]
-                sys_of[name] = collection.Sys(plat, root / (plat.folder_hint or plat.name), found_dirs.get(name),
-                                              dats=dats_of.get(name, []))
+                sys_of[name] = collection.Sys(plat, collection.standard_folder(root, plat.folder_hint or plat.name, found_dirs.get(name)),
+                                              found_dirs.get(name), dats=dats_of.get(name, []))
             return sys_of[name]
 
         claimed: set[Path] = set()
@@ -3842,7 +3842,9 @@ class App:
                         put(src, m.dst / src.relative_to(m.src))
         sorted_n = len(ops)
         ops += [op for op in flat_ops if op.status != "move" or op.src not in used]
-        ops = [op for op in ops if op.status != "move" or op.src != op.dst]
+        # (compared as text: on Windows two Path objects that differ only in case are equal, and a rename that only changes
+        # the case of a name - "ALPHA.SFC" to "Alpha.sfc" - is a move that has to be made)
+        ops = [op for op in ops if op.status != "move" or str(op.src) != str(op.dst)]
         arch: list[Any] = []
         if archive:
             names = sortroot.Names()

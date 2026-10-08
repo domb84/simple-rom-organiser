@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from . import library, scanner
 
 __all__ = ["ALIASES", "GLOBAL_KEYS", "detect_systems", "effective_profile", "clean_global", "check_folders", "Sys", "RootScan",
-           "Mapper", "virtual_flat", "virtual_disc"]
+           "Mapper", "virtual_flat", "virtual_disc", "standard_folder"]
 
 # Folder names (casefolded) beyond the platform's ``folder_hint`` that frontends use for the same system.
 ALIASES = {
@@ -70,6 +70,22 @@ def detect_systems(root: Path, platforms: Iterable[Any]) -> List[dict]:
         out.append({"platform": plat.name, "hint": hint, "path": str(found if found else Path(root) / hint),
                     "found": found is not None})
     return out
+
+
+def standard_folder(root: Path, name: str, current: Optional[Path]) -> Path:
+    """The folder a system's files go to: ``<root>/<name>``.
+
+    On a file system that ignores case (Windows, exFAT cards) an existing ``SNES`` IS the standard folder ``snes``. It is
+    then named as it is spelled on disk, because the paths of the files in it are spelled that way and the planning
+    compares paths as text (``.../snes`` is not a prefix of ``.../SNES/game.sfc``). Where case matters, ``SNES`` and
+    ``snes`` are two folders and this is always ``<root>/<name>``."""
+    std = Path(root) / name
+    if current is None or str(current) == str(std) or current.name.casefold() != name.casefold():
+        return std
+    try:
+        return Path(current) if os.path.samefile(current, std) else std
+    except OSError:                                    # there is no <root>/<name>: case matters here
+        return std
 
 
 def clean_global(values: Mapping[str, Any]) -> dict:
