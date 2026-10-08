@@ -85,6 +85,14 @@ library there: only what the rules keep, named and laid out properly. The source
 4. **Done:** shared folders: `shared_folders` / `apply_shared` read the asset settings (menu assets, rdb, cheats, playlists,
    thumbnails, downloads, remaps, rgui config) against the folders of those names in a base folder and set the unused ones.
 
+5. **Done (Amendment 30):** saves are part of the build. Profile rule `saved_games` = `keep` (default) | `archive` | `leave`:
+   `library.select(..., saved=...)` keeps a game the rules would archive when RetroArch has saves for it (reason
+   `saved_keep`); in `archive` mode the saves go with the archived game to `<archive>/<system folder>/_saves/<path below the
+   save folder>` (journalled as a `libsweep`, undone with the build). The preview counts renamed / kept / archived save files
+   and conflicts from the plan. The Collection sort no longer moves a loose save into the system folder with its ROM (it goes to
+   `_other` like every non-ROM file). Not done: copying a save to the edition that replaces the game (rejected: unsafe), saves of
+   multi-disc `.m3u` playlists and of ROMs already in `_excluded/` from an earlier build.
+
 ## Collection in place (v0.2)
 
 `collection.place` = `elsewhere` (default) | `inplace`. In place: `_collection_run_inplace` scans each ticked system without

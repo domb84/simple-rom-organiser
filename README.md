@@ -772,7 +772,10 @@ the source and are not copied. The choice is remembered.
      `_unmatched`) moves to an **archive folder** outside the ROM folders (default: next to it, named like it with `-archive`;
      `<archive>/_unmatched/...`, `<archive>/_other/...`, `<archive>/<system>/_excluded/...`), so the ROM folders hold
      only what you keep. Every file is moved once: straight from where it is to its final name and place, or to the archive (only
-     a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up.
+     a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up
+     (and are archived with their games, or protect them, as the rule *Games you have saves for* says). A save or note lying beside
+     a ROM is not a ROM: it goes to `<archive>/_other/...` like any other file that matches no database; only inside a disc
+     game's own folder do the Redump files stay, and just that game's saves and states (`.srm .state .state1 ...`) leave it.
    - **Build a clean library in another folder**: the same rules, but the files are **copied** (or **moved**) into
      `<destination>/<standard name>/...` and the ROM folder keeps its names; *keep in sync* is available with Copy. Copy is the
      default; Move takes the files out of the ROM folder and cannot be combined with sync.
@@ -831,10 +834,22 @@ build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_dupl
   looks for in its own empty folder) are set in `retroarch.cfg`; the favourites / history lists follow the playlist folder.
   Nothing is moved, the config is backed up, and **Undo last change** restores it.
 - **Saves follow the games:** RetroArch finds a save by the game's file name (`<name>.srm`, `<name>.state`, `.state1` ...,
-  `<name>.state1.png`). When a library build renames a game, its saves and states are renamed to match, in the same core
-  folder (cores stay separate). A build into another folder or a collection **copies** them to the new names and leaves the
-  old ones. Nothing is overwritten (a file already at the new name is left alone). Undoing the build undoes the saves too.
-  It waits if RetroArch is running (RetroArch writes its saves back when it closes). The switch is on the RetroArch page.
+  `<name>.state1.png`, Flycast's `<name>.A1.bin` memory cards ...). When a library build renames a game, its saves and states
+  are renamed to match, in the same core folder (cores stay separate). A build into another folder or a collection **copies**
+  them to the new names and leaves the old ones. Nothing is overwritten (a file already at the new name is left alone).
+  Undoing the build undoes the saves too. It waits if RetroArch is running (RetroArch writes its saves back when it closes).
+  The switch is on this page and, as **Rename saves with their ROMs**, in the Library rules and the Collection rules (one
+  stored setting).
+- **Saves are part of the build:** saves are looked after where RetroArch keeps them, never next to a ROM. The rule **Games you
+  have saves for** (Library rules of each system, and the Collection's shared rules) says what a build does with a game the
+  rules would archive while RetroArch has saves or save states for it: **Keep them** (the default: such a game is never
+  archived; the preview says *kept: you have saves*), **Archive their saves with them** (the game is archived as the rules say
+  and its saves and states move to `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder
+  while no archive folder is used; Undo brings them back), or **Leave the saves alone** (the game is archived, the saves stay).
+  Where RetroArch sorts the saves into a folder per core, only the cores that play the system count, so a Genesis save never
+  protects a Super Nintendo game of the same name. The preview counts the save files that will be renamed or archived, and the
+  conflicts, from the plan. Nothing is moved while RetroArch is running (the games are still archived). A build into another
+  folder archives nothing from your folders, so your saves stay; the rule then only decides which games are copied.
 - **BIOS and firmware:** press **Check** and the app reads the `.info` file of every installed core, lists the BIOS / firmware
   each wants (required or optional) and compares them with RetroArch's system folder, verified by MD5 where the core gives a
   checksum. By default it covers the cores of **every system that has a ROM folder** (or choose *Every installed core*, or one

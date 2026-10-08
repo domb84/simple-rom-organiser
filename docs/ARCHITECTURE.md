@@ -2198,9 +2198,81 @@ md5 from `notes`) and fill the system folder from the system's ROM folder. Endpo
 # Amendment 29 - Sort a mixed folder (v0.2)
 
 `romorg/sortroot.py`: `plan_sort` (identified files to their system's folder; loose unmatched files to `<aside>/_unmatched`; non-ROM
-files to `<aside>/_other`; sidecars follow their ROM), `plan_sweep` / `plan_restore` (the reserved folders of a library build to and
+files to `<aside>/_other`; since Amendment 30 a save or note beside a ROM is such a file and no longer follows it), `plan_sweep` / `plan_restore` (the reserved folders of a library build to and
 from `<aside>/<system folder>/`), `apply_moves` / `undo_moves` (journal, never overwrite, emptied folders removed). Server:
 `/api/collection/sort/plan|apply|undo`, `/api/collection/aside/restore`; in place collection builds sweep after applying.
+
+
+# Amendment 30 - Saves are part of the build (v0.2)
+
+**What.** RetroArch saves and save states are looked after by Build library (every system) and by Collection, where RetroArch keeps
+them (`savefile_directory` / `savestate_directory`, one folder per core when `sort_savefiles_enable`), never next to a ROM. Before,
+saves only followed ROM *renames* (Amendment 28); a ROM that the rules archived left its saves behind with nothing to belong to.
+
+**Why, measured.** The user's SNES folder (4,083 files, default rules, saves in `F:\Emulation\assets\saves\<core>\`): of 9 save sets
+in the two SNES cores (`bsnes`, `Snes9x`; 60 files in scope) 3 belong to ROMs the rules keep, 4 to ROMs the rules archive (Super Mario
+World (USA): the rules keep Europe Rev 1; Zelda ALttP Switch Online and Yoshi's Island (Europe) (En,Fr,De): superseded; Star Fox
+(Japan): excluded; together 12 files, 8 of them states) and 2 (Super Mario Collection (Japan) (Rev 1), Yoshi's Island (USA, Asia)
+(Rev 1)) to no ROM in the folder at all (no option can help those). With **leave** the 4 are orphaned (today's behaviour); with
+**keep** their 4 ROMs stay (kept 2,266 instead of 2,262; excluded 853, superseded 924); with **archive** the ROMs go and the 12 files
+go with them. Dry run on the real folders through the real API, nothing applied.
+
+**The rule.** `LibraryProfile.saved_games` = `"keep"` (default) | `"archive"` | `"leave"`, validated in the constructor and in
+`from_dict` (a bad value, or a profile saved before the field, takes the base profile's value, so `keep`), written by `to_dict`; per
+system and as a global rule of Collection (`collection.GLOBAL_KEYS`). `totals.profile_signature` leaves it out (the totals do not
+look at saves); the server's `plan_id` includes it.
+
+* `keep`: `library.select(items, profile, platform, ..., saved=frozenset)` calls `apply_saved` before `apply_overrides`: an item
+  the rules made `excluded` or `superseded` (not part of a multi-disk set, not a symlink; `incomplete` is left alone) whose content
+  name (`Item.path.stem`, and the stem of the archive member) is in `saved` is kept with `Decision.codes == ("saved_keep",)` and the
+  reason "kept: you have saves or save states for it". A user's own "always exclude" still wins. The decision is made before
+  `_vanished`, so a title kept for its saves does not vanish. `Selection.saved_kept()` counts them; `organiser.reason_counts` has
+  `kept_saved`. Both plan builders (`organiser._plan_core`, `discsys.plan_units`) pass `saved` through.
+* `saved` comes from `App._make_library_plan`: `retroarch.list_saves(install, platform)` walks the save roots ONCE per plan (the
+  files stay on the plan as `plan.save_files`) and `retroarch.save_name_keys` turns the file names into every content name they
+  could be a save of (each dot-cut whose rest has no space or bracket; `fold_name`d, so case-insensitive on Windows only). With saves
+  sorted by core only the folders of the cores that play the platform count (`cores_for_platform` over `core_infos(...,
+  firmware_only=False)`; the folder name is the core's `corename`); a folder that is no core's name, and files in the root, count
+  for every system. Empty when no RetroArch install is selected or it keeps its saves beside the games.
+* `archive`: `App._saves_moves` finds the saves of the games the plan sets aside (`code` set and status `move`; a name that a file
+  that stays also has is not set aside) with `retroarch.saves_of` (`SaveMatcher`: the longest game name wins; `Dr. Mario` is not cut
+  at its dot) and plans `sortroot.SMove`s to `<archive>/<system folder name>/_saves/<path below the save root>` (`<ROM
+  folder>/_saves/...` while no archive folder is used). `folders.SAVES_DIR` is a reserved folder and `sortroot.ASIDE_FOLDERS`
+  includes it, so a sweep moves it out with the other reserved folders and `plan_restore` brings it back. `sortroot.Names` never
+  overwrites (the name gets ` (2)`). The moves are journalled like a sweep (`apply_moves(kind="libsweep", library_log=...)`), so the
+  library's Undo (and the Collection's "Undo last", the saves being part of its `sort` journal) puts ROM and saves back together.
+  Skipped, with a note, while RetroArch runs (`saves_archived.skipped_running`); the ROMs are archived anyway. In Collection (in
+  place) the moves are made in the same pass and the same journal as the other moves into the archive: no file moves twice.
+* `leave`: nothing new.
+* Rename-follow (Amendment 28) is unchanged but looks only at the files of the system's cores (`plan_follow(files=...)`); the
+  archive step runs first, so the saves of an archived and renamed game are archived under the name they have.
+* Building into another folder (`elsewhere`): nothing is archived from the user's folders and the saves stay; `keep` decides which
+  games get copied; saves of renamed games are copied as before.
+
+**Preview.** `/api/library/plan` has `saves`: `{found, mode, follow, files, kept, running, elsewhere, rename: {files, games,
+conflicts}, archive: {files, games, states, to}}` (a dry run of `plan_follow` on the planned renames and of the archive moves) and
+`reasons.kept_saved`; the Collection preview has the same per system as `saves_plan`. The counts equal what the build then does
+(tests). The apply answers carry `saves` (renames), `saves_archived` and, for the Collection, `saves_archived` at the top.
+
+**Sort (Amendment 29 changed).** `plan_sort` no longer moves a loose file that sits beside a ROM (a save, a note) into the system
+folder with it, nor leaves one beside a ROM that stays: it is not a ROM and goes to `<archive>/_other/<same relative path>`. In a
+disc game's own folder everything stays (the Redump `.zip`, `.md5`, `.cue`, `.gdi` the verification uses) except the emulator saves
+and states of that game, recognised by `retroarch.is_save_of(name, image stem)` (`.srm .sav .state .state<N> .state.auto
+.state<N>.png .mcr .mcd .eep .sra .fla .mpk .nvr .rtc .uss`, `.<N>.srm`, Flycast `.A1.bin`..`.D6.bin`): `sortroot.unit_saves`. The
+disc scan counts every file that starts with the image's name as part of the game, so the virtual disc state of the Collection
+plan (`collection.virtual_disc`) leaves the saves out, and `SMove.leave` keeps a moving folder from taking them along.
+
+**Bugs found on the way.** (1) A Build library whose only changes are archive moves (nothing renamed inside the folder) wrote no
+undo log, so there was nothing to Undo it with: `organiser.write_marker_log` now makes a log with no steps that the sweep journals
+link to. (2) `retroarch.match_save` compared names exactly on Windows (RetroArch there ignores case); it folds case on Windows
+only now. (3) Renaming saves looked at the folders of every core, so a Genesis save could follow a same-named SNES ROM.
+
+**Not done.** Copying a save to the edition that replaces the game (rejected: unsafe). Saves of a multi-disc `.m3u` game (they are
+named after the playlist, not after a disc: not matched). Saves of ROMs already sitting in `_excluded/` or `_superseded/` from an
+earlier build (only the games a build moves now). `incomplete` sets and the disks of a TOSEC set are left to their rules, `keep`
+does not protect a `_duplicates/` copy (the keeper's own saves are untouched; the spare's go with it in `archive` mode). The "have
+N of M" totals do not look at saves. Saves are found by name only.
+
 
 ## v0.2: removed and changed
 
