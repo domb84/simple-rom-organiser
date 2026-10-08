@@ -773,9 +773,9 @@ the source and are not copied. The choice is remembered.
      `<archive>/_unmatched/...`, `<archive>/_other/...`, `<archive>/<system>/_excluded/...`), so the ROM folders hold
      only what you keep. Every file is moved once: straight from where it is to its final name and place, or to the archive (only
      a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up
-     (and are archived with their games, or protect them, as the rule *Games you have saves for* says). A save or note lying beside
-     a ROM is not a ROM: it goes to `<archive>/_other/...` like any other file that matches no database; only inside a disc
-     game's own folder do the Redump files stay, and just that game's saves and states (`.srm .state .state1 ...`) leave it.
+     (and what happens to the saves of a game the rules replace or archive is your choice, see *RetroArch saves* below). A save or
+     note lying beside a ROM is an ordinary file: it goes to `<archive>/_other/...` like any other file that matches no database,
+     and inside a disc game's own folder everything stays with the game.
    - **Build a clean library in another folder**: the same rules, but the files are **copied** (or **moved**) into
      `<destination>/<standard name>/...` and the ROM folder keeps its names; *keep in sync* is available with Copy. Copy is the
      default; Move takes the files out of the ROM folder and cannot be combined with sync.
@@ -840,16 +840,31 @@ build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_dupl
   Undoing the build undoes the saves too. It waits if RetroArch is running (RetroArch writes its saves back when it closes).
   The switch is on this page and, as **Rename saves with their ROMs**, in the Library rules and the Collection rules (one
   stored setting).
-- **Saves are part of the build:** saves are looked after where RetroArch keeps them, never next to a ROM. The rule **Games you
-  have saves for** (Library rules of each system, and the Collection's shared rules) says what a build does with a game the
-  rules would archive while RetroArch has saves or save states for it: **Keep them** (the default: such a game is never
-  archived; the preview says *kept: you have saves*), **Archive their saves with them** (the game is archived as the rules say
-  and its saves and states move to `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder
-  while no archive folder is used; Undo brings them back), or **Leave the saves alone** (the game is archived, the saves stay).
-  Where RetroArch sorts the saves into a folder per core, only the cores that play the system count, so a Genesis save never
-  protects a Super Nintendo game of the same name. The preview counts the save files that will be renamed or archived, and the
-  conflicts, from the plan. Nothing is moved while RetroArch is running (the games are still archived). A build into another
-  folder archives nothing from your folders, so your saves stay; the rule then only decides which games are copied.
+- **Saves in the scan, the library and the builds:** all of this exists only when the app knows a RetroArch config (it found an
+  install, or you chose a `retroarch.cfg` on this page). Without one the app does not look at any save folder, shows no saves
+  column and no saves setting, and sorts and builds exactly as if saves did not exist.
+  - *Scan:* every scan of a system (and of a Collection, per system) reads the save folders once and reports **how many saves
+    there are and which title each belongs to**: save files and states (a state's screenshot is kept apart and not counted), the
+    games they belong to, and how many of those games have a ROM in the folder, are a title in the database you have no ROM for,
+    or match nothing. A save belongs to a ROM when its name is that file's name (for a zip also the name inside); a Flycast memory
+    card `<name>.A1.bin`, `<name>.state1`, `<name>.srm` ... all belong to `<name>`. Where RetroArch makes one folder per core only
+    the cores that play the system count, so a Genesis save never belongs to a Super Nintendo game of the same name.
+  - *Overview* of a system: "N save files for M games (K with a ROM here, L without, U unmatched)", and once the library is
+    previewed, what a build would do with them. *Collection:* the same per system in the systems table.
+  - *Browse:* a **Saves** column on the Games, Matched and Missing lists (the total of saves and states, `1 save · 6 states`
+    under it, and the total of all editions of the title), also for titles you have no ROM for but have saves for; sortable; a
+    **Games with saves** filter; and a **Saves** tab that lists every save set with the title it matched.
+  - *Library:* a **Saves** column (sortable), the filters **Games with saves** and **Saves affected by this build**, and on each row
+    the choice for that game (below).
+  - *Rename:* when a build gives a ROM its database name its saves and states are renamed to match, in the same core folder
+    (a build into another folder, or a collection elsewhere, copies them). Nothing is overwritten; Undo gives the old names back.
+  - *When a rule replaces or archives a game you have saves for* you choose, in the Library rules (and the Collection's shared
+    rules) for every game, and on the Library tab for a single game: **Keep both ROMs** (the default: the ROM the rules would
+    replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
+    `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
+    used; Undo brings them back) or **Leave the saves where they are**. Nothing is copied to the edition that replaces the game.
+    Nothing is moved while RetroArch is running (the ROMs are still archived); a build into another folder never archives
+    anything from your folders.
 - **BIOS and firmware:** press **Check** and the app reads the `.info` file of every installed core, lists the BIOS / firmware
   each wants (required or optional) and compares them with RetroArch's system folder, verified by MD5 where the core gives a
   checksum. By default it covers the cores of **every system that has a ROM folder** (or choose *Every installed core*, or one

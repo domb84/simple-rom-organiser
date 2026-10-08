@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 import os
 import socket
 import struct
@@ -123,6 +124,16 @@ class Page:
                 last = str(exc)
             time.sleep(every)
         raise TimeoutError(f"timed out waiting for: {js} (last: {last!r})")
+
+    def screenshot(self, path: str, width: int = 1280, height: int = 900) -> None:
+        """Save a PNG of the whole page at the given viewport width (for looking at, not for asserting)."""
+        import base64
+        self.call("Emulation.setDeviceMetricsOverride", width=width, height=height, deviceScaleFactor=1, mobile=False)
+        full = self.eval("Math.max(document.documentElement.scrollHeight, 400)")
+        self.call("Emulation.setDeviceMetricsOverride", width=width, height=min(int(full), 2400), deviceScaleFactor=1, mobile=False)
+        data = self.call("Page.captureScreenshot", format="png")["data"]
+        Path(path).write_bytes(base64.b64decode(data))
+        self.call("Emulation.clearDeviceMetricsOverride")
 
     def close(self) -> None:
         self.ws.close()

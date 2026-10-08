@@ -452,6 +452,8 @@
     libStats: null,    // numbers of the last plan: {reasons, vanish, exclusions}
     gamesHave: "",     // "" | "1" | "0"
     gamesRated: "",    // "" | "1" (rated) | "0" (unrated)  -  Browse > Games
+    gamesSaves: "",    // "" | "1" (only the games with saves)  -  Browse > Games, only with a RetroArch config
+    libSaves: "",      // "" | with | affected  -  the Library preview's saves filter
     gamesSort: "",     // "" | rating_desc | rating_asc | name_asc | name_desc
     libSort: "",       // the same, for the Library preview
     vanishSort: "",    // ... and for "Games that vanish"
@@ -1404,6 +1406,7 @@
       ? `Not checked (DAT not downloaded): ${missingDats.join(", ")}` : "";
 
     renderDcBar(s);
+    renderSavesCard();
     const via = s.matched_via || {};
     const normalised = (via.headerless || 0) + (via.byteswapped || 0);
     const L = (view, extra = {}) => ({ view, ...extra });
@@ -1453,6 +1456,62 @@
     }));
   }
 
+  // ---- RetroArch saves (Amendment 31). Every function below is reached only when the server sent saves data, which it does
+  // only when a RetroArch config is known: without one nothing about saves is drawn.
+  const nPlural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
+
+  /** `1 save · 6 states` (empty when there are none). */
+  function savesText(c) {
+    const bits = [];
+    if (c && c.saves) bits.push(nPlural(c.saves, "save", "saves"));
+    if (c && c.states) bits.push(nPlural(c.states, "state", "states"));
+    return bits.join(" \u00b7 ");
+  }
+
+  /** The Saves cell of a Browse row: the total (saves + states), the breakdown under it, and the title's total when it differs. */
+  function savesCell(c) {
+    if (!c || (!c.total && !c.title_total)) return el("span", { class: "muted", text: "-" });
+    return el("div", { class: "saves-cell", title: c.total ? savesText(c) : "No saves for this edition" },
+      el("div", { class: "saves-total", text: c.total ? fmt(c.total) : "0" }),
+      c.total ? el("div", { class: "sub", text: savesText(c) }) : null,
+      c.title_total && c.title_total !== c.total ? el("div", { class: "sub", text: `all editions: ${fmt(c.title_total)}` }) : null);
+  }
+
+  /** Overview of a system: how many saves there are and which titles they belong to; what a pending build would do. */
+  function renderSavesCard() {
+    const box = $("ov-saves");
+    const t = state.scan && state.scan.saves;
+    box.classList.toggle("hidden", !t);
+    if (!t) { box.replaceChildren(); return; }
+    const p = currentPlatform();
+    const line = t.sets
+      ? `${nPlural(t.files, "save file", "save files")} for ${nPlural(t.sets, "game", "games")} (${fmt(t.rom_sets)} with a ROM here, ${fmt(t.dat_sets)} without, ${fmt(t.unmatched_sets)} unmatched)`
+      : "No save files found for this system.";
+    const plan = libPlan && libPlan.saves;
+    const will = [];
+    if (plan) {
+      if (plan.follow && plan.rename && plan.rename.files) will.push(`${plan.elsewhere ? "copy" : "rename"} ${nPlural(plan.rename.files, "file", "files")} with their ROMs`);
+      if (plan.kept) will.push(`keep ${nPlural(plan.kept, "game", "games")} the rules would archive`);
+      if (plan.archive && plan.archive.files) will.push(`archive ${nPlural(plan.archive.files, "file", "files")} with their ROMs`);
+      if (plan.leave && plan.leave.files) will.push(`leave ${nPlural(plan.leave.files, "file", "files")} of archived games where they are`);
+    }
+    box.replaceChildren(
+      el("h2", { id: "ov-saves-title", text: "Saves (RetroArch)" }),
+      el("div", { class: "saves-line", id: "ov-saves-line", text: line }),
+      t.sets ? el("div", { class: "sub", text: `${savesText(t)}${t.screenshots ? ` \u00b7 ${nPlural(t.screenshots, "state screenshot", "state screenshots")} (not counted)` : ""} \u00b7 ${fmtBytes(t.bytes)}` }) : null,
+      plan ? el("div", { class: "sub", id: "ov-saves-plan", text: will.length ? `A build with the current rules would ${will.join(", ")}.` : "A build with the current rules changes none of them." })
+        : el("div", { class: "sub", text: "Press Preview library on the Library tab to see what a build would do with them." }),
+      t.sets && p ? el("div", {}, el("a", { href: Route.build(slugOf(p), "browse", { view: "saves" }), text: "Which title does each belong to?" })) : null);
+  }
+
+  /** The RetroArch choice changed (or a config appeared): the saves columns, the saves option and the Saves card follow. */
+  async function refreshSavesAwareness() {
+    for (const k of Object.keys(state.library)) delete state.library[k];
+    if (typeof Collection !== "undefined") Collection.loaded = false;
+    await refreshScan();
+    await loadLibraryProfile();
+  }
+
   /** "Scan first" explanation with a Scan button, shared by the Library and Browse tabs. */
   function scanGate(box, what) {
     const p = currentPlatform();
@@ -1500,10 +1559,11 @@
     if (games) tabs.push(["games", "Games", total]);
     tabs.push(["matched", "Matched files", s.matched_files], ["missing", games ? "Missing games" : "Missing", missing],
       ["unmatched", "Unmatched", s.unmatched_files]);
+    if (scan.saves) tabs.push(["saves", "Saves", scan.saves.sets]);
     if (s.unsupported) tabs.push(["unsupported", "Unsupported", s.unsupported]);
     if (s.errors) tabs.push(["errors", "Errors", s.errors]);
     if (!tabs.some((t) => t[0] === activeTab)) activeTab = tabs[0][0];
-    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; }
+    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSaves = ""; }
     if (!DAT_FILTER_TABS.has(activeTab)) state.resultDat = "";
     $("result-tabs").replaceChildren(...tabs.map(([key, label, count]) => el("button", {
       class: `tab ${key === activeTab ? "active" : ""}`, role: "tab", "aria-selected": key === activeTab ? "true" : "false",
@@ -1535,6 +1595,14 @@
         })));
       drawHave();
       filters.push(chipBox);
+      if (scan.saves) {
+        const sbox = el("div", { class: "chips", id: "saves-chips" });
+        const drawSaves = () => sbox.replaceChildren(...[["", "With or without saves"], ["1", "Games with saves"]].map(([key, label]) =>
+          el("button", { class: `chip ${state.gamesSaves === key ? "active" : ""}`, "data-saves": key, text: label,
+            on: { click: () => { state.gamesSaves = key; drawSaves(); reload(); } } })));
+        drawSaves();
+        filters.push(sbox);
+      }
       if (ratingsAvailable()) {
         const rbox = el("div", { class: "chips", id: "rated-chips" });
         const drawRated = () => rbox.replaceChildren(...[["", "Rated or not"], ["1", "Rated"], ["0", "Unrated"]].map(([key, label]) =>
@@ -1785,7 +1853,7 @@
     return el("div", {}, el("div", { text: name }), dir ? el("div", { class: "sub", text: dir }) : null);
   }
 
-  const SORTABLE_KINDS = new Set(["games", "matched", "unmatched", "missing"]);
+  const SORTABLE_KINDS = new Set(["games", "matched", "unmatched", "missing", "saves"]);
   const kindSort = (kind) => (kind === "games" ? state.gamesSort : (state.kindSort[kind] || ""));
 
   function resultTableOptions(kind, tagBar, reload) {
@@ -1793,9 +1861,10 @@
     const fetchKind = async ({ offset, limit, q, checksums }) => {
       const have = kind === "games" ? state.gamesHave : "";
       const rated = kind === "games" && ratingsAvailable() ? state.gamesRated : "";
+      const saves = kind === "games" ? state.gamesSaves : "";
       const sort = kindSort(kind);
       const tagParams = TAG_TABS.has(kind) ? state.tagFilter : {};
-      const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, rated, sort, checksums: checksums ? "1" : "", ...tagParams })}`);
+      const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, rated, saves, sort, checksums: checksums ? "1" : "", ...tagParams })}`);
       if (tagBar) renderTagBar(tagBar, data.facets, reload);
       return data;
     };
@@ -1824,6 +1893,7 @@
             },
             { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(), render: ratingCell },
             { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "-") },
+            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
             { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => fmtBytes(i.size) },
             {
               label: "Your file(s)", cls: "wrap", render: (i) => (i.files && i.files.length
@@ -1854,6 +1924,7 @@
                 return el("span", { class: "badge move", text: i.placed_ok ? "rename" : "move" });
               },
             },
+            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
             { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
           ],
         };
@@ -1867,8 +1938,28 @@
                 tagChips(i.tags),
                 multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
             },
+            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
             { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
             { label: "CRC32", cls: "mono", render: (i) => i.crc },
+          ],
+        };
+      case "saves":
+        return {
+          fetch: fetchKind, placeholder: "Search titles or save names...", emptyText: "No save files found for this system.",
+          columns: [
+            {
+              label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
+                el("div", { class: "game-name", text: i.title }),
+                i.game && i.game !== i.title ? el("div", { class: "sub", text: i.game }) : null,
+                i.name !== i.title ? el("div", { class: "sub mono-path", text: i.name }) : null),
+            },
+            {
+              label: "Matched to", cls: "wrap", render: (i) => (i.match === "rom" ? badge("ok", "ROM here")
+                : i.match === "dat" ? badge("info", "title, no ROM here") : badge("skip", "unmatched")),
+            },
+            { label: "Saves", sortKey: "files", sortFirst: "desc", cls: "num", render: (i) => el("div", {}, el("div", { class: "saves-total", text: fmt(i.files) }),
+              el("div", { class: "sub", text: savesText(i) + (i.screenshots ? ` \u00b7 ${nPlural(i.screenshots, "screenshot", "screenshots")}` : "") })) },
+            { label: "Core", render: (i) => (i.cores.length ? i.cores.join(", ") : "-") },
           ],
         };
       case "unmatched":
@@ -2853,21 +2944,22 @@
     $("library-rules-note").textContent = JSON.stringify(prof) === JSON.stringify(info.defaults) ? "Default rules" : "Custom rules";
   }
 
-  // ---- "Games you have saves for" (Amendment 30): one group for the Library rules and for the Collection rules.
+  // ---- What happens to the saves of a game a rule replaces or archives (Amendment 31): one group for the Library rules and
+  // one for the Collection rules. Both exist only when a RetroArch config is known (the profile then has ``saved_games``).
   const SAVED_CHOICES = [
-    { value: "keep", label: "Keep them (default)",
-      text: "A game that RetroArch has saves or save states for is never archived by the rules: it stays, even when a better version of it exists." },
-    { value: "archive", label: "Archive their saves with them",
-      text: "The game is archived as the rules say, and its saves and save states move to the archive with it (into a _saves folder next to it). Undo brings them back. Saves are never moved next to a ROM, and not while RetroArch is running." },
-    { value: "leave", label: "Leave the saves alone",
-      text: "The game is archived as the rules say; its saves stay where they are (they then belong to no game in your library)." },
+    { value: "keep", label: "Keep both ROMs",
+      text: "The ROM the rules would replace or archive stays as well, so the saves still have their game. Its saves are renamed if the ROM is renamed." },
+    { value: "archive", label: "Archive the saves with the ROM",
+      text: "The ROM is replaced or archived as the rules say, and its saves and save states move to the archive with it (into a _saves folder). Undo brings them back. Not while RetroArch is running." },
+    { value: "leave", label: "Leave the saves where they are",
+      text: "The ROM is replaced or archived as the rules say; its saves are not touched." },
   ];
 
   /** The group of the rules panels: what happens to a game the rules would archive when RetroArch has saves for it, and the
    *  switch that renames saves with their ROMs (the same stored setting as on the RetroArch page). */
   function savesGroup(current, onChange, where) {
     const choice = SAVED_CHOICES.find((c) => c.value === current) || SAVED_CHOICES[0];
-    const select = el("select", { class: "input select", id: `${where}-saved-games`, "data-field": "saved_games", "aria-label": "Games you have saves for",
+    const select = el("select", { class: "input select", id: `${where}-saved-games`, "data-field": "saved_games", "aria-label": "When a rule replaces or archives a game you have saves for",
       on: { change: (ev) => onChange(ev.target.value) } },
     ...SAVED_CHOICES.map((c) => el("option", { value: c.value, text: c.label, selected: c.value === choice.value })));
     const follow = el("input", { type: "checkbox", id: `${where}-saves-follow`, "data-saves-follow": "1", checked: state.raFollow !== false,
@@ -2882,14 +2974,14 @@
     }
     return el("div", { class: "rules-group", id: `${where}-saves-group` },
       el("div", { class: "rules-head", text: "Saves (RetroArch)" }),
-      el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: "Games you have saves for: " }), select),
+      el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: "When a rule replaces or archives a game you have saves for: " }), select),
       el("div", { class: "sub note", id: `${where}-saved-games-note`, text: choice.text }),
       el("label", { class: "check rule-check", title: "The same setting as on the RetroArch page" }, follow,
         el("span", { class: "rule-text" }, el("span", { class: "rule-line" }, el("span", { class: "rule-label", text: "Rename saves with their ROMs" })),
           el("span", { class: "sub", text: "When a build gives a ROM its database name, its saves and save states get the new name too (a build in another folder copies them). Each core's folder stays separate; nothing is overwritten." }))),
       el("div", { class: "sub note", text: where === "col"
-        ? "Used when RetroArch is found with its saves in a folder of their own. Building into another folder archives nothing from your folders: the saves stay where they are, and only the games it copies are chosen by this setting."
-        : "Used when RetroArch is found with its saves in a folder of their own (see the RetroArch page). Building into another folder archives nothing here, so saves are left alone there; the setting still decides which games are copied." }));
+        ? "This is the default for every game. Building into another folder archives nothing from your folders: the saves stay where they are, and only the games it copies are chosen by this setting."
+        : "This is the default for every game; on the Library tab you can choose differently for a single game. Building into another folder archives nothing here, so saves are left alone there; the setting still decides which games are copied." }));
   }
 
   function syncFollowBoxes() {
@@ -2903,12 +2995,15 @@
     if (!s || !s.found) return [];
     const out = [];
     if (s.kept) out.push(card(fmt(s.kept), "Kept: you have saves for them", "ok"));
-    if (s.follow && !s.elsewhere && s.rename && (s.rename.files || s.rename.conflicts)) {
-      out.push(card(fmt(s.rename.files), `Save files ${apply ? "renamed" : "to rename"} with their ROMs (${fmt(s.rename.games)} game${s.rename.games === 1 ? "" : "s"})`, s.rename.files ? "info" : ""));
+    if (s.follow && s.rename && (s.rename.files || s.rename.conflicts)) {
+      const verb = s.elsewhere ? (apply ? "copied" : "to copy") : (apply ? "renamed" : "to rename");
+      out.push(card(fmt(s.rename.files), `Save files ${verb} with their ROMs (${fmt(s.rename.games)} game${s.rename.games === 1 ? "" : "s"})`, s.rename.files ? "info" : ""));
       if (s.rename.conflicts) out.push(card(fmt(s.rename.conflicts), "Save conflicts (left alone)", "bad"));
     }
-    if (s.mode === "archive" && !s.elsewhere && s.archive && s.archive.files)
+    if (!s.elsewhere && s.archive && s.archive.files)
       out.push(card(fmt(s.archive.files), `Save files ${apply ? "archived" : "to archive"} with their games (${fmt(s.archive.games)} game${s.archive.games === 1 ? "" : "s"})`, "warn"));
+    if (!s.elsewhere && s.leave && s.leave.files)
+      out.push(card(fmt(s.leave.files), `Save files left where they are (${fmt(s.leave.games)} archived game${s.leave.games === 1 ? "" : "s"})`, "info"));
     return out;
   }
 
@@ -2962,7 +3057,7 @@
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(regionSection(info));
     if (ratingEntries(info).length) groups.push(ratingsSection(info));
     if (!groups.length) groups.push(el("div", { class: "muted", text: "No library rules apply to this system." }));
-    groups.push(savesGroup(prof.saved_games, (v) => saveProfile({ saved_games: v }), "lib"));
+    if (prof.saved_games !== undefined) groups.push(savesGroup(prof.saved_games, (v) => saveProfile({ saved_games: v }), "lib"));
     $("library-rules").replaceChildren(...groups);
     renderRulesSummary(info);
     updateRuleCounts();
@@ -3153,6 +3248,9 @@
     vanishTable = null;
     libPlan = null;
     state.libWhy = "";
+    state.libSaves = "";
+    $("lib-saves-filters").classList.add("hidden");
+    if (state.scan) renderSavesCard();
   }
 
   function renderLibraryIntro() {
@@ -3231,7 +3329,7 @@
     const names = (i.reasons || []).map(reasonLabel);
     if ((i.reasons || []).includes("override_exclude")) lines.push("You chose to always exclude this game.");
     else if (cat === "kept") lines.push(i.reason && i.reason.includes("always keep") ? "You chose to always keep this game."
-      : i.reason && i.reason.includes("you have saves") ? "Kept because RetroArch has saves or save states for it (Library rules: Games you have saves for)."
+      : i.reason && i.reason.includes("you have saves") ? "Kept because RetroArch has saves or save states for it and the choice for its saves is \"Keep both ROMs\" (Library rules, or the choice for this game)."
         : "Kept: no rule sets this file aside, and it is the best version you have.");
     else if (cat === "excluded") lines.push(`Excluded by: ${names.join("; ") || i.reason}.${i.flags_text ? ` Flags: ${i.flags_text}.` : ""}`);
     else if (cat === "superseded") lines.push(`A better version of the same game wins${i.superseded_by ? `: ${i.superseded_by}` : ""}. ${i.reason || ""}`);
@@ -3249,6 +3347,47 @@
     if (i.status === "move" || i.status === "rename") facts.push(`will be ${i.kind === "rename" ? "renamed" : "moved"} to ${i.to}`);
     return el("div", { class: "why-panel" }, ...lines.map((l) => el("div", { text: l })),
       facts.length ? el("div", { class: "muted small", text: facts.join(" - ") }) : null);
+  }
+
+  const SAVED_OPTIONS = [["", "Use the default"], ["keep", "Keep both ROMs"], ["archive", "Archive the saves with the ROM"], ["leave", "Leave the saves"]];
+  const SAVED_EFFECT = { rename: ["info", "renamed with the ROM"], keep: ["ok", "ROM kept for them"], archive: ["warn", "archived with the ROM"], leave: ["skip", "left where they are"] };
+
+  /** The Saves chips of the Library preview: all rows / the games with saves / the saves this build changes. */
+  function renderLibrarySavesFilters(plan, reload) {
+    const box = $("lib-saves-filters");
+    const s = plan.saves;
+    box.classList.toggle("hidden", !s);
+    if (!s) { state.libSaves = ""; return; }
+    const chips = [["", "Saves: all rows", null], ["with", "Games with saves", s.rows_with], ["affected", "Saves affected by this build", s.rows_affected]];
+    box.replaceChildren(...chips.map(([key, label, n]) => el("button", {
+      class: `chip ${state.libSaves === key ? "active" : ""}`, "data-saves": key, text: n === null ? label : `${label} (${fmt(n)})`,
+      on: { click: () => { state.libSaves = key; reload(); } } })));
+  }
+
+  /** The Saves cell of a Library row: how many, what the build does with them, and the choice for this game. */
+  function libSavesCell(i) {
+    const s = i.item === "file" ? i.saves : null;
+    if (!s) return el("span", { class: "muted", text: "" });
+    const eff = SAVED_EFFECT[s.effect];
+    const info = state.library[state.platform];
+    const own = ((info && info.profile.saved_overrides) || []).find((o) => o[0] === s.dat && o[1] === s.game);
+    const select = s.game ? el("select", { class: "input select saves-choice", "data-game": s.game, "aria-label": `If a rule replaces ${s.game}: what happens to its saves`,
+      title: "If a rule replaces or archives this game: what happens to its saves. Only this game; the default is in the Library rules.",
+      on: { change: (e) => setSavedChoice(s, e.target.value) } },
+    ...SAVED_OPTIONS.map(([v, label]) => el("option", { value: v, text: label, selected: v === (own ? own[2] : "") }))) : null;
+    return el("div", { class: "saves-cell" },
+      el("div", {}, el("span", { class: "saves-total", text: fmt(s.total) }), " ", el("span", { class: "sub", text: savesText(s) })),
+      eff ? el("div", {}, badge(eff[0], eff[1])) : null,
+      select);
+  }
+
+  /** One game's own choice for its saves (stored in the library profile). */
+  async function setSavedChoice(s, choice) {
+    try {
+      const info = await post("/api/library/saved", { platform: state.platform, choice: choice || "default", games: [{ dat: s.dat, game: s.game }] });
+      adoptProfile(state.platform, info);          // the preview is marked out of date: Recalculate applies it
+      toast(`${s.game}: ${choice ? SAVED_OPTIONS.find((o) => o[0] === choice)[1].toLowerCase() : "back to the default"} - press Recalculate to see what it changes`, "ok", 6000);
+    } catch (err) { toast(err.message, "error"); }
   }
 
   /** "Always keep / exclude / back to the rules" for the ticked Library rows (one choice per game, not per file). */
@@ -3374,17 +3513,19 @@
         },
         fetch: Previews.wrap("lib", async ({ offset, limit, q, refresh }) => {
           const data = await post("/api/library/plan", {
-            ...buildOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, offset, limit, q, refresh,
+            ...buildOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, saves: state.libSaves || undefined, offset, limit, q, refresh,
             sort: state.libSort, checksums: state.showChecksums ? true : undefined,
           });
           libPlan = data;
           renderLibraryCards(data);
+          renderSavesCard();
           const box = $("lib-warnings");
           const notes = [...(data.warnings || [])];
           if (data.missing_dats && data.missing_dats.length) notes.push(`Not checked (DAT not installed): ${data.missing_dats.map(shortDat).join(", ")}.`);
           box.classList.toggle("hidden", !notes.length);
           box.replaceChildren(...notes.map((n) => el("div", { text: n })));
           const reload = () => { libTable.offset = 0; libTable.load(); };
+          renderLibrarySavesFilters(data, reload);
           const r = data.reasons || {}, pl = data.playlists || {};
           // every row of a category, moving or already in place (an already built library has few moves but many rows)
           const rc = data.categories || { kept: r.kept, excluded: r.excluded, superseded: r.superseded, incomplete: r.incomplete,
@@ -3415,6 +3556,7 @@
           },
           { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(),
             render: (i) => (i.item === "playlist" ? el("span", { class: "muted", text: "" }) : ratingCell(i)) },
+          { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "wrap saves-col", when: (d) => !!d.saves, render: libSavesCell },
           { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "") },
           { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => (i.size ? fmtBytes(i.size) : "") },
           { label: "Why", cls: "wrap why-col", render: libraryNote },
@@ -3470,7 +3612,8 @@
     });
     if (!ok) return;
     try {
-      const r = await post("/api/library/export/undo", { dest, run: run.id });
+      const r = await post("/api/library/export/undo", { dest, run: run.id, follow: state.exportFollow || undefined });
+      state.exportFollow = "";
       toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length ? "error" : "ok", 8000);
       if (libTable) { libTable.offset = 0; showLibraryPlan(); }
     } catch (err) { toast(err.message, "error"); }
@@ -3523,10 +3666,12 @@
     if (!s || !s.found) return [];
     const out = [];
     if (s.kept) out.push(el("li", { text: `${fmt(s.kept)} game(s) the rules would archive are kept because you have saves for them.` }));
-    if (s.follow && !s.elsewhere && s.rename && s.rename.files) out.push(el("li", { text: `${fmt(s.rename.files)} save file(s) are renamed with their ROMs.` }));
+    if (s.follow && s.rename && s.rename.files) out.push(el("li", { text: `${fmt(s.rename.files)} save file(s) are ${s.elsewhere ? "copied" : "renamed"} with their ROMs.` }));
     if (s.rename && s.rename.conflicts) out.push(el("li", { text: `${fmt(s.rename.conflicts)} save file(s) cannot be renamed: a file with the new name is there. They stay as they are.` }));
-    if (s.mode === "archive" && !s.elsewhere && s.archive && s.archive.files)
+    if (!s.elsewhere && s.archive && s.archive.files)
       out.push(el("li", { text: `${fmt(s.archive.files)} save file(s) of ${fmt(s.archive.games)} archived game(s) move to ${s.archive.to}${s.running ? " - not now: RetroArch is running, so they stay" : ""}.` }));
+    if (!s.elsewhere && s.leave && s.leave.files)
+      out.push(el("li", { text: `${fmt(s.leave.files)} save file(s) of ${fmt(s.leave.games)} archived game(s) stay where they are.` }));
     return out;
   }
 
@@ -3553,6 +3698,7 @@
       const r = job.result;
       const isUndo = r.action === "undo";
       const isExport = r.action === "library_export";
+      if (isExport && r.saves && r.saves.journal) state.exportFollow = r.saves.journal;       // (undo removes the copied saves too)
       const failed = Array.isArray(r.failed) ? r.failed : [];
       const n = (v) => (Array.isArray(v) ? v.length : v || 0);
       const text = isUndo
@@ -3740,6 +3886,7 @@
     if (!rows.length) return null;
     const sum = (f) => rows.reduce((n, s) => n + f(s), 0);
     return { found: true, follow: rows.some((s) => s.follow), elsewhere: rows.every((s) => s.elsewhere), mode: rows[0].mode, kept: sum((s) => s.kept || 0),
+      leave: { files: sum((s) => (s.leave || {}).files || 0), games: sum((s) => (s.leave || {}).games || 0) },
       rename: { files: sum((s) => s.rename.files), games: sum((s) => s.rename.games), conflicts: sum((s) => s.rename.conflicts) },
       archive: { files: sum((s) => s.archive.files), games: sum((s) => s.archive.games), states: sum((s) => s.archive.states), to: "the _saves folder of each system in the archive" } };
   }
@@ -3817,7 +3964,8 @@
     },
 
     async select(body) {
-      try { this.info = await post("/api/retroarch/select", body); this.filled = false; this.render(); } catch (err) { toast(err.message, "error"); }
+      try { this.info = await post("/api/retroarch/select", body); this.filled = false; this.render(); } catch (err) { toast(err.message, "error"); return; }
+      await refreshSavesAwareness();
     },
 
     async plan() {
@@ -4075,9 +4223,15 @@
           const folder = el("td", { class: "mono small", text: x.hint });
           return el("tr", {},
             el("td", { text: x.name }), folder, el("td", { class: "num", text: fmt(x.games) }), el("td", { class: "num", text: fmt(x.files) }),
+            ...(scan.saves ? [el("td", { class: "num", "data-saves-of": x.name, title: x.saves ? `${savesText(x.saves)}; ${fmt(x.saves.rom_sets)} with a ROM here, ${fmt(x.saves.dat_sets)} without, ${fmt(x.saves.unmatched_sets)} unmatched` : "",
+              text: x.saves && x.saves.files ? `${fmt(x.saves.files)} (${nPlural(x.saves.sets, "game", "games")})` : "-" })] : []),
             el("td", {}, el("input", { type: "checkbox", checked: x.own_rules, "aria-label": `${x.name} uses its own rules`,
               on: { change: (e) => this.save({ systems: { [x.name]: { own_rules: e.target.checked } } }) } })));
         }));
+        $("col-saves-th").classList.toggle("hidden", !scan.saves);
+        $("col-saves-line").classList.toggle("hidden", !scan.saves);
+        $("col-saves-line").textContent = scan.saves
+          ? `Saves (RetroArch): ${scan.saves.sets ? `${nPlural(scan.saves.files, "save file", "save files")} for ${nPlural(scan.saves.sets, "game", "games")} (${fmt(scan.saves.rom_sets)} with a ROM here, ${fmt(scan.saves.dat_sets)} without, ${fmt(scan.saves.unmatched_sets)} unmatched)` : "none found"}.` : "";
         $("col-leftovers").textContent = scan.unmatched || scan.other
           ? `${fmt(scan.unmatched)} ${scan.unmatched === 1 ? "file matches" : "files match"} no game and ${fmt(scan.other)} ${scan.other === 1 ? "is not a ROM" : "are not ROMs"}: they are listed in the preview.` : "";
       }
@@ -4090,7 +4244,7 @@
     rulesBody(extra = {}) {
       const p = this.info.profile;
       return { exclude: p.exclude, latest_only: p.latest_only, one_per_game: p.one_per_game, keep_other_language: p.keep_other_language, languages: p.languages,
-        region_priority: p.region_priority, keep_flags: p.keep_flags, saved_games: p.saved_games || "keep", ...extra };
+        region_priority: p.region_priority, keep_flags: p.keep_flags, ...(p.saved_games ? { saved_games: p.saved_games } : {}), ...extra };
     },
 
     setRules(changes) { return this.save({ global: this.rulesBody(changes) }); },
@@ -4134,7 +4288,7 @@
           el("div", { class: "rules-head", text: "Keep these kinds of variants (Amiga TOSEC)" }),
           el("div", { class: "rules-grid" }, info.keep_flags.map((f) => tickRow(f.label, p.keep_flags.includes(f.id), (on) => this.setRules({ keep_flags: toggle(p.keep_flags, f.id, on) }))))));
       }
-      groups.push(savesGroup(p.saved_games, (v) => this.setRules({ saved_games: v }), "col"));
+      if (p.saved_games !== undefined) groups.push(savesGroup(p.saved_games, (v) => this.setRules({ saved_games: v }), "col"));
       $("col-rules").replaceChildren(...groups);
       const custom = Object.keys(info.global).length > 0;
       $("col-rules-note").textContent = custom ? "Shared rules are set." : "Nothing set: every system uses its own defaults.";

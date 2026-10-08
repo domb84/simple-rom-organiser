@@ -450,8 +450,10 @@ class RetroArchTests(UiTestCase):
 
 
 
-class SavesOptionTests(UiTestCase):
-    """"Games you have saves for" (Amendment 30): in the Library rules and in the Collection rules, stored, shown in the preview."""
+class SavesUiTests(UiTestCase):
+    """RetroArch saves in the UI (Amendment 31): nothing at all without a RetroArch config; with one the Overview, the Library
+    tab, the Browse tab and the Collection page show them, and the default / per-game choice is stored."""
+    SAVES_SHOTS = os.environ.get("ROMORG_SHOT_DIR", "")
 
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         import json
@@ -464,76 +466,198 @@ class SavesOptionTests(UiTestCase):
     def select(self, id_: str, value: str) -> None:
         self.page.eval(f"""(() => {{ const s = document.getElementById({id_!r}); s.value = {value!r}; s.dispatchEvent(new Event('change')); }})()""")
 
+    def shot(self, name: str, width: int = 1280) -> None:
+        if self.SAVES_SHOTS:
+            self.page.screenshot(str(Path(self.SAVES_SHOTS) / f"{name}-{width}.png"), width=width)
+
     def retroarch_with_saves(self) -> Path:
+        """A RetroArch whose saves are in one folder, sorted per core: Amiga (PUAE) and Game Boy Advance (mGBA) saves."""
         base = Path(tempfile.mkdtemp(prefix="romorg-ui-sv-"))
         self.addCleanup(shutil.rmtree, base, True)
         ra, saves = base / "ra", base / "saves"
         (saves / "PUAE").mkdir(parents=True)
+        (saves / "mGBA").mkdir()
         ra.mkdir()
         (ra / "retroarch.cfg").write_text(f'savefile_directory = "{saves}"\nsavestate_directory = "{saves}"\n'
                                           'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
-        (saves / "PUAE" / "Alpha Quest v1.0 (1990)(Acme).srm").write_bytes(b"s")        # the older edition: v1.1 supersedes it
-        (saves / "PUAE" / "Alpha Quest v1.0 (1990)(Acme).state1").write_bytes(b"t")
+        for name in ("Alpha Quest v1.0 (1990)(Acme).srm", "Alpha Quest v1.0 (1990)(Acme).state1",         # the older edition: v1.1 supersedes it
+                     "Theta Tower (1997)(Thor).srm"):                                                      # a game in the DAT you have no ROM of
+            (saves / "PUAE" / name).write_bytes(b"s")
+        (saves / "PUAE" / "Mystery (1999)(Nobody).srm").write_bytes(b"s")                                   # belongs to nothing known
+        for name in ("Alpha Run (USA).srm", "Alpha Run (USA).state1", "Alpha Run (USA).state1.png", "Alpha Run (USA).state2",
+                     "Alpha Run (Europe).srm", "Zeta Zap (Europe).srm"):
+            (saves / "mGBA" / name).write_bytes(b"s")
+        (ra / "info").mkdir()
+        (ra / "info" / "puae_libretro.info").write_text('display_name = "Commodore - Amiga (PUAE)"\ncorename = "PUAE"\nsupported_extensions = "adf|ipf|dms"\n')
+        (ra / "info" / "mgba_libretro.info").write_text('display_name = "Nintendo - Game Boy Advance (mGBA)"\ncorename = "mGBA"\nsupported_extensions = "gba"\n')
         self.api("POST", "/api/retroarch/select", {"custom": str(ra)})
         return saves
 
-    def test_the_library_rules_have_the_option_it_is_saved_and_the_follow_switch_is_the_same_setting(self) -> None:
-        self.retroarch_with_saves()              # (the RetroArch page shows its switch when an install is known)
-        self.open("#/system/commodore-amiga/library")
+    def library_open(self) -> None:
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+
+    def preview(self) -> None:
+        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.querySelectorAll('#lib-table tbody tr').length > 3", timeout=30)
+
+    # ---- no RetroArch config: nothing at all
+    def test_without_a_retroarch_config_there_is_no_trace_of_saves_anywhere(self) -> None:
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("!!document.querySelector('#summary-cards .card')")
+        self.assertTrue(self.page.eval("document.getElementById('ov-saves').classList.contains('hidden')"))
+        self.assertEqual(self.page.eval("document.getElementById('ov-saves').textContent"), "")
+        self.library_open()
+        self.page.wait("!!document.getElementById('library-rules') && document.getElementById('library-rules').children.length > 0")
+        self.assertFalse(self.page.eval("!!document.getElementById('lib-saved-games')"))
+        self.assertNotIn("aves", self.page.eval("document.getElementById('library-rules').textContent").replace("Saves and", ""))
+        self.preview()
+        self.assertFalse(self.page.eval("[...document.querySelectorAll('#lib-table thead th')].some(th => th.textContent.includes('Saves'))"))
+        self.assertTrue(self.page.eval("document.getElementById('lib-saves-filters').classList.contains('hidden')"))
+        self.scan(platform="Nintendo Game Boy Advance", root=str(self.fx.gba))
+        self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/browse?view=games")
+        self.page.wait("document.querySelectorAll('#result-table tbody tr').length > 3")
+        self.assertFalse(self.page.eval("[...document.querySelectorAll('#result-table thead th')].some(th => th.textContent.includes('Saves'))"))
+        self.assertFalse(self.page.eval("[...document.querySelectorAll('#result-tabs .tab')].some(t => t.textContent.includes('Saves'))"))
+        self.assertFalse(self.page.eval("!!document.getElementById('saves-chips')"))
+        self.page.goto(self.fx.url + "#/collection")
+        self.page.wait("!!document.getElementById('col-rules') && document.getElementById('col-rules').children.length > 0")
+        self.assertFalse(self.page.eval("!!document.getElementById('col-saved-games')"))
+        self.assertTrue(self.page.eval("document.getElementById('col-saves-th').classList.contains('hidden')"))
+        self.no_js_errors()
+
+    # ---- with one
+    def test_the_overview_says_how_many_saves_and_which_titles_they_match(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("!document.getElementById('ov-saves').classList.contains('hidden')")
+        self.assertEqual(self.page.eval("document.getElementById('ov-saves-line').textContent"),
+                         "4 save files for 3 games (1 with a ROM here, 1 without, 1 unmatched)")
+        self.assertIn("3 saves \u00b7 1 state", self.page.eval("document.getElementById('ov-saves').textContent"))
+        self.shot("overview")
+        self.shot("overview", 700)
+        self.library_open()
+        self.preview()
+        self.page.eval("location.hash = '#/system/commodore-amiga/overview'")             # (no reload: the preview stays)
+        self.page.wait("!!document.getElementById('ov-saves-plan')")
+        self.assertIn("keep 1 game the rules would archive", self.page.eval("document.getElementById('ov-saves-plan').textContent"))
+        self.no_js_errors()
+
+    def test_library_rules_wording_the_saves_column_the_filter_and_the_per_game_choice(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan()
+        self.library_open()
         self.page.wait("!!document.getElementById('lib-saved-games')")
         self.assertEqual(self.page.eval("document.getElementById('lib-saved-games').value"), "keep")
         self.assertEqual(self.page.eval("[...document.getElementById('lib-saved-games').options].map(o => o.textContent)"),
-                         ["Keep them (default)", "Archive their saves with them", "Leave the saves alone"])
-        self.assertIn("never archived by the rules", self.page.eval("document.getElementById('lib-saved-games-note').textContent"))
+                         ["Keep both ROMs", "Archive the saves with the ROM", "Leave the saves where they are"])
+        self.assertIn("When a rule replaces or archives a game you have saves for", self.page.eval("document.getElementById('lib-saves-group').textContent"))
+        self.preview()
+        self.page.wait("[...document.querySelectorAll('#lib-table thead th')].some(th => th.textContent.includes('Saves'))")
+        self.page.wait("!document.getElementById('lib-saves-filters').classList.contains('hidden')")
+        chips = self.page.eval("[...document.querySelectorAll('#lib-saves-filters .chip')].map(c => c.textContent)")
+        self.assertEqual(chips, ["Saves: all rows", "Games with saves (1)", "Saves affected by this build (1)"])
+        self.shot("library")
+        self.shot("library", 700)
+        self.click("#lib-saves-filters .chip", "Games with saves")
+        self.page.wait("document.querySelectorAll('#lib-table tbody tr:not(.detail-row)').length === 1")
+        cell = self.page.eval("document.querySelector('#lib-table .saves-cell').textContent")
+        self.assertIn("1 save \u00b7 1 state", cell)
+        self.assertIn("ROM kept for them", cell)
+        # the choice for this one game: archive its saves with it
+        self.assertEqual(self.page.eval("document.querySelector('#lib-table select.saves-choice').value"), "")
+        self.select_in_table("archive")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('press Recalculate'))")
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_overrides"],
+                         [["Commodore Amiga - Games - [ADF]", "Alpha Quest v1.0 (1990)(Acme).adf", "archive"]])
+        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.querySelector('#lib-table .saves-cell .badge')?.textContent.includes('archived with the ROM')", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelector('#lib-table select.saves-choice').value"), "archive")
+        self.page.eval("location.reload()")                                              # it is stored: the choice survives
+        self.page.wait("!!document.getElementById('lib-saved-games')")
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_overrides"][0][2], "archive")
+        self.select("lib-saved-games", "leave")
+        self.page.wait("document.getElementById('lib-saved-games-note').textContent.includes('its saves are not touched')")
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_games"], "leave")
+        self.assertIn("saves left alone", self.page.eval("document.getElementById('library-rules-summary').textContent"))
+        self.no_js_errors()
+
+    def select_in_table(self, value: str) -> None:
+        self.page.eval(f"""(() => {{ const s = document.querySelector('#lib-table select.saves-choice'); s.value = {value!r};
+            s.dispatchEvent(new Event('change')); }})()""")
+
+    def test_browse_has_the_saves_column_the_title_total_the_filter_the_sort_and_the_saves_list(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan(platform="Nintendo Game Boy Advance", root=str(self.fx.gba))
+        self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/browse?view=games")
+        self.page.wait("[...document.querySelectorAll('#result-table thead th')].some(th => th.textContent.includes('Saves'))")
+        rows = self.page.eval("""[...document.querySelectorAll('#result-table tbody tr:not(.detail-row)')].map(r => ({
+            name: r.querySelector('.game-name')?.textContent, saves: r.querySelector('.saves-cell')?.textContent || ''}))""")
+        by = {r["name"]: r["saves"] for r in rows}
+        self.assertTrue(by["Alpha Run (USA)"].startswith("3"), by)                            # 1 save + 2 states (the screenshot is not counted)
+        self.assertIn("1 save \u00b7 2 states", by["Alpha Run (USA)"])
+        self.assertIn("all editions: 4", by["Alpha Run (USA)"])                               # + the Europe edition's save
+        self.shot("browse-games")
+        self.shot("browse-games", 700)
+        self.assertTrue(by["Zeta Zap (Europe)"].startswith("1"), by)                          # a title you have no ROM of
+        self.click("#saves-chips .chip", "Games with saves")
+        self.page.wait("document.querySelectorAll('#result-table tbody tr:not(.detail-row)').length === 3")
+        self.click("#result-table thead th", "Saves")
+        self.page.wait("document.querySelector('#result-table tbody tr .game-name')?.textContent === 'Alpha Run (USA)'")
+        self.click("#result-tabs .tab", "Saves")
+        self.page.wait("document.querySelectorAll('#result-table tbody tr:not(.detail-row)').length === 3")
+        text = self.page.eval("document.getElementById('result-table').textContent")
+        self.assertIn("ROM here", text)
+        self.assertIn("title, no ROM here", text)
+        self.shot("browse-saves")
+        self.no_js_errors()
+
+    def test_the_collection_page_has_a_saves_column_and_the_rules_have_the_option(self) -> None:
+        self.retroarch_with_saves()
+        self.api("POST", "/api/collection/save", {"root": str(self.fx.tmp)})
+        self.api("POST", "/api/collection/scan", {})
+        for _ in range(300):
+            if self.api("GET", "/api/job")["status"] != "running":
+                break
+            time.sleep(0.1)
+        self.open("#/collection")
+        self.page.wait("!!document.getElementById('col-saved-games')")
+        self.page.wait("!document.getElementById('col-saves-th').classList.contains('hidden')")
+        cells = self.page.eval("[...document.querySelectorAll('#col-systems td[data-saves-of]')].map(td => [td.dataset.savesOf, td.textContent])")
+        self.assertEqual(dict(cells)["Nintendo Game Boy Advance"], "5 (3 games)")
+        self.assertIn("Saves (RetroArch):", self.page.eval("document.getElementById('col-saves-line').textContent"))
+        self.assertEqual(self.page.eval("document.getElementById('col-saved-games').value"), "keep")
+        self.select("col-saved-games", "leave")
+        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
+        self.assertEqual(self.api("GET", "/api/collection")["global"]["saved_games"], "leave")
+        self.assertIn("Building into another folder archives nothing", self.page.eval("document.getElementById('col-rules').textContent"))
+        self.shot("collection")
+        self.shot("collection", 700)
+        self.no_js_errors()
+
+    def test_the_retroarch_switch_is_the_same_setting_as_the_one_in_the_rules(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan()
+        self.library_open()
+        self.page.wait("!!document.getElementById('lib-saves-follow')")
         self.assertTrue(self.page.eval("document.getElementById('lib-saves-follow').checked"))
-        self.select("lib-saved-games", "archive")
-        self.page.wait("document.getElementById('lib-saved-games-note').textContent.includes('saves and save states move to the archive')")
-        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_games"], "archive")
-        self.assertIn("saves archived with their games", self.page.eval("document.getElementById('library-rules-summary').textContent"))
-        self.page.eval("location.reload()")
-        self.page.wait("!!document.getElementById('lib-saved-games') && document.getElementById('lib-saved-games').value === 'archive'")
         self.page.eval("document.getElementById('lib-saves-follow').click()")
         self.page.wait("!document.getElementById('lib-saves-follow').checked")
         for _ in range(50):                                                              # (the click saves in the background)
             if not self.api("GET", "/api/retroarch")["follow"]:
                 break
             time.sleep(0.1)
-        self.assertFalse(self.api("GET", "/api/retroarch")["follow"])                    # the RetroArch page's own switch
+        self.assertFalse(self.api("GET", "/api/retroarch")["follow"])
         self.page.goto(self.fx.url + "#/retroarch")
         self.page.wait("!!document.getElementById('ra-follow')")
         self.page.wait("document.getElementById('ra-follow').checked === false", timeout=10)
-        self.no_js_errors()
-
-    def test_the_collection_rules_have_it_too(self) -> None:
-        self.open("#/collection")
-        self.page.wait("!!document.getElementById('col-saved-games')")
-        self.assertEqual(self.page.eval("document.getElementById('col-saved-games').value"), "keep")
-        self.select("col-saved-games", "leave")
-        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
-        self.assertEqual(self.api("GET", "/api/collection")["profile"]["saved_games"], "leave")
-        self.assertEqual(self.api("GET", "/api/collection")["global"]["saved_games"], "leave")
-        self.assertIn("Building into another folder archives nothing", self.page.eval("document.getElementById('col-rules').textContent"))
-        self.page.eval("location.reload()")
-        self.page.wait("!!document.getElementById('col-saved-games') && document.getElementById('col-saved-games').value === 'leave'")
-        self.assertTrue(self.page.eval("document.getElementById('col-saves-follow').checked"))
-        self.no_js_errors()
-
-    def test_the_preview_says_which_games_are_kept_for_their_saves_and_what_happens_to_the_saves(self) -> None:
-        self.retroarch_with_saves()
-        self.open()
-        self.scan()
-        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
-        self.page.wait("document.getElementById('lib-cards').textContent.includes('Kept: you have saves for them')", timeout=30)
-        self.assertRegex(self.page.eval("document.getElementById('lib-cards').textContent"), r"1\s*Kept: you have saves for them")
-        self.assertEqual(self.api("POST", "/api/library/plan", {"limit": 1})["reasons"]["kept_saved"], 1)
-        # archive: the same game goes, and the preview counts the save files that go with it
-        self.select("lib-saved-games", "archive")
-        self.page.wait("document.getElementById('lib-saved-games').value === 'archive'")
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
-        self.page.wait("document.getElementById('lib-cards').textContent.includes('Save files to archive with their games (1 game)')", timeout=30)
-        self.assertRegex(self.page.eval("document.getElementById('lib-cards').textContent"), r"2\s*Save files to archive")
         self.no_js_errors()
 
 

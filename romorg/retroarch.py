@@ -1082,9 +1082,10 @@ class SaveWalk:
         return self._cores[name]
 
     def for_platform(self, platform: Any = None) -> List[tuple]:
-        """``[(file, save root, here)]``: ``here`` is True for a file in a folder of a core that plays ``platform`` and for a
-        file that lies directly in the root (nothing says which system it is for); False for a file in a folder that no core
-        is named after (a game's folder: it can still match a game, but it is not counted as this system's own)."""
+        """``[(file, save root, here)]``: ``here`` is True for a file in a folder of a core that plays ``platform``, and for a
+        file that lies directly in the root when RetroArch does not make a folder per core (then nothing says which system it
+        is for); False for a file in a folder that no core is named after (a game's folder) and for a file in the root of a
+        folder that is sorted per core: they can still match a game, but they are not counted as this system's own."""
         if platform is None:
             return [(f, root, True) for f, root in self.files]
         known, mine = self._cores_of(platform)
@@ -1096,7 +1097,7 @@ class SaveWalk:
                 parts = (f.name,)
             if len(parts) > 1 and fold_name(parts[0]) in known and fold_name(parts[0]) not in mine:
                 continue
-            out.append((f, root, len(parts) == 1 or fold_name(parts[0]) in mine))
+            out.append((f, root, (len(parts) == 1 and not self.per_core) or (len(parts) > 1 and fold_name(parts[0]) in mine)))
         return out
 
 

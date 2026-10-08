@@ -101,15 +101,34 @@ Use the UI (or ask the user which folders). For each, say what happened:
 5. Watch for: Task Manager / `ps` showing leftover `romorg` worker processes after a cancel or after a job ends (there must be
    none), the UI wording being the Deck's (the "Discover (Desktop Mode)" hint appears only when chdman is chosen and missing).
 
-### Saves (Amendment 30, added 2026-10-08)
+### Saves (Amendment 31, added 2026-10-08): the final check of the real saves folder
 
-The library rules have a new setting, "Games you have saves for" (keep = default / archive their saves with them / leave the
-saves), and a build shows how many saves it will rename, keep or archive. On the Deck, with RetroArch installed and its
-`saves` folder holding a few `.srm` / `.state` files: (a) in Library > Rules the setting is there; with "Keep them" a game
-that has a save is not archived although the rules would (the preview says "kept: you have saves"); (b) rename a ROM through
-a build and check the save in `saves/<core>/` got the new name (Flycast `.A1.bin` memory cards too); (c) "Archive their saves
-with them" puts them under `<archive>/<system>/_saves/<core>/` and Undo brings ROM and saves back; (d) nothing is ever moved
-next to a ROM. A loose `.srm` beside a ROM now goes to `_other` in the Collection sort.
+This is the one run that cannot be done anywhere else: the real RetroArch config (its `savefile_directory` /
+`savestate_directory` point at `.../assets/saves/<core name>/`, 682 files) lives on the Deck. Read-only first, then a copy.
+
+1. **Nothing without a config.** With no RetroArch installed or chosen (check the RetroArch page: no install listed) there must
+   be no "Saves" card on a system's Overview, no Saves column or tab in Browse, no saves choice in the Library or Collection
+   rules, and `GET /api/status` has no `saves` under `scan`. Then let the app find (or choose) the Deck's `retroarch.cfg`:
+   the saves things appear without a restart.
+2. **Scan SNES** (`~/Emulation/roms/snes`). Overview, "Saves (RetroArch)": expect `9 save sets` of the user's two SNES cores
+   (`bsnes`, `Snes9x`): 3 with a kept ROM, 4 with a ROM the default rules would archive (Super Mario World (USA), Zelda ALttP
+   (Switch Online), Star Fox (Japan), Yoshi's Island (Europe) (En,Fr,De)), 2 without a ROM here (Super Mario Collection (Japan)
+   (Rev 1), Yoshi's Island (USA, Asia) (Rev 1)); on Windows this was "29 save files for 9 games (7 with a ROM here, 0 without, 2
+   unmatched)" in the first pass of the numbers below - report what the Deck says. Browse > Saves lists every set with its
+   title; Browse > Games has the Saves column (sort it, use "Games with saves"). The core folders of the user's other systems
+   (Flycast, Mupen64Plus-Next, PCSX-ReARMed ...) must not add anything to the SNES numbers.
+3. **Library > Preview** with the default (Keep both ROMs): kept 2,266, excluded 853, superseded 924 (it was 2,262 / 854 / 927
+   without saves), "Saves affected by this build" lists 4 rows. Choose "Archive the saves with the ROM" in the rules: 12 files of
+   4 games go to `_saves/` (needs an archive folder or the ROM folder), "Leave": they stay. Use the choice on one row (for
+   example Super Mario World (USA) = Keep both ROMs) and press Recalculate: only that game changes. **Do not Build on the real
+   folder**; to see the apply, copy the SNES folder and 3 of its saves to a scratch folder and a scratch RetroArch config.
+4. **Rename.** In that scratch copy rename a ROM (e.g. `Super Mario World (USA).sfc` -> `smw.sfc`), build: its `.srm` / `.state1` /
+   `.state1.png` get the database name again, Flycast `.A1.bin` memory cards too (use a Dreamcast game for that); Undo gives
+   the old names back; running RetroArch makes the app skip the saves with a note.
+5. **Collection** (scratch root with two systems): the systems table has a Saves column; a build in place and a build elsewhere
+   both keep every save usable (elsewhere copies them).
+6. A loose `.srm` beside a cartridge ROM goes to `<archive>/_other` in the Collection sort (ordinary file); a disc game's folder
+   with `.srm .state .state1` beside the CHD keeps them and moves as one.
 
 ## 5. Speed (about 20 minutes; compare with the old numbers)
 

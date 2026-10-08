@@ -675,3 +675,15 @@ td.change-col { width: 44%; min-width: 300px; }
 .shell .back-link { display: none; }
 
 .job-time { margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+/* RetroArch saves (Amendment 31): only drawn when a RetroArch config is known */
+.saves-line { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+#ov-saves { margin-top: 14px; }
+#ov-saves h2 { font-size: 17px; }
+.saves-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; min-width: 90px; }
+.num .saves-cell, td.num > .saves-cell { align-items: flex-end; }
+.saves-total { font-weight: 700; font-variant-numeric: tabular-nums; }
+.saves-col { min-width: 190px; }
+select.saves-choice { min-width: 0; width: 100%; max-width: 230px; padding: 3px 6px; font-size: 13px; }
+#lib-saves-filters { margin-top: 6px; }
+@media (max-width: 760px) { select.saves-choice { max-width: none; } }

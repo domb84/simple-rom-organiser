@@ -2198,12 +2198,14 @@ md5 from `notes`) and fill the system folder from the system's ROM folder. Endpo
 # Amendment 29 - Sort a mixed folder (v0.2)
 
 `romorg/sortroot.py`: `plan_sort` (identified files to their system's folder; loose unmatched files to `<aside>/_unmatched`; non-ROM
-files to `<aside>/_other`; since Amendment 30 a save or note beside a ROM is such a file and no longer follows it), `plan_sweep` / `plan_restore` (the reserved folders of a library build to and
+files to `<aside>/_other`; a save or note beside a ROM is such a file and does not follow it), `plan_sweep` / `plan_restore` (the reserved folders of a library build to and
 from `<aside>/<system folder>/`), `apply_moves` / `undo_moves` (journal, never overwrite, emptied folders removed). Server:
 `/api/collection/sort/plan|apply|undo`, `/api/collection/aside/restore`; in place collection builds sweep after applying.
 
 
-# Amendment 30 - Saves are part of the build (v0.2)
+# Amendment 30 - Saves are part of the build (v0.2) - SUPERSEDED by Amendment 31
+
+*The shape below (a rule in the rules panel, a save-aware sort, saves counted only inside the build preview) was rejected by the user. What still holds: the keep / archive / leave moves and their journals, `write_marker_log`, the rename-follow. What is gone: `sortroot.unit_saves`, `SMove.leave`, the disc-folder save exemption, the always-on saves setting. See Amendment 31.*
 
 **What.** RetroArch saves and save states are looked after by Build library (every system) and by Collection, where RetroArch keeps
 them (`savefile_directory` / `savestate_directory`, one folder per core when `sort_savefiles_enable`), never next to a ROM. Before,
@@ -2272,6 +2274,65 @@ named after the playlist, not after a disc: not matched). Saves of ROMs already 
 earlier build (only the games a build moves now). `incomplete` sets and the disks of a TOSEC set are left to their rules, `keep`
 does not protect a `_duplicates/` copy (the keeper's own saves are untouched; the spare's go with it in `archive` mode). The "have
 N of M" totals do not look at saves. Saves are found by name only.
+
+
+# Amendment 31 - Saves: aware only with a RetroArch config, reported per scan, chosen per game (v0.2)
+
+**Rule 1: no config, no saves.** `App._ra_active()` (the selected install, memoised 1.5 s, cleared when the choice changes) gates
+everything: with no install detected or chosen no save folder is walked, `ScanState.saves` stays None, `GET /api/status`
+has no `scan.saves`, `/api/scan/results` rows have no `saves` and `saves_on` is absent, `kind=saves` and `POST /api/library/saved`
+answer 409 `no_retroarch`, `/api/library/plan` has no `saves` and its rows no `saves`, the Collection scan has no `saves`, and
+`_profile_json` drops `saved_games` / `saved_overrides` (so the UI draws no saves setting, card, column or filter). Plans are
+identical to a build without the feature (test `NoConfig`). **The sort is ordinary again**: `sortroot.unit_saves`, `SMove.leave`,
+the `is_save_of` import, the disc-unit save exemption and `collection.virtual_disc`'s save filter are removed; a disc game's folder
+keeps whatever is in it and moves as one; a loose file beside a cartridge ROM is an ordinary other file (`<archive>/_other`).
+
+**The save index** (`romorg/saveindex.py`, built by `App._saves_report(state)` once per scan, kept on `ScanState.saves`, rebuilt only
+when the RetroArch choice or the save folders change - `retroarch_select/follow/apply/undo` call `_saves_forget_all`).
+`retroarch.SaveWalk` walks the save roots once (and reads the cores' `.info` once); `for_platform(platform)` restricts to the cores
+that play the system (core folder names are the `.info` `corename`, verified against the real RetroArch `info/*.info`:
+`bsnes`, `Snes9x`, `Flycast`, `Mupen64Plus-Next`, `PCSX-ReARMed` ... ) and flags each file `here` (in this system's core folder; a file
+directly in the root only when saves are not sorted per core). `saveindex.build` groups files into `SaveSet`s by content name
+(longest name that is a file stem / zip member / DAT game name, else the leftmost dot whose rest is a save suffix; Flycast
+`.A1.bin`, `.1.srm`, `Dr. Mario` handled), counts saves / states / screenshots (`.state<N>.png`, not counted), bytes and cores, and
+matches each set: `rom` (name of a file you have -> its DAT game and title), `dat` (a DAT game / set name or ROM name, no ROM here)
+or `none`. Unmatched sets are counted only when `here`. Games come from the Browse "Games" rows of the scan (`game_refs`).
+The Collection builds one report per system from the scan (`_collection_saves`, one shared `SaveWalk`; a virtual state with an
+identity `Mapper`) and the plan reuses it. Cost: one directory walk plus two dict lookups per file (about 2 s of the 90 s SNES scan is
+none of it; the 682-file folder indexes in tens of ms).
+
+**API.** `status.scan.saves` = totals `{files, saves, states, screenshots, bytes, sets, rom_sets, dat_sets, unmatched_sets, titles_rom,
+titles_dat, per_core, install}`; `/api/scan/results?kind=saves[&match=rom|dat|none]` = the sets; kinds `games|matched|missing` add
+`saves_on` and per row `saves: {saves, states, total, title_total}`, `saves=1` filters, `sort=saves_asc|saves_desc`;
+`/api/library/plan` rows carry `saves: {saves, states, total, effect (rename|keep|archive|leave|""), game, dat}`, filter `saves=with|affected`,
+sort `saves_*`, and the page `saves` = `{follow, kept, rename, archive, leave, overrides, files, sets, rows_with, rows_affected, ...}`;
+Collection scan systems carry `saves` and the scan a total. New `POST /api/library/saved {platform, choice: keep|archive|leave|default,
+games: [{dat, game}]}`. A platform build into another folder now copies the saves too (`res.saves.journal`; `export/undo` takes `follow`).
+
+**Profile.** `saved_games` (default for every game; `keep` = both ROMs stay) and new `saved_overrides: ((dat, game, choice), ...)`
+(normalised: valid, one per game, sorted; `from_dict` of an old profile gives `()`; stored with the other fields; excluded from
+`totals.profile_signature`; the `plan_id` includes them only when a report exists). `library.saved_choice(profile, dat, game)`;
+`apply_saved(sel, items, saved, profile)` keeps a game the rules would set aside only when its choice is `keep`. `plan.save_report`
+carries the index; `App._saves_plan(plan)` derives, per set-aside game (by the game of the set), `archive` / `leave` sets, the
+kept names and the rename pairs; preview (`_saves_plan_info`) and apply (`_saves_moves`, `_ra_follow`) use the same object, so the
+numbers agree (tests). Games set aside never have their saves renamed. UI: Overview card, Collection column and line, Browse Saves
+column / filter / sort / Saves tab, Library Saves column, filters and the per-row choice; the rules group says "When a rule replaces
+or archives a game you have saves for: Keep both ROMs / Archive the saves with the ROM / Leave the saves where they are".
+
+**Measured** (real SNES folder, 4,083 files, copy of the data dir, cfg copy pointing at `F:\Emulation\assets\saves`, nothing applied):
+27 save files (9 saves, 18 states, 2 screenshots not counted) in 9 sets: 7 matched to a ROM here (3 kept: Star Fox (USA) (Rev 2),
+Starwing (Europe) (Rev 1), Super Mario World (Europe) (Rev 1); 4 the rules archive: Super Mario World (USA), Zelda ALttP (Switch Online),
+Star Fox (Japan), Yoshi's Island (Europe) (En,Fr,De)), 2 unmatched (Super Mario Collection (Japan) (Rev 1), Yoshi's Island (USA, Asia)
+(Rev 1): no ROM and no DAT entry). Keep: kept 2,266 / excluded 853 / superseded 924, 4 games kept for saves; leave: 2,262 / 854 / 927,
+12 files of 4 games stay; archive: the same, 12 files (7 states) of 4 games to `_saves`; archive with Super Mario World (USA) = keep:
+kept_saved 1, 11 files of 3 games; with it = leave: 11 files of 3 games archived, 1 left.
+
+**Bugs found.** (1) `SaveWalk` first counted a file in the root of a per-core folder as this system's: the real folder has Amiga `.nvr`
+files there and they showed as unmatched SNES saves (now `here` only when not sorted per core). (2) The old `states` count included
+screenshots. (3) A Library apply with `export_to` never carried the saves along.
+
+**Not done.** Per-game choices inside a Collection's shared rules (the global profile has no overrides), a home-page badge, saves of
+multi-disc `.m3u`, ROMs already in `_excluded/`; a save is found only by name. Saves that appear after the scan are seen at the next scan.
 
 
 ## v0.2: removed and changed

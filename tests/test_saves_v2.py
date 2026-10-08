@@ -247,13 +247,27 @@ class Index(SavesCase):
             self.call("GET", "/api/status")
             self.assertEqual((built.call_count, walked.call_count), (2, 2))
 
-    def test_unsorted_save_folder_counts_what_it_cannot_place_as_unmatched(self) -> None:
+    def test_a_file_in_the_root_of_a_per_core_folder_matches_but_is_not_counted_as_unmatched(self) -> None:
+        # (the user's real saves folder has Amiga .nvr files directly in its root: not SNES business)
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
-        put(self.saves / "Zed (USA).srm", b"s")                                    # directly in the root
+        put(self.saves / "Zed (USA).srm", b"s")                                    # directly in the root: still matches a ROM here
+        put(self.saves / "Whatever (Japan).srm", b"s")                             # nothing says it is a SNES save
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        t = self.call("GET", "/api/status")["scan"]["saves"]
+        self.assertEqual((t["rom_sets"], t["unmatched_sets"], t["per_core"]), (1, 0, True))
+
+    def test_unsorted_save_folder_counts_what_it_cannot_place_as_unmatched(self) -> None:
+        ra = self.tmp / "RetroArch2"
+        ra.mkdir()
+        (ra / "retroarch.cfg").write_text(f'savefile_directory = "{self.saves}"\nsavestate_directory = "{self.saves}"\n'
+                                          'sort_savefiles_enable = "false"\nsort_savestates_enable = "false"\n')
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra)})
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        put(self.saves / "Zed (USA).srm", b"s")
         put(self.saves / "Whatever (Japan).srm", b"s")
         self.job("/api/scan", {"path": str(root), "platform": SNES})
         t = self.call("GET", "/api/status")["scan"]["saves"]
-        self.assertEqual((t["rom_sets"], t["unmatched_sets"]), (1, 1))
+        self.assertEqual((t["rom_sets"], t["unmatched_sets"], t["per_core"]), (1, 1, False))
 
     def test_collection_reports_saves_per_system_and_in_total(self) -> None:
         root = self.tmp / "My ROMs"

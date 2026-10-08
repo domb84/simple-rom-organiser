@@ -89,9 +89,10 @@
         <h2>2. Systems found</h2>
         <p class="muted small">Every system that has games in the folder is built; there is nothing to switch on. <i>Own rules</i> uses a system's own Library tab rules instead of the shared rules below. Folders get the standard short names (the ones EmulationStation-DE, EmuDeck and RetroDECK use) when you apply.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>System</th><th>Folder after organising</th><th class="num">Games</th><th class="num">Files</th><th>Own rules</th></tr></thead>
+          <thead><tr><th>System</th><th>Folder after organising</th><th class="num">Games</th><th class="num">Files</th><th class="num hidden" id="col-saves-th" title="RetroArch save files, and the games they belong to">Saves</th><th>Own rules</th></tr></thead>
           <tbody id="col-systems"></tbody>
         </table></div>
+        <div id="col-saves-line" class="small hidden"></div>
         <div id="col-leftovers" class="muted small"></div>
       </div>
 
@@ -394,6 +395,7 @@
         <div id="scan-output" class="hidden">
           <div id="scan-missing-dats" class="notice hidden"></div>
           <div class="cards" id="summary-cards"></div>
+          <div class="panel hidden" id="ov-saves" aria-labelledby="ov-saves-title"></div>
           <h3 id="dat-cards-title">Per DAT</h3>
           <div class="dat-cards" id="dat-cards"></div>
         </div>
@@ -494,6 +496,7 @@
               <div id="lib-vanish-table"></div>
             </details>
             <div class="chips" id="lib-reason-filters"></div>
+            <div class="chips hidden" id="lib-saves-filters" aria-label="Saves"></div>
             <div class="chips hidden" id="lib-why-filters"></div>
             <div class="chips" id="lib-status-filters"></div>
             <div id="lib-table"></div>

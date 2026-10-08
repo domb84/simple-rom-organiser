@@ -85,13 +85,17 @@ library there: only what the rules keep, named and laid out properly. The source
 4. **Done:** shared folders: `shared_folders` / `apply_shared` read the asset settings (menu assets, rdb, cheats, playlists,
    thumbnails, downloads, remaps, rgui config) against the folders of those names in a base folder and set the unused ones.
 
-5. **Done (Amendment 30):** saves are part of the build. Profile rule `saved_games` = `keep` (default) | `archive` | `leave`:
-   `library.select(..., saved=...)` keeps a game the rules would archive when RetroArch has saves for it (reason
-   `saved_keep`); in `archive` mode the saves go with the archived game to `<archive>/<system folder>/_saves/<path below the
-   save folder>` (journalled as a `libsweep`, undone with the build). The preview counts renamed / kept / archived save files
-   and conflicts from the plan. The Collection sort no longer moves a loose save into the system folder with its ROM (it goes to
-   `_other` like every non-ROM file). Not done: copying a save to the edition that replaces the game (rejected: unsafe), saves of
-   multi-disc `.m3u` playlists and of ROMs already in `_excluded/` from an earlier build.
+5. **Done (Amendment 31, replaces the shape of Amendment 30):** saves are looked at only when a RetroArch config is known; with
+   none the app is not aware that saves exist (no walk, no field, no column, no setting). With one, every scan (a system's and
+   each system of a Collection) builds a **save index** once (`romorg/saveindex.py`: one walk of the save folders, files grouped
+   by content name into save sets, each matched to a title: a ROM you have / a DAT title without a ROM / unmatched; saves,
+   states and screenshots counted apart) and reports it: Overview line and card, Collection systems column, Browse Saves
+   column / filter / sort / Saves tab, Library Saves column and filters. A build renames the saves with their ROMs (also disc
+   systems, zips, Amiga names, Collection in place and elsewhere). For a game the rules replace or archive the profile's
+   `saved_games` (`keep` = keep both ROMs, `archive` = the saves go with the ROM, `leave`) is the default and
+   `saved_overrides` (per game, set on the Library tab) overrides it. Saves beside ROMs are ordinary files again in the sort.
+   Not done: copying a save to the edition that replaces the game (rejected: unsafe), saves of multi-disc `.m3u` playlists and of
+   ROMs already in `_excluded/` from an earlier build, per-game choices inside a Collection's shared rules, a badge on the home page.
 
 ## Collection in place (v0.2)
 

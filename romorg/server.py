@@ -3542,6 +3542,7 @@ class App:
             job.report(0, 0, "Moving saves...")
             res = ra.apply_relocation(sel, rel, journal_dir, zip_path, progress=lambda d, t, m: job.report(d, t, m))
             res["action"] = "retroarch"
+            self._saves_forget_all()            # the saves are somewhere else now: every scan's save report is read again
             return res
 
         return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
@@ -3554,7 +3555,9 @@ class App:
         if journal not in known:
             raise ApiError(HTTPStatus.BAD_REQUEST, "That change cannot be undone (it was already undone, or is unknown).")
         try:
-            return ra.undo_relocation(Path(journal))
+            res = ra.undo_relocation(Path(journal))
+            self._saves_forget_all()
+            return res
         except RuntimeError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
 
