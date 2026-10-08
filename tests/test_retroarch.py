@@ -164,6 +164,29 @@ class Follow(World):
         self.assertEqual((out["restored"], out["skipped"]), (3, []))
         self.assertTrue((self.saves / "bsnes" / "Mario.srm").is_file())
 
+    def test_every_file_of_a_game_follows_whatever_its_suffix(self) -> None:
+        """Cores name their files ``<game><suffix>`` with suffixes of every shape: Flycast's memory cards are
+        ``Game (USA).A1.bin``, Beetle PSX's second card ``Game.1.srm``, Mupen64Plus ``.eep`` / ``.mpk``. All of them (and the
+        screenshots of states) belong to the game; a longer game name that merely starts the same way does not."""
+        d = self.saves / "Flycast"
+        d.mkdir(exist_ok=True)
+        mine = ["Dave Mirra (USA).A1.bin", "Dave Mirra (USA).D1.bin", "Dave Mirra (USA).state1", "Dave Mirra (USA).state1.png",
+                "Dave Mirra (USA).1.srm", "Dave Mirra (USA).eep", "Dave Mirra (USA).state.auto"]
+        other = ["Dave Mirra (USA) (Rev 1).A1.bin", "Dave Mirra 2 (USA).A1.bin", "Dr. Mario (USA).srm"]
+        for n in mine + other:
+            (d / n).write_bytes(b"x")
+        ops = ra.plan_follow(self.inst, [("Dave Mirra (USA)", "Dave Mirra Freestyle BMX (USA)")], "move", self.home)
+        self.assertEqual(sorted(o.src.name for o in ops if o.src.parent == d), sorted(mine))
+        res = ra.apply_follow(ops, self.home / "j", install=self.inst)
+        self.assertEqual(res["failed"], [])
+        for n in mine:
+            self.assertTrue((d / n.replace("Dave Mirra (USA)", "Dave Mirra Freestyle BMX (USA)", 1)).is_file(), n)
+        for n in other:
+            self.assertTrue((d / n).is_file(), n)
+        self.assertEqual(ra.match_save("Dr. Mario (USA).srm", {"Dr. Mario (USA)": "x"}), ("Dr. Mario (USA)", ".srm"))
+        self.assertEqual(ra.match_save("Dr. Mario (USA).srm", {"Dr": "x"}), None)             # a dot inside the name is not a cut
+        self.assertEqual(ra.match_save("Game (USA).state1.png", {"Game (USA)": 1, "Game": 2}), ("Game (USA)", ".state1.png"))
+
     def test_copy_mode_keeps_both_and_undo_removes_the_copy(self) -> None:
         ops = ra.plan_follow(self.inst, [("Mario (USA)", "Mario - New")], "copy", self.home)
         res = ra.apply_follow(ops, self.home / "j", install=self.inst)

@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 __all__ = ["Install", "WinSystem", "detect_installs","read_cfg", "resolve", "settings_of", "is_running", "write_cfg",
            "classify", "plan_relocation", "apply_relocation", "undo_relocation", "list_undo", "override_warnings",
-           "SETTING_KEYS", "split_save", "pairs_from_moves", "plan_follow", "apply_follow", "core_infos",
+           "SETTING_KEYS", "split_save", "match_save", "pairs_from_moves", "plan_follow", "apply_follow", "core_infos",
            "cores_for_platform", "cores_for_platforms", "check_bios_cores", "check_bios", "apply_bios", "shared_base", "shared_folders", "apply_shared"]
 
 SETTING_KEYS = ("savefile_directory", "savestate_directory", "sort_savefiles_enable", "sort_savestates_enable",
@@ -955,6 +955,20 @@ def split_save(name: str) -> Optional[tuple]:
     return None
 
 
+def match_save(name: str, wanted: Iterable[str]) -> Optional[tuple]:
+    """``(content name, suffix)`` when ``name`` is a save or state file of one of the ``wanted`` games: the game's name, then a
+    dot, then whatever the core adds (``.srm``, ``.state1.png``, Flycast's ``.A1.bin`` memory cards, ``.1.srm``, ``.eep`` ...).
+    The longest game name wins, so ``Game (USA).A1.bin`` belongs to ``Game (USA)`` and not to a shorter ``Game``; a dot
+    inside a name (``Dr. Mario``) is only a cut where the part before it is itself one of the games and what follows is a plain suffix (no spaces)."""
+    wanted = wanted if isinstance(wanted, (set, dict, frozenset)) else set(wanted)
+    cut = name.rfind(".")
+    while cut > 0:
+        if name[:cut] in wanted and not any(ch in name[cut:] for ch in " ()"):     # a core's suffix never has spaces
+            return name[:cut], name[cut:]
+        cut = name.rfind(".", 0, cut)
+    return None
+
+
 def pairs_from_moves(moves: Iterable[tuple]) -> List[tuple]:
     """``(old content name, new content name)`` for every file whose name (without extension) changes."""
     out: Dict[str, str] = {}
@@ -996,10 +1010,11 @@ def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", ho
     claimed: set = set()
     for root in save_roots(install, home):
         for f in _walk(root):
-            parts = split_save(f.name)
-            if parts is None or parts[0] not in wanted:
+            hit = match_save(f.name, wanted)
+            if hit is None:
                 continue
-            stem, suffix, kind = parts
+            stem, suffix = hit
+            kind = "state" if re.match(r"^\.state", suffix, re.IGNORECASE) else "save"
             dst = f.with_name(wanted[stem] + suffix)
             status, note = mode, ""
             key = os.path.normcase(str(dst))
