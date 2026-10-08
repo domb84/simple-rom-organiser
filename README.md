@@ -784,7 +784,7 @@ files in the right order. **Bring archived files back** returns the archived fil
 deleted or overwritten: a name that is taken gets ` (2)`.
 
 **Keep a single system's folder tidy too.** On a system's Library tab, with *In this folder*, tick *Keep this folder tidy*
-and choose a folder (the default is next to the ROM root, named like it with `-aside`, the same as in Collection). After the
+and choose a folder (the default is next to the ROM root, named like it with `-archive`, the same as in Collection). After the
 build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`, `_unmatched`) is moved out to
 `<folder>/<this system's folder name>/...` so the system folder holds only what you keep. The preview counts it, and
 **Undo last** brings those files back first, then reverts the build.
@@ -945,7 +945,13 @@ More detail is in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 The UI is sized for the Deck's 1280x800 screen with large touch targets. The native
 **Browse...** button uses `kdialog` (or `zenity`) and is only shown when available
-(Desktop Mode); the **Folders...** browser works everywhere.
+(Desktop Mode); on Windows it opens the Windows folder dialog. The **Folders...** browser works everywhere.
+Every folder field has both buttons. One native dialog is open at a time (a second **Browse...** says so),
+it opens in the field's folder or its nearest existing parent, and it is closed when the app quits.
+
+**Windows:** two packages, a single `.exe` and a `.zip` (`packaging\build_windows_exe.ps1`,
+`packaging\build_windows.ps1`; see [docs/PACKAGING.md](docs/PACKAGING.md)). Both builds end with
+`packaging\smoke_test.ps1`, which makes the checks of `packaging/smoke_test.sh` against the finished package.
 
 ## Where data is stored
 

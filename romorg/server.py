@@ -636,6 +636,23 @@ def _dialog_command() -> str | None:
     return None
 
 
+def _dialog_start(start: str) -> Path:
+    """The folder a native dialog opens in: ``start`` itself, else its nearest existing parent (a default archive
+    folder that is not made yet opens next to the ROM folder), else the home folder."""
+    home = Path.home()
+    if not start:
+        return home
+    try:
+        path = Path(start).expanduser()
+        if path.is_absolute():
+            for candidate in (path, *path.parents):
+                if candidate.is_dir():
+                    return candidate
+    except (OSError, ValueError, RuntimeError):      # a path the OS refuses (NUL, a bad ~user)
+        pass
+    return home
+
+
 def _places() -> list[dict[str, str]]:
     """Useful starting points for the folder browser (home, SD cards, USB...)."""
     places: list[dict[str, str]] = []
@@ -832,6 +849,8 @@ class App:
             self.updates.ratings_wanted = self._ratings_wanted
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
+        self._dialog_lock = threading.Lock()                   # one native folder dialog at a time
+        self._dialog_proc: subprocess.Popen[str] | None = None   # the open one (closed when the app exits)
 
     # ---------------------------------------------------------------- helpers
 
@@ -2256,9 +2275,7 @@ class App:
             raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "No native folder dialog available - use the folder browser")
         start = _str_arg(body.get("start"))
         title = _str_arg(body.get("title"))[:MAX_TITLE] or "Choose a folder"
-        start_dir = Path(start).expanduser() if start else Path.home()
-        if not start_dir.is_dir():
-            start_dir = start_dir.parent if start_dir.parent.is_dir() else Path.home()
+        start_dir = _dialog_start(start)
         env = None
         if tool == "powershell":
             script = ("Add-Type -AssemblyName System.Windows.Forms;"
@@ -2274,18 +2291,42 @@ class App:
         else:
             cmd = ["zenity", "--file-selection", "--directory", f"--title={title}",
                    f"--filename={start_dir}{os.sep}"]
+        # One dialog at a time: a second Browse click (on another field, or in another tab) would put a second
+        # dialog on the screen, and each waits for its own answer.
+        if not self._dialog_lock.acquire(blocking=False):
+            raise ApiError(HTTPStatus.CONFLICT, "A folder dialog is already open - choose a folder or cancel there "
+                                                "first (it may be behind this window)")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=False,
-                                  timeout=DIALOG_TIMEOUT, env=env,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except subprocess.TimeoutExpired:  # dialog hidden / never answered: give up
-            return {"cancelled": True, "timeout": True}
-        except OSError as exc:
-            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not open dialog: {exc}") from None
-        chosen = proc.stdout.strip()
+            try:
+                proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, encoding="utf-8", errors="replace", env=env,
+                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except OSError as exc:
+                raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not open dialog: {exc}") from None
+            self._dialog_proc = proc
+            try:
+                out, _err = proc.communicate(timeout=DIALOG_TIMEOUT)
+            except subprocess.TimeoutExpired:  # dialog hidden / never answered: give up
+                proc.kill()
+                proc.communicate()
+                return {"cancelled": True, "timeout": True}
+        finally:
+            self._dialog_proc = None
+            self._dialog_lock.release()
+        chosen = out.strip().lstrip("﻿")
         if proc.returncode != 0 or not chosen:
             return {"cancelled": True}
         return {"path": chosen}
+
+    def _close_dialog(self) -> None:
+        """Close a native folder dialog that is still open (the app is exiting: nobody would read its answer, and
+        the dialog would stay on the screen as a window of a process that no longer exists)."""
+        proc = self._dialog_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
     def scan_start(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         root = self._validate_dir(body.get("path"))
@@ -4514,6 +4555,7 @@ class App:
         moves (everything done so far is in the undo log). True if no job is left running.
         """
         self.closing.set()
+        self._close_dialog()
         try:
             self.updates.cancel()  # a DAT download stops at its next safe point (the .part file stays resumable)
         except Exception:  # noqa: BLE001

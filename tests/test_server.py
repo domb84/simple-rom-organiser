@@ -201,6 +201,45 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+class FakeDialog:
+    """Stands in for the native folder dialog's process (``subprocess.Popen``): records how it was started and
+    answers with ``stdout`` / ``returncode``. ``hang``: never answers (every wait times out); ``block``: answers
+    only once it is killed."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "", hang: bool = False, block: bool = False) -> None:
+        self.returncode, self.stdout, self.hang, self.block = returncode, stdout, hang, block
+        self.calls: list[list[str]] = []
+        self.cmd: list[str] = []
+        self.kwargs: dict[str, Any] = {}
+        self.timeouts: list[Any] = []
+        self.killed = False
+        self.started = threading.Event()
+        self._dead = threading.Event()
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> "FakeDialog":
+        self.calls.append(cmd)
+        self.cmd, self.kwargs = cmd, kwargs
+        self.started.set()
+        return self
+
+    def communicate(self, timeout: Any = None) -> tuple[str, str]:
+        self.timeouts.append(timeout)
+        if self.hang and not self.killed:
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+        if self.block:
+            self._dead.wait(30)
+            self.returncode = 1
+            return "", ""
+        return self.stdout, ""
+
+    def poll(self) -> Any:
+        return None if (self.hang or self.block) and not self.killed else self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self._dead.set()
+
+
 class ServerTestCase(unittest.TestCase):
     """Starts a server on a random port with fake core modules."""
 
@@ -632,17 +671,64 @@ class EndpointTests(ServerTestCase):
         self.assertEqual(status, 501)
 
     def test_fs_pick_kdialog(self) -> None:
-        done = subprocess.CompletedProcess([], 0, stdout=f"{self.roms}\n", stderr="")
+        done = FakeDialog(0, f"{self.roms}\n")
         with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
-                mock.patch.object(server.subprocess, "run", return_value=done) as run:
+                mock.patch.object(server.subprocess, "Popen", done):
             self.assertEqual(self.post("/api/fs/pick", {"title": "Pick BIOS"})["path"], str(self.roms))
-        cmd = run.call_args.args[0]
+        cmd = done.cmd
         self.assertEqual(cmd[0], "kdialog")
         self.assertEqual(cmd[cmd.index("--title") + 1], "Pick BIOS")
-        cancelled = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        cancelled = FakeDialog(1, "")
         with mock.patch.object(server, "_dialog_command", return_value="zenity"), \
-                mock.patch.object(server.subprocess, "run", return_value=cancelled):
+                mock.patch.object(server.subprocess, "Popen", cancelled):
             self.assertEqual(self.post("/api/fs/pick", {}), {"cancelled": True})
+
+    def test_fs_pick_starts_in_the_nearest_existing_folder(self) -> None:
+        """A field that names a folder which is not made yet (the default archive folder, a new destination) opens
+        the dialog in the nearest folder that exists, not in the home folder."""
+        missing = self.roms / "not-made-yet" / "deeper"
+        for start, want in ((str(missing), self.roms), (str(self.roms), self.roms), ("", Path.home()),
+                            ("\0", Path.home())):
+            done = FakeDialog(1, "")
+            with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
+                    mock.patch.object(server.subprocess, "Popen", done):
+                self.post("/api/fs/pick", {"start": start})
+            self.assertEqual(Path(done.cmd[-1]), want, start)
+
+    def test_fs_pick_answers_in_any_script(self) -> None:
+        """The chosen path comes back as it is: accents, CJK, and a byte-order mark some shells put first."""
+        name = self.roms / "Jeux Pokémon ゲーム"
+        done = FakeDialog(0, f"﻿{name}\r\n")
+        with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
+                mock.patch.object(server.subprocess, "Popen", done):
+            self.assertEqual(self.post("/api/fs/pick", {})["path"], str(name))
+        self.assertEqual(done.kwargs["encoding"], "utf-8")
+
+    def test_fs_pick_one_dialog_at_a_time_and_closed_on_exit(self) -> None:
+        """A second Browse click while a dialog is open is refused (not a second dialog), other requests are still
+        answered, and quitting the app closes the dialog instead of leaving it on the screen."""
+        hung = FakeDialog(0, f"{self.roms}\n", block=True)
+        answers: list[Any] = []
+        with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
+                mock.patch.object(server.subprocess, "Popen", hung):
+            first = threading.Thread(target=lambda: answers.append(self.post("/api/fs/pick", {})))
+            first.start()
+            self.assertTrue(hung.started.wait(10))
+            status, body, _ = self.request("POST", "/api/fs/pick", {})
+            self.assertEqual(status, 409)
+            self.assertIn("already open", body["error"])
+            self.assertEqual(len(hung.calls), 1)                       # no second dialog was started
+            self.assertEqual(self.request("GET", "/api/status")[0], 200)    # the server is not blocked by the dialog
+            self.srv.app._close_dialog()                               # what stop_jobs() does when the app exits
+            first.join(10)
+        self.assertTrue(hung.killed)
+        self.assertEqual(answers, [{"cancelled": True}])
+        with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
+                mock.patch.object(server.subprocess, "Popen", FakeDialog(0, f"{self.roms}\n")):
+            self.assertEqual(self.post("/api/fs/pick", {})["path"], str(self.roms))    # the lock was released
+        with mock.patch.object(self.srv.app, "_close_dialog") as close:
+            self.srv.app.stop_jobs(0.1)                                # Quit, Ctrl+C, SIGTERM all end here
+        close.assert_called_once()
 
     def test_results_before_scan(self) -> None:
         status, _, _ = self.request("GET", "/api/scan/results?kind=matched")
@@ -1572,11 +1658,12 @@ class ReviewFixTests(ServerTestCase):
         self.assertEqual(status, 400)
 
     def test_fs_pick_timeout_and_game_mode(self) -> None:
+        never = FakeDialog(0, "", hang=True)
         with mock.patch.object(server, "_dialog_command", return_value="kdialog"), \
-                mock.patch.object(server.subprocess, "run",
-                                  side_effect=subprocess.TimeoutExpired(["kdialog"], 300)) as run:
+                mock.patch.object(server.subprocess, "Popen", never):
             self.assertEqual(self.post("/api/fs/pick", {}), {"cancelled": True, "timeout": True})
-        self.assertEqual(run.call_args.kwargs["timeout"], server.DIALOG_TIMEOUT)
+        self.assertEqual(never.timeouts[0], server.DIALOG_TIMEOUT)
+        self.assertTrue(never.killed)                 # the unanswered dialog does not stay on the screen
         if os.name == "nt":  # the Windows dialog is always available; there is no Steam game mode
             return
         with mock.patch.dict(os.environ, {"DISPLAY": ":0", "SteamGamepadUI": "1"}), \
