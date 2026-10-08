@@ -1,5 +1,8 @@
 # Runbook: verify the Windows-pass work on a real Steam Deck
 
+**Latest handover for v0.2 (branch `v0.2`, 2026-10-08): `docs/HANDOVER_DECK_2.md`. Start there; this runbook has the detailed steps.**
+
+
 For whoever (any account, any Claude session or a person) sits at the Deck next. Everything in this file can be done from a
 fresh login. It is the "do this on the Deck" half of `docs/HANDOVER_DECK.md`; read that file's last section ("Update
 2026-10-07") if you want the background. **Why this matters:** every check so far ran on Windows, in WSL Ubuntu and in Arch
