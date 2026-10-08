@@ -557,6 +557,48 @@ class Failures(CollectionCase):
         self.assertTrue((root / "new" / "mono.gb").is_file())
 
 
+class ArchiveFolder(CollectionCase):
+    def test_the_default_shown_is_the_one_the_build_uses_also_through_a_link(self) -> None:
+        import subprocess
+        root = self.tmp / "real" / "roms"
+        put(root / "Dump" / "notes.txt", b"notes")
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        link = self.tmp / "link"
+        try:
+            if os.name == "nt":                                # a junction needs no privilege
+                made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(root)], capture_output=True).returncode == 0
+            else:
+                os.symlink(root, link)
+                made = True
+        except OSError:
+            made = False
+        if not made:
+            self.skipTest("cannot make a link here")
+        self.addCleanup(lambda: os.path.lexists(link) and (os.rmdir(link) if os.name == "nt" else os.unlink(link)))
+        info = self.call("POST", "/api/collection/save", {"root": str(link)})
+        self.assertEqual(info["aside_default"], str(self.tmp / "real" / "roms-archive"))
+        self.assert_clean(self.build(link))
+        self.assertTrue((self.tmp / "real" / "roms-archive" / "_other" / "Dump" / "notes.txt").is_file())
+        self.assertFalse((self.tmp / "link-archive").exists())
+        self.undo()
+
+    def test_a_folder_inside_the_rom_folder_is_refused_in_any_spelling(self) -> None:
+        root = self.tmp / "Roms"
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        self.scan(root)
+        inside = [str(root / "archive"), str(root) + os.sep, str(root / "Dump" / ".." / "x")]
+        if os.name == "nt":
+            inside += [str(root).upper() + "\\ARCHIVE", str(root).swapcase(), str(root).replace("\\", "/") + "/a"]
+        for aside in inside:
+            self.call("POST", "/api/collection/save", {"aside": aside})
+            code, out = self.http("POST", "/api/collection/plan", {})
+            self.assertEqual((code, out.get("code")), (400, "bad_aside"), aside)
+        self.call("POST", "/api/collection/save", {"aside": "", "place": "elsewhere", "dest": inside[0]})
+        self.call("POST", "/api/collection/plan", {})
+        job = self.wait()
+        self.assertEqual((job["status"], job["error_code"]), ("error", "bad_destination"))
+
+
 class EmptyFolders(CollectionCase):
     def test_undo_also_brings_back_the_folders_that_were_empty_before(self) -> None:
         root = self.tmp / "roms"

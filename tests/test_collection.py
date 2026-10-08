@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from romorg import collection, library, platforms
+from romorg import collection, libexport, library, platforms, sortroot
 
 
 class Detect(unittest.TestCase):
@@ -56,6 +56,22 @@ class Rules(unittest.TestCase):
         self.assertIsNotNone(collection.check_folders(Path("/a/b"), Path("/a/b/c")))
         self.assertIsNotNone(collection.check_folders(Path("/a/b"), Path("/a")))
         self.assertIsNone(collection.check_folders(Path("/a/b"), Path("/a/c")))
+
+    def test_the_top_of_a_drive_as_rom_folder(self) -> None:
+        # E:\ (an SD card with the ROMs at its top) ends in a separator already: a folder inside it was not seen as inside
+        with tempfile.TemporaryDirectory() as tmp:
+            inside = Path(tmp).resolve()
+            top = Path(inside.anchor)
+            self.assertIn("inside the ROM root", collection.check_folders(top, inside) or "")
+            self.assertIn("inside the destination", collection.check_folders(inside, top) or "")
+            self.assertIsNotNone(collection.check_folders(top, top))
+            with self.assertRaises(libexport.ExportError):
+                libexport.check_destination(top, inside / "library")
+            with self.assertRaises(libexport.ExportError):
+                libexport.check_destination(inside, top)
+            aside = sortroot.default_aside(top)                    # no folder lies next to a drive: no exception, and refused
+            self.assertIsNotNone(collection.check_folders(top, aside))
+        self.assertEqual(sortroot.default_aside(Path("/a/roms")), Path("/a/roms-archive"))
 
     def test_overlap_is_seen_through_other_spellings_of_the_same_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

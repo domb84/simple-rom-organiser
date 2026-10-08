@@ -119,9 +119,10 @@ def check_folders(root: Path, dest: Path) -> Optional[str]:
     a, b = os.path.normcase(os.path.realpath(root)), os.path.normcase(os.path.realpath(dest))
     if a == b:
         return "The destination is the ROM root itself. Choose another folder."
-    if b.startswith(a + os.sep):
+    # (the top of a drive already ends in a separator: "E:\\" + "\\" is the start of no path, and the overlap went unseen)
+    if b.startswith(a.rstrip(os.sep) + os.sep):
         return "The destination is inside the ROM root. Choose a folder outside it."
-    if a.startswith(b + os.sep):
+    if a.startswith(b.rstrip(os.sep) + os.sep):
         return "The ROM root is inside the destination. Choose a folder that does not contain it."
     return None
 

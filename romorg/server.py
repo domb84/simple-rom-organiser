@@ -3540,7 +3540,13 @@ class App:
             if found is None or plat.name in found:                  # (every installed DAT before the first scan)
                 for r, n in self._available_regions(plat).items():
                     present[r] = present.get(r, 0) + n
-        cfg = {**cfg, "aside_default": str(_mod("sortroot").default_aside(Path(cfg["root"]))) if cfg["root"] else ""}
+        base: Path | None = None
+        if cfg["root"]:
+            try:                                             # as the build sees it (a link / a subst drive resolved)
+                base = self._validate_dir(cfg["root"])
+            except ApiError:
+                base = Path(cfg["root"])
+        cfg = {**cfg, "aside_default": str(_mod("sortroot").default_aside(base)) if base is not None else ""}
         return {**cfg, "scan": scan, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
                 "rules": [{"key": k, "label": labels.get(k, k)} for k in self._rule_keys()],
                 "languages": dict(getattr(tags, "LANGUAGES", {}) or {}),

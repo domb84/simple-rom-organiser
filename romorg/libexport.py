@@ -145,10 +145,10 @@ def check_destination(root: Path, dest: Path) -> Path:
     if a == b:
         raise ExportError("The destination is the source folder itself. Choose another folder, or use "
                           "\"build in this folder\" to reorganise the source.")
-    if b.startswith(a + os.sep):
+    if b.startswith(a.rstrip(os.sep) + os.sep):          # (rstrip: the top of a drive, "E:\\", ends in a separator)
         raise ExportError("The destination is inside the source folder: it would be scanned as part of the source. "
                           "Choose a folder outside it.")
-    if a.startswith(b + os.sep):
+    if a.startswith(b.rstrip(os.sep) + os.sep):
         raise ExportError("The source folder is inside the destination. Choose a folder that does not contain the "
                           "source.")
     if dest.exists() and not dest.is_dir():

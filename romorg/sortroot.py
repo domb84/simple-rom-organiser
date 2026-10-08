@@ -51,8 +51,14 @@ class SMove:
 
 
 def default_aside(root: Path) -> Path:
-    """Next to the ROM folder: ``<root>-archive``."""
+    """Next to the ROM folder: ``<root>-archive``.
+
+    The top of a drive (``E:\\``, a share, ``/``) has no name and nothing lies next to it: the answer is then a folder
+    inside it, which the overlap check refuses with the request to choose an archive folder elsewhere (rather than an
+    exception from here that breaks the whole page)."""
     root = Path(root)
+    if not root.name:
+        return root / "_archive"
     return root.with_name(root.name + "-archive")
 
 
