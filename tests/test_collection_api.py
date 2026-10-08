@@ -336,7 +336,7 @@ class MixedFolder(CollectionCase):
         self.assertEqual(res["sort"]["result"]["moved"], 20)       # every file once (not one more for the duplicate)
         self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).smc"]))
         self.assertEqual(self.files(archive), self.ARCHIVED)
-        self.assertEqual([d.name for d in root.iterdir() if d.is_dir()], ["gb", "gba", "snes"])     # the old folders are gone
+        self.assertEqual(sorted(d.name for d in root.iterdir() if d.is_dir()), ["gb", "gba", "snes"])     # the old folders are gone
         self.assert_one_move_per_file(root)
         self.assertEqual(len(self.moves(root)), 20)
         logs = [p.name for p in root.glob(".romorg-undo-*.json")]
