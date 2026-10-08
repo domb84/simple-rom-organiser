@@ -337,6 +337,11 @@ class ScanState:
     # Identity of this scan inside the running app (new for every scan / re-scan): keys the library totals
     # and the ``plan_id`` of a Build library preview.
     serial: int = field(default_factory=lambda: next(_SCAN_SERIAL))
+    # The RetroArch saves of this system (saveindex.SaveReport), built once per scan and ONLY when a RetroArch config is
+    # known (Amendment 31): None = no saves are looked at. ``saves_for`` = the config it was built for.
+    saves: Any = None
+    saves_for: str = ""
+    save_walk: Any = None                # retroarch.SaveWalk: the one walk of the save folders (shared by a Collection's systems)
 
 
 def _call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -420,6 +425,7 @@ def _page(items: list[Any], offset: Any, limit: Any, q: Any) -> dict[str, Any]:
     return {"total": len(items), "offset": off, "limit": lim, "items": items[off:off + lim]}
 
 
+SAVE_KINDS = ("games", "matched", "missing", "saves")
 SORT_KEYS = ("rating_desc", "rating_asc", "name_asc", "name_desc", "year_asc", "year_desc", "size_asc", "size_desc")
 
 
@@ -1044,10 +1050,13 @@ class App:
                 self._cutoffs[platform.name] = (key, cutoff)
         return library.RatingContext(lookup, cutoff)
 
-    @staticmethod
-    def _profile_json(profile: Any) -> dict[str, Any]:
+    def _profile_json(self, profile: Any) -> dict[str, Any]:
         data = profile.to_dict() if hasattr(profile, "to_dict") else dataclasses.asdict(profile)
-        return {**data, "exclude": sorted(data.get("exclude") or ())}
+        out = {**data, "exclude": sorted(data.get("exclude") or ())}
+        if self._ra_active() is None:            # no RetroArch known: the app does not know that saves exist
+            out.pop("saved_games", None)
+            out.pop("saved_overrides", None)
+        return out
 
     @staticmethod
     def _rule_keys() -> list[str]:
@@ -1727,27 +1736,70 @@ class App:
         self._lang_cache_games[platform.name] = (key, value)
         return value
 
-    def _save_files(self, platform: Any) -> list[tuple[Path, Path]]:
-        """``[(file, save root)]``: the RetroArch save and state files that can belong to games of ``platform`` (empty when
-        no RetroArch is found or it keeps its saves beside the games). The save folders are read once per plan."""
+    # ---------------------------------------------------------------- saves of a scan (Amendment 31)
+    # Nothing below runs unless a RetroArch config is known (``_ra_active``): then every scan gets a save report.
+    def _ra_active(self) -> Any:
+        """The RetroArch install whose saves count, or None. With none the app looks at no save folder at all."""
+        now = time.monotonic()
+        memo = getattr(self, "_ra_memo", None)
+        if memo is not None and now - memo[0] < 1.5:
+            return memo[1]
         try:
-            ra, installs, saved = self._ra_state()
+            _ra, installs, saved = self._ra_state()
             sel = self._ra_selected(installs, saved)
-            return ra.list_saves(sel, platform) if sel is not None else []
-        except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken RetroArch folder never stops a plan
+        except Exception:  # noqa: BLE001 - a broken RetroArch folder never stops anything
             traceback.print_exc()
-            return []
+            sel = None
+        self._ra_memo = (now, sel)
+        return sel
+
+    def _saves_forget(self) -> None:
+        """The RetroArch choice changed: every scan's save report is built again when it is next needed."""
+        self._ra_memo = None
+        for holder in (self._scan, self._rootscan):
+            if holder is not None:
+                for attr, empty in (("saves", None), ("saves_for", ""), ("save_walk", None), ("save_reports", {})):
+                    if hasattr(holder, attr):
+                        setattr(holder, attr, empty)
+
+    def _saves_forget_all(self) -> None:
+        """`_saves_forget` and the plans / result pages built with the old choice."""
+        self._saves_forget()
+        if self._scan is not None:
+            self._drop_plans(self._scan)
+
+    def _saves_report(self, state: ScanState, walk: Any = None) -> Any:
+        """The ``saveindex.SaveReport`` of a scan (built once, kept on the scan), or None when no RetroArch config is known."""
+        sel = self._ra_active()
+        if sel is None:
+            return None
+        key = str(sel.cfg)
+        if state.saves is not None and state.saves_for == key:
+            return state.saves
+        try:
+            ra, saveindex = _mod("retroarch"), _mod("saveindex")
+            walk = walk or state.save_walk
+            if walk is None or str(walk.install.cfg) != key:
+                walk = ra.SaveWalk(sel)
+            state.save_walk = walk
+            by_file, by_dat = saveindex.game_refs(item for item, _t in self._kind_rows(state, "games"))
+            state.saves = saveindex.build(walk.for_platform(state.platform), by_file, by_dat, walk.per_core, sel.label)
+            state.saves_for = key
+        except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken RetroArch folder never stops a scan
+            traceback.print_exc()
+            return None
+        return state.saves
 
     def _make_library_plan(self, state: ScanState, prof: Any, savedisk: bool, labels: bool) -> Any:
-        """A fresh ``LibraryPlan`` of the scan for the given rules (not cached). The plan carries ``save_files`` (see
-        :meth:`_save_files`) for the preview and for archiving saves; with ``saved_games == "keep"`` the games they belong
-        to are not set aside."""
+        """A fresh ``LibraryPlan`` of the scan for the given rules (not cached). With a RetroArch config the plan carries
+        ``save_report`` (the scan's saves) and a game the rules would set aside whose choice is "keep" is kept."""
         rctx = self._rating_context(state.platform, prof)
-        files = self._save_files(state.platform)
-        saved = _mod("retroarch").save_name_keys(f.name for f, _root in files) if files and prof.saved_games == "keep" else None
+        report = self._saves_report(state)
+        saved = report.keys() if report is not None else None
         saved_arg = {"saved": saved} if saved else {}
         plan = self._make_library_plan_core(state, prof, savedisk, labels, rctx, saved_arg)
-        plan.save_files = files
+        if report is not None:
+            plan.save_report = report
         return plan
 
     def _make_library_plan_core(self, state: ScanState, prof: Any, savedisk: bool, labels: bool, rctx: Any,
@@ -1798,8 +1850,11 @@ class App:
         if ikey not in state.items:
             plan = self._library_plan(state, *key)
             items = [self._rename_item(op, state.root) for op in plan.ops]
-            for item in items:
+            for item, op in zip(items, plan.ops):
                 item["category"] = self._library_category(item)
+                info = self._saves_effect(plan, op)           # (None without a RetroArch config: the row has no such field)
+                if info is not None:
+                    item["saves"] = info
             for op in plan.playlists:
                 item = self._m3u_item(op, state.root)
                 item.update(item="playlist", category="playlist")
@@ -2062,6 +2117,9 @@ class App:
                 "dat_names": list(state.dat_names), "missing_dats": list(state.missing_dats),
                 "recursive": state.recursive, "summary": self._summary(state), "id": state.serial,
             }
+            report = self._saves_report(state)
+            if report is not None:                 # (the field exists only when a RetroArch config is known)
+                out["scan"]["saves"] = report.totals()
         return out
 
     @staticmethod
@@ -2248,6 +2306,33 @@ class App:
             profile, overrides=tuple((d, n, a) for (d, n), a in current.items())))
         return self._profile_info(platform)
 
+    def library_saved(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/library/saved``: ``{platform, choice: keep | archive | leave | default, games: [{dat, game}]}`` - what
+        a build does with the saves of single games the rules would replace or archive (stored in the platform's library
+        profile; ``default`` = follow the profile's ``saved_games``). Only when a RetroArch config is known."""
+        if self._ra_active() is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch config is known, so saves are not looked at.", "no_retroarch")
+        platform = self._resolve_platform(body.get("platform"))
+        library = self._library_mod()
+        choice = _str_arg(body.get("choice"))
+        if choice not in library.SAVED_GAMES + ("default",):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "choice must be keep, archive, leave or default")
+        games = body.get("games")
+        if not isinstance(games, list) or not games or len(games) > 5000 or not all(
+                isinstance(g, dict) and _str_arg(g.get("dat")) and _str_arg(g.get("game")) for g in games):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "games must be a list of {dat, game} (1 to 5000)")
+        profile = self._profile(platform)
+        current = {(d, n): a for d, n, a in profile.saved_overrides}
+        for g in games:
+            key = (_str_arg(g["dat"]), _str_arg(g["game"]))
+            if choice == "default":
+                current.pop(key, None)
+            else:
+                current[key] = choice
+        self._save_profile(platform, dataclasses.replace(
+            profile, saved_overrides=tuple((d, n, a) for (d, n), a in current.items())))
+        return self._profile_info(platform)
+
     @staticmethod
     def _rating_changes(body: dict[str, Any], library: Any) -> dict[str, Any]:
         """The rating fields of a profile save (strict: a wrong type or range is a 400, never silently ignored)."""
@@ -2403,6 +2488,14 @@ class App:
                 rows = [r for r in rows if r[0]["dest"] == folder]
         elif kind == "m3u":
             rows = self._m3u_rows(state, False, True)
+        elif kind == "saves":                      # the save sets and the title each one belongs to (needs a RetroArch config)
+            report = self._saves_report(state)
+            if report is None:
+                raise ApiError(HTTPStatus.CONFLICT, "No RetroArch config is known, so saves are not looked at.", "no_retroarch")
+            rows = _rows(report.rows())
+            match = query.get("match", "").strip()
+            if match in ("rom", "dat", "none"):
+                rows = [r for r in rows if r[0]["match"] == match]
         elif kind in ("matched", "unmatched", "missing", "unsupported", "errors", "games"):
             self._kind_rows(state, kind)
             rows = state.items[kind]
@@ -2428,11 +2521,19 @@ class App:
                 rows = _tag_filter(rows, query)
         else:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown result kind: {kind}")
-        if kind in ("matched", "unmatched", "missing"):
+        report = self._saves_report(state) if kind in SAVE_KINDS else None
+        if report is not None and kind in ("games", "matched", "missing"):
+            rows = self._saves_filter_sort(report, kind, rows, _bool_arg(query.get("saves")), query.get("sort", "").strip())
+        elif kind in ("matched", "unmatched", "missing"):
             rows = _sort_rows(rows, query.get("sort", "").strip(),
                               lambda i: i.get("file") or i.get("set_name") or i.get("name") or "")
+        elif kind == "saves":
+            rows = self._saves_sort_sets(rows, query.get("sort", "").strip())
         page = _page(rows, query.get("offset"), query.get("limit"), query.get("q"))
         page["kind"] = kind
+        if report is not None and kind in ("games", "matched", "missing"):
+            page["saves_on"] = True
+            page["items"] = [dict(it, saves=self._row_saves(report, kind, it)) for it in page["items"]]
         if kind == "games":
             page["has_year"] = any(r[0].get("year") is not None for r in state.items["games"][:2000])
         if facets is not None:
@@ -2441,6 +2542,46 @@ class App:
             # only the rows of this page, built from the scan result in memory (nothing is re-hashed)
             page["items"] = [dict(it, checksums=self._checksums(state, kind, it)) for it in page["items"]]
         return page
+
+    @staticmethod
+    def _saves_key(kind: str, item: dict[str, Any]) -> tuple[str, str]:
+        """The (DAT, game) a Browse row stands for, as the save report names its games."""
+        if kind == "games":
+            return item.get("dat", ""), item.get("name", "")
+        if kind == "missing":
+            return item.get("dat", ""), item.get("set_name") or item.get("name", "")
+        roms = item.get("roms") or [""]
+        return item.get("dat", ""), item.get("set_name") or roms[0]
+
+    def _row_saves(self, report: Any, kind: str, item: dict[str, Any]) -> dict[str, Any] | None:
+        """``{saves, states, total, title_total}``: the saves of the game of a Browse row and, in ``title_total``, of every
+        edition of its title (None: nothing)."""
+        own = report.game_counts(*self._saves_key(kind, item))
+        title = report.title_counts(item.get("title") or "") if kind == "games" else None
+        if not own and not title:
+            return None
+        return {"saves": (own or {}).get("saves", 0), "states": (own or {}).get("states", 0), "total": (own or {}).get("total", 0),
+                "title_total": (title or own or {}).get("total", 0)}
+
+    def _saves_filter_sort(self, report: Any, kind: str, rows: list[tuple[dict[str, Any], str]], only: bool,
+                           sort: str) -> list[tuple[dict[str, Any], str]]:
+        """Browse rows: only the games with saves (``saves=1``), sorted by their saves (``saves_desc`` | ``saves_asc``) or as
+        the other sorts do."""
+        def total(item: dict[str, Any]) -> int:
+            return (report.game_counts(*self._saves_key(kind, item)) or {}).get("total", 0)
+        if only:
+            rows = [r for r in rows if total(r[0])]
+        if sort in ("saves_asc", "saves_desc"):
+            return self._sort_saves(rows, sort.endswith("desc"), total)
+        return _sort_rows(rows, sort, lambda i: i.get("file") or i.get("set_name") or i.get("name") or "")
+
+    @staticmethod
+    def _saves_sort_sets(rows: list[tuple[dict[str, Any], str]], sort: str) -> list[tuple[dict[str, Any], str]]:
+        if sort in ("files_asc", "files_desc"):
+            return sorted(rows, key=lambda r: r[0]["files"], reverse=sort.endswith("desc"))
+        if sort in ("name_asc", "name_desc"):
+            return sorted(rows, key=lambda r: (r[0]["title"] or r[0]["name"]).casefold(), reverse=sort.endswith("desc"))
+        return rows
 
     def _annotate_ratings(self, state: ScanState, rows: list[tuple[dict[str, Any], str]]) -> None:
         """Browse -> Games: ``rating`` (0-10) / ``votes`` / ``rating_match`` on every game of a rated DAT (None = unrated or
@@ -2846,7 +2987,9 @@ class App:
     def _plan_id(self, state: ScanState, key: tuple[bool, bool]) -> str:
         """Identity of the Build library plan for this scan + these rules + these options (``plan_id``)."""
         profile = self._profile(state.platform)
-        sig = _mod("totals").profile_signature(profile) + "-" + profile.saved_games[:1]     # (the totals do not look at saves)
+        sig = _mod("totals").profile_signature(profile)        # (the totals do not look at saves)
+        if self._saves_report(state) is not None:             # a plan with saves in it changes when their choices change
+            sig += "-" + _mod("totals").signature_text([profile.saved_games, *map(str, profile.saved_overrides)])[:6]
         if profile.rating_active:                     # a rebuilt ratings index changes the plan
             sig += "-" + _mod("totals").signature_text([self._ratings_sig()])[:6]
         return f"{state.serial}.{sig}.{int(key[0])}{int(key[1])}"
@@ -2939,6 +3082,18 @@ class App:
         for item, _t in rows:
             categories[item["category"]] = categories.get(item["category"], 0) + 1
         status, reason, dest = _str_arg(body.get("status")), _str_arg(body.get("reason")), _str_arg(body.get("dest"))
+        saves_filter = _str_arg(body.get("saves"))        # "" | "with" (games with saves) | "affected" (saves this build changes)
+        if saves_filter and saves_filter not in ("with", "affected"):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "saves must be with or affected")
+        saves_rows = {"with": 0, "affected": 0}
+        for r in rows:
+            sv = r[0].get("saves")
+            if sv:
+                saves_rows["with"] += 1
+                if sv.get("effect"):
+                    saves_rows["affected"] += 1
+        if saves_filter:
+            rows = [r for r in rows if r[0].get("saves") and (saves_filter == "with" or r[0]["saves"].get("effect"))]
         if reason and reason not in LIBRARY_REASONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown reason filter: {reason}")
         why = _str_arg(body.get("why"))  # primary exclusion code (excluded_<code> counts)
@@ -2953,6 +3108,8 @@ class App:
         self._annotate_library(state, rows)
         rows = _sort_rows(rows, _str_arg(body.get("sort")),
                           lambda i: i.get("to_name") or Path(i.get("path") or "").name)
+        if _str_arg(body.get("sort")) in ("saves_asc", "saves_desc"):
+            rows = self._sort_saves(rows, _str_arg(body.get("sort")).endswith("desc"), lambda i: (i.get("saves") or {}).get("total", 0))
         wkey = ("warnings", "library", key)
         if wkey not in state.items:
             state.items[wkey] = [(dict(text=w), "") for w in self._plan_warnings(state, file_rows)]
@@ -2990,10 +3147,12 @@ class App:
         page["has_year"] = any(r[0].get("year") is not None for r in file_rows[:2000])
         export_asked = _str_arg(body.get("export_to"))
         try:
-            page["saves"] = self._saves_plan_info(
-                plan, plan.profile, state.root,
+            info = self._saves_plan_info(
+                plan, state.root,
                 self._library_aside_dir(state, body) if _str_arg(body.get("aside_to")) and not export_asked else None,
                 bool(export_asked))
+            if info is not None:                                    # (no field at all without a RetroArch config)
+                page["saves"] = {**info, "rows_with": saves_rows["with"], "rows_affected": saves_rows["affected"]}
         except ApiError:
             raise
         except Exception as exc:  # noqa: BLE001 - the saves line is a courtesy of the preview
@@ -3021,6 +3180,14 @@ class App:
                     src = self._kind_rows(state, it["cs_kind"])
                     it["checksums"] = self._checksums(state, it["cs_kind"], src[it["cs_id"]][0])
         return page
+
+    @staticmethod
+    def _sort_saves(rows: list[tuple[dict[str, Any], str]], desc: bool, total: Callable[[dict[str, Any]], int]) -> list[tuple[dict[str, Any], str]]:
+        """Rows sorted by their number of saves; the rows without any are last whichever way it runs."""
+        have = [r for r in rows if total(r[0])]
+        lack = [r for r in rows if not total(r[0])]
+        have.sort(key=lambda r: -total(r[0]) if desc else total(r[0]))
+        return have + lack
 
     def _annotate_library(self, state: ScanState, rows: list[tuple[dict[str, Any], str]]) -> None:
         """Library rows: ``rating`` / ``votes`` of the game the file belongs to, and ``cs_kind`` / ``cs_id`` - the scan
@@ -3161,12 +3328,12 @@ class App:
                     self._link_undo(res["undo_log"], conv_res["undo_log"])
                 elif conv_res.get("undo_log"):                           # the build itself changed nothing: undo the conversion
                     res["undo_log"] = conv_res["undo_log"]
-            saves_moves, _saves_info = self._saves_moves(plan, plan.profile, st.root, aside)
+            saves_moves, _saves_info = self._saves_moves(plan, st.root, aside)
             if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
                 res["saves_archived"] = self._apply_saves_moves(saves_moves, res.get("undo_log", ""))
             moved = self._moved_pairs(plan.ops)
             if moved:
-                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")}, st.platform)
+                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")}, plan)
                 if follow:
                     res["saves"] = follow
             if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
@@ -3218,6 +3385,10 @@ class App:
                 raise ApiError(HTTPStatus.CONFLICT, str(exc), "mass_removal")
             res["action"] = "library_export"
             res["dest"] = str(ep.dest)
+            follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy",
+                                     {"collection": str(ep.dest)}, self._library_plan(state, *key))
+            if follow:
+                res["saves"] = follow
             return res
 
         return {"job": self.jobs.start("library", work, platform=state.platform.name).to_dict()}
@@ -3292,6 +3463,7 @@ class App:
         if "backup_dir" in body:
             changes["backup_dir"] = _str_arg(body.get("backup_dir"))
         self._config_update(retroarch={**saved, **changes})
+        self._saves_forget_all()
         return self._ra_info()
 
     def _ra_relocation(self, body: dict[str, Any]) -> tuple[Any, Any, Any]:
@@ -3386,20 +3558,27 @@ class App:
         except RuntimeError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
 
-    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any],
-                   platform: Any = None) -> dict[str, Any] | None:
+    @staticmethod
+    def _report_files(report: Any) -> list[tuple[Path, Path]]:
+        """``[(file, save root)]`` of every file of a save report that is still there."""
+        return [(f, root) for st in report.sets.values() for f, root, _k, _z in st.members if os.path.lexists(f)]
+
+    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any], plan: Any) -> dict[str, Any] | None:
         """Saves and states follow ROMs that got new names (``pairs_from``: ``(old path, new path)``). ``mode`` ``move`` for
-        a build in place, ``copy`` for a build into another folder. None when RetroArch is not in use or the option is off.
-        With ``platform`` only the files of the cores that play it are looked at."""
+        a build in place, ``copy`` for a build into another folder. None when no RetroArch config is known (``plan`` has no
+        save report) or the option is off. The games the plan sets aside keep their saves where they are (or archive them)."""
+        sp = self._saves_plan(plan)
+        if sp is None:
+            return None
         try:
             ra, installs, saved = self._ra_state()
             sel = self._ra_selected(installs, saved)
             if sel is None or saved.get("follow", True) is False:
                 return None
-            pairs = ra.pairs_from_moves(pairs_from)
+            pairs = [(a, b) for a, b in ra.pairs_from_moves(pairs_from) if ra.fold_name(a) not in sp["gone"]]
             if not pairs:
                 return None
-            ops = ra.plan_follow(sel, pairs, mode, files=ra.list_saves(sel, platform) if platform is not None else None)
+            ops = ra.plan_follow(sel, pairs, mode, files=self._report_files(sp["report"]))
             res = ra.apply_follow(ops, self._ra_dirs(saved)[0], extra, sel)
             res["conflicts"] = sum(1 for o in ops if o.status == "conflict")
             return res
@@ -3407,7 +3586,7 @@ class App:
             traceback.print_exc()
             return {"error": str(exc), "followed": 0, "copied": 0, "failed": []}
 
-    # ---- saves are part of the build (Amendment 30)
+    # ---- saves are part of the build (Amendment 31)
     @staticmethod
     def _plan_stems(plan: Any) -> tuple[dict[str, str], set[str]]:
         """``({content name: reason code}, {content names})``: the games (as RetroArch names their saves, see
@@ -3419,8 +3598,7 @@ class App:
         for op in plan.ops:
             if getattr(op, "status", "") == "delete" or getattr(op, "kind", "") == "m3u":
                 continue
-            unit = getattr(op, "unit", None)
-            stem = ra.fold_name(Path(getattr(unit, "path", None) or op.src).stem)
+            stem = ra.fold_name(App._op_stem(op))
             if op.code:
                 if op.status in ("move", "rename"):
                     gone[stem] = op.code
@@ -3429,6 +3607,12 @@ class App:
         for stem in stay:
             gone.pop(stem, None)
         return gone, stay
+
+    @staticmethod
+    def _op_stem(op: Any) -> str:
+        """The content name RetroArch gives the saves of the file(s) of an op: the name of the game's image / ROM file."""
+        unit = getattr(op, "unit", None)
+        return Path(getattr(unit, "path", None) or op.src).stem
 
     @staticmethod
     def _planned_pairs(plan: Any) -> list[tuple[str, str]]:
@@ -3440,23 +3624,56 @@ class App:
             moves.extend(getattr(op, "moves", None) or [(op.src, op.dst)])
         return _mod("retroarch").pairs_from_moves(moves)
 
-    def _saves_moves(self, plan: Any, prof: Any, folder: Path, aside: Path | None) -> tuple[list[Any], dict[str, Any]]:
-        """With ``saved_games == "archive"``: the moves that take the saves and states of the games the plan sets aside to
+    def _saves_plan(self, plan: Any) -> dict[str, Any] | None:
+        """What the build does with the saves, from the plan alone (None: no RetroArch config is known, nothing to do):
+
+        * ``gone``: the games the plan sets aside; of those ``archive`` (their saves go to the archive with them) and ``leave``
+          (their saves stay where they are) as save sets, by the game's own choice or the profile's;
+        * ``kept``: content names of games kept only because of their saves;
+        * ``pairs``: the renames the saves of the games that stay follow."""
+        report = getattr(plan, "save_report", None)
+        if report is None:
+            return None
+        cached = getattr(plan, "_saves_plan", None)
+        if cached is not None:
+            return cached
+        ra, library = _mod("retroarch"), self._library_mod()
+        prof = plan.profile
+        gone, _stay = self._plan_stems(plan)
+        archive: list[Any] = []
+        leave: list[Any] = []
+        for stem in gone:
+            st = report.sets.get(stem)
+            if st is None or not st.files:
+                continue
+            choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
+            (archive if choice == "archive" else leave).append(st)
+        kept = {ra.fold_name(self._op_stem(op)) for op in plan.ops
+                if library.SAVED_KEEP_TEXT in (getattr(op, "reason", "") or "") and getattr(op, "status", "") != "delete"}
+        pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in gone]
+        sp = {"gone": gone, "archive": archive, "leave": leave, "kept": kept, "pairs": pairs, "report": report}
+        plan._saves_plan = sp
+        return sp
+
+    def _saves_moves(self, plan: Any, folder: Path, aside: Path | None) -> tuple[list[Any], dict[str, Any]]:
+        """The moves that take the saves and states of the games the plan sets aside (and whose choice is "archive") to
         ``<archive>/<system folder name>/_saves/<path below the save folder>`` (inside the ROM folder, ``<folder>/_saves``,
         while no archive folder is used). Never over an existing file (the name gets `` (2)``). ``([], {})`` otherwise."""
-        files = getattr(plan, "save_files", None) or []
-        if prof.saved_games != "archive" or not files:
-            return [], {}
-        gone, _stay = self._plan_stems(plan)
-        found = _mod("retroarch").saves_of(files, gone) if gone else []
-        if not found:
+        sp = self._saves_plan(plan)
+        if sp is None or not sp["archive"]:
             return [], {}
         sortroot = _mod("sortroot")
         base = (aside / folder.name if aside is not None else folder) / SAVES_DIR
         names = sortroot.Names()
-        moves = [sortroot.SMove(s.src, names.free(base / s.rel), SAVES_DIR, size=s.size) for s in found]
-        return moves, {"files": len(moves), "games": len({s.stem for s in found}),
-                       "states": sum(1 for s in found if s.kind == "state"), "to": str(base)}
+        moves: list[Any] = []
+        for st in sp["archive"]:
+            for f, root, _kind, size in st.members:
+                if os.path.lexists(f):
+                    moves.append(sortroot.SMove(f, names.free(base / f.relative_to(root)), SAVES_DIR, size=size))
+        if not moves:
+            return [], {}
+        return moves, {"files": len(moves), "games": len(sp["archive"]), "states": sum(st.states for st in sp["archive"]),
+                       "to": str(base)}
 
     def _apply_saves_moves(self, moves: list[Any], library_log: str) -> dict[str, Any]:
         """Do :meth:`_saves_moves` (journalled like a sweep, linked to the build's undo log). Skipped, with a note, while
@@ -3471,33 +3688,57 @@ class App:
         return {"moved": res["moved"], "planned": len(moves), "failed": res["failed"][:20], "journal": res["journal"],
                 "skipped_running": False}
 
-    def _saves_plan_info(self, plan: Any, prof: Any, folder: Path, aside: Path | None, elsewhere: bool = False) -> dict[str, Any]:
+    def _saves_plan_info(self, plan: Any, folder: Path, aside: Path | None, elsewhere: bool = False) -> dict[str, Any] | None:
         """What a build does with RetroArch's saves, from the plan (nothing is looked at after the build): ``kept`` games
-        kept because of their saves, ``rename`` save files that follow renamed ROMs (a dry run of the real thing),
-        ``archive`` save files that go with the games the rules archive."""
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        files = getattr(plan, "save_files", None) or []
+        kept because of their saves, ``rename`` save files that follow renamed ROMs (a dry run of the real thing; copies when
+        the build is into another folder), ``archive`` save files that go with the games the rules archive, ``leave`` the games
+        the rules archive whose saves stay. None when no RetroArch config is known."""
+        sp = self._saves_plan(plan)
+        if sp is None:
+            return None
+        ra = _mod("retroarch")
+        _ra, _installs, saved = self._ra_state()
+        report, prof = sp["report"], plan.profile
         info: dict[str, Any] = {
-            "found": sel is not None and bool(files), "install": sel is not None, "mode": prof.saved_games, "files": len(files),
-            "follow": saved.get("follow", True) is not False, "kept": plan.selection.saved_kept(), "running": ra.is_running(),
-            "elsewhere": elsewhere, "rename": {"files": 0, "games": 0, "conflicts": 0},
-            "archive": {"files": 0, "games": 0, "states": 0, "to": ""}}
-        if sel is None or not files:
-            return info
-        gone, _stay = self._plan_stems(plan)
-        if info["follow"] and not elsewhere:
-            skip = set(gone) if prof.saved_games == "archive" else set()
-            pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in skip]
-            ops = ra.plan_follow(sel, pairs, "move", files=files)
-            hits = ra.saves_of(files, {a for a, _b in pairs})
-            info["rename"] = {"files": sum(1 for o in ops if o.status == "move"),
-                              "games": len({s.stem for s in hits}), "conflicts": sum(1 for o in ops if o.status == "conflict")}
-        if prof.saved_games == "archive" and not elsewhere:
-            _moves, arch = self._saves_moves(plan, prof, folder, aside)
+            "install": True, "mode": prof.saved_games, "follow": saved.get("follow", True) is not False,
+            "kept": sum(1 for k in sp["kept"] if k in report.sets and report.sets[k].files), "running": ra.is_running(),
+            "elsewhere": elsewhere, "overrides": len(prof.saved_overrides), **{k: report.totals()[k] for k in ("files", "sets")},
+            "rename": {"files": 0, "games": 0, "conflicts": 0}, "archive": {"files": 0, "games": 0, "states": 0, "to": ""},
+            "leave": {"files": 0, "games": 0}}
+        info["found"] = bool(info["files"])
+        if info["follow"] and sp["pairs"]:
+            ops = ra.plan_follow(self._ra_active(), sp["pairs"], "copy" if elsewhere else "move", files=self._report_files(report))
+            hits = ra.saves_of(self._report_files(report), {a for a, _b in sp["pairs"]})
+            info["rename"] = {"files": sum(1 for o in ops if o.status in ("move", "copy")), "games": len({h.stem for h in hits}),
+                              "conflicts": sum(1 for o in ops if o.status == "conflict")}
+        if not elsewhere:
+            _moves, arch = self._saves_moves(plan, folder, aside)
             if arch:
                 info["archive"] = arch
+            if sp["leave"]:
+                info["leave"] = {"files": sum(len(st.members) for st in sp["leave"]), "games": len(sp["leave"])}
         return info
+
+    def _saves_effect(self, plan: Any, op: Any) -> dict[str, Any] | None:
+        """The saves of the game of a plan row, and what the build does with them (``effect``: ``rename`` | ``keep`` |
+        ``archive`` | ``leave`` | ``""``)."""
+        sp = self._saves_plan(plan)
+        if sp is None:
+            return None
+        ra = _mod("retroarch")
+        stem = ra.fold_name(self._op_stem(op))
+        st = sp["report"].sets.get(stem)
+        if st is None or not st.files:
+            return None
+        effect = ""
+        if stem in sp["kept"]:
+            effect = "keep"
+        elif stem in sp["gone"]:
+            effect = "archive" if st in sp["archive"] else "leave"
+        elif any(ra.fold_name(a) == stem for a, _b in sp["pairs"]):
+            effect = "rename"
+        return {"saves": st.saves, "states": st.states, "total": st.files, "effect": effect,
+                "game": st.game, "dat": st.dat}
 
     def _link_undo(self, library_log: str, convert_log: str) -> None:
         folder = _mod("paths").data_dir() / "collection-undo"
@@ -3583,6 +3824,7 @@ class App:
         """``POST /api/retroarch/follow {follow: bool}`` remembers whether saves follow ROM renames."""
         saved = self._ra_state()[2]
         self._config_update(retroarch={**saved, "follow": _bool_arg(body.get("follow"), True)})
+        self._saves_forget_all()
         return self._ra_info()
 
     def _ra_bios_scope(self, body: dict[str, Any]) -> tuple[Any, Any, list[dict[str, Any]], list[Path], list[Any], str]:
@@ -3718,12 +3960,51 @@ class App:
             return None
         rows = []
         for s in sorted(rs.systems.values(), key=lambda x: x.name.casefold()):
-            rows.append({"name": s.name, "hint": s.platform.folder_hint, "games": s.games(), "files": s.files(),
-                         "convert": self._collection_convertible(s), "chd": _layout(s.platform) == LAYOUT_GAME_FOLDER,
-                         "folder": str(s.std), "current": str(s.current) if s.current else "",
-                         "own_rules": bool(cfg["systems"].get(s.name, {}).get("own_rules"))})
-        return {"at": rs.at, "files": rs.files, "bytes": rs.bytes, "seconds": rs.seconds, "systems": rows,
-                "unmatched": len(rs.unmatched), "other": len(rs.other), "ambiguous": len(rs.ambiguous), "notes": rs.notes}
+            row = {"name": s.name, "hint": s.platform.folder_hint, "games": s.games(), "files": s.files(),
+                   "convert": self._collection_convertible(s), "chd": _layout(s.platform) == LAYOUT_GAME_FOLDER,
+                   "folder": str(s.std), "current": str(s.current) if s.current else "",
+                   "own_rules": bool(cfg["systems"].get(s.name, {}).get("own_rules"))}
+            report = self._collection_saves(rs, s)
+            if report is not None:                   # (no field at all without a RetroArch config)
+                row["saves"] = report.totals()
+            rows.append(row)
+        out = {"at": rs.at, "files": rs.files, "bytes": rs.bytes, "seconds": rs.seconds, "systems": rows,
+               "unmatched": len(rs.unmatched), "other": len(rs.other), "ambiguous": len(rs.ambiguous), "notes": rs.notes}
+        if any("saves" in r for r in rows):
+            out["saves"] = self._collection_saves_total(rs)
+        return out
+
+    def _collection_saves(self, rs: Any, sysobj: Any) -> Any:
+        """The save report of one system of a Collection scan (built from the scan, once; the save folders are walked once for
+        all systems). None when no RetroArch config is known."""
+        sel = self._ra_active()
+        if sel is None:
+            return None
+        key = str(sel.cfg)
+        got = rs.save_reports.get(sysobj.name)
+        if got is not None and getattr(got, "install_cfg", "") == key:
+            return got
+        try:
+            if rs.save_walk is None or str(rs.save_walk.install.cfg) != key:
+                rs.save_walk = _mod("retroarch").SaveWalk(sel)
+            state = self._collection_state(rs, sysobj, {"folder_of": {sysobj.name: sysobj.std}, "mapper": _mod("collection").Mapper()})
+            report = self._saves_report(state, rs.save_walk)
+            if report is not None:
+                report.install_cfg = key
+                rs.save_reports[sysobj.name] = report
+            return report
+        except Exception:  # noqa: BLE001 - the saves are a courtesy
+            traceback.print_exc()
+            return None
+
+    def _collection_saves_total(self, rs: Any) -> dict[str, Any]:
+        """The save totals of every system of the Collection added up."""
+        total: dict[str, Any] = {}
+        for report in rs.save_reports.values():
+            for k, v in report.totals().items():
+                if isinstance(v, int) and not isinstance(v, bool):
+                    total[k] = total.get(k, 0) + v
+        return total
 
     def _collection_info(self) -> dict[str, Any]:
         library = self._library_mod()
@@ -4004,6 +4285,9 @@ class App:
 
     def _collection_plan_of(self, rs: Any, sysobj: Any, layout: dict[str, Any], cfg: dict[str, Any]) -> tuple[Any, Any]:
         state = self._collection_state(rs, sysobj, layout)
+        report = self._collection_saves(rs, sysobj)
+        if report is not None:                       # (the same games under their new paths: the scan's saves apply as they are)
+            state.saves, state.saves_for = report, report.install_cfg
         plan = self._make_library_plan(state, self._collection_profile(sysobj, cfg), False, not self._is_dc(state))
         return state, plan
 
@@ -4157,7 +4441,7 @@ class App:
                                                                    plan, root, aside, cfg["sweep"])
                 prepared[sysobj.name] = (state, plan, ops, sorted_n)
                 now_moves += arch
-                smoves, sinfo = self._saves_moves(plan, plan.profile, layout["folder_of"][sysobj.name], aside if cfg["sweep"] else None)
+                smoves, sinfo = self._saves_moves(plan, layout["folder_of"][sysobj.name], aside if cfg["sweep"] else None)
                 if smoves:
                     saves_moves[sysobj.name] = (smoves, sinfo)
                     now_moves += smoves
@@ -4206,7 +4490,9 @@ class App:
             rows.append(row)
             if not apply:
                 try:
-                    row["saves_plan"] = self._saves_plan_info(plan, plan.profile, state.root, aside if cfg["sweep"] else None)
+                    info = self._saves_plan_info(plan, state.root, aside if cfg["sweep"] else None)
+                    if info is not None:
+                        row["saves_plan"] = info
                 except Exception:  # noqa: BLE001 - the saves line is a courtesy of the preview
                     traceback.print_exc()
             if apply and actionable:
@@ -4222,7 +4508,7 @@ class App:
                                      "playlists": res.get("playlists_written", 0)}
                     row["failed"] = list(res.get("failed") or [])[:20]
                     follow = self._ra_follow(self._moved_pairs(apply_ops if apply_ops is not None else plan.ops), "move",
-                                             {"library_log": res.get("undo_log") or ""}, sysobj.platform)
+                                             {"library_log": res.get("undo_log") or ""}, plan)
                     if follow:
                         row["saves"] = {k: follow.get(k) for k in ("followed", "failed", "conflicts", "skipped_running", "error")}
                     if res.get("undo_log"):
@@ -4301,7 +4587,9 @@ class App:
                            notes=list(ep.notes),
                            conflicts=[{"rel": t.rel, "reason": t.reason} for t in ep.items if t.action == "conflict"][:20])
                 if not apply:
-                    row["saves_plan"] = self._saves_plan_info(plan, plan.profile, state.root, None, True)
+                    info = self._saves_plan_info(plan, state.root, None, True)
+                    if info is not None:
+                        row["saves_plan"] = info
                 if apply and ep.mass_removal() and not allow_mass:
                     row.update(status="needs_confirm", error=f"This sync would remove {len(ep.to_remove())} of the "
                                f"{ep.owned_total} files built before - not done. Check the rules and the source, then confirm.")
@@ -4315,7 +4603,7 @@ class App:
                     row["result"] = {k: res[k] for k in ("created", "copied", "moved", "playlists", "skipped", "replaced", "removed")}
                     row["failed"] = res["failed"][:20]
                     follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy", {"collection": str(dest)},
-                                             sysobj.platform)
+                                             plan)
                     if follow:
                         row["saves"] = {k: follow.get(k) for k in ("copied", "failed", "conflicts", "skipped_running", "error")}
                     if res["run"] is not None:
@@ -4487,7 +4775,14 @@ class App:
         run = body.get("run")
         try:
             with self.jobs.exclusive("the undo of a library build"):
-                return libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
+                res = libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
+                follow = _str_arg(body.get("follow"))          # the saves that build copied (its result names the journal)
+                if follow and Path(follow).is_file() and self._ra_active() is not None:
+                    try:
+                        _mod("retroarch").undo_relocation(Path(follow))
+                    except Exception:  # noqa: BLE001 - e.g. RetroArch is running: the copied saves stay, harmless
+                        traceback.print_exc()
+                return res
         except libexport.ExportError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "nothing_to_undo")
 
@@ -4865,6 +5160,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/library/totals"): App.library_totals,
     ("POST", "/api/library/profile"): App.library_profile_save,
     ("POST", "/api/library/override"): App.library_override,
+    ("POST", "/api/library/saved"): App.library_saved,
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,
     ("POST", "/api/library/apply"): App.library_apply,

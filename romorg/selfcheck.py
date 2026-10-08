@@ -374,7 +374,7 @@ APP_MODULES = (
     "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "collection", "convert", "datfile", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders",
     "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nointro", "organiser", "paths",
-    "platforms", "playstation", "ratings", "redump", "retroarch", "rvz", "scanner", "selfcheck", "server", "sevenzip",
+    "platforms", "playstation", "ratings", "redump", "retroarch", "rvz", "saveindex", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "tags", "tempspace", "tosec", "totals", "whdload", "winproc", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("index.html", "app.js", "style.css")

@@ -1049,36 +1049,65 @@ def save_roots(install: Install, home: Optional[Path] = None) -> List[Path]:
     return roots
 
 
-def list_saves(install: Install, platform: Any = None, home: Optional[Path] = None) -> List[tuple]:
-    """``[(file, save root)]`` for every save and state file that can belong to a game of ``platform`` (all of them when
-    ``platform`` is None): the save roots are walked ONCE. When RetroArch sorts the files into a sub-folder per core, only
-    the folders of the cores that play the platform count, so a Genesis save never belongs to a same-named SNES game. A
-    sub-folder that is no core's name (sorted by content folder, or files directly in the root) counts for every system."""
-    roots = save_roots(install, home)
-    if not roots:
-        return []
-    known: set = set()
-    mine: Optional[set] = None
-    if platform is not None:
-        infos = core_infos(install, home, firmware_only=False)
-        known = {fold_name(c["core"]) for c in infos}
-        mine = {fold_name(c["core"]) for c in cores_for_platform(infos, platform)}
-    out: List[tuple] = []
-    seen: set = set()
-    for root in roots:
-        for f in _walk(root):
-            key = os.path.normcase(str(f))
-            if key in seen:
-                continue
-            seen.add(key)
+class SaveWalk:
+    """The save and state files of one install, read ONCE (a walk of the save roots) and the cores' names read once: asked for
+    one system after the other (a Collection has up to 18) it never walks again. See :func:`list_saves`."""
+
+    def __init__(self, install: Install, home: Optional[Path] = None) -> None:
+        self.install = install
+        self.home = home
+        self.roots = save_roots(install, home)
+        cur = settings_of(install, home)
+        # RetroArch writes a sub-folder per core only when it is asked to: that is what tells a core's folder from a game's
+        self.per_core = bool(cur.get("sort_savefiles_enable") or cur.get("sort_savestates_enable"))
+        self.files: List[tuple] = []
+        seen: set = set()
+        for root in self.roots:
+            for f in _walk(root):
+                key = os.path.normcase(str(f))
+                if key not in seen:
+                    seen.add(key)
+                    self.files.append((f, root))
+        self._infos: Optional[List[dict]] = None
+        self._cores: Dict[str, tuple] = {}
+
+    def _cores_of(self, platform: Any) -> tuple:
+        """``(names of every core, names of the cores that play platform)``, folded."""
+        if self._infos is None:
+            self._infos = core_infos(self.install, self.home, firmware_only=False)
+        name = getattr(platform, "name", "")
+        if name not in self._cores:
+            self._cores[name] = ({fold_name(c["core"]) for c in self._infos},
+                                 {fold_name(c["core"]) for c in cores_for_platform(self._infos, platform)})
+        return self._cores[name]
+
+    def for_platform(self, platform: Any = None) -> List[tuple]:
+        """``[(file, save root, here)]``: ``here`` is True for a file in a folder of a core that plays ``platform`` and for a
+        file that lies directly in the root (nothing says which system it is for); False for a file in a folder that no core
+        is named after (a game's folder: it can still match a game, but it is not counted as this system's own)."""
+        if platform is None:
+            return [(f, root, True) for f, root in self.files]
+        known, mine = self._cores_of(platform)
+        out: List[tuple] = []
+        for f, root in self.files:
             try:
                 parts = f.relative_to(root).parts
             except ValueError:
                 parts = (f.name,)
-            if mine is not None and len(parts) > 1 and fold_name(parts[0]) in known and fold_name(parts[0]) not in mine:
+            if len(parts) > 1 and fold_name(parts[0]) in known and fold_name(parts[0]) not in mine:
                 continue
-            out.append((f, root))
-    return out
+            out.append((f, root, len(parts) == 1 or fold_name(parts[0]) in mine))
+        return out
+
+
+def list_saves(install: Install, platform: Any = None, home: Optional[Path] = None, walk: Optional[SaveWalk] = None) -> List[tuple]:
+    """``[(file, save root)]`` for every save and state file that can belong to a game of ``platform`` (all of them when
+    ``platform`` is None): the save roots are walked ONCE (``walk``: one already made). When RetroArch sorts the files into
+    a sub-folder per core, only the folders of the cores that play the platform count, so a Genesis save never belongs to a
+    same-named SNES game. A sub-folder that is no core's name (sorted by content folder, or files directly in the root)
+    counts for every system."""
+    walk = walk if walk is not None else SaveWalk(install, home)
+    return [(f, root) for f, root, _here in walk.for_platform(platform)]
 
 
 @dataclass

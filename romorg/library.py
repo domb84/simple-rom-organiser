@@ -38,9 +38,10 @@ OVERRIDE_CODES = (OVERRIDE_KEEP, OVERRIDE_EXCLUDE)
 OVERRIDE_ACTIONS = ("keep", "exclude")
 ALL_CODES = RULES + FLAG_CODES + (LANGUAGE_CODE,) + RATING_CODES + OVERRIDE_CODES
 BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a set of another edition
-# "Games you have saves for" (Amendment 30): what the build does with a game the rules would set aside while RetroArch
-# saves or save states exist for it. ``keep`` = it stays (SAVED_KEEP), ``archive`` = it goes and its saves go with it,
-# ``leave`` = it goes and the saves stay where they are.
+# What the build does with a game the rules would replace or archive while RetroArch saves or save states exist for it
+# (Amendment 31; only when a RetroArch config is known): ``keep`` = both ROMs stay, the one the rules would archive too
+# (SAVED_KEEP), ``archive`` = it goes and its saves go with it, ``leave`` = it goes and the saves stay where they are.
+# ``saved_games`` is the default for every game; ``saved_overrides`` says it per game.
 SAVED_GAMES = ("keep", "archive", "leave")
 SAVED_KEEP = "saved_keep"       # Decision.codes of a game kept because you have saves or save states for it
 SAVED_KEEP_TEXT = "kept: you have saves or save states for it"
@@ -117,6 +118,15 @@ def _norm_overrides(raw: Any) -> tuple[tuple[str, str, str], ...]:
     return tuple(sorted((d, n, a) for (d, n), a in found.items()))
 
 
+def _norm_saved_overrides(raw: Any) -> tuple[tuple[str, str, str], ...]:
+    """``((dat, game, "keep" | "archive" | "leave"), ...)``: valid entries only, one per game (the last wins), sorted."""
+    found: dict[tuple[str, str], str] = {}
+    for entry in raw if isinstance(raw, (list, tuple)) else ():
+        if isinstance(entry, (list, tuple)) and len(entry) == 3 and all(isinstance(x, str) for x in entry)                 and entry[0] and entry[1] and entry[2] in SAVED_GAMES:
+            found[(entry[0], entry[1])] = entry[2]
+    return tuple(sorted((d, n, a) for (d, n), a in found.items()))
+
+
 def _norm_votes(v: Any) -> int:
     n = _num(v)
     return DEFAULT_MIN_VOTES if n is None or n < 1 else int(n)
@@ -153,6 +163,8 @@ class LibraryProfile:
     # RetroArch saves / save states (Amendment 30): "keep" (a game you have saves for is never set aside by the rules),
     # "archive" (it is set aside and its saves go to the archive with it), "leave" (it is set aside, the saves stay).
     saved_games: str = "keep"
+    # The same per game: (DAT name, game = set name or rom name, "keep" | "archive" | "leave"), see ``override_game``.
+    saved_overrides: tuple[tuple[str, str, str], ...] = ()
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -166,6 +178,7 @@ class LibraryProfile:
         object.__setattr__(self, "rank_scope", self.rank_scope if self.rank_scope in RANK_SCOPES else "dat")
         object.__setattr__(self, "overrides", _norm_overrides(self.overrides))
         object.__setattr__(self, "saved_games", self.saved_games if self.saved_games in SAVED_GAMES else "keep")
+        object.__setattr__(self, "saved_overrides", _norm_saved_overrides(self.saved_overrides))
 
     @property
     def rating_active(self) -> bool:
@@ -182,7 +195,8 @@ class LibraryProfile:
                 "keep_other_language": self.keep_other_language,
                 "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
-                "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games}
+                "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
+                "saved_overrides": [list(o) for o in self.saved_overrides]}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -230,7 +244,8 @@ class LibraryProfile:
                    keep_unrated=flag("keep_unrated", base.keep_unrated),
                    overrides=_norm_overrides(d["overrides"]) if "overrides" in d else base.overrides,
                    saved_games=d["saved_games"] if isinstance(d.get("saved_games"), str) and d["saved_games"] in SAVED_GAMES
-                   else base.saved_games)
+                   else base.saved_games,
+                   saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides)
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -792,15 +807,15 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
 
     With a rating filter in ``profile`` (``profile.rating_active``) ``ratings`` is required (:class:`RatingsUnavailable`
     otherwise) and the filter is applied last, at game level (:func:`apply_ratings`). ``saved``: the content names (as
-    ``retroarch.save_name_keys`` writes them) RetroArch has saves or states for; with ``profile.saved_games == "keep"`` a
-    game among them is never set aside (:func:`apply_saved`); None / empty = nothing changes."""
+    ``retroarch.save_name_keys`` writes them) RetroArch has saves or states for; a game among them whose choice is ``keep`` (the
+    profile's, or its own in ``saved_overrides``) is never set aside (:func:`apply_saved`); None / empty = nothing changes."""
     if profile.rating_active and ratings is None:
         raise RatingsUnavailable("a rating filter is set but no rating data was supplied")
     sel = _select_base(items, profile, platform, lang_games)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
-    if saved and profile.saved_games == "keep":
-        apply_saved(sel, items, saved)
+    if saved:
+        apply_saved(sel, items, saved, profile)
     apply_overrides(sel, items, profile)
     sel.vanished = _vanished(items, sel)
     return sel
@@ -815,15 +830,26 @@ def content_names(item: Item) -> tuple[str, ...]:
     return tuple(names)
 
 
-def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset) -> None:
-    """Keep the games the rules set aside (excluded or superseded) when RetroArch has saves or states for them. A user's
-    own "always exclude" still wins (it is applied after this). Files that are part of a multi-disk set, symbolic links
-    and incomplete games are left to their rules."""
+def saved_choice(profile: LibraryProfile, dat: str, game: str) -> str:
+    """What happens to a game the rules would set aside when it has saves: its own choice, else the profile's."""
+    for d, n, choice in profile.saved_overrides:
+        if d == dat and n == game:
+            return choice
+    return profile.saved_games
+
+
+def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile: Optional[LibraryProfile] = None) -> None:
+    """Keep the games the rules set aside (excluded or superseded) when RetroArch has saves or states for them and their
+    choice is ``keep`` (``profile.saved_games``, or the game's own in ``profile.saved_overrides``; without a profile: all).
+    A user's own "always exclude" still wins (it is applied after this). Files that are part of a multi-disk set, symbolic
+    links and incomplete games are left to their rules."""
     from .retroarch import fold_name
 
     for it in items:
         d = sel.decisions.get(it.key)
         if d is None or d.action not in (EXCLUDED, SUPERSEDED) or d.set_id is not None or it.link:
+            continue
+        if profile is not None and saved_choice(profile, *override_game(it.dat, it.rom)) != "keep":
             continue
         if any(fold_name(n) in saved for n in content_names(it)):
             sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)

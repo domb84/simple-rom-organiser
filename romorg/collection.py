@@ -168,6 +168,10 @@ class RootScan:
     bytes: int = 0
     seconds: float = 0.0
     at: float = field(default_factory=time.time)
+    # The RetroArch saves of each system (system name -> saveindex.SaveReport) and the one walk of the save folders they were
+    # read from: filled by the server, and only when a RetroArch config is known (Amendment 31).
+    save_reports: Dict[str, Any] = field(default_factory=dict)
+    save_walk: Any = None
 
     def flat(self) -> Dict[Path, Optional[str]]:
         out: Dict[Path, Optional[str]] = {}

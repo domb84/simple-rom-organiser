@@ -137,7 +137,7 @@ class ArchiveMode(SavesCase):
         plan = self.lib_plan(root, aside_to=str(aside))
         self.assertEqual(plan["saves"]["archive"]["files"], 4)
         self.assertEqual(plan["saves"]["archive"]["games"], 1)
-        self.assertEqual(plan["saves"]["archive"]["states"], 2)
+        self.assertEqual(plan["saves"]["archive"]["states"], 1)                    # (a state's screenshot is moved with it but not counted)
         self.assertEqual(plan["reasons"]["kept_saved"], 0)
         before_saves, before_roms = self.saved_files(), tree(root)
         self.assertEqual(self.saved_files(), sorted(saves + solo))                 # (the preview moved nothing)
