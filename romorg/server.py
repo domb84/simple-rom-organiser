@@ -3067,7 +3067,7 @@ class App:
                     jp = Path(arch_out["journal"])
                     data = json.loads(jp.read_text(encoding="utf-8"))
                     data["library_log"] = res["undo_log"]
-                    jp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+                    sortroot._write_json(jp, data)
             else:
                 apply = _mod("discsys").apply_plan if self._is_dc(st) else _mod("organiser").apply_renames
                 res = dict(_call(apply, plan.ops, st.root, progress=job.report,
@@ -3327,14 +3327,18 @@ class App:
         """Undoing a build that moved its archived files out brings them back first (so the build's own undo finds them)."""
         sortroot = _mod("sortroot")
         folder = _mod("paths").data_dir() / "collection-undo"
+        out: dict[str, Any] | None = None
         try:
+            # one build can leave two journals: what its rules archived, and what earlier builds had left in _excluded/ ...
             for j in sorted(folder.glob("libsweep-*.json"), reverse=True):
                 data = json.loads(j.read_text(encoding="utf-8"))
                 if not data.get("undone") and data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
-                    return sortroot.undo_moves(j)
+                    back = sortroot.undo_moves(j)
+                    out = back if out is None else {"restored": out["restored"] + back["restored"],
+                                                    "skipped": out["skipped"] + back["skipped"]}
         except Exception:  # noqa: BLE001
             traceback.print_exc()
-        return None
+        return out
 
     def _ra_undo_follow(self, library_log: str) -> dict[str, Any] | None:
         """Undoing a library build also gives the saves their old names back (the follow journal made by that build)."""
@@ -4001,7 +4005,15 @@ class App:
             if apply and conv_log and sysobj.name not in last["runs"]:      # converted, and the library itself had nothing to do
                 last["runs"][sysobj.name] = {"log": "", "root": str(root), "convert_log": conv_log}
         if apply and not job.cancel.is_set():
-            sortroot.remove_empty_tree(root, keep)          # the old, now empty folders go
+            gone = sortroot.remove_empty_tree(root, keep)   # the old, now empty folders go
+            if gone:                                        # (also those that were empty before: the undo makes them again)
+                try:
+                    undo_dir.mkdir(parents=True, exist_ok=True)
+                    note_path = undo_dir / f"emptied-{time.strftime('%Y%m%d-%H%M%S')}-{job.id}.json"
+                    sortroot._write_json(note_path, {"kind": "emptied", "root": str(root), "folders": gone})
+                    last["emptied"] = str(note_path)
+                except OSError:
+                    traceback.print_exc()
         if cfg["sweep"] and not job.cancel.is_set():
             sweep = sortroot.plan_sweep({n: f for n, f in layout["folder_of"].items()}, aside)
             out["aside"] = {"path": str(aside), "files": len(sweep), "bytes": sum(m.size for m in sweep)}
@@ -4016,7 +4028,7 @@ class App:
         out.update(systems=rows, totals=total, cancelled=job.cancel.is_set())
         if apply:
             if any(last.get(k) for k in ("runs", "sweep", "sort", "rename")):
-                self._collection_save(last=last)
+                self._collection_save(last=last)            # (empty folders alone are not a build to undo)
             elif noted[0]:                                  # nothing was changed after all: the build before stays the last one
                 self._collection_save(last=before_last)
             job.report(steps - 1, steps, "Reading the folder again...")
@@ -4130,11 +4142,14 @@ class App:
         if not runs and not last.get("rename") and not last.get("sort") and not last.get("sweep"):
             raise ApiError(HTTPStatus.CONFLICT, "There is no collection build to undo.", "nothing_to_undo")
         removed, restored, left, errors = 0, 0, [], []
+        again: dict[str, Any] = {"place": last.get("place") or "inplace", "runs": {}}     # what could not be taken back now
         for journal in [last.get("sweep")]:                                             # the archived files come back first
             if journal and Path(journal).is_file():
                 back = sortroot.undo_moves(Path(journal))
                 restored += back["restored"]
                 left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
+                if back.get("left"):
+                    again["sweep"] = journal
         for name, rec in runs.items():
             if "log" in rec:                                    # a build in place: the system's own undo log
                 try:
@@ -4144,11 +4159,23 @@ class App:
                     restored += len(res.get("restored") or []) if isinstance(res.get("restored"), (list, tuple)) else int(res.get("restored") or 0)
                     left += [{"system": name, **x} for x in (res.get("skipped") or []) if isinstance(x, dict)
                              and x.get("reason") != "already back in place"]
+                    # a move back that failed (the file is in use ...) is reported too, and the log keeps it for another try
+                    left += [{"system": name, "src": x.get("src", ""), "dst": x.get("dst", ""), "reason": x.get("error", "")}
+                             for x in (res.get("failed") or []) if isinstance(x, dict)]
+                    keep_rec = dict(rec) if rec.get("log") and Path(rec["log"]).is_file() and (res.get("failed") or res.get("remaining")) else None
                     if rec.get("log"):
                         self._ra_undo_follow(rec["log"])
                     if rec.get("convert_log") and Path(rec["convert_log"]).is_file():
                         cres = dict(_mod("organiser").undo(Path(rec["convert_log"]), root=Path(rec["root"])))   # the CHDs go, the raw sets return
                         restored += len(cres.get("restored") or []) if isinstance(cres.get("restored"), (list, tuple)) else int(cres.get("restored") or 0)
+                        left += [{"system": name, "src": x.get("src", ""), "dst": x.get("dst", ""), "reason": x.get("error", "")}
+                                 for x in (cres.get("failed") or []) if isinstance(x, dict)]
+                        if Path(rec["convert_log"]).is_file() and (cres.get("failed") or cres.get("remaining")):
+                            keep_rec = {**(keep_rec or {"log": "", "root": rec["root"]}), "convert_log": rec["convert_log"]}
+                        elif keep_rec is not None:
+                            keep_rec["convert_log"] = ""
+                    if keep_rec is not None:
+                        again["runs"][name] = keep_rec
                 except Exception as exc:  # noqa: BLE001
                     traceback.print_exc()
                     errors.append({"system": name, "error": str(exc)})
@@ -4163,15 +4190,30 @@ class App:
                 removed += res["removed"]
                 restored += res.get("restored", 0)
                 left += [{"system": name, **x} for x in res["skipped"]]
+                if res["skipped"]:                              # (the manifest keeps the run until all of it is undone)
+                    again["runs"][name] = dict(rec)
             except libexport.ExportError as exc:
                 errors.append({"system": name, "error": str(exc)})
         if last.get("sort") and Path(last["sort"]).is_file():
             back = sortroot.undo_moves(Path(last["sort"]))
             restored += back["restored"]
             left += [{"system": "", "rel": x["path"], "reason": x["reason"]} for x in back["skipped"]]
+            if back.get("left"):
+                again["sort"] = last["sort"]
         if last.get("rename") and Path(last["rename"]).is_file():       # the folders get their old names back
             sortroot.undo_moves(Path(last["rename"]))
-        self._collection_save(last={})
+        if last.get("emptied") and Path(last["emptied"]).is_file():     # the folders that were removed because they were empty
+            try:
+                note = json.loads(Path(last["emptied"]).read_text(encoding="utf-8"))
+                base = Path(note["root"])
+                for d in reversed(note["folders"]):
+                    if sortroot.inside(Path(d), base):
+                        os.makedirs(d, exist_ok=True)
+                os.unlink(last["emptied"])
+            except (OSError, ValueError, KeyError, TypeError):
+                traceback.print_exc()
+        # what could not be taken back (a file in use, its old place taken) stays the "last build": Undo can be pressed again
+        self._collection_save(last=again if (again["runs"] or again.get("sort") or again.get("sweep")) else {})
         self._rootscan = None
         return {"removed": removed, "restored": restored, "skipped": left, "errors": errors}
 

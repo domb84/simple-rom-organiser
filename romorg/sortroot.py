@@ -374,16 +374,20 @@ def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optiona
             cur = cur.parent
 
 
-def remove_empty_tree(root: Path, keep: Iterable[Path] = ()) -> None:
-    """Remove every folder under ``root`` that holds nothing (``keep`` and ``root`` itself stay)."""
+def remove_empty_tree(root: Path, keep: Iterable[Path] = ()) -> List[str]:
+    """Remove every folder under ``root`` that holds nothing (``keep`` and ``root`` itself stay). Returns the folders that
+    were removed, deepest first (an undo makes them again)."""
     stops = {os.path.normcase(os.path.realpath(s)) for s in [root, *keep]}
+    removed: List[str] = []
     for dirpath, _dirs, _files in os.walk(root, topdown=False):
         if os.path.normcase(os.path.realpath(dirpath)) in stops or os.path.islink(dirpath):
             continue
         try:
             remove_dir(dirpath)
+            removed.append(str(dirpath))
         except OSError:
             pass
+    return removed
 
 
 # ---- the journal
@@ -541,7 +545,9 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
 
 
 def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
-    """Move everything back where it came from, unless the original place is taken or the file is gone."""
+    """Move everything back where it came from, unless the original place is taken or the file is gone. Returns
+    ``{"restored", "skipped": [{path, reason}], "left"}``; ``left`` moves could not be taken back now and stay in the journal,
+    so the undo can be tried again (a file that was in use ...)."""
     journal = Path(journal)
     d = read_journal(journal)
     partial = bool(d.pop("partial", False))
@@ -570,7 +576,8 @@ def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
     if not skipped:
         d["undone"] = True
         _write_json(journal, d)
-    elif partial:                                      # from now on an ordinary journal of what is still to take back
+    elif partial or restored:                          # from now on a journal of what is still to take back
         d["moves"] = list(reversed(left))
+        d["undone"] = not left
         _write_json(journal, d)
-    return {"restored": restored, "skipped": skipped}
+    return {"restored": restored, "skipped": skipped, "left": len(left)}

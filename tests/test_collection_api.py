@@ -557,6 +557,90 @@ class Failures(CollectionCase):
         self.assertTrue((root / "new" / "mono.gb").is_file())
 
 
+class EmptyFolders(CollectionCase):
+    def test_undo_also_brings_back_the_folders_that_were_empty_before(self) -> None:
+        root = self.tmp / "roms"
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        (root / "ps2").mkdir()                                     # empty, e.g. made by a frontend for a system without games
+        (root / "saves" / "slot 1").mkdir(parents=True)
+        before = tree(root)
+        self.assert_clean(self.build(root))
+        self.assertEqual(tree(root), ["snes/", "snes/Alpha (USA).sfc"])
+        self.undo()
+        self.assertEqual(tree(root), before)
+
+
+class UndoAgain(CollectionCase):
+    def test_what_an_undo_could_not_take_back_can_be_undone_later(self) -> None:
+        root = self.tmp / "roms"
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        put(root / "Dump" / "beta.sfc", self.rom["Beta (USA)"])
+        put(root / "Dump" / "unknown.gba", b"unknown 1")
+        put(root / "Dump" / "notes.txt", b"notes")
+        before = tree(root)
+        self.assert_clean(self.build(root))
+        put(root / "Dump" / "alpha.sfc", b"in the way")            # the old places of one ROM and of one archived file are taken
+        put(root / "Dump" / "unknown.gba", b"in the way")
+        out = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(out["restored"], 2)
+        self.assertEqual(len(out["skipped"]), 2, out)
+        self.assertTrue((root / "snes" / "Alpha (USA).sfc").is_file())                    # not lost, not overwritten
+        self.assertEqual((root / "Dump" / "alpha.sfc").read_bytes(), b"in the way")
+        last = self.call("GET", "/api/collection")["last"]
+        self.assertTrue(last.get("sort") and last.get("runs"), "the rest of the build can still be undone")
+        os.unlink(root / "Dump" / "alpha.sfc")
+        os.unlink(root / "Dump" / "unknown.gba")
+        out = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual((out["restored"], out["skipped"], out["errors"]), (2, [], []))
+        self.assertEqual(tree(root), before)
+        self.assertEqual(self.call("GET", "/api/collection")["last"], {})
+        self.assertEqual(self.http("POST", "/api/collection/undo", {})[0], 409)
+
+    def test_a_move_back_that_fails_is_reported_and_kept_for_later(self) -> None:
+        from romorg import organiser
+        root = self.tmp / "roms"
+        put(root / "Dump" / "alpha.sfc", self.rom["Alpha (USA)"])
+        put(root / "Dump" / "unknown.gba", b"unknown 1")
+        before = tree(root)
+        self.assert_clean(self.build(root))
+
+        def in_use(src: Any, dst: Any, *a: Any, **k: Any) -> None:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process", str(src))
+
+        with mock.patch.object(organiser, "_rename_no_overwrite", in_use), mock.patch.object(sortroot, "move_path", in_use):
+            out = self.call("POST", "/api/collection/undo", {})
+        self.assertEqual(out["restored"], 0)
+        self.assertEqual(len(out["skipped"]), 2, out)                  # both are told, none is dropped silently
+        self.assertTrue((root / "snes" / "Alpha (USA).sfc").is_file())
+        out = self.call("POST", "/api/collection/undo", {})            # free again
+        self.assertEqual((out["restored"], out["skipped"], out["errors"]), (2, [], []))
+        self.assertEqual(tree(root), before)
+
+
+class LibraryWithArchive(CollectionCase):
+    """One system's *Build library* in place, with an archive folder for what the rules set aside."""
+
+    def test_undo_brings_back_everything_the_build_archived(self) -> None:
+        root = self.tmp / "GBA"
+        put(root / "run.gba", self.rom["Run (USA)"])
+        put(root / "run copy.gba", self.rom["Run (USA)"])                          # a duplicate: archived by this build
+        put(root / "_excluded" / "old leftover.gba", b"left by an earlier build")   # swept out by this build as well
+        put(root / "what.gba", b"unknown")
+        before = tree(root)
+        aside = self.tmp / "lib-archive"
+        self.job("/api/scan", {"path": str(root), "platform": GBA})
+        plan = self.call("POST", "/api/library/plan", {"limit": 50, "aside_to": str(aside)})
+        res = self.job("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})
+        self.assertEqual((res["aside"]["moved"], res["aside"]["failed"]), (3, []))
+        self.assertEqual(tree(root), ["Run (USA).gba"])
+        self.assertEqual(lower([x for x in tree(aside) if not x.endswith("/")]),
+                         ["_unmatched/gba/what.gba", "gba/_duplicates/run copy.gba", "gba/_excluded/old leftover.gba"])
+        back = self.job("/api/library/undo", {"log": res["undo_log"]})
+        self.assertEqual(back["aside_restored"], 3)
+        self.assertEqual(tree(root), before)
+        self.assertEqual([x for x in tree(aside) if not x.endswith("/")], [])
+
+
 OTHER_DRIVE = os.environ.get("ROMORG_TEST_OTHER_DRIVE")
 
 

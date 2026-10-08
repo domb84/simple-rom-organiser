@@ -230,6 +230,13 @@ def _existing_state(src: Path, target: Path, size: int, owned: Optional[tuple]) 
     return "conflict"
 
 
+def _is_same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def _unchanged(dest: Path, rel: str, rec: tuple) -> bool:
     """True while the file at ``rel`` is still what the build made (``rec`` = ``(size, mtime_ns, how, src)``)."""
     p = dest / rel
@@ -317,11 +324,16 @@ def plan_export(plan: Any, root: Path, dest: Path, mode: str = "copy", sidecars:
         if owned and not any(t.action != "conflict" for t in ep.items):
             raise ExportError("The rules keep nothing from the source (is it empty, or not mounted?). Nothing is removed "
                               "from the destination.")
+        folded = {os.path.normcase(w).casefold(): w for w in wanted}
         for rel, rec in sorted(owned.items()):
             if rel in wanted:
                 continue
             if not os.path.lexists(dest / rel):
                 continue                                    # already gone: the manifest is tidied when applied
+            other = folded.get(os.path.normcase(rel).casefold())
+            if other is not None and _is_same_file(dest / rel, dest / other):
+                continue                                    # only the case of the name changed and the file system ignores
+                #                                             case: this IS the wanted file (removing it would remove that)
             if _unchanged(dest, rel, rec):
                 ep.removals.append(Removal(rel, rec[2], rec[0], "not kept by the rules any more"))
             else:

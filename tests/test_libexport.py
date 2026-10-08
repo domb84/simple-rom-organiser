@@ -215,6 +215,18 @@ class Sync(Export):
         self.assertEqual(len(list(self.dest.glob("g*.gba"))), 40)
         self.assertEqual(libexport.apply_export(ep, allow_mass=True)["removed"], 35)
 
+    def test_a_name_that_only_changes_case_does_not_remove_the_file(self) -> None:
+        # Windows / exFAT: "Game A.gba" and "game a.gba" are one file. The sync saw the new spelling as "already there" and
+        # the old spelling as "no longer kept", and deleted the one file there is.
+        self.build()
+        self.plan.ops[0] = op(self.root / "a.gba", self.root / "game a.gba")
+        ep = libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True)
+        libexport.apply_export(ep)
+        have = [p for p in self.dest.iterdir() if p.name.casefold() == "game a.gba"]
+        self.assertEqual([p.read_bytes() for p in have], [b"A" * 1000])
+        again = libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True)
+        self.assertEqual((again.to_remove(), again.pending()), ([], 0))
+
     def test_empty_folders_are_tidied_after_a_removal(self) -> None:
         sub = self.root / "Sub"
         sub.mkdir()
