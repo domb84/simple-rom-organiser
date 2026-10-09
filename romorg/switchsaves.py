@@ -204,9 +204,18 @@ def eden_game_dirs(ini: Path) -> List[str]:
 def detect_eden(home: Optional[Path] = None) -> Dict[str, object]:
     """Eden's NAND and SD card folders and game folders from its ``qt-config.ini`` (or its default places); {} when it is not installed."""
     home = Path(home) if home else Path.home()
+    cands = []           # (name, config folder, data folder)
     for name in ("eden", "yuzu", "sudachi", "suyu"):
-        ini = home / ".config" / name / "qt-config.ini"
-        share = home / ".local" / "share" / name
+        cands.append((name, home / ".config" / name, home / ".local" / "share" / name))
+    for flatpak, name in (("dev.eden_emu.eden", "eden"), ("org.yuzu_emu.yuzu", "yuzu")):            # (the flatpaks keep their own XDG folders)
+        base = home / ".var" / "app" / flatpak
+        cands.append((name, base / "config" / name, base / "data" / name))
+    appdata = os.environ.get("APPDATA")
+    if appdata:                                                                                       # Windows: one folder holds config and data
+        for name in ("eden", "yuzu", "sudachi", "suyu"):
+            cands.append((name, Path(appdata) / name / "config", Path(appdata) / name))
+    for name, conf, share in cands:
+        ini = conf / "qt-config.ini"
         if ini.is_file() or share.is_dir():
             nand = read_ini_value(ini, "nand_directory") or str(share / "nand")
             sdmc = read_ini_value(ini, "sdmc_directory") or str(share / "sdmc")
@@ -235,7 +244,10 @@ def detect_ryujinx(home: Optional[Path] = None, near: Iterable[Path] = ()) -> Di
             if (up / "bis" / "user").is_dir() or (up / "bis" / "system").is_dir():
                 return read(up, True)
     home = Path(home) if home else Path.home()
-    base = home / ".config" / "Ryujinx"
-    if not (base / "Config.json").is_file() and not (base / "bis").is_dir():
-        return {}
-    return read(base, False)
+    places = [home / ".config" / "Ryujinx"]
+    if os.environ.get("APPDATA"):
+        places.append(Path(os.environ["APPDATA"]) / "Ryujinx")                                        # Windows
+    for base in places:
+        if (base / "Config.json").is_file() or (base / "bis").is_dir():
+            return read(base, False)
+    return {}

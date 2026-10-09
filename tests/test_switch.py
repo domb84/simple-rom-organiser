@@ -486,3 +486,19 @@ class Stores(Base):
         self.assertEqual(labels, {"Some Game (World) (En,Fr,Zh,De,Ja)", "Free Demo (USA) (En) (Demo)", "Europe Only (Europe) (En)"})
         self.assertEqual(db.title("0100EEEE0FFF0000")["name"], "Europe Only")            # (a title only another store sells is known too)
         db.close()
+
+
+class MoreDetection(Base):
+    def test_eden_in_a_flatpak_and_on_windows_and_ryujinx_on_windows(self) -> None:
+        home = self.tmp / "home"
+        data = home / ".var" / "app" / "dev.eden_emu.eden" / "data" / "eden"
+        (data / "nand").mkdir(parents=True)
+        self.assertEqual(switchsaves.detect_eden(home)["nand"], str(data / "nand"))
+        with mock.patch.dict(os.environ, {"APPDATA": str(self.tmp / "AppData")}):
+            win = self.tmp / "AppData" / "eden"
+            (win / "nand").mkdir(parents=True)
+            (self.tmp / "AppData" / "Ryujinx" / "bis").mkdir(parents=True)
+            empty = self.tmp / "empty"
+            empty.mkdir()
+            self.assertEqual(switchsaves.detect_eden(empty)["nand"], str(win / "nand"))
+            self.assertEqual(switchsaves.detect_ryujinx(empty)["data"], str(self.tmp / "AppData" / "Ryujinx"))

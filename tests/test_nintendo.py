@@ -414,5 +414,18 @@ class Api(CollectionCase):
         self.assertEqual(code, 400)
 
 
+
+class Running(unittest.TestCase):
+    def test_the_process_of_an_emulator_is_recognised_on_windows(self) -> None:
+        from romorg import emulators, retroarch
+        with mock.patch.object(emulators.sys, "platform", "win32"), \
+                mock.patch.object(retroarch, "_win_processes", return_value=[(1, "explorer.exe"), (2, "Dolphin.exe")]):
+            self.assertTrue(emulators.running("dolphin"))
+            self.assertFalse(emulators.running("cemu"))
+            self.assertTrue(emulators.source_running("dolphin"))
+            self.assertFalse(emulators.source_running("switch"))
+        self.assertFalse(emulators.running("nothing"))
+
+
 if __name__ == "__main__":
     unittest.main()

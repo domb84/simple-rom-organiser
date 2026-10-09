@@ -3106,6 +3106,8 @@
     }
     if (!s.elsewhere && s.archive && s.archive.files)
       out.push(card(fmt(s.archive.files), `Save files ${apply ? "archived" : "to archive"} with their games (${fmt(s.archive.games)} game${s.archive.games === 1 ? "" : "s"})`, "warn"));
+    if (!s.elsewhere && s.archive && (s.archive.running || []).length)
+      out.push(card(s.archive.running.join(", "), `running: close ${s.archive.running.length > 1 ? "them" : "it"}, or its saves stay where they are`, "bad"));
     if (!s.elsewhere && s.leave && s.leave.files)
       out.push(card(fmt(s.leave.files), `Save files left where they are (${fmt(s.leave.games)} archived game${s.leave.games === 1 ? "" : "s"})`, "info"));
     return out;
@@ -3814,7 +3816,7 @@
       const sv = r.saves || {};
       const saveText = (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
       const sa = r.saves_archived;
-      const archText = sa ? (sa.skipped_running ? "; RetroArch is running: the saves of the archived games were not moved" : `; ${fmt(sa.moved)} save file(s) archived with their games`) : "";
+      const archText = sa ? (sa.skipped_running ? `; ${(sa.running || ["RetroArch"]).join(", ")} ${(sa.running || [1]).length > 1 ? "are" : "is"} running: ${sa.moved ? "some" : "the"} saves of the archived games were not moved` : `; ${fmt(sa.moved)} save file(s) archived with their games`) : "";
       const asideText = r.aside ? `; ${fmt(r.aside.moved)} archived file(s) moved out to ${r.aside.path}` : (r.action === "undo" && r.aside_restored ? `; ${fmt(r.aside_restored)} archived file(s) brought back` : "");
       const convText = r.converted ? `; ${fmt(r.converted.count)} converted first${r.converted.failed.length ? ` (${fmt(r.converted.failed.length)} could not be converted)` : ""}` : (r.action === "undo" && r.converted_back ? "; the conversion was undone too" : "");
       toast(text + saveText + archText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
@@ -4648,7 +4650,7 @@
                 ...(t.conflict ? [card(fmt(t.conflict), "Conflicts (left alone)", "bad")] : []),
         ...(r.aside ? [card(fmt(r.aside.moved !== undefined ? r.aside.moved : r.aside.files), r.aside.moved !== undefined ? "Moved out of the ROM folders" : "Files to archive", "info")] : []),
         ...savesCards(colSavesTotal(r), apply),
-        ...(r.saves_archived ? [card(fmt(r.saves_archived.files), r.saves_archived.skipped_running ? "Saves NOT archived: RetroArch is running" : "Save files archived with their games", r.saves_archived.skipped_running ? "bad" : "warn")] : []),
+        ...(r.saves_archived ? [card(fmt(r.saves_archived.files), r.saves_archived.skipped_running ? `Saves NOT archived: ${(r.saves_archived.running || ["RetroArch"]).join(", ")} ${(r.saves_archived.running || [1]).length > 1 ? "are" : "is"} running` : "Save files archived with their games", r.saves_archived.skipped_running ? "bad" : "warn")] : []),
         ...(apply ? [card(fmt(moved), "Files tidied now", "ok")] : [card(fmt(t.actionable), "Library changes", t.actionable ? "info" : "ok")]));
       this.head([["System"], ["Result"], ["Games", 1], ["Kept", 1], ["Changed", 1], ["Archived", 1], ["Notes"]]);
       // files that match no database belong to no system: one line, one total (those in system folders are archived too)

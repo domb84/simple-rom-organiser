@@ -11,12 +11,14 @@ and Ryujinx), so there is one place per setting.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
 from . import nintendoapp, switchapp
 
-__all__ = ["SOURCES", "KEYS", "describe", "store", "platforms_of", "enabled_for"]
+__all__ = ["SOURCES", "KEYS", "describe", "store", "platforms_of", "enabled_for", "running", "source_running", "source_label"]
 
 # key, label, platforms it plays, what the folder is
 SOURCES = (
@@ -113,3 +115,50 @@ def platforms_of(key: str) -> List[str]:
 def enabled_for(platform: str, nin: Dict[str, Dict[str, str]], switch: Dict[str, Any]) -> List[str]:
     """The emulators (keys) that are on, have a folder that exists and play ``platform``: where its saves come from besides RetroArch."""
     return [e["key"] for e in describe(nin, switch) if e["active"] and platform in e["platforms"]]
+
+
+# the process each emulator runs as: the start of its name on Linux (/proc/<pid>/comm is cut at 15 characters), the image on Windows
+_PROCESS = {
+    "dolphin": (("dolphin-emu",), ("dolphin.exe",)),
+    "cemu": (("cemu",), ("cemu.exe",)),
+    "pcsx2": (("pcsx2",), ("pcsx2-qt.exe", "pcsx2.exe")),
+    "eden": (("eden", "yuzu", "sudachi", "suyu"), ("eden.exe", "yuzu.exe", "sudachi.exe", "suyu.exe")),
+    "ryujinx": (("ryujinx",), ("ryujinx.exe",)),
+}
+# the save source of a save set -> the emulator whose process must be closed before its files are moved
+_SOURCE_EMULATOR = {"dolphin": "dolphin", "cemu": "cemu", "pcsx2": "pcsx2", "switch": "eden"}
+
+
+def running(key: str) -> bool:
+    """True while the emulator ``key`` runs (an emulator writes to its save files, and keeps them open, while it plays)."""
+    if key not in _PROCESS:
+        return False
+    names, images = _PROCESS[key]
+    try:
+        if sys.platform.startswith("linux"):
+            for d in Path("/proc").iterdir():
+                if d.name.isdigit():
+                    try:
+                        if (d / "comm").read_text().strip().lower().startswith(names):
+                            return True
+                    except OSError:
+                        continue
+            return False
+        if sys.platform == "win32":
+            from . import retroarch
+            return any(str(name).lower() in images for _pid, name in retroarch._win_processes())
+        return subprocess.run(["pgrep", "-i", "-f", names[0]], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError, AttributeError, ImportError):
+        return False
+
+
+def source_running(source: str) -> bool:
+    """True when the program that owns the saves of a save set's ``source`` runs (RetroArch or one of the emulators here)."""
+    if source == "retroarch":
+        from . import retroarch
+        return retroarch.is_running()
+    return running(_SOURCE_EMULATOR.get(source, ""))
+
+
+def source_label(source: str) -> str:
+    return {"retroarch": "RetroArch", "dolphin": "Dolphin", "cemu": "Cemu", "pcsx2": "PCSX2", "switch": "Eden"}.get(source, source)

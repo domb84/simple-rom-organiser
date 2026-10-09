@@ -173,6 +173,21 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
 
+    def test_a_running_emulator_keeps_its_saves_where_they_are(self) -> None:
+        from romorg import emulators
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
+        aside = self.base / "archive"
+        with mock.patch.object(emulators, "source_running", lambda source: source == "pcsx2"):
+            plan = self.call("/api/library/plan", {"platform": PS2, "aside_to": str(aside)})
+            self.assertEqual(plan["saves"]["archive"]["running"], ["PCSX2"])
+            self.call("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})
+            res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        sa = res["result"]["saves_archived"]
+        self.assertEqual((sa["skipped_running"], sa["running"], sa["moved"]), (True, ["PCSX2"], 0))
+        self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())      # (the saves did not move)
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])                                      # (the game was archived)
+
     def test_archive_takes_the_saves_along_and_undo_brings_them_back(self) -> None:
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
         aside = self.base / "archive"

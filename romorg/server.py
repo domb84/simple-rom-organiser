@@ -3718,25 +3718,32 @@ class App:
         for st in sp["archive"]:
             for f, root, _kind, size in st.members:
                 if os.path.lexists(f):
-                    moves.append(sortroot.SMove(f, names.free(base / f.relative_to(root)), SAVES_DIR, size=size,
+                    moves.append(sortroot.SMove(f, names.free(base / f.relative_to(root)), SAVES_DIR, note=st.source, size=size,
                                                 kind="folder" if os.path.isdir(f) else "file"))
         if not moves:
             return [], {}
+        emulators = _mod("emulators")
+        running = sorted({emulators.source_label(m.note) for m in moves if emulators.source_running(m.note)})
         return moves, {"files": len(moves), "games": len(sp["archive"]), "states": sum(st.states for st in sp["archive"]),
-                       "to": str(base)}
+                       "to": str(base), "running": running}
 
     def _apply_saves_moves(self, moves: list[Any], library_log: str) -> dict[str, Any]:
-        """Do :meth:`_saves_moves` (journalled like a sweep, linked to the build's undo log). Skipped, with a note, while
-        RetroArch runs: it writes its saves back when it exits."""
+        """Do :meth:`_saves_moves` (journalled like a sweep, linked to the build's undo log). The saves of a program that runs are
+        not moved (RetroArch writes its saves back when it exits; an emulator keeps its save files open): they stay, and the answer says
+        which program it was."""
         if not moves:
             return {}
-        if _mod("retroarch").is_running():
-            return {"skipped_running": True, "moved": 0, "planned": len(moves), "failed": []}
-        keep = [m.src.parent for m in moves] + [m.dst.parent.parent for m in moves]
-        res = _mod("sortroot").apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=keep,
+        emulators = _mod("emulators")
+        busy = {m.note for m in moves if emulators.source_running(m.note)}
+        todo = [m for m in moves if m.note not in busy]
+        names = sorted(emulators.source_label(b) for b in busy)
+        if not todo:
+            return {"skipped_running": True, "running": names, "moved": 0, "planned": len(moves), "failed": []}
+        keep = [m.src.parent for m in todo] + [m.dst.parent.parent for m in todo]
+        res = _mod("sortroot").apply_moves(todo, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=keep,
                                            extra={"library_log": library_log})
         return {"moved": res["moved"], "planned": len(moves), "failed": res["failed"][:20], "journal": res["journal"],
-                "skipped_running": False}
+                "skipped_running": bool(busy), "running": names}
 
     def _saves_plan_info(self, plan: Any, folder: Path, aside: Path | None, elsewhere: bool = False) -> dict[str, Any] | None:
         """What a build does with RetroArch's saves, from the plan (nothing is looked at after the build): ``kept`` games
