@@ -950,8 +950,8 @@ and Browse tabs.
   file is **identified, not verified**: the game ID in its header (`SB4E01`) gives the title (GameTDB, else the header's own title),
   its 4th character the region, then revision and disc number pick the Redump game. A copy of an `.iso` that matches no checksum
   (scrubbed, trimmed) is identified the same way.
-* **Wii U:** Redump has no Wii U DAT. The app makes one from GameTDB's `wiiutdb.xml` (the 457 disc games, `Title (Region) (Languages)`, no
-  checksums; eShop and Virtual Console titles are left out) when it fetches the list (on the first start, then when you press Check for updates). A `.wux` / `.wud` is told by the product code in its first sector (`WUP-P-AFXE-00-551USA-0`);
+* **Wii U:** Redump has no Wii U DAT. The app makes one from GameTDB's `wiiutdb.xml` (the 457 disc games, no checksums; eShop and
+  Virtual Console titles are left out), with No-Intro's names where it knows the title (they carry all the languages) when it fetches the list (on the first start, then when you press Check for updates). A `.wux` / `.wud` is told by the product code in its first sector (`WUP-P-AFXE-00-551USA-0`);
   nothing is decrypted.
 * **GameCube** and **Wii** are separate systems with their own folders, even though Dolphin plays both.
 
@@ -969,6 +969,14 @@ switched off) shows no saves anywhere: no card, no column, no choice in the Libr
   choose to archive its saves with it: they go to `<archive>/<system>/_saves/...` and Undo brings them back). The saves of a memory card
   *image* (`.ps2`, GameCube `.raw`) cannot be split by game: they are counted but never moved.
 * On the platform page the **Overview** shows "Saves (Dolphin)" and the **Browse** tab has the Saves column and list, with the source.
+
+## BIOS, firmware and key files
+
+A file in a system's folder that matches no game may be a console's BIOS or firmware. The app tells it by its **checksum** against the
+list libretro's cores use (`System.dat`: 514 files of 60 systems, bundled; names and checksums only, no file), whatever the file is
+called. It is then treated like a ROM: it stays with the ROMs, a Library build renames it to the name the emulators expect
+(`scph1001.bin`, `dc_boot.bin` ...), and it is never moved to `_unmatched` or the archive. The Browse tab marks it *BIOS / firmware* in
+the Unmatched list. `prod.keys`, `title.keys` and `keys.txt` (Switch and Wii U emulators) are told by name and left alone.
 
 ## Kickstarts for RetroArch (PUAE)
 

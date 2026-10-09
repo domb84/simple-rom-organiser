@@ -1620,6 +1620,14 @@ def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast") -> DcOp
     if (low in organiser.KEEP_NAMES or f.suffix.lower() in organiser.KEEP_SUFFIXES or low.endswith(".m3u")
             or (len(parts) > 1 and parts[0].casefold() in organiser.KEEP_DIRS) or f.is_symlink()):
         return DcOp(status="skip", reason="left in place (frontend / user file)", **base)
+    kept = organiser.bios_op(f)                    # a console's BIOS, told by its checksum: it stays with the discs, under its name
+    if kept is not None:
+        if kept.status != "move" or not plan.free(kept.dst):
+            return DcOp(status="skip" if kept.status == "move" else kept.status, reason=kept.reason, **{**base, "unmatched": False})
+        op = DcOp(src=f, dst=kept.dst, status="move", reason=kept.reason, rom_name=kept.dst.name, kind="rename", unmatched=False,
+                  moves=[(f, kept.dst)], unit_kind="file", n_files=1)
+        plan.claimed[_fold(kept.dst)] = op
+        return op
     dst = organiser.reason_destination(f, root, UNMATCHED_DIR)
     n = 1
     while not plan.free(dst):

@@ -19,9 +19,13 @@ from typing import Any, Callable, Dict, Optional
 
 from . import meter
 
-__all__ = ["URLS", "WIIU_DAT", "build_dat", "GameTdb", "db_path", "db_info", "build", "check_update", "download_and_build", "MAX_AGE_DAYS"]
+OPTIONAL = ("wiiu_nointro",)
+__all__ = ["URLS", "OPTIONAL", "nointro_names", "better_names", "WIIU_DAT", "build_dat", "GameTdb", "db_path", "db_info", "build", "check_update", "download_and_build", "MAX_AGE_DAYS"]
 
 URLS = {"wii": "https://www.gametdb.com/wiitdb.txt", "wiiu": "https://www.gametdb.com/wiiutdb.txt",
+        # No-Intro's names of the Wii U titles (its DAT lists the eShop files, not discs: only the names are used, they carry the
+        # languages and the spelling the other DATs use). Optional: without it GameTDB's own names stay.
+        "wiiu_nointro": "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/Nintendo%20-%20Wii%20U%20(Digital).dat",
         "wiiu_xml": "https://www.gametdb.com/wiiutdb.zip",       # the same list with the type (disc / eShop / Virtual Console), region and languages
         "ps2": "https://raw.githubusercontent.com/PCSX2/pcsx2/master/bin/resources/GameIndex.yaml"}   # (PCSX2's own serial list)
 USER_AGENT = "simple-rom-organiser"
@@ -151,6 +155,38 @@ def parse_wiiu_xml(raw: bytes) -> Dict[str, str]:
     return out
 
 
+def nointro_names(text: str) -> list:
+    """The game names of a No-Intro DAT (clrmamepro text), without the entries that are no game (unknown titles, updates, add-ons)."""
+    import re
+    return [n for n in re.findall(r'^\s*name "([^"]+)"', text, re.M)[1:]
+            if not any(tag in n for tag in ("(Unknown)", "(Update)", "(DLC)"))]
+
+
+def better_names(discs: Dict[str, str], names: list) -> Dict[str, str]:
+    """``discs`` (ID -> GameTDB's ``Title (Region) (Languages)``) with No-Intro's name for the same title and region where it has
+    one: ``The Legend of Zelda - Twilight Princess HD (USA) (En)`` -> ``Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es)``."""
+    from .discmatch import norm_title, regions_of
+    index: Dict[tuple, str] = {}
+    for n in names:
+        for region in regions_of(n) or {""}:
+            index.setdefault((norm_title(n), region), n)
+    import re
+    lang = re.compile(r"\(([A-Z][a-z](?:,[A-Z][a-z])*)\)")
+    out: Dict[str, str] = {}
+    used: set = set()
+    for gid, label in sorted(discs.items()):
+        title = norm_title(label)
+        name = next((index[(title, r)] for r in sorted(regions_of(label) or {""}) if (title, r) in index), label)
+        mine = lang.search(label)
+        if name != label and mine and not lang.search(name):      # (No-Intro names no languages for it: GameTDB's are kept)
+            name = f"{name} ({mine.group(1)})"
+        if name in used:                                          # (two discs, one name: the second keeps its own)
+            name = label
+        used.add(name)
+        out[gid] = name
+    return out
+
+
 def build(files: Dict[str, Path], out: Path) -> Dict[str, int]:
     """Make the SQLite file from the downloaded lists (``{"wii": path, "wiiu": path}``; plain or gzip)."""
     out = Path(out)
@@ -162,6 +198,8 @@ def build(files: Dict[str, Path], out: Path) -> Dict[str, int]:
     try:
         conn.executescript("CREATE TABLE names (kind TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (kind, id));"
                            "CREATE TABLE info (key TEXT PRIMARY KEY, value TEXT);")
+        discs: Dict[str, str] = {}
+        better: list = []
         for kind, path in files.items():
             raw = Path(path).read_bytes()
             try:
@@ -171,8 +209,10 @@ def build(files: Dict[str, Path], out: Path) -> Dict[str, int]:
             text = raw.decode("utf-8", errors="replace")
             if kind == "wiiu_xml":
                 discs = parse_wiiu_xml(raw)
-                conn.executemany("INSERT OR REPLACE INTO names VALUES (?,?,?)", [("wiiu_disc", k, v) for k, v in discs.items()])
                 counts[kind] = len(discs)
+                continue
+            if kind == "wiiu_nointro":
+                better = nointro_names(text)
                 continue
             if kind == "ps2":
                 from .pcsx2 import parse_game_index
@@ -181,6 +221,15 @@ def build(files: Dict[str, Path], out: Path) -> Dict[str, int]:
                 names = parse(text)
             conn.executemany("INSERT OR REPLACE INTO names VALUES (?,?,?)", [(kind, k, v) for k, v in names.items()])
             counts[kind] = len(names)
+        if discs:
+            if better:
+                discs = better_names(discs, better)
+            seen: set = set()
+            for gid in sorted(discs):                           # (two discs GameTDB gives one name: the later one carries its ID)
+                if discs[gid] in seen:
+                    discs[gid] = f"{discs[gid]} [{gid}]"
+                seen.add(discs[gid])
+            conn.executemany("INSERT OR REPLACE INTO names VALUES (?,?,?)", [("wiiu_disc", k, v) for k, v in discs.items()])
         conn.executemany("INSERT OR REPLACE INTO info VALUES (?,?)", [("fetched", time.strftime("%Y-%m-%d %H:%M")), ("fetched_at", str(time.time()))])
         conn.commit()
     except BaseException:
@@ -250,8 +299,13 @@ def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None
             if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
                 raise InterruptedError("cancelled")
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = resp.read()
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+            except OSError:
+                if kind in OPTIONAL:
+                    continue                                         # (the names it would better stay as they are)
+                raise
             meter.add(len(data))
             if progress:
                 progress(len(data), len(data), f"GameTDB: {kind} titles")

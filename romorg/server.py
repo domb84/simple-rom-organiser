@@ -2662,6 +2662,13 @@ class App:
             items = [{"file": _entry_rel(e, root), "size": e.size, "crc": e.crc,
                       "reason": getattr(e, "reason", ""), "kind": getattr(e, "kind", "")}
                      for e in sources]
+            bios = _mod("bios")
+            for e, item in zip(sources, items):            # a BIOS / firmware file (told by its checksum) or an emulator's key file
+                found = bios.lookup(e.size, e.crc or "", getattr(e, "sha1", "") or "") if getattr(e, "member", None) is None else None
+                if found is not None:
+                    item["bios"] = f"{found.system} ({found.name})"
+                elif getattr(e, "member", None) is None and bios.is_key_file(e.path):
+                    item["bios"] = "key file of an emulator"
         elif kind == "missing":
             sources = list(result.missing)
             items = [self._missing_item(r, tags_mod) for r in sources]
@@ -4568,6 +4575,13 @@ class App:
             for f in files:
                 if f not in claimed:
                     (rs.unmatched if sortroot.rom_like(f, extensions) else rs.other).add(f)
+        bios = _mod("bios")                                          # a BIOS / firmware file (by checksum) or a key file stays where it is
+        kept_bios = {p for p in (rs.unmatched | rs.other) if bios.is_key_file(p) or bios.identify(p) is not None}
+        if kept_bios:
+            rs.unmatched -= kept_bios
+            rs.other -= kept_bios
+            notes.append(f"Left where {'it is' if len(kept_bios) == 1 else 'they are'}: {len(kept_bios)} BIOS / firmware or key "
+                         f"file{'' if len(kept_bios) == 1 else 's'} (told by checksum).")
         for u in bad_units:                                          # a disc image no DAT knows
             rs.unmatched.update(Path(f) for f in u.files)
         if disc_dats:                                                # loose .iso files left over: PlayStation 2 DVD games

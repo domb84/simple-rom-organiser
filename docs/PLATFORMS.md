@@ -20,7 +20,7 @@ in the file is looked up in a catalogue; such a match is **identified**, not **v
 | Sony PlayStation 2 | `.chd .iso .cue .bin` | Redump (11,774) | Checksum of the ISO / every track | region, language, latest | **PCSX2** (serial) | folder per game, no playlists, convert to CHD |
 | Nintendo GameCube | `.iso .gcm .rvz` | Redump (2,019) | Checksum; a `.rvz` is rebuilt in memory and hashed as the ISO it stands for | region, language, latest | **Dolphin** (game code) | rename to the DAT name, rules, archive |
 | Nintendo Wii | `.iso .rvz .wia .wbfs .ciso` | Redump (3,780) | Plain `.iso`: checksum. Compressed formats: **ID** (game ID in the header: title + region + revision + disc) | region, language, latest | **Dolphin** (game code) | same as GameCube |
-| Nintendo Wii U | `.wux .wud` | Made from GameTDB's `wiiutdb.xml` (Redump has none): its 457 disc games, `Title (Region) (Languages)`; eShop and Virtual Console titles are not discs and are left out | **ID** (product code in the first sector) | region, language | **Cemu** (title ID, via Cemu's own game list) | same as GameCube |
+| Nintendo Wii U | `.wux .wud` | Made from GameTDB's `wiiutdb.xml` (Redump has none): its 457 disc games, named as No-Intro names them where it knows the title (`Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es)`), else by GameTDB; eShop and Virtual Console titles are not discs and are left out | **ID** (product code in the first sector) | region, language | **Cemu** (title ID, via Cemu's own game list) | same as GameCube |
 | Nintendo Switch | `.nsp .nsz .xci .xcz` (games, updates, add-ons in one folder) | Three catalogues made from titledb: **Nintendo - Switch** (24k games: region, languages, demo flag), **(Updates)** (38k, one per version), **(DLC)** (18k). No checksums exist | **ID** (title ID inside the file, plus the version for an update). Optional check of every NCA against its own name | region + language (games, updates); demo; **latest update only** (updates) | **Eden / Ryujinx** (title ID) | same as the others: rename to the catalogue name, rules, archive |
 
 ## Where things come from
@@ -34,6 +34,15 @@ in the file is looked up in a catalogue; such a match is **identified**, not **v
   Ryujinx's save folders are counted but never moved. A system with no emulator set up (Emulators page) shows no saves at all.
 * **Verification** (is the file intact?): cartridge systems, Amiga, Dreamcast, PlayStation, PS2, GameCube and plain Wii `.iso` verify by
   the checksum match itself; the Switch has the NCA check; Wii compressed images and the Wii U cannot be verified.
+
+## BIOS, firmware and key files
+
+A file that matches no game may be something an emulator needs. It is told by its **checksum** against the list libretro's cores use
+(`System.dat`, 514 files of 60 systems, bundled with the app), whatever it is called and whichever system's folder it is in. Such a file
+is treated like a ROM: it stays with the ROMs, a Library build gives it the name the emulators expect (`scph1001.bin`), and it never goes
+to `_unmatched` or the archive (Collection leaves it where it is). The key files of the Switch and Wii U emulators (`prod.keys`,
+`title.keys`, `keys.txt`) have no common checksum; they are told by name and left as they are. A file that only *has* a BIOS's name is
+an ordinary unmatched file.
 
 ## Gaps in parity (what is not the same, and why)
 

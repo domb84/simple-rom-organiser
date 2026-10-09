@@ -348,6 +348,24 @@ def _is_keep_file(path: Path) -> bool:
     return name in KEEP_NAMES or os.path.splitext(name)[1] in KEEP_SUFFIXES
 
 
+def bios_op(src: Path) -> Optional[RenameOp]:
+    """The op of a file no game matches when it is a BIOS / firmware file (told by its checksum: it stays where it is, under the name
+    the emulators expect) or an emulator's key file (told by its name: left as it is); None for any other file."""
+    from . import bios
+    if bios.is_key_file(src):
+        return RenameOp(src, src, "skip", "key file of an emulator - left in place", "", "move", "", False)
+    found = bios.identify(src)
+    if found is None:
+        return None
+    why = f"BIOS / firmware ({found.system}), told by its checksum - kept with the ROMs"
+    if src.name.casefold() in found.names:                      # (already one of the names the emulators look for)
+        return RenameOp(src, src, "ok", why, found.name, "rename", "", False)
+    dst = src.with_name(found.name)
+    if os.path.lexists(dst):
+        return RenameOp(src, src, "skip", f"{why}; {found.name} is already here, so this copy keeps its name", found.name, "rename", "", False)
+    return RenameOp(src, dst, "move", why, found.name, "rename", "", False)
+
+
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
                unmatched: bool) -> RenameOp:
     # str(): on Windows Path equality ignores case, which would hide a case-only rename
@@ -403,6 +421,9 @@ class _Planner:
             return RenameOp(src, src, "skip", "frontend media folder - left in place", "", "move", "", True)
         if _is_keep_file(src):
             return RenameOp(src, src, "skip", "frontend / emulator file - left in place", "", "move", "", True)
+        kept = bios_op(src)
+        if kept is not None:
+            return kept
         return _finish_op(src, root / UNMATCHED_DIR / rel, [why], "", "", True)
 
 

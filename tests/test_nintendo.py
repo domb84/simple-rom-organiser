@@ -189,6 +189,28 @@ class DiscMatch(Base):
         self.assertEqual(discmatch.norm_title("Legend of Zelda, The - Twilight Princess (USA)"), discmatch.norm_title("The Legend of Zelda: Twilight Princess"))
 
 
+class WiiUNames(Base):
+    def test_no_intro_names_replace_gametdbs_for_the_same_title_and_region(self) -> None:
+        discs = gametdb.parse_wiiu_xml(b"<datafile>" + b"".join(
+            f'<game name="{n}"><id>{i}</id><type>{t}</type></game>'.encode()
+            for n, i, t in (("The Legend of Zelda: Twilight Princess HD (USA) (EN)", "AZAE01", "WiiU"),
+                            ("The Legend of Zelda: Twilight Princess HD (Europe) (EN,FR)", "AZAP01", "WiiU"),
+                            ("The Voice (USA) (EN)", "AVCE01", "WiiU"), ("Only GameTDB (Japan) (JA)", "AOGJ01", "WiiU"),
+                            ("An eShop game (USA) (EN)", "WAAE", "eShop"))) + b"</datafile>")
+        self.assertEqual(discs["AZAE01"], "The Legend of Zelda - Twilight Princess HD (USA) (En)")          # (no colon, En not EN)
+        self.assertNotIn("WAAE", discs)
+        dat = ('clrmamepro (\n\tname "Nintendo - Wii U (Digital)"\n)\ngame (\n\tname "Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es)"\n)\n'
+               'game (\n\tname "Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es) (Update)"\n)\ngame (\n\tname "Voice, The (USA)"\n)\n'
+               'game (\n\tname "000500001f940e00 (Unknown)"\n)\n')
+        names = gametdb.nointro_names(dat)
+        self.assertEqual(names, ["Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es)", "Voice, The (USA)"])
+        out = gametdb.better_names(discs, names)
+        self.assertEqual(out["AZAE01"], "Legend of Zelda, The - Twilight Princess HD (USA) (En,Fr,Es)")
+        self.assertEqual(out["AZAP01"], "The Legend of Zelda - Twilight Princess HD (Europe) (En,Fr)")     # No-Intro has no European one here
+        self.assertEqual(out["AVCE01"], "Voice, The (USA) (En)")                                             # (its languages are kept)
+        self.assertEqual(out["AOGJ01"], "Only GameTDB (Japan) (Ja)")
+
+
 class IdSaves(Base):
     """The saves of an ID-based emulator as save sets of the system's games (``idsaves``)."""
 

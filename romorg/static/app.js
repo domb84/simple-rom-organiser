@@ -2013,7 +2013,9 @@
         return {
           fetch: fetchKind, placeholder: "Search unmatched files...", emptyText: "Every file matched a DAT.",
           columns: [
-            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => fileCell(i.file) },
+            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => (i.bios
+              ? el("div", {}, fileCell(i.file), el("div", { class: "sub" }, badge("info", "BIOS / firmware"), ` ${i.bios}: kept with the ROMs, never archived`))
+              : fileCell(i.file)) },
             ...(isGameFolder(currentPlatform()) ? [{ label: "Why", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason || "" }) }] : []),
             { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
             ...(isGameFolder(currentPlatform()) ? [] : [{ label: "CRC32", cls: "mono", render: (i) => i.crc || "" }]),

@@ -81,3 +81,12 @@ The .zip package contains the unmodified "embeddable" Python 3.14 distribution f
 licence, see licenses\python-LICENSE.txt, which also carries the licences of libraries it contains, such as
 Zstandard, bzip2 and libffi); the single-file .exe is built from Python 3.14 with PyInstaller 6.22.3 (GPL-2.0 with the
 bootloader exception, which allows any licence for the resulting program).
+
+
+BIOS / firmware list (bundled as data: romorg/biosdata.py)
+----------------------------------------------------------
+The names and checksums of the BIOS, firmware and system files that emulators need are taken from "System.dat" of the
+libretro-database project (https://github.com/libretro/libretro-database/blob/master/dat/System.dat, version v1.19.0),
+which is under the Creative Commons Attribution-ShareAlike 4.0 licence (https://creativecommons.org/licenses/by-sa/4.0/).
+The list is reproduced as data (system, file name, size, CRC-32, SHA-1) and stays under that licence. No BIOS or
+firmware file itself is included.
