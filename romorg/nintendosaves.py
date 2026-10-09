@@ -148,6 +148,10 @@ def detect_dolphin(home: Optional[Path] = None) -> Dict[str, object]:
     appdata = os.environ.get("APPDATA")
     if appdata:
         cands.append((Path(appdata) / "Dolphin Emulator", Path(appdata) / "Dolphin Emulator" / "Config" / "Dolphin.ini"))
+    profile = os.environ.get("USERPROFILE")
+    if profile:                                              # Windows, older installs: "Documents\Dolphin Emulator" (also under OneDrive)
+        for docs in (Path(profile) / "Documents", Path(profile) / "OneDrive" / "Documents"):
+            cands.append((docs / "Dolphin Emulator", docs / "Dolphin Emulator" / "Config" / "Dolphin.ini"))
     for data, ini in cands:
         if (data / "Wii").is_dir() or (data / "GC").is_dir() or ini.is_file():
             cfg = ini if ini.is_file() else data / "Config" / "Dolphin.ini"

@@ -29,5 +29,8 @@ PS2 and Switch) shows no saves anywhere.*
 * **Choices.** Per game on the Library tab, or one default for the system (Library rules) or for Collection.
 * **Running programs.** Before saves are archived the app looks for the program's process (Linux `/proc`, Windows process list). Saves of a
   running program stay where they are; the others in the same build still move, and the preview and the result say which program it was.
+* **Collection and emulator folders.** An emulator's data folder that lies inside the Collection's ROM folder (a portable Ryujinx with the
+  games in it, say) is left alone: its saves, caches and settings are never sorted or archived as "files that are not ROMs". Only the
+  Switch game files inside a Ryujinx folder are looked at.
 * **Not built.** Copying saves between emulators (Eden to Ryujinx, per `docs/SWITCH_PLAN.md`), saves of other standalone emulators
   (DuckStation, Flycast ...).

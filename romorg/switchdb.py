@@ -296,7 +296,7 @@ def build(titles_json: Path, cnmts_json: Path, out: Path, source: str = "US.en",
         for region, path in (region_jsons or {}).items():
             rows += read_store(path, region)
         conn.executemany("INSERT OR IGNORE INTO titles VALUES (?,?,?,?)", rows)
-        titles = len(rows)
+        titles = len({r[0] for r in rows})                    # (a title several stores list is one title)
         cn = _load(Path(cnmts_json))
         nca_rows, app_rows = [], []
         for tid, versions in cn.items():
@@ -399,7 +399,12 @@ def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = 
         return {"status": "missing"}
     from . import paths
     if path == db_path() and not all((paths.redump_dir() / f"{d}.dat").is_file() for d in SWITCH_DATS):
-        return {"status": "update_available"}                        # (the catalogue DAT is made when the database is built)
+        try:
+            made = build_dat(path)                                   # (the database is here, only the DATs made from it are not)
+        except OSError:
+            made = 0
+        if not made:
+            return {"status": "update_available"}                    # (a database built before it held the catalogue: fetch it again)
     if gate and (now if now is not None else time.time()) - float(info.get("fetched_at") or 0) < MAX_AGE_DAYS * 86400:
         return {"status": "up_to_date", "skipped": True}
     try:

@@ -95,7 +95,11 @@ class DiscNameIndex:
 
 def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
     """``match(path)``: the DAT rom list (one rom) of the Wii or Wii U disc image at ``path``, or None."""
-    index = DiscNameIndex(roms)
+    roms = list(roms)
+    # a title can be on two consoles (Resident Evil 4: GameCube and Wii), and a Collection scan has every system's DATs: a disc is
+    # only looked up among the games of its own console's DAT (all of them when that DAT is not among them: a test's own DAT)
+    own = {kind: [r for r in roms if getattr(r, "dat", "") == dat] for kind, dat in (("wii", "Nintendo - Wii"), ("wiiu", "Nintendo - Wii U"))}
+    indexes = {kind: DiscNameIndex(items or roms) for kind, items in own.items()}
 
     def match(path: Path) -> Optional[List[Any]]:
         wiiu = path.suffix.lower() in nintendodisc.WIIU_EXTS
@@ -103,6 +107,7 @@ def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
         if info is None or info.kind not in ("wii", "wiiu"):
             return None
         kind = info.kind
+        index = indexes[kind]
         tdb = gametdb.GameTdb()
         try:
             titles = [tdb.name(kind, info.game_id), info.name]

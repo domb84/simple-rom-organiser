@@ -144,7 +144,7 @@ class SaveReport:
                 "titles_dat": len({(s.title or s.game).casefold() for s in dat}
                                   - {(s.title or s.game).casefold() for s in rom}),
                 "per_core": self.per_core, "install": self.install,
-                "sources": sorted({st.shown for st in sets}) or ([self.install] if self.install else []),
+                "sources": sorted({name for st in sets for name in st.shown.split(" + ")}) or ([self.install] if self.install else []),
                 "renames": any(st.renames for st in sets) or bool(self.install)}
 
     def game_counts(self, dat: str, game: str) -> Optional[Dict[str, int]]:

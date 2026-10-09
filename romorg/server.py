@@ -848,6 +848,23 @@ class App:
             self.updates.ratings_wanted = self._ratings_wanted
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
+        self._adopt_old_folders()
+
+    def _adopt_old_folders(self) -> None:
+        """The Switch, Wii and Wii U had pages of their own with a games folder each; they are systems now, with a folder like any
+        other. A folder chosen on such a page becomes the system's folder, once, when the system has none (never raises)."""
+        try:
+            cfg = self._config()
+            have = self._folders(cfg)
+            old = cfg.get("nintendo") if isinstance(cfg.get("nintendo"), dict) else {}
+            sw = cfg.get("switch") if isinstance(cfg.get("switch"), dict) else {}
+            for name, folder in (("Nintendo Switch", sw.get("games")),
+                                 ("Nintendo Wii", (old.get("wii") or {}).get("games") if isinstance(old.get("wii"), dict) else None),
+                                 ("Nintendo Wii U", (old.get("wiiu") or {}).get("games") if isinstance(old.get("wiiu"), dict) else None)):
+                if name not in have and isinstance(folder, str) and folder.strip() and os.path.isdir(folder):
+                    self._config_update(folder_for=(name, folder))
+        except Exception:  # noqa: BLE001 - a convenience only
+            traceback.print_exc()
 
     # ---------------------------------------------------------------- helpers
 
@@ -897,6 +914,7 @@ class App:
         concurrent writer (scan, profile save, ...) can never be overwritten by a stale snapshot.
         ``strict``: a failed write raises ``ApiError(500)`` instead of being swallowed.
         """
+        self._id_memo = None                               # (what is set up may have changed: the emulators are looked up again)
         def mutate(cfg: dict[str, Any]) -> None:
             cfg.update(values)
             for key, pair in (("folders", folder_for), ("latest_only", latest_for),
@@ -1772,7 +1790,12 @@ class App:
         RetroArch plays, a RetroArch config is known. Without a platform (Collection): any of them."""
         idsaves = _mod("idsaves")
         if platform is not None and idsaves.applies(platform):
-            return idsaves.active(platform, self._nin_cfg(), self._switch_eff())
+            now = time.monotonic()                              # (asked for every row of the systems list: looked up at most every 1.5 s)
+            memo = getattr(self, "_id_memo", None)
+            if memo is None or now - memo[0] >= 1.5:
+                nin, eff = self._nin_cfg(), self._switch_eff()
+                memo = self._id_memo = (now, {p: idsaves.active(p, nin, eff) for p in idsaves.PLATFORM_SOURCES})
+            return memo[1].get(platform, False)
         if platform is None:
             return self._saves_anywhere()                    # (Collection's rules: any save source of any system)
         return self._ra_active() is not None
@@ -1800,6 +1823,7 @@ class App:
     def _saves_forget(self) -> None:
         """The RetroArch choice changed: every scan's save report is built again when it is next needed."""
         self._ra_memo = None
+        self._id_memo = None
         for holder in (self._scan, self._rootscan):
             if holder is not None:
                 for attr, empty in (("saves", None), ("saves_for", ""), ("save_walk", None), ("save_reports", {})):
@@ -4053,7 +4077,11 @@ class App:
 
     def emulators_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/emulators``: the emulators whose saves are looked at: platforms, folder (found or chosen), on or off."""
-        return {"emulators": _mod("emulators").describe(self._nin_cfg(), self._switch_cfg())}
+        switch = self._switch_cfg()
+        folder = self._folders().get("Nintendo Switch")
+        if folder:
+            switch = {**switch, "games": folder}                    # (a portable Ryujinx is looked for next to the games)
+        return {"emulators": _mod("emulators").describe(self._nin_cfg(), switch)}
 
     def emulators_config(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/emulators/config {source, folder?, enabled?}``: remember an emulator's folder (an empty text goes back to the
@@ -4385,6 +4413,43 @@ class App:
             raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "archive folder"), "bad_aside")
         return aside
 
+    def _emulator_data_dirs(self) -> list[tuple[str, Path, bool]]:
+        """``[(emulator, folder, games may lie in it)]``: the data folders of the emulators that are set up (Emulators page). A
+        portable Ryujinx keeps the user's games inside its own folder, so there only what is not a Switch game file is its data."""
+        out: list[tuple[str, Path, bool]] = []
+        try:
+            nin, napp = self._nin_cfg(), _mod("nintendoapp")
+            for console, label in (("wii", "Dolphin"), ("wiiu", "Cemu"), ("ps2", "PCSX2")):
+                data = napp.effective(console, nin)["data"].strip()
+                if data:
+                    out.append((label, Path(os.path.abspath(data)), False))
+            eff = self._switch_eff()
+            if eff.get("eden"):
+                out.append(("Eden", Path(os.path.abspath(eff["eden"])), False))
+            if eff.get("ryujinx"):
+                out.append(("Ryujinx", Path(os.path.abspath(eff["ryujinx"])), True))
+        except Exception:  # noqa: BLE001 - a courtesy: a broken emulator folder never stops a scan
+            traceback.print_exc()
+        return out
+
+    def _without_emulator_data(self, files: list[Path], root: Path) -> tuple[list[Path], list[str]]:
+        """``files`` without what belongs to an emulator whose data folder lies inside ``root`` (its saves, caches and settings are
+        not ROMs, and moving them as "files that are not ROMs" would break the emulator), and the names of those emulators."""
+        sortroot, switchfmt = _mod("sortroot"), _mod("switchfmt")
+        mine = [(label, d, games) for label, d, games in self._emulator_data_dirs()
+                if d != root and sortroot.inside(d, root) and d.is_dir()]
+        if not mine:
+            return files, []
+        kept: list[Path] = []
+        hit: set[str] = set()
+        for f in files:
+            owner = next(((label, games) for label, d, games in mine if sortroot.inside(f, d)), None)
+            if owner is None or (owner[1] and f.suffix.lower() in switchfmt.CONTAINER_EXTS):
+                kept.append(f)
+            else:
+                hit.add(owner[0])
+        return kept, sorted(hit)
+
     def _collection_scan_work(self, job: Job, root: Path, force: bool = False) -> Any:
         """Read every file under ``root`` ONCE and find its system: the cartridge / flat systems in one scan with all their
         DATs together, every disc image once against the DATs of all disc systems."""
@@ -4440,6 +4505,10 @@ class App:
         step = 0
         job.report(0, steps or 1, "Looking at the folder...")
         files = scanner.collect_files(root, True, [], ())               # the folder is walked ONCE for everything below
+        files, left = self._without_emulator_data(files, root)
+        if left:
+            notes.append("Left alone: the data of your emulators that lies inside this folder (" + ", ".join(left) + "). "
+                         "Their saves are handled per system; nothing in those folders is sorted or archived.")
         rs = collection.RootScan(root=root, notes=notes, files=len(files))
         sys_of: dict[str, Any] = {}
         by_name = {p.name: p for p in platforms}

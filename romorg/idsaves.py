@@ -151,8 +151,10 @@ def _switch(owned: List[Owned], eff: Dict[str, Any], header_key: Optional[bytes]
     """Eden's and Ryujinx's saves of the Switch, by title ID: a game's saves are those of its base title (updates and add-ons share
     them). Eden's save folders can move with the game; Ryujinx keeps a counter folder and an ``ExtraData0`` file per save that must stay
     together, so its saves are counted, never moved."""
-    eden = switchsaves.find_eden(Path(eff["eden"])) if eff.get("eden") and os.path.isdir(eff["eden"]) else []
-    ryu = switchsaves.find_ryujinx(Path(eff["ryujinx"])) if eff.get("ryujinx") and os.path.isdir(eff["ryujinx"]) else []
+    # a save game is a profile's or the device's save with files in it (Ryujinx also keeps caches and BCAT data: not save games)
+    eden = [s for s in (switchsaves.find_eden(Path(eff["eden"])) if eff.get("eden") and os.path.isdir(eff["eden"]) else []) if s.files]
+    ryu = [s for s in (switchsaves.find_ryujinx(Path(eff["ryujinx"])) if eff.get("ryujinx") and os.path.isdir(eff["ryujinx"]) else [])
+           if s.files and s.kind in ("account", "device")]
     grouped = switchsaves.group_by_title(eden, ryu)
     db = switchscan.SwitchDb()
 

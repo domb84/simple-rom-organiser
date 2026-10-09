@@ -611,6 +611,8 @@
   const isFlat = (p) => !!p && p.layout === "flat";
   const sourceLabel = (source) => (source === "nointro" ? "No-Intro" : source === "whdload" ? "WHDLoad"
     : source === "redump" ? "Redump" : "TOSEC");
+  /** Where a system's DATs come from, for the screen: two systems have no DAT of checksums, their catalogue is made from a list. */
+  const platformSource = (p) => (p.name === "Nintendo Switch" ? "titledb" : p.name === "Nintendo Wii U" ? "GameTDB" : sourceLabel(p.source));
   const isGameFolder = (p) => !!p && p.layout === "game_folder";   // disc systems (Dreamcast, PlayStation, PlayStation 2): one folder per game
   const discOf = (p) => (p && p.disc) || null;                         // {key, label, gd, iso, playlists, iso_mode, ...}
   const discPlaylists = (p) => !!p && isGameFolder(p) && (!discOf(p) || discOf(p).playlists !== false);
@@ -979,7 +981,7 @@
     const p = currentPlatform();
     if (!p) return;
     $("sys-title").textContent = p.name;
-    $("sys-source").textContent = sourceLabel(p.source);
+    $("sys-source").textContent = platformSource(p);
     $("sys-source").className = `badge src-${p.source}`;
     $("sys-sub").textContent = p.extensions && p.extensions.length ? p.extensions.join(" ") : "";
     const example = folderExample(p.folder_hint || "...");
@@ -1080,7 +1082,7 @@
   function renderPlatform() {
     const p = currentPlatform();
     state.rendered = p ? p.name : null;
-    $("platform-details-title").textContent = p ? `DAT files for ${p.name} (${sourceLabel(p.source)})` : "DAT files";
+    $("platform-details-title").textContent = p ? `DAT files for ${p.name} (${platformSource(p)})` : "DAT files";
     const rows = p ? p.dats.map((d) => el("tr", {},
       el("td", { class: "wrap" }, el("div", { text: d.name }),
         el("div", { class: "sub", text: [d.m3u ? "M3U playlists" : ""].filter(Boolean).join(" · ") })),
@@ -1100,7 +1102,7 @@
     const ds = p ? datStatus(p) : { kind: "missing", text: "" };
     $("dat-status-line").replaceChildren(
       el("span", { class: `dat-chip ${ds.kind}`, text: ds.text }),
-      p ? el("span", { class: "muted small", text: ` ${p.dats.length} DAT${p.dats.length === 1 ? "" : "s"} · ${sourceLabel(p.source)}` }) : null);
+      p ? el("span", { class: "muted small", text: ` ${p.dats.length} DAT${p.dats.length === 1 ? "" : "s"} · ${platformSource(p)}` }) : null);
 
     // Library: what goes where for this layout.
     renderLibraryLayout();
@@ -4032,6 +4034,7 @@
       try {
         this.list = (await post("/api/emulators/config", { source: key, ...change })).emulators;
         this.render();
+        refreshSavesAwareness();                           // (the systems' saves cards, columns and rules follow)
       } catch (err) { toast(err.message, "error"); }
     },
   };

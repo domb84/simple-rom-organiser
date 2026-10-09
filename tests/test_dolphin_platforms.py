@@ -190,3 +190,44 @@ class CollectionTests(DolphinCase):
         scan = self.run_job("/api/collection/scan", {})["scan"]
         self.assertNotIn("saves", next(s for s in scan["systems"] if s["name"] == GC))
         self.assertNotIn("saves", scan)
+
+
+class CollectionWithSwitchTests(DolphinCase):
+    """A Collection root with a GameCube disc, a Switch game and a portable Ryujinx inside it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from test_switch import APP, game_nsp, small_db
+        from romorg import switchdb
+        path = switchdb.db_path()
+        small_db(path)
+        switchdb.build_dat()
+        self.mixed = self.base / "mixed"
+        (self.mixed / "Dump").mkdir(parents=True)
+        R.build_rvz(self.mixed / "Dump" / "anything.rvz", self.gc_iso, compression=R.NONE)
+        self.portable = self.mixed / "switch" / "portable"
+        (self.portable / "games").mkdir(parents=True)
+        (self.portable / "games" / "game.nsp").write_bytes(game_nsp(APP, 0))
+        (self.portable / "bis" / "user" / "save" / "0000000000000001" / "0").mkdir(parents=True)
+        (self.portable / "bis" / "user" / "save" / "0000000000000001" / "0" / "progress.bin").write_bytes(b"save")
+        (self.portable / "Config.json").write_text("{}")
+        (self.mixed / "Dump" / "cover.jpg").write_bytes(b"jpg")
+        self.call("/api/collection/save", {"root": str(self.mixed)})
+
+    def test_every_system_is_still_found_when_the_switch_catalogue_is_installed(self) -> None:
+        scan = self.run_job("/api/collection/scan", {})["scan"]
+        self.assertEqual({s["name"]: s["games"] for s in scan["systems"]}, {GC: 1, "Nintendo Switch": 1})
+
+    def test_a_wii_disc_is_still_identified_next_to_switch_games(self) -> None:
+        R.build_rvz(self.mixed / "Dump" / "wii game.rvz", iso("RMGE01", "Super Mario Galaxy"), compression=R.NONE, disc_type=2)
+        scan = self.run_job("/api/collection/scan", {})["scan"]
+        self.assertEqual({s["name"]: s["games"] for s in scan["systems"]}, {GC: 1, WII: 1, "Nintendo Switch": 1})
+
+    def test_the_data_of_an_emulator_inside_the_folder_is_left_alone(self) -> None:
+        self.call("/api/emulators/config", {"source": "ryujinx", "folder": str(self.portable)})
+        scan = self.run_job("/api/collection/scan", {})["scan"]
+        self.assertEqual({s["name"]: s["games"] for s in scan["systems"]}, {GC: 1, "Nintendo Switch": 1})     # (the games in it are games)
+        self.assertEqual((scan["unmatched"], scan["other"]), (0, 1))                                              # only the cover: no save, no Config.json
+        self.assertTrue(any("Ryujinx" in n for n in scan["notes"]))
+        plan = self.run_job("/api/collection/plan", {})
+        self.assertNotIn("progress.bin", str(plan))

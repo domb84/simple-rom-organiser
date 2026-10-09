@@ -120,6 +120,8 @@ def scan_all(cfg: Dict[str, Any], progress: Callable[[int, int, str], None], can
     if cfg["games"].strip():
         folder = _path(cfg["games"])
         if folder is None or not folder.is_dir():
+            db.close()
+            verdicts.close()
             raise FileNotFoundError(f"The games folder does not exist: {cfg['games']}")
         games = switchscan.scan_folder(folder, db, key, progress, cancel, verdicts)
     verdicts.close()

@@ -145,6 +145,8 @@ def parse_wiiu_xml(raw: bytes) -> Dict[str, str]:
         name = name.replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">")
         # the languages come as EN,FR,DE; the library rules know En,Fr,De
         name = re.sub(r"\(([A-Z]{2}(?:,[A-Z]{2})*)\)\s*$", lambda g: "(" + ",".join(x.capitalize() for x in g.group(1).split(",")) + ")", name)
+        name = re.sub(r"\s*:\s+", " - ", name)                    # (Redump's spelling: a file name cannot hold a colon)
+        name = re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|]', " ", name)).strip()
         out.setdefault(gid, name)
     return out
 
@@ -227,7 +229,12 @@ def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = 
         return {"status": "missing"}
     from . import paths
     if path is None and not (paths.redump_dir() / f"{WIIU_DAT}.dat").is_file():
-        return {"status": "update_available"}                    # (the Wii U DAT is made when the list is fetched)
+        try:
+            made = build_dat()                                   # (the list is here, only the DAT made from it is not: make it again)
+        except OSError:
+            made = 0
+        if not made:
+            return {"status": "update_available"}                # (a list fetched before the DAT existed: fetch it again)
     if gate and (now if now is not None else time.time()) - float(info.get("fetched_at") or 0) < MAX_AGE_DAYS * 86400:
         return {"status": "up_to_date", "skipped": True}
     return {"status": "update_available"}

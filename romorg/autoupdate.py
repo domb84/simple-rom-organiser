@@ -70,6 +70,8 @@ class UpdateError(Exception):
         self.message = message or code
 
 
+# the systems whose files are told with the help of a list of names besides their DAT: DAT name -> the list
+NAME_LISTS = {"Nintendo - Wii": "gametdb"}
 # the systems whose "DAT" is made from one of the title databases (no DAT of checksums exists): DAT name -> the database
 MADE_DATS = {"Nintendo - Wii U": "gametdb", "Nintendo - Switch": "switchdb", "Nintendo - Switch (Updates)": "switchdb",
              "Nintendo - Switch (DLC)": "switchdb"}
@@ -431,11 +433,11 @@ class UpdateManager:
         out: list[str] = []
         if self._installed_tosec() is None:
             out.append("tosec")
-        if {d.name for d in self.nointro.list_dats()} < set(NOINTRO_DATS):
+        if not set(NOINTRO_DATS) <= {d.name for d in self.nointro.list_dats()}:
             out.append("nointro")
-        if self.whdload is not None and {d.name for d in self.whdload.list_dats()} < set(WHDLOAD_DATS):
+        if self.whdload is not None and not set(WHDLOAD_DATS) <= {d.name for d in self.whdload.list_dats()}:
             out.append("whdload")
-        if self.redump is not None and {d.name for d in self.redump.list_dats()} < set(REDUMP_DATS):
+        if self.redump is not None and not set(REDUMP_DATS) <= {d.name for d in self.redump.list_dats()}:
             out.append("redump")
         for key in ("switchdb", "gametdb"):
             mod = getattr(self, key, None)
@@ -982,6 +984,24 @@ class UpdateManager:
     def _present(platform: platforms.Platform) -> bool:
         return bool(platforms.locate_dats(platform))
 
+    def _ensure_names(self, platform: platforms.Platform, progress: Optional[Progress], cancel: Any) -> None:
+        """A system whose files are told through a list of names besides its DAT (the Wii: GameTDB gives a disc's title) gets that list
+        when it is missing. Best effort: without it a disc is told by its header's own title, and nothing here fails a scan."""
+        key = next((k for dat, k in NAME_LISTS.items() if dat in platform.dats and getattr(self, k, None) is not None), "")
+        if not key or not self.enabled:
+            return
+        try:
+            if getattr(self, key).db_info()["available"]:
+                return
+            with self._lock:
+                if self._running:
+                    return
+                self._running = True
+                self._begin()
+            self._run(scope=("extra", (key,)), cancel=cancel, forward=progress, claimed=True)
+        except Exception:  # noqa: BLE001
+            pass
+
     def ensure(self, platform: platforms.Platform, progress: Optional[Progress] = None,
                cancel: Any = None) -> None:
         """Return when at least one DAT of ``platform`` is installed, updating first if needed.
@@ -989,6 +1009,7 @@ class UpdateManager:
         Waits for a running update (forwarding its progress) or runs one here (single-flight).
         Raises :class:`UpdateError` (``offline`` | ``failed`` | ``cancelled``).
         """
+        self._ensure_names(platform, progress, cancel)
         if self._present(platform):
             return
         if not self.enabled:

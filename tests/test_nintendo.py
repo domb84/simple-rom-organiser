@@ -177,6 +177,18 @@ class WiiPlatform(Base):
         self.assertEqual(sorted(e.path.name for e in res.unmatched), ["notes.txt", "unknown.rvz"])
 
 
+class DiscMatch(Base):
+    def test_a_title_two_consoles_have_is_looked_up_in_the_disc_s_own_dat(self) -> None:
+        from types import SimpleNamespace as Rom
+        from romorg import discmatch
+        gc = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - GameCube")
+        wii = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - Wii")
+        match = discmatch.make_matcher([gc, wii])                     # (a Collection scan: every system's DATs)
+        disc = self.put("re4.wbfs", wbfs("RB4E08", "Resident Evil 4"))
+        self.assertIs(match(disc)[0], wii)
+        self.assertEqual(discmatch.norm_title("Legend of Zelda, The - Twilight Princess (USA)"), discmatch.norm_title("The Legend of Zelda: Twilight Princess"))
+
+
 class IdSaves(Base):
     """The saves of an ID-based emulator as save sets of the system's games (``idsaves``)."""
 

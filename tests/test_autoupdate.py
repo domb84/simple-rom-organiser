@@ -241,6 +241,12 @@ class StartupTest(Base):
         wait_idle(mgr)
         self.assertEqual((calls, self.tosec.pack_downloads, sw.checks, gt.checks, mgr.status()["running"]), ([], 0, [], [], False))
 
+    def test_a_dat_that_is_not_one_of_ours_does_not_hide_a_missing_one(self) -> None:
+        self.install_everything()
+        del self.nointro.local[GBA]
+        self.nointro.local["Some - Other DAT"] = "x"                   # (as many DATs as expected, one of them not ours)
+        self.assertEqual(self.mgr.missing(), ["nointro"])
+
     def test_the_button_still_checks_everything(self) -> None:
         self.install_everything()
         sw = FakeSwitchdb()

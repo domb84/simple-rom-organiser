@@ -20,8 +20,11 @@ __all__ = ["make_matcher"]
 def make_matcher(roms: Iterable[Any], header_key: Optional[bytes] = None) -> Callable[[Path], Optional[List[Any]]]:
     """``match(path)``: the catalogue rom (one) of the Switch file at ``path``, or None. A game or an add-on matches by its title ID,
     an update by its title ID and version (an update whose version the database does not list matches nothing)."""
+    from .switchdb import SWITCH_DATS
+    roms = list(roms)
+    own = [r for r in roms if getattr(r, "dat", "") in SWITCH_DATS] or roms     # (a Collection scan has every system's DATs)
     by_name: Dict[str, Any] = {}
-    for rom in roms:
+    for rom in own:
         by_name.setdefault(rom.game, rom)
 
     def match(path: Path) -> Optional[List[Any]]:

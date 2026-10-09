@@ -1302,9 +1302,11 @@ def scan(
     if "discid" in containers:
         from . import discmatch
         id_exts |= set(discmatch.ID_EXTS)
+    _switch_exts: set[str] = set()
     if "titleid" in containers:
         from . import switchfmt
-        id_exts |= set(switchfmt.CONTAINER_EXTS)
+        _switch_exts = set(switchfmt.CONTAINER_EXTS)
+        id_exts |= _switch_exts
     strategies = [a for a in dict.fromkeys(alt_hashes or ()) if a in STRATEGY_VARIANTS]
     # rom sizes that are not a multiple of 1 KiB (SNES copier-header rule, see variant_for)
     odd_sizes = ({r.size for d in dat_list for r in d.roms if r.size and r.size % 1024}
@@ -1322,7 +1324,8 @@ def scan(
         files = collect_files(root, recursive, problems, protected_dirs)
     else:
         files = sorted(Path(f) for f in files)
-    if "titleid" in containers:
+    if set(containers) == {"titleid"}:
+        # (a scan of the Switch's own folder; a Collection scan has every system's containers and keeps every file)
         # a folder named by a 16-digit title ID belongs to an emulator (shader caches, mods ...): nothing in it is a game file
         def _own(f: Path) -> bool:
             try:
@@ -1440,14 +1443,19 @@ def scan(
             add_member(path, member, size, crc, st, compute)
 
     def id_roms(path: Path) -> Optional[list[Rom]]:
-        if "match" not in id_state:
+        """The DAT roms of a file told by its ID: a Switch file by the caller's matcher, a disc image by ``discmatch`` (a Collection
+        scan has both kinds, so the file's extension says which)."""
+        kind = "switch" if "titleid" in containers and id_matcher is not None and path.suffix.lower() in _switch_exts else "disc"
+        if kind == "disc" and "discid" not in containers:
+            return None
+        if kind not in id_state:
             roms = [r for d in dat_list for r in d.roms]
-            if "titleid" in containers and id_matcher is not None:
-                id_state["match"] = id_matcher(roms)
+            if kind == "switch":
+                id_state[kind] = id_matcher(roms)
             else:
                 from . import discmatch
-                id_state["match"] = discmatch.make_matcher(roms)
-        return id_state["match"](path)
+                id_state[kind] = discmatch.make_matcher(roms)
+        return id_state[kind](path)
 
     def scan_by_id(path: Path) -> bool:
         """A disc image identified by the game ID in its header (no checksum): a match when the Redump game is found."""

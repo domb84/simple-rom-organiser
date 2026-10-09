@@ -551,6 +551,8 @@ def _build_units(result: "ScanResult", layout: str) -> tuple[list[MatchedUnit], 
             continue
         via = getattr(m, "matched_via", "raw") or "raw"
         op, rom = _matched_op(p, root, m.primary, None, layout, via, getattr(m, "byte_order", "") or "")
+        if getattr(m, "container", "") == "id":            # (told by the game / title ID in the file: no checksum exists for it)
+            op.reason = op.reason.replace("matched through its compressed disc image", "identified by the ID in the file, not by a checksum")
         units.append(MatchedUnit(p, op, rom, frozenset(unit_key(r) for r in m.primary), _header_form(rom, via),
                                  rom.dat, via == "raw", False, os.path.islink(p), None, 1, style_of(rom)))
     unmatched_loose = sorted(loose_unmatched - set(loose_matched), key=os.fspath)
