@@ -55,6 +55,7 @@ class CollectionCase(unittest.TestCase):
              "gba": ["Run (USA)", "Bash (USA)"],
              "gb": ["Tetra (World)", "Mono (World)"]}
     BASE: str | None = None                       # the folder the scratch folder is made in (default: the temp folder)
+    ARCHIVE = True                                # set the archive folder of Settings to <scratch>/rom-archive
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="romorg-coll-", dir=self.BASE)).resolve()
@@ -78,6 +79,8 @@ class CollectionCase(unittest.TestCase):
         threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.addCleanup(self.srv.server_close)
         self.addCleanup(self.srv.shutdown)
+        if self.ARCHIVE:                                   # there is no default archive folder: the tests choose one, like the user
+            self.call("POST", "/api/settings/archive", {"dir": str(self.tmp / "rom-archive")})
 
     @staticmethod
     def _remove(folder: Path) -> None:
@@ -223,7 +226,7 @@ class CaseInsensitivePaths(CollectionCase):
         res = self.build(root)
         self.assert_clean(res)
         self.assertEqual(tree(root), ["snes/", "snes/Alpha (USA).sfc"])
-        archive = self.tmp / "roms-archive"
+        archive = self.tmp / "rom-archive"
         dups = [p for p in (archive / "snes" / "_duplicates").iterdir()]
         self.assertEqual(len(dups), 2)
         self.assertEqual(len({p.name.casefold() for p in dups}), 2)
@@ -240,7 +243,7 @@ class CaseInsensitivePaths(CollectionCase):
         before = tree(root)
         self.assert_clean(self.build(root))
         self.assertEqual(tree(root), ["gb/", "gb/Tetra (World).gb"])
-        self.assertEqual((self.tmp / "roms-archive" / "_other" / "GB").read_bytes(), b"a file called GB")
+        self.assertEqual((self.tmp / "rom-archive" / "_other" / "GB").read_bytes(), b"a file called GB")
         self.undo()
         self.assertEqual(tree(root), before)
 
@@ -259,7 +262,7 @@ class CaseInsensitivePaths(CollectionCase):
         self.assert_clean(res)
         self.assertEqual(lower(tree(root)), ["snes/", "snes/alpha (usa).sfc", "snes/gamma (usa).sfc"])
         self.assertEqual(len([d for d in root.iterdir() if d.is_dir()]), 1)
-        archive = self.tmp / "roms-archive"
+        archive = self.tmp / "rom-archive"
         # (where case matters SNES/ is not the system's folder: what.sfc is then an unknown file of a loose folder)
         what = "snes/_unmatched/what.sfc" if os.name == "nt" else "_unmatched/snes/_unmatched/what.sfc"
         self.assertEqual(lower([x for x in tree(archive) if not x.endswith("/")]),
@@ -277,7 +280,7 @@ class CaseInsensitivePaths(CollectionCase):
         typed = Path(str(root).upper()) if os.name == "nt" else root
         self.assert_clean(self.build(typed))
         self.assertEqual(tree(root), ["gba/", "gba/Run (USA).gba"])
-        self.assertTrue((self.tmp / "roms-archive" / "_other" / "Dump" / "readme.txt").is_file())
+        self.assertTrue((self.tmp / "rom-archive" / "_other" / "Dump" / "readme.txt").is_file())
         self.assert_one_move_per_file(typed)
         self.undo()
         self.assertEqual(tree(root), before)
@@ -322,7 +325,7 @@ class MixedFolder(CollectionCase):
 
     def test_scan_preview_build_rescan_undo(self) -> None:
         root = self.make()
-        archive = root.with_name(root.name + "-archive")
+        archive = root.with_name("rom-archive")
         before = tree(root)
         scan = self.scan(root)
         self.assertEqual([(s["hint"], s["games"], s["files"], Path(s["folder"]).name) for s in scan["systems"]],
@@ -357,7 +360,7 @@ class MixedFolder(CollectionCase):
         self.assert_clean(res)
         self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).sfc", "snes/_converted_originals/Dump one/delta.smc"]))
         self.assertEqual((root / "snes" / "Delta Dash (USA).sfc").read_bytes(), self.rom["Delta Dash (USA)"])
-        self.assertEqual(self.files(root.with_name(root.name + "-archive")), self.ARCHIVED)
+        self.assertEqual(self.files(root.with_name("rom-archive")), self.ARCHIVED)
         self.assert_one_move_per_file(root)
         self.undo()
         self.assertEqual(tree(root), before)
@@ -374,7 +377,7 @@ class MixedFolder(CollectionCase):
         res = self.build(root, convert=True)
         self.assert_clean(res)
         self.assertEqual(self.files(root), sorted(self.KEPT + ["snes/Delta Dash (USA).sfc", "snes/_converted_originals/Dump one/delta.smc"]))
-        self.assertEqual(self.files(root.with_name(root.name + "-archive")), self.ARCHIVED)
+        self.assertEqual(self.files(root.with_name("rom-archive")), self.ARCHIVED)
         self.assertFalse(os.access(root / "snes" / "Alpha (USA).sfc", os.W_OK))        # still read-only
         self.undo()
         self.assertEqual(tree(root), before)
@@ -401,7 +404,7 @@ class Failures(CollectionCase):
         import subprocess
         import sys
         root = self.make()
-        archive = self.tmp / "roms-archive"
+        archive = self.tmp / "rom-archive"
         before = tree(root)
         proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write('up'); sys.stdout.flush(); sys.stdin.read()"],
                                 cwd=str(root / "cwd here"), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -492,7 +495,7 @@ class Failures(CollectionCase):
             self.call("POST", "/api/collection/apply", {})
             job = self.wait()
         self.assertEqual(job["status"], "cancelled")
-        archive = self.tmp / "roms-archive"
+        archive = self.tmp / "rom-archive"
         self.assertEqual(len([x for x in tree(archive) if x.endswith(".gba")]), 5)
         self.assertTrue((root / "Dump" / "alpha.sfc").is_file())       # the systems were not started
         last = self.call("GET", "/api/collection")["last"]
@@ -525,7 +528,7 @@ class Failures(CollectionCase):
             self.srv.app.jobs.current.thread.join(30)
         self.assertTrue(seen["journal"]["partial"])
         self.assertEqual(len(seen["journal"]["moves"]), 4)             # three made, the fourth written down and not made
-        self.assertEqual(len([x for x in tree(self.tmp / "roms-archive") if x.endswith(".gba")]), 3)
+        self.assertEqual(len([x for x in tree(self.tmp / "rom-archive") if x.endswith(".gba")]), 3)
 
     def test_a_build_stopped_after_convert_first_can_undo_the_conversion(self) -> None:
         root = self.tmp / "roms"
@@ -581,7 +584,7 @@ class Failures(CollectionCase):
 
 
 class ArchiveFolder(CollectionCase):
-    def test_the_default_shown_is_the_one_the_build_uses_also_through_a_link(self) -> None:
+    def test_the_archive_folder_is_the_one_the_build_uses_also_through_a_link(self) -> None:
         import subprocess
         root = self.tmp / "real" / "roms"
         put(root / "Dump" / "notes.txt", b"notes")
@@ -598,10 +601,11 @@ class ArchiveFolder(CollectionCase):
         if not made:
             self.skipTest("cannot make a link here")
         self.addCleanup(lambda: os.path.lexists(link) and (os.rmdir(link) if os.name == "nt" else os.unlink(link)))
+        self.call("POST", "/api/settings/archive", {"dir": str(self.tmp / "real" / "rom-archive")})
         info = self.call("POST", "/api/collection/save", {"root": str(link)})
-        self.assertEqual(info["aside_default"], str(self.tmp / "real" / "roms-archive"))
+        self.assertEqual(info["aside_default"], str(self.tmp / "real" / "rom-archive"))
         self.assert_clean(self.build(link))
-        self.assertTrue((self.tmp / "real" / "roms-archive" / "_other" / "Dump" / "notes.txt").is_file())
+        self.assertTrue((self.tmp / "real" / "rom-archive" / "_other" / "Dump" / "notes.txt").is_file())
         self.assertFalse((self.tmp / "link-archive").exists())
         self.undo()
 
@@ -699,7 +703,7 @@ class LibraryWithArchive(CollectionCase):
         self.assertEqual((res["aside"]["moved"], res["aside"]["failed"]), (3, []))
         self.assertEqual(tree(root), ["Run (USA).gba"])
         self.assertEqual(lower([x for x in tree(aside) if not x.endswith("/")]),
-                         ["_unmatched/gba/what.gba", "gba/_duplicates/run copy.gba", "gba/_excluded/old leftover.gba"])
+                         ["gba/_duplicates/run copy.gba", "gba/_excluded/old leftover.gba", "gba/_unmatched/what.gba"])
         back = self.job("/api/library/undo", {"log": res["undo_log"]})
         self.assertEqual(back["aside_restored"], 3)
         self.assertEqual(tree(root), before)

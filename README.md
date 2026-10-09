@@ -18,6 +18,8 @@ Supported systems:
 | Sony PlayStation | *Sony - PlayStation* (10,914 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Sony PlayStation 2 | *Sony - PlayStation 2* (11,774 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Nintendo GameCube | *Nintendo - GameCube* (2,019 discs, Redump); files are `.iso`, `.gcm` or Dolphin `.rvz` | [redump.org](http://redump.org/) (plain HTTP only) |
+| Nintendo Wii | *Nintendo - Wii* (Redump); a plain `.iso` is hashed, Dolphin's `.rvz` `.wia` `.wbfs` `.ciso` are identified by the game ID in their header | [redump.org](http://redump.org/) (plain HTTP only) |
+| Nintendo Wii U | *Nintendo - Wii U*, made from GameTDB's list (Redump has none): a catalogue with no checksums; `.wux` / `.wud` are told by the product code | [gametdb.com](https://www.gametdb.com/) |
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
 every file against the system's DATs, shows what you have and what is missing, renames
@@ -45,12 +47,12 @@ have it), raw Redump sets (`.gdi` / `.cue` + track files) are recognised too and
 
 What it does:
 
-1. Keeps the DATs current **automatically**. At every start it checks, in the background,
-   the newest TOSEC release (<https://www.tosecdev.org/downloads>, ~100 MB, Amiga; downloaded
-   only when its release date differs from the installed one), the twelve No-Intro DATs in the
-   [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro)
-   mirror on GitHub (a few MB each, consoles; only changed files are fetched) and the Redump
-   Dreamcast / PlayStation / PlayStation 2 / GameCube DATs (one HEAD request per DAT; the zips only when their date is newer). Nothing to download by hand.
+1. Downloads the databases itself - **once**. On the **first start** it fetches, in the background, every database that is missing:
+   the newest TOSEC release (<https://www.tosecdev.org/downloads>, ~100 MB, Amiga), the No-Intro DATs of the
+   [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro) mirror on GitHub (a few MB each,
+   consoles), the Redump DATs (Dreamcast, PlayStation, PlayStation 2, GameCube, Wii) and the lists the Wii U and Switch catalogues are
+   made from (GameTDB; the title database `blawar/titledb`, about 100 MB). **Later starts ask the network for nothing**; press
+   **Check for updates** (More menu) to look for newer ones and fetch them. A system whose DAT is missing fetches it when you scan it.
 2. **Systems & folders**: one row per system with its DAT status and folder (type it, or use the built-in folder
    browser, **Folders...**, with shortcuts for Home and drives). Each folder is remembered.
 3. Scans a folder (always including subfolders) and shows how many games / DAT entries you
@@ -175,7 +177,7 @@ amiga/
 python3 -m romorg                 # opens your browser at http://127.0.0.1:<random port>/
 python3 -m romorg --port 8765     # fixed port
 python3 -m romorg --no-browser    # just print the URL
-python3 -m romorg --no-update     # do not check for / download newer DATs at startup
+python3 -m romorg --no-update     # do not download anything at startup, not even what is missing
 ```
 
 `ROMORG_OFFLINE=1` switches the automatic update off as well (tests and smoke runs use it
@@ -290,7 +292,11 @@ known* (hover for why) - the app never invents a hash:
 - `.zip` archives are matched by the CRC32 + size of their members (read from the zip
   directory, no extraction). `.7z` / `.rar` work if the `7z` command is installed;
   otherwise they are listed as *unsupported* (and treated as unmatched when organising).
-- Hashes are cached (keyed by path, size and modification time), so re-scans are fast.
+- Hashes are cached (keyed by path, size and modification time; a file that was only moved or renamed is recognised by its
+  inode and is not read again), so re-scans are fast. **Rescan folder** reads only new and changed files; **Recalculate
+  checksums** (next to it, on a system and in Collection) reads everything again. A scan you stop keeps what it had read:
+  scanning again carries on from there. The server keeps the scan of the last six systems you scanned, so going to another system
+  and back needs no new scan (after a restart the first scan is quick, because the hashes are cached).
 - Hidden files, `.m3u` files and the app's undo logs are ignored. Leftovers of an
   interrupted move (`*.romorg-tmp-*`), partial output of an interrupted Convert
   (`*.romorg-convert-*`, removed by Undo) and dangling symbolic links are listed as errors.
@@ -768,7 +774,7 @@ the source and are not copied. The choice is remembered.
      the old, empty folders are removed. The games are renamed to the databases' names
      and sorted by the rules (one per game, latest versions, languages, regions ...). What matches nothing, is not a ROM
      (pictures, text ...), or is archived by the rules (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`,
-     `_unmatched`) moves to an **archive folder** outside the ROM folders (default: next to it, named like it with `-archive`;
+     `_unmatched`) moves to an **archive folder** outside the ROM folders (the one set in **Settings**, or the Collection's own - there is no default: with none, nothing is archived and files that match nothing stay where they are;
      `<archive>/_unmatched/...`, `<archive>/_other/...`, `<archive>/<system>/_excluded/...`), so the ROM folders hold
      only what you keep. Every file is moved once: straight from where it is to its final name and place, or to the archive (only
      a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up
@@ -785,11 +791,16 @@ the source and are not copied. The choice is remembered.
 files in the right order. **Bring archived files back** returns the archived files to the systems' folders. Nothing is ever
 deleted or overwritten: a name that is taken gets ` (2)`.
 
-**Keep a single system's folder tidy too.** On a system's Library tab, with *In this folder*, tick *Keep this folder tidy*
-and choose a folder (the default is next to the ROM root, named like it with `-archive`, the same as in Collection). After the
-build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`, `_unmatched`) is moved out to
-`<folder>/<this system's folder name>/...` so the system folder holds only what you keep. The preview counts it, and
-**Undo last** brings those files back first, then reverts the build.
+**Archive a single system's leftovers too.** On a system's Library tab, with *In this folder*, **Archive unmatched files (excluded,
+superseded, incomplete, duplicates) to another folder** is on by default - but only exists once an archive folder is set. There is
+**no default archive folder**: choose one for every system on the **Settings** page (the sidebar). Until you do, the Library tab says so
+and what the rules leave out stays in the system's folder in `_excluded`, `_superseded` ... as before, and Collection leaves files that
+match nothing where they are. A system can have its own folder: type another one on its Library tab (a button there goes back to the
+common one; Settings lists the systems that have their own). After the build, what the rules leave out is moved to the archive,
+**straight from where it was**, into a folder named like this system's own:
+`<archive>/<system folder name>/_excluded`, `_superseded`, `_incomplete`, `_duplicates` and `_unmatched`. The Library tab lists
+the folders for the system you have open. The system folder then holds only what you keep, the preview counts the files, and
+**Undo last** brings them back first, then reverts the build.
 
 ## Disc images (CHD) and converting first (v0.2)
 
@@ -864,6 +875,16 @@ build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_dupl
     used; Undo brings them back) or **Leave the saves where they are**. Nothing is copied to the edition that replaces the game.
     Nothing is moved while RetroArch is running (the ROMs are still archived); a build into another folder never archives
     anything from your folders.
+  - *Collection, one game at a time:* under the shared rules, **Saves of single games: choose for each game** lists every game
+    with saves that the rules would replace or archive (all systems, searchable) with a choice for each: the default, keep both
+    ROMs, archive the saves with the ROM, or leave them. The choices are part of the shared rules (**Back to each system's
+    defaults** clears them).
+  - *Multi-disc games:* RetroArch names the saves of a game started from a playlist after the `.m3u` (`Game.srm`), not after a
+    disc. A playlist you have saves under counts as that game's name: its saves are listed with the game, follow the game when
+    its rules say archive or leave, and are renamed when the build replaces your playlist with the one named after the
+    database (`game.m3u` becomes `Game (1990)(Pub).m3u`, `game.srm` becomes `Game (1990)(Pub).srm`). Only a playlist that
+    already has saves is followed: a save made from disc 1 on its own keeps disc 1's name.
+  - *The system list:* a system with saves shows a small badge with their number (set at its last scan).
 - **BIOS and firmware:** press **Check** and the app reads the `.info` file of every installed core, lists the BIOS / firmware
   each wants (required or optional) and compares them with RetroArch's system folder, verified by MD5 where the core gives a
   checksum. By default it covers the cores of **every system that has a ROM folder** (or choose *Every installed core*, or one
@@ -894,6 +915,60 @@ build, what the rules archive (`_excluded`, `_superseded`, `_incomplete`, `_dupl
   (`[cr]`, `[cr Galahad]`) joins `[cr CSL]` / `[cr Galahad v1]` disks. Disks with
   incompatible dump flags are never mixed (such families are reported incomplete), and
   excluded variants (`[b]`, pre-release ...) are never borrowed from.
+
+## Nintendo Switch (v0.2)
+
+The **Nintendo Switch** is a system like the others (Cartridge consoles, in the sidebar) with Overview, Library and Browse. Games, updates
+and add-ons (`.nsp` `.nsz` `.xci` `.xcz`) live in the one folder; the folders the emulators keep in there (named by a 16-digit title ID,
+with shader caches) are ignored.
+
+* **The database.** There is no checksum DAT for the Switch (No-Intro and Redump have none, and a card dump is far too big to hash for
+  a lookup). The "DATs" are three catalogues made from one source, the community title database `blawar/titledb` (names, languages and
+  demo flags from its US, GB and JP eShop lists - the store a title is sold in is its region -, the NCA content IDs, every update
+  version in `versions.json`): ***Nintendo - Switch*** (the games, `Game (USA, Europe) (En,Fr,De)`), ***Nintendo - Switch (Updates)*** (one entry per update version, `Game - Update (USA, Europe) (v3)`) and
+  ***Nintendo - Switch (DLC)***. They are made when the database is fetched, on the first start (about 100 MB over the wire; "Update the title database now" on
+  the Emulators page does it again). Each has its own completion figure.
+* **How a file is matched.** By the **title ID** inside it - the `.cnmt.xml`, an NCA the database knows (this recognises a renamed eShop
+  file and gives its version), the ticket, the `[title ID]` in the name, and for a card dump the header of its small CNMT NCA (the one
+  place your own `prod.keys` is used: 512 bytes of one file; nothing else is decrypted) - and for an update by its **version** as well.
+  An update whose version the database does not list is unmatched.
+* **Library.** The ordinary rules: *latest update only* applies to the updates catalogue (older updates go to the archive's
+  `_superseded`), duplicates, region on the games, unmatched files to `_unmatched`, and files are renamed to the catalogue names.
+* **Checksums.** A Switch file names each NCA by the first 16 bytes of its SHA-256, so it carries its own checksums. **Check the Switch
+  files' checksums** (Emulators page) hashes every NCA of every game file and compares it with its name (`.nsz` / `.xcz` are not
+  checked); the result is remembered for files that do not change.
+* **Saves** (Eden and Ryujinx, by title ID, shown on the system's Overview and Browse): see below. Copying saves between the emulators is
+  planned, see `docs/SWITCH_PLAN.md`.
+
+## Nintendo Wii and Wii U, and the saves of the emulators (v0.2)
+
+**Nintendo Wii** and **Nintendo Wii U** are systems like the others (disc systems, in the sidebar), with the same Overview, Library
+and Browse tabs.
+
+* **Wii:** *Nintendo - Wii* from Redump. A plain `.iso` is hashed. Dolphin's `.rvz` / `.wia` / `.wbfs` / `.ciso` are not the original
+  image (the encrypted partitions are stored decrypted), so Redump's checksum cannot be had without rebuilding the whole disc; such a
+  file is **identified, not verified**: the game ID in its header (`SB4E01`) gives the title (GameTDB, else the header's own title),
+  its 4th character the region, then revision and disc number pick the Redump game. A copy of an `.iso` that matches no checksum
+  (scrubbed, trimmed) is identified the same way.
+* **Wii U:** Redump has no Wii U DAT. The app makes one from GameTDB's `wiiutdb.xml` (the 457 disc games, `Title (Region) (Languages)`, no
+  checksums; eShop and Virtual Console titles are left out) when it fetches the list (on the first start, then when you press Check for updates). A `.wux` / `.wud` is told by the product code in its first sector (`WUP-P-AFXE-00-551USA-0`);
+  nothing is decrypted.
+* **GameCube** and **Wii** are separate systems with their own folders, even though Dolphin plays both.
+
+### Saves of the emulators
+
+The **Emulators** page (sidebar, below Settings) lists the emulators the app looks at - **Dolphin** (GameCube, Wii), **Cemu** (Wii U),
+**PCSX2** (PlayStation 2), **Eden** and **Ryujinx** (Switch) - each with its folder (found on this machine and selected; type or browse
+to override), and a switch to ignore it. RetroArch, below them, serves every other system. A system whose emulator is not set up (or
+switched off) shows no saves anywhere: no card, no column, no choice in the Library rules.
+
+* **RetroArch's** saves are named after the ROM: they follow a renamed ROM, and the Library rules' "rename saves" switch applies.
+* **The others** are told by the game's ID, so they never need a new name: Dolphin by the 4-character game code (GameCube `.gci` files
+  and Wii `data` folders), Cemu by the title ID (Cemu's own `title_list_cache.xml` says which disc is which), PCSX2 by the disc's serial
+  (read from `SYSTEM.CNF`; memory-card folders and save states). A game that has saves is **kept** when the rules would archive it (or you
+  choose to archive its saves with it: they go to `<archive>/<system>/_saves/...` and Undo brings them back). The saves of a memory card
+  *image* (`.ps2`, GameCube `.raw`) cannot be split by game: they are counted but never moved.
+* On the platform page the **Overview** shows "Saves (Dolphin)" and the **Browse** tab has the Saves column and list, with the source.
 
 ## Kickstarts for RetroArch (PUAE)
 

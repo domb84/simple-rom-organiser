@@ -80,9 +80,22 @@ class SaveSet:
     here: bool = False                          # some file is in a folder of a core that plays this system
     members: List[Tuple[Path, Path, str, int]] = field(default_factory=list)   # (file, save root, kind, size)
     match: str = NONE                           # rom | dat | none
+    source: str = "retroarch"                   # which emulator's saves (retroarch: named after the ROM; the others are told by a game ID)
+    label: str = ""                             # that emulator's name for the screen
     dat: str = ""
     game: str = ""                              # the DAT game (set) name
     title: str = ""
+
+    @property
+    def shown(self) -> str:
+        """The emulator's name for the screen."""
+        return self.label or ("RetroArch" if self.source == "retroarch" else self.source.capitalize())
+
+    @property
+    def renames(self) -> bool:
+        """True when the saves are named after the ROM (RetroArch's): they follow a renamed ROM. The other emulators' saves are told
+        by the game's ID and never change name."""
+        return self.source == "retroarch"
 
     @property
     def files(self) -> int:
@@ -92,15 +105,27 @@ class SaveSet:
     def public(self) -> Dict[str, Any]:
         return {"name": self.name, "match": self.match, "dat": self.dat, "game": self.game, "title": self.title or self.name,
                 "files": self.files, "saves": self.saves, "states": self.states, "screenshots": self.shots,
-                "bytes": self.bytes, "cores": list(self.cores)}
+                "bytes": self.bytes, "cores": list(self.cores), "source": self.source, "label": self.shown}
 
 
 @dataclass
 class SaveReport:
     """The result of :func:`build` for one scan."""
     sets: Dict[str, SaveSet] = field(default_factory=dict)       # by folded content name
+    playlists: Dict[str, Tuple[str, List[str]]] = field(default_factory=dict)   # folded .m3u name -> (name, its discs' names)
     per_core: bool = False                                       # RetroArch keeps one sub-folder per core
     install: str = ""
+
+    def playlist_of(self, disc_key: str) -> Optional[str]:
+        """The folded name of the first playlist that lists the disc whose folded name is ``disc_key`` (None: no playlist)."""
+        cache = getattr(self, "_pl", None)
+        if cache is None:
+            cache = {}
+            for key, (_name, discs) in self.playlists.items():
+                for d in discs:
+                    cache.setdefault(fold_name(d), key)
+            self._pl = cache
+        return cache.get(disc_key)
 
     def counted(self) -> List[SaveSet]:
         """The sets that are this system's business: every matched one, and an unmatched one only when it lies in the folder of
@@ -118,7 +143,9 @@ class SaveReport:
                 "titles_rom": len({(s.title or s.game).casefold() for s in rom}),
                 "titles_dat": len({(s.title or s.game).casefold() for s in dat}
                                   - {(s.title or s.game).casefold() for s in rom}),
-                "per_core": self.per_core, "install": self.install}
+                "per_core": self.per_core, "install": self.install,
+                "sources": sorted({st.shown for st in sets}) or ([self.install] if self.install else []),
+                "renames": any(st.renames for st in sets) or bool(self.install)}
 
     def game_counts(self, dat: str, game: str) -> Optional[Dict[str, int]]:
         """``{saves, states, total}`` of the sets that belong to one DAT game (None: no save)."""
@@ -183,11 +210,29 @@ def game_refs(rows: Iterable[Dict[str, Any]]) -> Tuple[Dict[str, Tuple[str, str,
     return by_file, by_dat
 
 
+def playlist_refs(playlists: Iterable[Tuple[str, List[str]]], by_file: Dict[str, Tuple[str, str, str]]) -> Dict[str, Tuple[str, List[str]]]:
+    """The playlists (``(name, disc names)``) that belong to the games of ``by_file`` (the first disc is one of them), by folded name."""
+    out: Dict[str, Tuple[str, List[str]]] = {}
+    for name, discs in playlists:
+        if discs and fold_name(discs[0]) in by_file:
+            out.setdefault(fold_name(name), (name, list(discs)))
+    return out
+
+
 def build(entries: Iterable[Tuple[Path, Path, bool]], by_file: Dict[str, Tuple[str, str, str]],
-          by_dat: Dict[str, Tuple[str, str, str]], per_core: bool = False, install: str = "") -> SaveReport:
+          by_dat: Dict[str, Tuple[str, str, str]], per_core: bool = False, install: str = "",
+          playlists: Iterable[Tuple[str, List[str]]] = ()) -> SaveReport:
     """Group the save files ``entries`` (``(file, save root, here)`` from ``retroarch.SaveWalk.for_platform``) into sets and
-    match each set to a title (see the module's text). One pass over the files; every name is looked up in two dictionaries."""
+    match each set to a title (see the module's text). One pass over the files; every name is looked up in two dictionaries.
+
+    ``playlists``: the ``.m3u`` files of the system as ``(name, disc names)``. RetroArch names the saves of a multi-disc game after
+    the playlist it was started from, so a playlist is a name a game's saves can have: it belongs to the game of its first disc."""
     report = SaveReport(per_core=per_core, install=install)
+    report.playlists = playlist_refs(playlists, by_file)
+    if report.playlists:
+        by_file = dict(by_file)
+        for key, (_name, discs) in report.playlists.items():
+            by_file.setdefault(key, by_file[fold_name(discs[0])])
     for f, root, here in entries:
         name = f.name
         pick: Optional[Tuple[str, str]] = None

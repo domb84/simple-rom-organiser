@@ -59,7 +59,7 @@ function Stop-Tree([int]$RootPid, [string]$Image) {
 
 function Get-Text([string]$Path, [hashtable]$Headers = @{}) {
     $r = Invoke-WebRequest "$script:url$Path" -UseBasicParsing -Headers $Headers -TimeoutSec 60
-    if ($r.StatusCode -ne 200) { throw "smoke test failed: GET $Path answered $($r.StatusCode)" }
+    if ($r.StatusCode -ne 210) { throw "smoke test failed: GET $Path answered $($r.StatusCode)" }
     if ($r.Content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($r.Content) }
     return [string]$r.Content
 }
@@ -93,7 +93,7 @@ try {
     Assert-Match $status '"os": "windows"' "status does not say the app runs on Windows"
 
     # the pages of the UI: home, a system, and the three v0.2 added; and the files the page loads
-    foreach ($view in "view-home", "view-system", "view-collection", "view-retroarch", "view-chd") {
+    foreach ($view in "view-home", "view-system", "view-collection", "view-retroarch", "view-chd", "view-settings") {
         Assert-Match $index ('id="' + $view + '"') "the page lacks $view"
     }
     foreach ($file in [regex]::Matches($index, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value }) {
@@ -109,11 +109,11 @@ try {
                       "Nintendo Entertainment System", "Super Nintendo Entertainment System", "Nintendo Game Boy",
                       "Nintendo Game Boy Color", "Nintendo DS", "Sega Mega Drive - Genesis", "Sega Master System",
                       "Sega Game Gear", "Sega 32X", "Atari Lynx", "Sega Dreamcast", "Sony PlayStation",
-                      "Sony PlayStation 2", "Nintendo GameCube") {
+                      "Sony PlayStation 2", "Nintendo GameCube", "Nintendo Wii", "Nintendo Wii U", "Nintendo Switch") {
         Assert-Match $platforms ('"' + [regex]::Escape($name) + '"') "platform missing: $name"
     }
     $count = [regex]::Matches($platforms, '"folder_hint"').Count
-    if ($count -ne 18) { throw "smoke test failed: expected 18 systems, the app lists $count" }
+    if ($count -ne 21) { throw "smoke test failed: expected 21 systems, the app lists $count" }
     Write-Host "GET /api/platforms -> $count systems"
     $updates = Get-Text "/api/updates"
     Assert-Match $updates '"state"' "/api/updates missing"

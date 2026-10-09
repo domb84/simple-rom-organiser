@@ -179,6 +179,72 @@ PLATFORMS[GAMECUBE_PLATFORM] = Platform(
     containers=("rvz",),
 )
 
+REDUMP_WII_DAT = "Nintendo - Wii"
+WII_PLATFORM = "Nintendo Wii"
+
+# Like the GameCube: one file per disc, flat folder, Redump's DAT. A plain .iso is hashed; Dolphin's compressed formats cannot be
+# turned back into the original image, so they are identified by the game ID in their header (romorg.discmatch).
+PLATFORMS[WII_PLATFORM] = Platform(
+    name=WII_PLATFORM,
+    dats=(REDUMP_WII_DAT,),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_FLAT,
+    extensions=(".iso", ".rvz", ".wia", ".wbfs", ".ciso"),
+    convertible=False,
+    folder_hint="wii",
+    latest_dats=(REDUMP_WII_DAT,),
+    language_dats=(REDUMP_WII_DAT,),
+    region_dats=(REDUMP_WII_DAT,),
+    containers=("rvz", "discid"),
+)
+
+WIIU_DAT = "Nintendo - Wii U"
+WIIU_PLATFORM = "Nintendo Wii U"
+
+# Redump has no Wii U DAT: the "DAT" is made from GameTDB's list (romorg.gametdb.build_dat), a catalogue of the disc games with no
+# checksums. A disc image is told by the product code in its first sector (romorg.discmatch); nothing is hashed.
+PLATFORMS[WIIU_PLATFORM] = Platform(
+    name=WIIU_PLATFORM,
+    dats=(WIIU_DAT,),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_FLAT,
+    extensions=(".wux", ".wud"),
+    convertible=False,
+    folder_hint="wiiu",
+    latest_dats=(WIIU_DAT,),
+    language_dats=(WIIU_DAT,),
+    region_dats=(WIIU_DAT,),
+    containers=("discid",),
+)
+
+SWITCH_DAT = "Nintendo - Switch"
+SWITCH_UPDATES_DAT = "Nintendo - Switch (Updates)"
+SWITCH_DLC_DAT = "Nintendo - Switch (DLC)"
+SWITCH_PLATFORM = "Nintendo Switch"
+
+# No DAT of checksums exists for the Switch: the "DATs" are catalogues made from the title database (romorg.switchdb): the games (with
+# the stores they are sold in), every update version of them and their add-ons. A file is told by its title ID and version
+# (romorg.switchmatch). Games, updates and add-ons sit in one folder; "latest version only" applies to the updates DAT.
+PLATFORMS[SWITCH_PLATFORM] = Platform(
+    name=SWITCH_PLATFORM,
+    dats=(SWITCH_DAT, SWITCH_UPDATES_DAT, SWITCH_DLC_DAT),
+    m3u_dats=(),
+    kickstart_dat=None,
+    source=DatSource.REDUMP.value,
+    layout=LAYOUT_FLAT,
+    extensions=(".nsp", ".xci", ".nsz", ".xcz"),
+    convertible=False,
+    folder_hint="switch",
+    latest_dats=(SWITCH_UPDATES_DAT,),
+    language_dats=(SWITCH_DAT, SWITCH_UPDATES_DAT),
+    region_dats=(SWITCH_DAT,),
+    containers=("titleid",),
+)
+
 REDUMP_PSX_DAT = "Sony - PlayStation"
 PSX_PLATFORM = "Sony PlayStation"
 REDUMP_PS2_DAT = "Sony - PlayStation 2"

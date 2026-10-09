@@ -48,7 +48,8 @@
       <input type="search" id="side-q" class="input side-q" placeholder="Find a system" aria-label="Find a system" autocomplete="off">
       <a class="nav-item nav-collection" href="#/collection" id="collection-link"><span class="nav-name">Collection <span class="muted small">all systems</span></span></a>
       <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
-      <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">RetroArch <span class="muted small">saves and config</span></span></a>
+      <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">Emulators <span class="muted small">saves and config</span></span></a>
+      <a class="nav-item nav-collection" href="#/settings" id="settings-link"><span class="nav-name">Settings <span class="muted small">for every system</span></span></a>
       <nav id="home-groups" aria-label="Systems by group"><div class="empty">Loading systems...</div></nav>
       <div class="muted small side-foot" id="dats-dir"></div>
     </aside>
@@ -79,6 +80,7 @@
           <input type="text" id="col-root" class="input grow mono" placeholder="~/Emulation/roms" spellcheck="false" autocomplete="off">
           <button class="btn" id="col-root-browse">Folders...</button>
           <button class="btn btn-primary" id="col-scan-btn" data-needs-idle>Scan folder</button>
+          <button class="btn hidden" id="col-scan-force-btn" data-needs-idle title="Read every file again and calculate all its checksums again. A normal rescan reads only new and changed files.">Recalculate checksums</button>
         </div>
         <div id="col-scan-info" class="muted small"></div>
         <div id="col-scan-notes" class="notice hidden"></div>
@@ -103,12 +105,13 @@
         </div>
         <div id="col-inplace-opts">
           <p class="muted small">Files go into their system's folder, are renamed to the databases' names and sorted by the rules. What matches nothing, is not a ROM, or is archived by the rules (excluded, superseded, incomplete, duplicates) moves to the archive folder, so the ROM folders hold only what you keep. Nothing is deleted; Undo puts everything back.</p>
-          <label class="small" for="col-aside">Archive folder (outside the ROM folders)</label>
+          <label class="small" for="col-aside">Archive folder (outside the ROM folders; empty = the one in <a href="#/settings">Settings</a>; with none, nothing is archived)</label>
           <div class="row">
-            <input type="text" id="col-aside" class="input grow mono" placeholder="Default: next to the ROM folder, named like it with -archive" spellcheck="false" autocomplete="off">
+            <input type="text" id="col-aside" class="input grow mono" placeholder="Archive folder (or set one for every system in Settings)" spellcheck="false" autocomplete="off">
             <button class="btn" id="col-aside-browse">Folders...</button>
           </div>
           <label class="check"><input type="checkbox" id="col-sweep" checked> Move what the rules archive out of the ROM folders into the archive folder</label>
+          <div class="muted small hidden" id="col-aside-none">No archive folder is set, so nothing is archived: files that match nothing and files that are not ROMs stay where they are, and what the rules leave out goes into <code>_excluded</code>, <code>_superseded</code> ... inside each system's folder. Choose one above, or for every system in <a href="#/settings">Settings</a>.</div>
           <label class="check hidden" id="col-convert-wrap"><input type="checkbox" id="col-convert"> <span id="col-convert-label"></span></label>
         </div>
         <div id="col-elsewhere" class="hidden">
@@ -132,6 +135,16 @@
       <details class="rules-panel hidden" id="col-rules-box" open>
         <summary><span class="rules-title">4. Rules for every system</span><span class="rules-summary" id="col-rules-summary"></span><span class="edit-hint" aria-hidden="true"></span></summary>
         <div class="rules-body" id="col-rules"></div>
+        <details class="saves-games hidden" id="col-saves-games">
+          <summary id="col-saves-games-title">Saves of single games: choose for each game</summary>
+          <p class="sub note">The games the rules above would replace or archive that you have RetroArch saves for. The choice at the top is the default; here you can give a single game another one.</p>
+          <input type="search" id="col-saves-q" class="input" placeholder="Search these games" aria-label="Search the games with saves" autocomplete="off">
+          <div class="table-wrap"><table>
+            <thead><tr><th>System</th><th>Game</th><th>Saves</th><th>The build</th><th>If a rule replaces it</th></tr></thead>
+            <tbody id="col-saves-table"></tbody>
+          </table></div>
+          <div class="muted small" id="col-saves-note"></div>
+        </details>
         <div class="row">
           <button class="btn btn-small" id="col-rules-reset">Back to each system's defaults</button>
           <span class="muted small" id="col-rules-note"></span>
@@ -153,6 +166,28 @@
           <thead id="col-thead"></thead>
           <tbody id="col-table"></tbody>
         </table></div>
+      </div>
+    </section>
+
+    <!-- ===================== NINTENDO SWITCH: games and the saves of Eden and Ryujinx ===================== -->
+    <!-- ===================== SETTINGS: what applies to every system ===================== -->
+    <section class="view hidden" id="view-settings" aria-labelledby="settings-title">
+      <div class="sys-head">
+        <h1 id="settings-title">Settings</h1>
+        <span class="muted small grow">What applies to every system. A system can still have its own on its Library tab.</span>
+      </div>
+      <div class="panel">
+        <h2>Archive folder</h2>
+        <p class="muted small">Where the Library and Collection builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
+        <div class="row">
+          <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
+          <button class="btn" id="set-archive-browse">Folders...</button>
+        </div>
+        <div class="muted small" id="set-archive-default"></div>
+        <div class="hidden" id="set-archive-own-box">
+          <h3>Systems with their own archive folder</h3>
+          <ul class="archive-list" id="set-archive-own"></ul>
+        </div>
       </div>
     </section>
 
@@ -213,9 +248,26 @@
     <!-- ===================== RETROARCH: where saves live, and the config that says so ===================== -->
     <section class="view hidden" id="view-retroarch" aria-labelledby="ra-title">
       <div class="sys-head">
-        <h1 id="ra-title">RetroArch</h1>
-        <span class="muted small grow">Choose where saves and states live. The app moves them there and updates RetroArch's config to match.</span>
+        <h1 id="ra-title">Emulators and saves</h1>
+        <span class="muted small grow">Where each emulator keeps its saves. A system whose emulator is set up here shows its saves; one that is not shows none.</span>
       </div>
+      <div class="panel" id="emu-panel">
+        <h2>Emulators</h2>
+        <p class="muted small">Found on this machine and selected for you; change a folder if yours is somewhere else. Switch an emulator off and the app ignores its saves. RetroArch (below) serves every other system.</p>
+        <div id="emu-list"></div>
+        <div class="emu-row" id="emu-switch">
+          <div class="row"><b>Nintendo Switch games</b></div>
+          <div id="sw-db-line" class="small"></div>
+          <div id="sw-keys-line" class="small muted"></div>
+          <div class="row">
+            <button class="btn" id="sw-verify-btn" data-needs-idle title="Hashes every NCA in every game file and compares it with its own name. Reads all the files; the result is remembered for files that do not change.">Check the Switch files' checksums</button>
+            <button class="btn" id="sw-db-btn" data-needs-idle>Update the title database now</button>
+            <span class="muted small">Fetched on the first start, then only when you ask (about 100 MB from github.com/blawar/titledb); this does it now.</span>
+          </div>
+        </div>
+      </div>
+      <h2 class="section-title" id="ra-section-title">RetroArch</h2>
+      <p class="muted small">Choose where saves and states live. The app moves them there and updates RetroArch's config to match.</p>
       <div class="panel">
         <h2>Installation</h2>
         <div id="ra-none" class="notice hidden">No RetroArch was found. You can point at a <code>retroarch.cfg</code> below. Everything else in the app works without it.</div>
@@ -328,6 +380,7 @@
         <span class="badge" id="sys-source"></span>
         <span class="muted small grow" id="sys-sub"></span>
         <button class="btn btn-primary" id="scan-btn">Scan folder</button>
+        <button class="btn hidden" id="scan-force-btn" title="Read every file again and calculate all its checksums again. A normal rescan reads only new and changed files.">Recalculate checksums</button>
       </div>
 
       <div class="tabs systabs" role="tablist" id="sys-tabs" aria-label="System sections">
@@ -393,7 +446,6 @@
 
       <!-- ---------- Library ---------- -->
       <div class="tabpanel hidden" role="tabpanel" id="tab-library" aria-labelledby="tabbtn-library" tabindex="-1">
-        <p class="muted" id="library-intro"></p>
 
         <div class="totals-pair" id="lib-totals-pair">
           <section class="totals-block" aria-labelledby="lib-totals-all-title">
@@ -435,12 +487,14 @@
             <legend>Where to build</legend>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-here" checked> In this folder (reorganises the source: files are moved)</label>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-other"> In another folder (the files are copied or moved there)</label>
+            <div class="muted small hidden" id="lib-aside-none">No archive folder is set (<a href="#/settings">Settings</a>): what the rules leave out stays in this folder, in <code>_excluded</code>, <code>_superseded</code> ...</div>
             <div id="lib-aside-opts">
-              <label class="check" title="Files the rules archive are moved to a folder next to the ROM folders instead of staying in this one."><input type="checkbox" id="lib-aside-on"> Keep this folder tidy: move what the rules archive (excluded, superseded, incomplete, duplicates, unmatched) to another folder</label>
+              <label class="check" title="Files the rules leave out are moved to a folder of their own instead of staying in this one."><input type="checkbox" id="lib-aside-on"> Archive unmatched files (excluded, superseded, incomplete, duplicates) to another folder</label>
               <div class="row hidden" id="lib-aside-row">
                 <input type="text" id="lib-aside-dir" class="input grow mono" placeholder="Folder for the archived files" spellcheck="false" autocomplete="off" aria-label="Archive folder">
                 <button class="btn" id="lib-aside-browse">Folders...</button>
               </div>
+              <div class="archive-where hidden" id="lib-aside-where"></div>
             </div>
             <div id="lib-export-opts" class="hidden">
               <div class="row">

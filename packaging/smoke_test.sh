@@ -58,7 +58,7 @@ grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
 # the pages of v0.2 (also checked by packaging/smoke_test.ps1 on Windows)
-for view in view-home view-system view-collection view-retroarch view-chd; do
+for view in view-home view-system view-collection view-retroarch view-chd view-settings; do
   grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
 done
 
@@ -68,11 +68,11 @@ if [[ -n "$TOKEN" ]]; then
   for name in "Commodore Amiga" "Commodore Amiga - WHDLoad" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
               "Super Nintendo Entertainment System" "Nintendo Game Boy" "Nintendo Game Boy Color" "Nintendo DS" \
               "Sega Mega Drive - Genesis" "Sega Master System" "Sega Game Gear" "Sega 32X" "Atari Lynx" \
-              "Sega Dreamcast" "Sony PlayStation" "Sony PlayStation 2" "Nintendo GameCube"; do
+              "Sega Dreamcast" "Sony PlayStation" "Sony PlayStation 2" "Nintendo GameCube" "Nintendo Wii" "Nintendo Wii U" "Nintendo Switch"; do
     grep -q "\"$name\"" <<<"$PLATFORMS" || { echo "platform missing: $name" >&2; exit 1; }
   done
   COUNT="$(grep -o '"folder_hint"' <<<"$PLATFORMS" | wc -l)"
-  [[ "$COUNT" == "18" ]] || { echo "expected 18 systems, the app lists $COUNT" >&2; exit 1; }
+  [[ "$COUNT" == "21" ]] || { echo "expected 21 systems, the app lists $COUNT" >&2; exit 1; }
   echo "GET /api/platforms -> $COUNT systems"
   grep -q '"state"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing" >&2; exit 1; }
   grep -q '"rules"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Commodore%20Amiga")" \

@@ -240,8 +240,9 @@ def get_index(dat: DatFile) -> DcIndex:
 class ChdCache:
     """Per-file track hashes in the shared ``hashes.sqlite`` (table ``chd_hashes``); degrades to a no-op."""
 
-    def __init__(self, db_path: Optional[Path]) -> None:
+    def __init__(self, db_path: Optional[Path], refresh: bool = False) -> None:
         self.conn: Optional[sqlite3.Connection] = None
+        self.refresh = refresh                 # True: read nothing (recalculate every checksum), write everything again
         self._lock = threading.Lock()
         if db_path is None:
             return
@@ -252,19 +253,24 @@ class ChdCache:
                 "CREATE TABLE IF NOT EXISTS chd_hashes (path TEXT NOT NULL, size INTEGER NOT NULL,"
                 " mtime_ns INTEGER NOT NULL, sha1 TEXT NOT NULL, kind TEXT NOT NULL, tracks TEXT NOT NULL,"
                 " level TEXT NOT NULL, via TEXT NOT NULL, PRIMARY KEY (path, size, mtime_ns, sha1))")
+            conn.execute("CREATE INDEX IF NOT EXISTS chd_hashes_ident ON chd_hashes(sha1, size, mtime_ns)")
             conn.commit()
             self.conn = conn
         except (sqlite3.Error, OSError):
             self.conn = None
 
     def get(self, path: str, size: int, mtime_ns: int, sha1: str) -> Optional[dict]:
-        if self.conn is None:
+        if self.conn is None or self.refresh:
             return None
         try:
             with self._lock:
                 row = self.conn.execute(
                     "SELECT tracks, level, via FROM chd_hashes WHERE path=? AND size=? AND mtime_ns=? AND sha1=?",
                     (path, size, mtime_ns, sha1)).fetchone()
+                if row is None:                    # the same CHD (header sha1, size, time) under another name or folder
+                    row = self.conn.execute(
+                        "SELECT tracks, level, via FROM chd_hashes WHERE sha1=? AND size=? AND mtime_ns=? LIMIT 1",
+                        (sha1, size, mtime_ns)).fetchone()
         except sqlite3.Error:
             return None
         if not row:
@@ -1009,14 +1015,14 @@ def identify_raw(unit: DcUnit, index: DcIndex, hasher_cache: scanner.HashCache,
         if i not in hashes:
             st = files[i].stat()
             key = scanner._cache_key(files[i])
-            got = hasher_cache.get(key, st.st_size, st.st_mtime_ns) if key else None
+            got = hasher_cache.get(key, st.st_size, st.st_mtime_ns, scanner.file_ident(st)) if key else None
             if got is None:
                 if prog:
                     prog.check()
                     prog.emit(f"Hashing {files[i].name}")
                 got = _hash_file_progress(files[i], prog)
                 if key:
-                    hasher_cache.put(key, st.st_size, st.st_mtime_ns, got[0], got[1])
+                    hasher_cache.put(key, st.st_size, st.st_mtime_ns, got[0], got[1], scanner.file_ident(st))
             hashes[i] = got
             unit.tracks[i]["crc32"], unit.tracks[i]["sha1"] = got
         return hashes[i]
@@ -1153,7 +1159,7 @@ def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full
 def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
          cache_path: Optional[Path] = None, use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None,
          engine: str = "auto", protected_dirs: Sequence[str] = (), workers: int = 1, full: bool = False,
-         **_ignored: Any) -> DcScanResult:
+         refresh_cache: bool = False, **_ignored: Any) -> DcScanResult:
     """Scan ``root`` for CHDs and raw sets and match them to the Redump DAT (``dats``: one DatFile or a list)."""
     root = Path(root).expanduser().absolute()
     if not root.is_dir():
@@ -1167,8 +1173,8 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
     problems: list[tuple[Path, str]] = []
     files = scanner.collect_files(root, True, problems, protected_dirs)
     units, rest = discover_units(root, files, system)
-    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None)
-    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None)
+    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
+    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
     use_chdman = chdman is not None and engine == "chdman"        # forced; "auto" = built-in reader first
 
     sched = chdsched.make_scheduler(workers)
@@ -1256,7 +1262,8 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
 def scan_many(root, dats: Sequence[DatFile], files: Optional[Sequence[Path]] = None,
               progress: Optional[ProgressFn] = None, cancel: Any = None, cache_path: Optional[Path] = None,
               use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None, engine: str = "auto",
-              workers: int = 1, full: bool = False) -> tuple[list[tuple[DcUnit, "DiscSystem"]], list[DcUnit], list[Path]]:
+              workers: int = 1, full: bool = False,
+              refresh_cache: bool = False) -> tuple[list[tuple[DcUnit, "DiscSystem"]], list[DcUnit], list[Path]]:
     """Every disc image under ``root`` against the Redump DATs of ALL disc systems in ONE pass: the folder is walked and the
     CHDs / sheets found once, each disc is read once (its track hashes are cached and shared by every DAT it is tried
     against; a disc whose track sizes fit no game of a DAT is rejected without decoding anything).
@@ -1273,8 +1280,8 @@ def scan_many(root, dats: Sequence[DatFile], files: Optional[Sequence[Path]] = N
         files = scanner.collect_files(root, True, [], ())
     units, rest = discover_units(root, list(files), None)
     units = [u for u in units if not folders.is_converted(_parts(u.path, root))]
-    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None)
-    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None)
+    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
+    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
     use_chdman = chdman is not None and engine == "chdman"
     sched = chdsched.make_scheduler(workers)
     try:

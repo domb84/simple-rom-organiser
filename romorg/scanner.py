@@ -794,13 +794,27 @@ def read_magic(path: Path) -> bytes:
         return f.read(4)
 
 
-class HashCache:
-    """sqlite hash cache; silently degrades to a no-op if the db can't be used."""
+def file_ident(st: Optional[os.stat_result]) -> Optional[tuple[int, int]]:
+    """``(device, inode)`` of a stat result, to recognise a file that was only moved or renamed (same size, same modification
+    time, same inode): its hashes are not computed again. None where the file system has no usable inode numbers."""
+    if st is None:
+        return None
+    ino = getattr(st, "st_ino", 0) or 0
+    return (getattr(st, "st_dev", 0) or 0, ino) if ino else None
 
-    def __init__(self, db_path: Optional[Path]) -> None:
+
+class HashCache:
+    """sqlite hash cache; silently degrades to a no-op if the db can't be used.
+
+    A file is found by its path, size and modification time; when it was only moved or renamed (same device and inode, size and
+    modification time) its hashes are found that way too. ``refresh`` = read nothing from the cache (write everything again):
+    "recalculate every checksum"."""
+
+    def __init__(self, db_path: Optional[Path], refresh: bool = False) -> None:
         self.conn: Optional[sqlite3.Connection] = None
-        self._pending: list[tuple[str, int, int, str, str]] = []
-        self._pending_alt: list[tuple[str, int, int, str, str, str, str]] = []
+        self.refresh = refresh
+        self._pending: list[tuple[str, int, int, str, str, int, int]] = []
+        self._pending_alt: list[tuple[str, int, int, str, str, str, str, int, int]] = []
         if db_path is None:
             return
         try:
@@ -817,34 +831,48 @@ class HashCache:
                 " crc TEXT NOT NULL, sha1 TEXT NOT NULL,"
                 " PRIMARY KEY (path, size, mtime_ns, member, variant))"
             )
+            for table in ("hashes", "alt_hashes"):          # databases of earlier versions get the inode columns
+                have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                for col in ("dev", "ino"):
+                    if col not in have:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {table}_ident ON {table}(ino, size, mtime_ns)")
             conn.commit()
             self.conn = conn
         except (sqlite3.Error, OSError):
             self.conn = None
 
-    def get(self, path: str, size: int, mtime_ns: int) -> Optional[tuple[str, str]]:
-        if self.conn is None:
+    def get(self, path: str, size: int, mtime_ns: int, ident: Optional[tuple[int, int]] = None) -> Optional[tuple[str, str]]:
+        if self.conn is None or self.refresh:
             return None
         try:
             row = self.conn.execute(
                 "SELECT crc, sha1 FROM hashes WHERE path=? AND size=? AND mtime_ns=?",
                 (path, size, mtime_ns),
             ).fetchone()
+            if row is None and ident is not None:           # moved or renamed since: the same file
+                row = self.conn.execute(
+                    "SELECT crc, sha1 FROM hashes WHERE ino=? AND dev=? AND size=? AND mtime_ns=? LIMIT 1",
+                    (ident[1], ident[0], size, mtime_ns),
+                ).fetchone()
+                if row is not None:
+                    self.put(path, size, mtime_ns, row[0], row[1], ident)
         except sqlite3.Error:
             return None
         return (row[0], row[1]) if row else None
 
-    def put(self, path: str, size: int, mtime_ns: int, crc: str, sha1: str) -> None:
+    def put(self, path: str, size: int, mtime_ns: int, crc: str, sha1: str,
+            ident: Optional[tuple[int, int]] = None) -> None:
         if self.conn is not None:
-            self._pending.append((path, size, mtime_ns, crc, sha1))
+            self._pending.append((path, size, mtime_ns, crc, sha1, ident[0] if ident else 0, ident[1] if ident else 0))
             if len(self._pending) >= 500:
                 self.flush()
 
     def get_alt(self, path: str, size: int, mtime_ns: int, member: str, variant: str,
-                ) -> Optional[tuple[str, str]]:
+                ident: Optional[tuple[int, int]] = None) -> Optional[tuple[str, str]]:
         """Cached (crc, sha1) of a variant of a loose file (``member=""``) or archive member
         (keyed by the archive's path/size/mtime)."""
-        if self.conn is None:
+        if self.conn is None or self.refresh:
             return None
         try:
             row = self.conn.execute(
@@ -852,14 +880,23 @@ class HashCache:
                 " AND member=? AND variant=?",
                 (path, size, mtime_ns, member, variant),
             ).fetchone()
+            if row is None and ident is not None:
+                row = self.conn.execute(
+                    "SELECT crc, sha1 FROM alt_hashes WHERE ino=? AND dev=? AND size=? AND mtime_ns=?"
+                    " AND member=? AND variant=? LIMIT 1",
+                    (ident[1], ident[0], size, mtime_ns, member, variant),
+                ).fetchone()
+                if row is not None:
+                    self.put_alt(path, size, mtime_ns, member, variant, row[0], row[1], ident)
         except sqlite3.Error:
             return None
         return (row[0], row[1]) if row else None
 
     def put_alt(self, path: str, size: int, mtime_ns: int, member: str, variant: str,
-                crc: str, sha1: str) -> None:
+                crc: str, sha1: str, ident: Optional[tuple[int, int]] = None) -> None:
         if self.conn is not None:
-            self._pending_alt.append((path, size, mtime_ns, member, variant, crc, sha1))
+            self._pending_alt.append((path, size, mtime_ns, member, variant, crc, sha1,
+                                      ident[0] if ident else 0, ident[1] if ident else 0))
             if len(self._pending_alt) >= 500:
                 self.flush()
 
@@ -870,14 +907,15 @@ class HashCache:
             if self._pending:
                 # Drop stale rows for the same path, then insert the fresh ones.
                 self.conn.executemany("DELETE FROM hashes WHERE path=?", [(p[0],) for p in self._pending])
-                self.conn.executemany("INSERT OR REPLACE INTO hashes VALUES (?,?,?,?,?)", self._pending)
+                self.conn.executemany("INSERT OR REPLACE INTO hashes (path, size, mtime_ns, crc, sha1, dev, ino)"
+                                      " VALUES (?,?,?,?,?,?,?)", self._pending)
             if self._pending_alt:
                 # Stale = same path, other size/mtime (rows of other members/variants stay).
                 stale = {(p[0], p[1], p[2]) for p in self._pending_alt}
                 self.conn.executemany(
                     "DELETE FROM alt_hashes WHERE path=? AND NOT (size=? AND mtime_ns=?)", sorted(stale))
-                self.conn.executemany("INSERT OR REPLACE INTO alt_hashes VALUES (?,?,?,?,?,?,?)",
-                                      self._pending_alt)
+                self.conn.executemany("INSERT OR REPLACE INTO alt_hashes (path, size, mtime_ns, member, variant, crc, sha1,"
+                                      " dev, ino) VALUES (?,?,?,?,?,?,?,?,?)", self._pending_alt)
             self.conn.commit()
         except sqlite3.Error:
             pass  # read-only / locked db: just lose the cache writes
@@ -1219,11 +1257,13 @@ def scan(
     cancel: Any = None,
     cache_path: Optional[Path] = None,
     use_cache: bool = True,
+    refresh_cache: bool = False,
     alt_hashes: Sequence[str] = (),
     layout: str = LAYOUT_PER_DAT,
     protected_dirs: Sequence[str] = (),
     containers: Sequence[str] = (),
     files: Optional[Sequence[Path]] = None,
+    id_matcher: Optional[Callable[[Sequence["Rom"]], Callable[[Path], Optional[list["Rom"]]]]] = None,
 ) -> ScanResult:
     """Scan ``root`` (recursively, incl. DAT folders and the reserved ``_unmatched/``,
     ``_excluded/`` ... folders) against ``dats``.
@@ -1254,6 +1294,17 @@ def scan(
     index = _Index(dat_list)
     exe = find_7z()
     container_exts = {CONTAINER_EXTS[c] for c in containers if c in CONTAINER_EXTS}
+    # Files told by an ID in their header when no checksum can be had: Wii / Wii U discs (``discid``, romorg.discmatch) and
+    # Switch games (``titleid``, romorg.switchmatch, whose matcher the caller builds: it needs the user's keys)
+    id_on = "discid" in containers or "titleid" in containers
+    id_exts = set()
+    id_state: dict[str, Any] = {}
+    if "discid" in containers:
+        from . import discmatch
+        id_exts |= set(discmatch.ID_EXTS)
+    if "titleid" in containers:
+        from . import switchfmt
+        id_exts |= set(switchfmt.CONTAINER_EXTS)
     strategies = [a for a in dict.fromkeys(alt_hashes or ()) if a in STRATEGY_VARIANTS]
     # rom sizes that are not a multiple of 1 KiB (SNES copier-header rule, see variant_for)
     odd_sizes = ({r.size for d in dat_list for r in d.roms if r.size and r.size % 1024}
@@ -1271,12 +1322,23 @@ def scan(
         files = collect_files(root, recursive, problems, protected_dirs)
     else:
         files = sorted(Path(f) for f in files)
+    if "titleid" in containers:
+        # a folder named by a 16-digit title ID belongs to an emulator (shader caches, mods ...): nothing in it is a game file
+        def _own(f: Path) -> bool:
+            try:
+                parts = f.relative_to(root).parts[:-1]
+            except ValueError:
+                return False
+            return any(len(p) == 16 and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
+        from . import switchfmt
+        files = [f for f in files if f.suffix.lower() in switchfmt.CONTAINER_EXTS and not _own(f)]       # (the emulators keep caches in here too)
     errors.extend(problems)
     total = len(files)
-    cache = HashCache((cache_path or default_cache_path()) if use_cache else None)
+    cache = HashCache((cache_path or default_cache_path()) if use_cache else None, refresh=refresh_cache)
 
     def cached_alts(key: Optional[str], size: int, mtime_ns: int, member: str,
-                    content_size: int, negative: bool = False) -> Optional[dict[str, tuple[str, str, int]]]:
+                    content_size: int, negative: bool = False,
+                    ident: Optional[tuple[int, int]] = None) -> Optional[dict[str, tuple[str, str, int]]]:
         """Cached variants; with ``negative``, None when nothing is cached at all (``{}`` =
         cached "no variant applies")."""
         out: dict[str, tuple[str, str, int]] = {}
@@ -1284,20 +1346,21 @@ def scan(
             return None if negative else out
         for strategy in strategies:
             for v in STRATEGY_VARIANTS[strategy]:
-                row = cache.get_alt(key, size, mtime_ns, member, v)
+                row = cache.get_alt(key, size, mtime_ns, member, v, ident)
                 if row is not None:
                     out[v] = (row[0], row[1], _variant_size(v, content_size))
-        if negative and not out and cache.get_alt(key, size, mtime_ns, member, no_variants) is None:
+        if negative and not out and cache.get_alt(key, size, mtime_ns, member, no_variants, ident) is None:
             return None
         return out
 
     def store_alts(key: Optional[str], size: int, mtime_ns: int, member: str,
-                   alts: dict[str, tuple[str, str, int]], negative: bool = False) -> None:
+                   alts: dict[str, tuple[str, str, int]], negative: bool = False,
+                   ident: Optional[tuple[int, int]] = None) -> None:
         if key is not None:
             for v, (crc, sha1, _) in alts.items():
-                cache.put_alt(key, size, mtime_ns, member, v, crc, sha1)
+                cache.put_alt(key, size, mtime_ns, member, v, crc, sha1, ident)
             if negative and not alts:
-                cache.put_alt(key, size, mtime_ns, member, no_variants, "", "")
+                cache.put_alt(key, size, mtime_ns, member, no_variants, "", "", ident)
 
     def add_member(path: Path, member: str, size: int, crc: str, st: Optional[os.stat_result],
                    compute: Optional[Callable[[], dict[str, tuple[str, str, int]]]]) -> None:
@@ -1310,7 +1373,8 @@ def scan(
             key = _cache_key(path) if st is not None else None
             mtime = st.st_mtime_ns if st is not None else 0
             asize = st.st_size if st is not None else 0
-            alts = cached_alts(key, asize, mtime, member, size, negative=True)
+            ident = file_ident(st)
+            alts = cached_alts(key, asize, mtime, member, size, negative=True, ident=ident)
             if alts is None:
                 try:
                     alts = compute()
@@ -1319,7 +1383,7 @@ def scan(
                         subprocess.SubprocessError, ValueError, EOFError, zlib.error) as exc:
                     errors.append((path, f"{member}: {type(exc).__name__}: {exc}"))
                     alts, ok = {}, False
-                store_alts(key, asize, mtime, member, alts, negative=ok)
+                store_alts(key, asize, mtime, member, alts, negative=ok, ident=ident)
             hit = _alt_match(index, strategies, alts)
             if hit is not None:
                 v, roms = hit
@@ -1375,9 +1439,32 @@ def scan(
                     return hash_7z_member(path, member, exe, size, usable, sizes=odd_sizes)
             add_member(path, member, size, crc, st, compute)
 
+    def id_roms(path: Path) -> Optional[list[Rom]]:
+        if "match" not in id_state:
+            roms = [r for d in dat_list for r in d.roms]
+            if "titleid" in containers and id_matcher is not None:
+                id_state["match"] = id_matcher(roms)
+            else:
+                from . import discmatch
+                id_state["match"] = discmatch.make_matcher(roms)
+        return id_state["match"](path)
+
+    def scan_by_id(path: Path) -> bool:
+        """A disc image identified by the game ID in its header (no checksum): a match when the Redump game is found."""
+        st = path.stat()
+        e = Entry(path, None, st.st_size, "", "", root)
+        roms = id_roms(path)
+        if roms:
+            matched.append(Match(e, roms, matched_via=VIA_CONTAINER, container="id"))
+        else:
+            unmatched.append(e)
+        return True
+
     def scan_container(path: Path) -> bool:
         """An ``.rvz``: hash the ISO it stands for. False = not a container after all (hash it as a plain file)."""
         from . import rvz
+        if path.suffix.lower() in id_exts and path.suffix.lower() != ".rvz":
+            return scan_by_id(path)
         if not rvz.is_rvz(path):
             return False
         st = path.stat()
@@ -1385,6 +1472,8 @@ def scan(
             with rvz.Rvz(path) as r:
                 disc_size = r.iso_size
         except rvz.RvzUnsupported:
+            if id_on:
+                return scan_by_id(path)
             unsupported.append(path)          # a Wii disc, a WIA: not read
             return True
         except rvz.RvzError as exc:
@@ -1393,20 +1482,25 @@ def scan(
         key = _cache_key(path)
         if key is not None:
             key += CONTAINER_KEY_SUFFIX      # not the hash of the file's own bytes, which scan_loose caches
-        hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
+        ident = file_ident(st)
+        if ident is not None:
+            ident = (ident[0], -ident[1])      # (its rows are told apart from the hash of the file's own bytes)
+        hit = cache.get(key, st.st_size, st.st_mtime_ns, ident) if key is not None else None
         if hit is None:
             try:
                 crc, sha1, _n = rvz.hash_image(path, cancel=lambda: _is_cancelled(cancel))
             except InterruptedError:
                 raise ScanCancelled() from None
             except rvz.RvzUnsupported:
+                if id_on:
+                    return scan_by_id(path)
                 unsupported.append(path)
                 return True
             except rvz.RvzError as exc:
                 errors.append((path, f"RvzError: {exc}"))
                 return True
             if key is not None:
-                cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1)
+                cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1, ident)
         else:
             crc, sha1 = hit
         e = Entry(path, None, disc_size, crc, sha1, root)
@@ -1418,11 +1512,12 @@ def scan(
         return True
 
     def scan_loose(path: Path) -> None:
-        if container_exts and path.suffix.lower() in container_exts and scan_container(path):
+        if (container_exts or id_exts) and path.suffix.lower() in (container_exts | id_exts) and scan_container(path):
             return
         st = path.stat()
         key = _cache_key(path)
-        hit = cache.get(key, st.st_size, st.st_mtime_ns) if key is not None else None
+        ident = file_ident(st)
+        hit = cache.get(key, st.st_size, st.st_mtime_ns, ident) if key is not None else None
         alts: Optional[dict[str, tuple[str, str, int]]] = None
         if hit is None:
             fut = pre_hash.pop(path, None)
@@ -1435,9 +1530,9 @@ def scan(
             else:
                 crc, sha1 = hash_file(path)
             if alts is not None:
-                store_alts(key, st.st_size, st.st_mtime_ns, "", alts)
+                store_alts(key, st.st_size, st.st_mtime_ns, "", alts, ident=ident)
             if key is not None:
-                cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1)
+                cache.put(key, st.st_size, st.st_mtime_ns, crc, sha1, ident)
         else:
             crc, sha1 = hit
         e = Entry(path, None, st.st_size, crc, sha1, root)
@@ -1447,19 +1542,24 @@ def scan(
             return
         if strategies:
             if alts is None:  # raw hash came from the cache
-                alts = cached_alts(key, st.st_size, st.st_mtime_ns, "", st.st_size)
+                alts = cached_alts(key, st.st_size, st.st_mtime_ns, "", st.st_size, ident=ident)
                 if not alts:
                     magic = read_magic(path) if any(s_ != ALT_SNES_HEADER for s_ in strategies) else None
                     eligible = variants_for(strategies, st.st_size, magic, odd_sizes)
                     if eligible:
                         alts = hash_file_variants(path, strategies, raw=False, variants=eligible,
                                                   sizes=odd_sizes)[1]
-                        store_alts(key, st.st_size, st.st_mtime_ns, "", alts)
+                        store_alts(key, st.st_size, st.st_mtime_ns, "", alts, ident=ident)
             hit2 = _alt_match(index, strategies, alts or {})
             if hit2 is not None:
                 v, roms = hit2
                 assert alts is not None
                 matched.append(_alt_match_obj(e, v, roms, alts[v][0], alts[v][1]))
+                return
+        if id_on and path.suffix.lower() in (".iso", ".gcm"):
+            roms = id_roms(path)                      # a copy that is not the original image (scrubbed, trimmed)
+            if roms:
+                matched.append(Match(e, roms, matched_via=VIA_CONTAINER, container="id"))
                 return
         unmatched.append(e)
 
@@ -1493,10 +1593,10 @@ def scan(
             try:
                 if ext in SEVENZIP_EXTS:
                     pre_list[path] = pool.submit(list_archive, path)
-                elif ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS and ext not in container_exts:
+                elif ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS and ext not in container_exts and ext not in id_exts:
                     st0 = path.stat()
                     key0 = _cache_key(path)
-                    if key0 is None or cache.get(key0, st0.st_size, st0.st_mtime_ns) is None:
+                    if key0 is None or cache.get(key0, st0.st_size, st0.st_mtime_ns, file_ident(st0)) is None:
                         pre_hash[path] = pool.submit(hash_ahead, path)
             except OSError:
                 pass            # the main loop reports it the way it always did

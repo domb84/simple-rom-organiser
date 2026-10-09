@@ -749,7 +749,8 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "system"
 
 
-def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: float | None = None) -> dict[str, Any]:
+def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: float | None = None,
+                saves: Any = None) -> dict[str, Any]:
     """The small last-scan record kept per platform in config.json (Amendment 15): counts + time + folder.
 
     Never holds lists or per-file data - it only feeds the system cards of the home screen."""
@@ -777,6 +778,9 @@ def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: fl
     if summary.get("chd_files") is not None:           # disc systems
         record.update(chd_files=num("chd_files"), identified=num("identified"), verified=num("verified"),
                       raw=num("raw"))
+    if saves is not None:                              # (only with a RetroArch config: the badge of the system list)
+        totals = saves.totals()
+        record["saves"] = {"files": int(totals["files"]), "sets": int(totals["sets"])}
     return record
 
 
@@ -830,6 +834,7 @@ class App:
         self._fallback_dat_lock = threading.Lock()
         self.updates = self._make_updates(auto_update)
         self._scan: ScanState | None = None
+        self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
         self._undo_counts: dict[tuple[str, int, int], int] = {}
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
@@ -858,7 +863,7 @@ class App:
         module = _optional_mod("autoupdate")
         if module is not None:
             try:
-                return module.UpdateManager(enabled=enabled)
+                return module.UpdateManager(enabled=enabled, switchdb=_mod("switchdb"), gametdb=_mod("gametdb"))
             except Exception:  # noqa: BLE001 - never stop the app from starting
                 traceback.print_exc()
         return _NoUpdates()
@@ -880,6 +885,7 @@ class App:
                        latest_for: tuple[str, bool] | None = None, strict: bool = False,
                        kickstart_for: tuple[str, str | None] | None = None,
                        record_for: tuple[str, dict[str, Any] | None] | None = None,
+                       archive_for: tuple[str, str | None] | None = None,
                        **values: Any) -> dict[str, Any]:
         """Merge values into config.json and return the saved config.
 
@@ -894,7 +900,8 @@ class App:
         def mutate(cfg: dict[str, Any]) -> None:
             cfg.update(values)
             for key, pair in (("folders", folder_for), ("latest_only", latest_for),
-                              ("kickstart_dests", kickstart_for), ("scan_records", record_for)):
+                              ("kickstart_dests", kickstart_for), ("scan_records", record_for),
+                              ("archive_overrides", archive_for)):
                 if pair is None:
                     continue
                 table = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
@@ -1016,10 +1023,10 @@ class App:
                 self._cutoffs[platform.name] = (key, cutoff)
         return library.RatingContext(lookup, cutoff)
 
-    def _profile_json(self, profile: Any) -> dict[str, Any]:
+    def _profile_json(self, profile: Any, platform: str | None = None) -> dict[str, Any]:
         data = profile.to_dict() if hasattr(profile, "to_dict") else dataclasses.asdict(profile)
         out = {**data, "exclude": sorted(data.get("exclude") or ())}
-        if self._ra_active() is None:            # no RetroArch known: the app does not know that saves exist
+        if not self._saves_available(platform):  # no save source known for it: the app does not know that saves exist
             out.pop("saved_games", None)
             out.pop("saved_overrides", None)
         return out
@@ -1102,8 +1109,8 @@ class App:
         on = set(profile.exclude)
         info: dict[str, Any] = {
             "platform": platform.name,
-            "profile": self._profile_json(profile),
-            "defaults": self._profile_json(library.default_profile(platform)),
+            "profile": self._profile_json(profile, platform.name),
+            "defaults": self._profile_json(library.default_profile(platform), platform.name),
             "rules": [{"key": k, "label": labels.get(k, k), "on": k in on} for k in self._rule_keys()],
             "available": {
                 "latest_only": bool(getattr(platform, "latest_dats", ())),
@@ -1148,6 +1155,9 @@ class App:
         old and the new scan never sit in memory together. Pages and plans of the old results are rebuilt on demand."""
         with self._lock:
             state = self._scan
+        self._shed_state(state)
+
+    def _shed_state(self, state: "ScanState | None") -> None:
         if state is None:
             return
         self._drop_plans(state)
@@ -1363,8 +1373,15 @@ class App:
             "kickstart_dest": _kick_dest(cfg, platform.name),
             "protected_dirs": list(getattr(platform, "protected_dirs", ()) or ()),
             "slug": _slug(platform.name),
-            "last_scan": self._last_scan(cfg, platform.name),
+            "last_scan": self._last_scan_shown(cfg, platform.name),
         }
+
+    def _last_scan_shown(self, cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
+        """The last-scan record for the system list; its saves figure only while a RetroArch config is known (no trace otherwise)."""
+        record = self._last_scan(cfg, name)
+        if record is not None and "saves" in record and not self._saves_available(name):
+            record = {k: v for k, v in record.items() if k != "saves"}
+        return record
 
     @staticmethod
     def _last_scan(cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -1385,7 +1402,7 @@ class App:
 
     def _profile_for_info(self, platform: Any, cfg: dict[str, Any]) -> dict[str, Any] | None:
         try:
-            return self._profile_json(self._profile(platform, cfg))
+            return self._profile_json(self._profile(platform, cfg), platform.name)
         except Exception:  # noqa: BLE001 - e.g. the library module is missing
             return None
 
@@ -1424,7 +1441,7 @@ class App:
         return path
 
     def _run_scan(self, job: Job, root: Path, platform: Any, cancellable: bool = True,
-                  keep: bool = True, report: Callable[..., None] | None = None) -> ScanState | None:
+                  keep: bool = True, report: Callable[..., None] | None = None, force: bool = False) -> ScanState | None:
         """Scan ``root``. ``keep=False`` (collection builds) returns the state without making it the current scan.
         ``report`` replaces ``rep`` (a collection maps each system's progress onto its share of the whole job)."""
         rep = report or job.report
@@ -1468,13 +1485,14 @@ class App:
                 root, dats, progress=rep, cancel=job.cancel if cancellable else None,
                 chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
                 workers=_mod("chdsched").default_workers(cfg.get("chd_workers")), full=bool(cfg.get("chd_verify_scan")),
-                protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()))
+                protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()), refresh_cache=force)
         else:
             result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=rep,
                            cancel=job.cancel if cancellable else None,
                            alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=layout,
                            protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()),
-                           containers=tuple(getattr(platform, "containers", ()) or ()))
+                           containers=tuple(getattr(platform, "containers", ()) or ()), refresh_cache=force,
+                           id_matcher=self._switch_matcher())
         if cancellable and job.cancel.is_set():
             return None
         dat_names = list(getattr(result, "dat_names", None) or [getattr(d, "name", "") for d in dats])
@@ -1485,13 +1503,58 @@ class App:
         if keep:
             with self._lock:
                 self._scan = state
+            self._remember_scan(state)
             self._record_scan(state)
         return state
+
+    def _switch_matcher(self) -> Any:
+        """The scanner's matcher for Switch files (told by title ID, with the user's ``prod.keys`` for a game card dump)."""
+        switchapp, switchmatch = _mod("switchapp"), _mod("switchmatch")
+        key = switchapp.header_key(self._switch_cfg())
+        return lambda roms: switchmatch.make_matcher(roms, key)
+
+    SCANS_KEPT = 6
+
+    def _remember_scan(self, state: ScanState) -> None:
+        """Keep the finished scan of a system, so coming back to it later needs no new scan (``scan_select``). The oldest are
+        let go (and what they derived with them)."""
+        dropped: list[ScanState] = []
+        with self._lock:
+            self._scans.pop(state.platform.name, None)
+            self._scans[state.platform.name] = state
+            while len(self._scans) > self.SCANS_KEPT:
+                oldest = next(iter(self._scans))
+                dropped.append(self._scans.pop(oldest))
+        for old in dropped:
+            self._shed_state(old)
+
+    def _forget_scans(self) -> None:
+        """Files were moved on a large scale (a Collection build / undo): no scan of a single system applies any more."""
+        with self._lock:
+            self._scans.clear()
+            self._scan = None
+
+    def scan_select(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/scan/select {platform}``: make the scan kept for that system the current one (no scanning). ``selected`` is
+        false when there is none or the folder of the system is not the one that was scanned."""
+        platform = self._resolve_platform(body.get("platform"))
+        with self._lock:
+            state = self._scans.get(platform.name)
+            current = self._scan
+        folder = self._folders().get(platform.name)
+        if state is None or not folder or os.path.normcase(str(state.root)) != os.path.normcase(os.path.abspath(os.path.expanduser(folder))):
+            return {"selected": False}
+        if current is not state:
+            self._shed_state(current)
+            with self._lock:
+                self._scan = state
+            self._config_update(last_platform=platform.name)
+        return {"selected": True, "platform": platform.name}
 
     def _record_scan(self, state: ScanState) -> None:
         """Remember the last scan summary of this system (cards survive a restart; never raises)."""
         try:
-            record = scan_record(self._summary(state), state.root, state.dat_names)
+            record = scan_record(self._summary(state), state.root, state.dat_names, saves=self._saves_report(state))
             self._config_update(record_for=(state.platform.name, record))
         except Exception:  # noqa: BLE001 - a convenience only
             traceback.print_exc()
@@ -1704,6 +1767,21 @@ class App:
 
     # ---------------------------------------------------------------- saves of a scan (Amendment 31)
     # Nothing below runs unless a RetroArch config is known (``_ra_active``): then every scan gets a save report.
+    def _saves_available(self, platform: str | None = None) -> bool:
+        """True when the saves of ``platform`` are looked at: its own emulator is set up (Dolphin, PCSX2 ...), or, for a system
+        RetroArch plays, a RetroArch config is known. Without a platform (Collection): any of them."""
+        idsaves = _mod("idsaves")
+        if platform is not None and idsaves.applies(platform):
+            return idsaves.active(platform, self._nin_cfg(), self._switch_eff())
+        if platform is None:
+            return self._saves_anywhere()                    # (Collection's rules: any save source of any system)
+        return self._ra_active() is not None
+
+    def _saves_anywhere(self) -> bool:
+        """True when some system's saves are looked at: a RetroArch config is known or an emulator of an ID-based system is set up."""
+        idsaves = _mod("idsaves")
+        return self._ra_active() is not None or any(idsaves.active(p, self._nin_cfg(), self._switch_eff()) for p in idsaves.PLATFORM_SOURCES)
+
     def _ra_active(self) -> Any:
         """The RetroArch install whose saves count, or None. With none the app looks at no save folder at all."""
         now = time.monotonic()
@@ -1734,24 +1812,52 @@ class App:
         if self._scan is not None:
             self._drop_plans(self._scan)
 
-    def _saves_report(self, state: ScanState, walk: Any = None) -> Any:
-        """The ``saveindex.SaveReport`` of a scan (built once, kept on the scan), or None when no RetroArch config is known."""
-        sel = self._ra_active()
-        if sel is None:
-            return None
-        key = str(sel.cfg)
+    def _playlists_of(self, paths: Iterable[Path]) -> list[tuple[str, list[str]]]:
+        """``(name, disc names)`` of the given ``.m3u`` files (RetroArch names a multi-disc game's saves after its playlist)."""
+        m3u = _mod("m3u")
+        out: list[tuple[str, list[str]]] = []
+        for path in paths:
+            info = m3u.read_m3u(path)
+            if info is not None and info[1]:
+                out.append((Path(path).stem, [Path(p).stem for p in info[1]]))
+        return out
+
+    def _saves_report(self, state: ScanState, walk: Any = None, m3us: Iterable[Path] | None = None) -> Any:
+        """The ``saveindex.SaveReport`` of a scan (built once, kept on the scan), or None when no save source is set up for the system:
+        RetroArch's (a system RetroArch plays, when a config is known) or its emulator's (PCSX2, Dolphin ...)."""
+        idsaves = _mod("idsaves")
+        by_id = idsaves.applies(state.platform.name)
+        if by_id:
+            if not idsaves.active(state.platform.name, self._nin_cfg(), self._switch_eff()):
+                return None
+            sel, key = None, idsaves.config_key(state.platform.name, self._nin_cfg(), self._switch_eff())
+        else:
+            sel = self._ra_active()
+            if sel is None:
+                return None
+            key = str(sel.cfg)
         if state.saves is not None and state.saves_for == key:
             return state.saves
         try:
-            ra, saveindex = _mod("retroarch"), _mod("saveindex")
-            walk = walk or state.save_walk
-            if walk is None or str(walk.install.cfg) != key:
-                walk = ra.SaveWalk(sel)
-            state.save_walk = walk
+            saveindex = _mod("saveindex")
             by_file, by_dat = saveindex.game_refs(item for item, _t in self._kind_rows(state, "games"))
-            state.saves = saveindex.build(walk.for_platform(state.platform), by_file, by_dat, walk.per_core, sel.label)
+            if by_id:
+                owned = idsaves.owned_games((item for item, _t in self._kind_rows(state, "games")), Path(state.root))
+                state.saves = saveindex.SaveReport(per_core=False, install="")
+                for st in idsaves.sets_for(state.platform.name, owned, self._nin_cfg(), self._switch_eff(), _mod("switchapp").header_key(self._switch_cfg())):
+                    state.saves.sets[st.key] = st
+            else:
+                ra = _mod("retroarch")
+                walk = walk or state.save_walk
+                if walk is None or str(walk.install.cfg) != key:
+                    walk = ra.SaveWalk(sel)
+                state.save_walk = walk
+                if m3us is None:
+                    m3us = _mod("m3u").find_m3us(state.root) if Path(state.root).is_dir() else ()
+                state.saves = saveindex.build(walk.for_platform(state.platform), by_file, by_dat, walk.per_core, sel.label,
+                                              playlists=self._playlists_of(m3us))
             state.saves_for = key
-        except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken RetroArch folder never stops a scan
+        except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken save folder never stops a scan
             traceback.print_exc()
             return None
         return state.saves
@@ -2051,7 +2157,8 @@ class App:
         out["library_export"] = {"enabled": bool(exp.get("enabled")), "dest": str(exp.get("dest") or ""),
                                  "mode": _mod("libexport").normalize_mode(exp.get("mode")),
                                  "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync")),
-                                 "aside": bool(exp.get("aside")), "aside_dir": str(exp.get("aside_dir") or "")}
+                                 "aside": exp.get("aside", True) is not False}      # (archiving is on unless it was switched off)
+        out["archive"] = self._archive_settings(cfg)
         out["kickstart_dest"] = _kick_dest(cfg, LEGACY_KICKSTART_PLATFORM)     # the TOSEC Amiga's (legacy key)
         dests = cfg.get("kickstart_dests") if isinstance(cfg.get("kickstart_dests"), dict) else {}
         out["kickstart_dests"] = {k: v for k, v in dests.items() if isinstance(v, str)}
@@ -2276,9 +2383,9 @@ class App:
         """``POST /api/library/saved``: ``{platform, choice: keep | archive | leave | default, games: [{dat, game}]}`` - what
         a build does with the saves of single games the rules would replace or archive (stored in the platform's library
         profile; ``default`` = follow the profile's ``saved_games``). Only when a RetroArch config is known."""
-        if self._ra_active() is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch config is known, so saves are not looked at.", "no_retroarch")
         platform = self._resolve_platform(body.get("platform"))
+        if not self._saves_available(platform.name):
+            raise ApiError(HTTPStatus.CONFLICT, "No save source is set up for this system, so saves are not looked at.", "no_retroarch")
         library = self._library_mod()
         choice = _str_arg(body.get("choice"))
         if choice not in library.SAVED_GAMES + ("default",):
@@ -2370,9 +2477,10 @@ class App:
         root = self._validate_dir(body.get("path"))
         _check_scan_root(root)
         platform = self._resolve_platform(body.get("platform"))
+        force = _bool_arg(body.get("force"))              # recalculate every checksum (else only new or changed files are read)
 
         def work(job: Job) -> Any:
-            state = self._run_scan(job, root, platform)
+            state = self._run_scan(job, root, platform, force=force)
             if state is None:
                 return None
             self._config_update(folder_for=(platform.name, str(root)), last_platform=platform.name,
@@ -2778,6 +2886,7 @@ class App:
             with self._lock:
                 if self._scan is state:
                     self._scan = None  # the old plan is stale: force a new scan
+                self._scans.pop(state.platform.name, None)
             res["rescan_error"] = (exc.message if isinstance(exc, ApiError) else str(exc)) or type(exc).__name__
         return res
 
@@ -3037,7 +3146,7 @@ class App:
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         page.update(
             plan_id=self._plan_id(state, key), files=len(ops),
-            root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile),
+            root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile, state.platform.name),
             counts=_status_counts(ops), reasons=reasons, categories=categories, by_dest=by_dest,
             playlists={"write": writes, "ok": statuses.count("ok"),
                        "remove": sum(1 for op in ops if op.status == "delete"),
@@ -3209,7 +3318,7 @@ class App:
             arch_out: dict[str, Any] | None = None
             if aside is not None:
                 # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
-                ops, arch, _n = self._collection_single_pass(st.root, [], plan, st.root.parent, aside, True)
+                ops, arch, _n = self._collection_single_pass(st.root, [], plan, st.root.parent, aside, True, per_system=True)
                 if arch:
                     arch_out = sortroot.apply_moves(arch, _mod("paths").data_dir() / "collection-undo", "libsweep",
                                                     keep=[st.root, aside], cancel=job.cancel)
@@ -3305,7 +3414,7 @@ class App:
         mode = _mod("libexport").normalize_mode(_str_arg(body.get("mode")))
         value = {"enabled": _bool_arg(body.get("enabled")), "dest": _str_arg(body.get("dest")), "mode": mode,
                  "sidecars": _bool_arg(body.get("sidecars")), "sync": _bool_arg(body.get("sync")) and mode != "move",
-                 "aside": _bool_arg(body.get("aside")), "aside_dir": _str_arg(body.get("aside_dir"))}
+                 "aside": _bool_arg(body.get("aside"), True)}
         self._config_update(library_export=value)
         return value
 
@@ -3471,7 +3580,7 @@ class App:
     @staticmethod
     def _report_files(report: Any) -> list[tuple[Path, Path]]:
         """``[(file, save root)]`` of every file of a save report that is still there."""
-        return [(f, root) for st in report.sets.values() for f, root, _k, _z in st.members if os.path.lexists(f)]
+        return [(f, root) for st in report.sets.values() if st.renames for f, root, _k, _z in st.members if os.path.lexists(f)]
 
     def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any], plan: Any) -> dict[str, Any] | None:
         """Saves and states follow ROMs that got new names (``pairs_from``: ``(old path, new path)``). ``mode`` ``move`` for
@@ -3486,6 +3595,7 @@ class App:
             if sel is None or saved.get("follow", True) is False:
                 return None
             pairs = [(a, b) for a, b in ra.pairs_from_moves(pairs_from) if ra.fold_name(a) not in sp["gone"]]
+            pairs += self._playlist_pairs(plan, sp["report"], sp["gone"])      # the saves of a multi-disc game follow its playlist
             if not pairs:
                 return None
             ops = ra.plan_follow(sel, pairs, mode, files=self._report_files(sp["report"]))
@@ -3534,6 +3644,30 @@ class App:
             moves.extend(getattr(op, "moves", None) or [(op.src, op.dst)])
         return _mod("retroarch").pairs_from_moves(moves)
 
+    @staticmethod
+    def _playlist_pairs(plan: Any, report: Any, gone: Any) -> list[tuple[str, str]]:
+        """``(old playlist name, new playlist name)``: RetroArch names the saves of a multi-disc game after its ``.m3u``. A playlist
+        you have saves under is replaced by the plan's playlist for the same discs (as renamed by the plan); when the name
+        differs the saves follow it."""
+        if not report.playlists or not getattr(plan, "playlists", None):
+            return []
+        ra, m3u = _mod("retroarch"), _mod("m3u")
+        disc_map = {ra.fold_name(a): b for a, b in App._planned_pairs(plan)}
+        planned: dict[frozenset, str] = {}
+        for op in plan.playlists:
+            if getattr(op, "status", "") in ("write", "ok") and op.lines:
+                names = frozenset(ra.fold_name(Path(e).stem) for e in m3u.entry_paths(op.lines, op.path.parent))
+                planned.setdefault(names, op.path.stem)
+        out: list[tuple[str, str]] = []
+        for key, (name, discs) in report.playlists.items():
+            if key in gone:
+                continue
+            new = frozenset(ra.fold_name(disc_map.get(ra.fold_name(d)) or d) for d in discs)
+            target = planned.get(new)
+            if target and ra.fold_name(target) != key:
+                out.append((name, target))
+        return out
+
     def _saves_plan(self, plan: Any) -> dict[str, Any] | None:
         """What the build does with the saves, from the plan alone (None: no RetroArch config is known, nothing to do):
 
@@ -3550,6 +3684,10 @@ class App:
         ra, library = _mod("retroarch"), self._library_mod()
         prof = plan.profile
         gone, _stay = self._plan_stems(plan)
+        for pk, (_name, discs) in report.playlists.items():        # a playlist whose discs all go is gone with them
+            fds = [ra.fold_name(d) for d in discs]
+            if pk not in gone and fds and all(d in gone for d in fds):
+                gone[pk] = gone[fds[0]]
         archive: list[Any] = []
         leave: list[Any] = []
         for stem in gone:
@@ -3561,6 +3699,7 @@ class App:
         kept = {ra.fold_name(self._op_stem(op)) for op in plan.ops
                 if library.SAVED_KEEP_TEXT in (getattr(op, "reason", "") or "") and getattr(op, "status", "") != "delete"}
         pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in gone]
+        pairs += self._playlist_pairs(plan, report, gone)
         sp = {"gone": gone, "archive": archive, "leave": leave, "kept": kept, "pairs": pairs, "report": report}
         plan._saves_plan = sp
         return sp
@@ -3579,7 +3718,8 @@ class App:
         for st in sp["archive"]:
             for f, root, _kind, size in st.members:
                 if os.path.lexists(f):
-                    moves.append(sortroot.SMove(f, names.free(base / f.relative_to(root)), SAVES_DIR, size=size))
+                    moves.append(sortroot.SMove(f, names.free(base / f.relative_to(root)), SAVES_DIR, size=size,
+                                                kind="folder" if os.path.isdir(f) else "file"))
         if not moves:
             return [], {}
         return moves, {"files": len(moves), "games": len(sp["archive"]), "states": sum(st.states for st in sp["archive"]),
@@ -3616,7 +3756,7 @@ class App:
             "rename": {"files": 0, "games": 0, "conflicts": 0}, "archive": {"files": 0, "games": 0, "states": 0, "to": ""},
             "leave": {"files": 0, "games": 0}}
         info["found"] = bool(info["files"])
-        if info["follow"] and sp["pairs"]:
+        if info["follow"] and sp["pairs"] and self._ra_active() is not None:
             ops = ra.plan_follow(self._ra_active(), sp["pairs"], "copy" if elsewhere else "move", files=self._report_files(report))
             hits = ra.saves_of(self._report_files(report), {a for a, _b in sp["pairs"]})
             info["rename"] = {"files": sum(1 for o in ops if o.status in ("move", "copy")), "games": len({h.stem for h in hits}),
@@ -3639,13 +3779,16 @@ class App:
         stem = ra.fold_name(self._op_stem(op))
         st = sp["report"].sets.get(stem)
         if st is None or not st.files:
+            stem = sp["report"].playlist_of(stem) or stem          # a multi-disc game's saves are named after its playlist
+            st = sp["report"].sets.get(stem)
+        if st is None or not st.files:
             return None
         effect = ""
         if stem in sp["kept"]:
             effect = "keep"
         elif stem in sp["gone"]:
             effect = "archive" if st in sp["archive"] else "leave"
-        elif any(ra.fold_name(a) == stem for a, _b in sp["pairs"]):
+        elif st.renames and any(ra.fold_name(a) == stem for a, _b in sp["pairs"]):
             effect = "rename"
         return {"saves": st.saves, "states": st.states, "total": st.files, "effect": effect,
                 "game": st.game, "dat": st.dat}
@@ -3812,6 +3955,119 @@ class App:
         return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
 
 
+    # ---------------------------------------------------------------- Nintendo Switch: games and the two emulators' saves
+    def _switch_cfg(self) -> dict[str, Any]:
+        return _mod("switchapp").normalise(self._config().get("switch"))
+
+    def _switch_common_archive(self) -> str:
+        return self._archive_settings(self._config())["dir"]
+
+    def switch_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/switch``: the settings, what was found on this machine, the title database, the last scan's summary."""
+        return _mod("switchapp").describe(self._switch_cfg(), getattr(self, "_switch_last", None), self._switch_common_archive())
+
+    def switch_config(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/switch/config {games?, eden?, ryujinx?, keys?}``: remember the folders (an empty text forgets one)."""
+        cfg = self._switch_cfg()
+        for key in ("games", "eden", "ryujinx", "keys", "archive"):
+            if key in body:
+                value = _str_arg(body.get(key))
+                if value:
+                    value = os.path.abspath(os.path.expanduser(value))
+                    if key != "keys" and os.path.isfile(value):
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "That is a file, not a folder.", "bad_switch_folder")
+                _mod("switchapp").store(key, value, cfg)
+        self._config_update(switch=cfg, strict=True)
+        return self.switch_get({}, None)
+
+    def _switch_eff(self) -> dict[str, Any]:
+        """The Switch settings as they are used (what was found on this machine fills what the user left empty)."""
+        cfg = self._switch_cfg()
+        folder = self._folders().get("Nintendo Switch")          # the games folder is the system's folder, like any other system
+        if folder:
+            cfg = {**cfg, "games": folder}
+        eff = _mod("switchapp").effective(cfg)
+        eff.pop("auto", None)
+        return eff
+
+    def _switch_scan_job(self, cfg: dict[str, Any], job: Job, action: str, extra: dict[str, Any] | None = None) -> Any:
+        result = _mod("switchapp").scan_all(cfg, job.report, job.cancel)
+        if job.cancel.is_set():
+            return None
+        self._switch_last = result
+        return {"action": action, "summary": result["summary"], **(extra or {})}
+
+    def switch_scan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        cfg = self._switch_eff()
+        if not any(cfg[k].strip() for k in ("games", "eden", "ryujinx")):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the games folder or an emulator's folder first.", "no_switch_folder")
+        return {"job": self.jobs.start("switch", lambda job: self._switch_scan_job(cfg, job, "switch_scan")).to_dict()}
+
+    def switch_rows(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/switch/rows {view: games | saves | unidentified, q?, only?, offset?, limit?}``."""
+        view = _str_arg(body.get("view")) or "games"
+        if view not in ("games", "saves", "unidentified"):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "view must be games, saves or unidentified")
+        return _mod("switchapp").rows(getattr(self, "_switch_last", None), view, _page, body)
+
+    def switch_db_update(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/switch/db/update``: fetch the title database (about 32 MB) and rebuild the local copy."""
+        def work(job: Job) -> Any:
+            try:
+                counts = _mod("switchdb").update(job.report, job.cancel)
+            except InterruptedError:
+                return None
+            except OSError as exc:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, f"Could not fetch the Switch title database: {exc}", "switch_db_failed") from None
+            return {"action": "switch_db", **counts, "db": _mod("switchdb").db_info()}
+
+        return {"job": self.jobs.start("switchdb", work).to_dict()}
+
+    def switch_verify(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/switch/verify``: check every game file's NCAs against their names (reads all the files; remembered)."""
+        cfg = self._switch_eff()
+        if not cfg["games"].strip():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the games folder first.", "no_switch_folder")
+
+        def work(job: Job) -> Any:
+            try:
+                counts = _mod("switchapp").verify_all(cfg, job.report, job.cancel)
+            except InterruptedError:
+                return None
+            except FileNotFoundError as exc:
+                raise ApiError(HTTPStatus.BAD_REQUEST, str(exc), "no_switch_folder") from None
+            return self._switch_scan_job(cfg, job, "switch_verify", {"verify": counts})
+
+        return {"job": self.jobs.start("switchverify", work).to_dict()}
+
+    # ---------------------------------------------------------------- Nintendo Wii / Wii U: games and the saves of Dolphin and Cemu
+    def _nin_cfg(self) -> dict[str, dict[str, str]]:
+        return _mod("nintendoapp").normalise(self._config().get("nintendo"))
+
+    def emulators_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/emulators``: the emulators whose saves are looked at: platforms, folder (found or chosen), on or off."""
+        return {"emulators": _mod("emulators").describe(self._nin_cfg(), self._switch_cfg())}
+
+    def emulators_config(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/emulators/config {source, folder?, enabled?}``: remember an emulator's folder (an empty text goes back to the
+        one that was found) and whether its saves are looked at."""
+        emu = _mod("emulators")
+        key = _str_arg(body.get("source"))
+        if key not in emu.KEYS:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "unknown emulator", "bad_emulator")
+        folder = None
+        if "folder" in body:
+            folder = _str_arg(body.get("folder"))
+            if folder:
+                folder = os.path.abspath(os.path.expanduser(folder))
+                if os.path.isfile(folder):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "That is a file, not a folder.", "bad_folder")
+        enabled = _bool_arg(body.get("enabled"), True) if "enabled" in body else None
+        nin, switch = self._nin_cfg(), self._switch_cfg()
+        emu.store(key, nin, switch, folder, enabled)
+        self._config_update(nintendo=nin, switch=switch, strict=True)
+        return self.emulators_get({}, None)
+
     # ---------------------------------------------------------------- collection (v0.2): a whole ROM root
     # One scan of the root reads every file once and finds its system (``_collection_scan_work``). Everything else (the
     # preview, sorting into system folders, the library rules, the build elsewhere) works from that scan's metadata.
@@ -3887,6 +4143,24 @@ class App:
     def _collection_saves(self, rs: Any, sysobj: Any) -> Any:
         """The save report of one system of a Collection scan (built from the scan, once; the save folders are walked once for
         all systems). None when no RetroArch config is known."""
+        idsaves = _mod("idsaves")
+        if idsaves.applies(sysobj.name):                 # an emulator that tells a game by its ID (Dolphin, Cemu, PCSX2, Eden / Ryujinx)
+            if not idsaves.active(sysobj.name, self._nin_cfg(), self._switch_eff()):
+                return None
+            key = idsaves.config_key(sysobj.name, self._nin_cfg(), self._switch_eff())
+            got = rs.save_reports.get(sysobj.name)
+            if got is not None and getattr(got, "install_cfg", "") == key:
+                return got
+            try:
+                state = self._collection_state(rs, sysobj, {"folder_of": {sysobj.name: sysobj.std}, "mapper": _mod("collection").Mapper()})
+                report = self._saves_report(state)
+                if report is not None:
+                    report.install_cfg = key
+                    rs.save_reports[sysobj.name] = report
+                return report
+            except Exception:  # noqa: BLE001 - the saves are a courtesy
+                traceback.print_exc()
+                return None
         sel = self._ra_active()
         if sel is None:
             return None
@@ -3898,7 +4172,9 @@ class App:
             if rs.save_walk is None or str(rs.save_walk.install.cfg) != key:
                 rs.save_walk = _mod("retroarch").SaveWalk(sel)
             state = self._collection_state(rs, sysobj, {"folder_of": {sysobj.name: sysobj.std}, "mapper": _mod("collection").Mapper()})
-            report = self._saves_report(state, rs.save_walk)
+            if rs.m3us is None:
+                rs.m3us = _mod("m3u").find_m3us(rs.root)       # the playlists lie wherever the files do: looked for once
+            report = self._saves_report(state, rs.save_walk, rs.m3us)
             if report is not None:
                 report.install_cfg = key
                 rs.save_reports[sysobj.name] = report
@@ -3914,6 +4190,8 @@ class App:
             for k, v in report.totals().items():
                 if isinstance(v, int) and not isinstance(v, bool):
                     total[k] = total.get(k, 0) + v
+            total["sources"] = sorted(set(total.get("sources", [])) | set(report.totals().get("sources", [])))
+            total["renames"] = bool(total.get("renames")) or bool(report.totals().get("renames"))
         return total
 
     def _collection_info(self) -> dict[str, Any]:
@@ -3935,7 +4213,8 @@ class App:
                 base = self._validate_dir(cfg["root"])
             except ApiError:
                 base = Path(cfg["root"])
-        cfg = {**cfg, "aside_default": str(_mod("sortroot").default_aside(base)) if base is not None else ""}
+        global_dir = self._archive_settings(self._config())["dir"]
+        cfg = {**cfg, "aside_default": global_dir, "aside_is_global": bool(global_dir)}
         return {**cfg, "scan": scan, "profile": self._profile_json(shown), "defaults": self._profile_json(library.LibraryProfile()),
                 "rules": [{"key": k, "label": labels.get(k, k)} for k in self._rule_keys()],
                 "languages": dict(getattr(tags, "LANGUAGES", {}) or {}),
@@ -3943,6 +4222,30 @@ class App:
                 "region_counts": present,
                 "keep_flags": [{"id": e["id"], "label": e["label"]} for e in library.rule_catalog("tosec")
                                if e.get("kind") == "keep_flag"]}
+
+    @staticmethod
+    def _archive_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+        """The archive folder every system uses (``dir``; empty = none: nothing is archived) and the
+        systems that have their own (``overrides``)."""
+        table = cfg.get("archive_overrides") if isinstance(cfg.get("archive_overrides"), dict) else {}
+        return {"dir": str(cfg.get("archive_dir") or ""),
+                "overrides": {k: v for k, v in table.items() if isinstance(k, str) and isinstance(v, str) and v}}
+
+    def archive_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/settings/archive {dir, platform?}``: the archive folder for every system, or (with ``platform``) for that
+        system alone. An empty ``dir`` goes back to the default (for a system: to the global setting)."""
+        raw = _str_arg(body.get("dir"))
+        if raw:
+            folder = Path(os.path.abspath(os.path.expanduser(raw)))
+            if folder.is_file():
+                raise ApiError(HTTPStatus.BAD_REQUEST, "That is a file, not a folder.", "bad_archive")
+            raw = str(folder)
+        if _str_arg(body.get("platform")):
+            platform = self._resolve_platform(body.get("platform"))
+            self._config_update(archive_for=(platform.name, raw or None), strict=True)
+        else:
+            self._config_update(archive_dir=raw, strict=True)
+        return self._archive_settings(self._config())
 
     def collection_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return self._collection_info()
@@ -3969,7 +4272,11 @@ class App:
         if "global" in body:
             if not isinstance(body["global"], dict):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "global must be an object")
-            changes["global"] = _mod("collection").clean_global(body["global"])
+            rules = dict(body["global"])
+            kept = self._collection_cfg()["global"].get("saved_overrides")
+            if rules and kept and "saved_overrides" not in rules:    # (the rules panel does not send them: own list; "back to defaults" ({}) clears)
+                rules["saved_overrides"] = kept
+            changes["global"] = _mod("collection").clean_global(rules)
         if "systems" in body:
             known = {p.name for p in _mod("platforms").list_platforms()}
             if not isinstance(body["systems"], dict) or not set(body["systems"]) <= known:
@@ -3986,21 +4293,92 @@ class App:
         self._collection_save(**changes)
         return self._collection_info()
 
+    def collection_saves(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/saves {q?, offset?, limit?}``: the games the shared rules replace, archive or keep because of
+        their saves, one row per game with the choice that applies to it (the default, or its own). Needs a RetroArch config and
+        a scan; works from the scan's metadata like the preview."""
+        self._collection_ready()
+        if not self._saves_anywhere():
+            raise ApiError(HTTPStatus.CONFLICT, "No save source is set up (RetroArch or an emulator), so saves are not looked at.", "no_retroarch")
+        cfg = self._collection_cfg()
+        root = self._collection_root(cfg)
+        rs = self._rootscan
+        own = {n: self._profile(p).to_dict() for p in _mod("platforms").list_platforms()
+               for n in [p.name] if cfg["systems"].get(n, {}).get("own_rules")}
+        ra = self._ra_active()
+        sig = json.dumps([cfg["global"], own, ra.cfg if ra else "", _mod("idsaves").config_key("Sony PlayStation 2", self._nin_cfg(), self._switch_eff())],
+                         sort_keys=True, default=str)
+        cached = getattr(rs, "_saves_rows", None)
+        if cached is not None and cached[0] == sig:             # (typing in the search box does not plan every system again)
+            return _page(cached[1], body.get("offset"), body.get("limit"), body.get("q"))
+        layout = self._collection_layout(rs, cfg, root, self._collection_aside(cfg, root))
+        rows: list[tuple[dict[str, Any], str]] = []
+        for sysobj in sorted(rs.systems.values(), key=lambda x: x.name.casefold()):
+            _state, plan = self._collection_plan_of(rs, sysobj, layout, cfg)
+            sp = self._saves_plan(plan)
+            if sp is None:
+                continue
+            prof = plan.profile
+            for key in sorted(set(sp["gone"]) | set(sp["kept"])):
+                st = sp["report"].sets.get(key)
+                if st is None or not st.files or st.match == "none":
+                    continue
+                effect = "keep" if key in sp["kept"] else "archive" if st in sp["archive"] else "leave"
+                item = {"platform": sysobj.name, "dat": st.dat, "game": st.game, "title": st.title or st.game, "saves": st.saves,
+                        "states": st.states, "total": st.files, "effect": effect,
+                        "choice": next((a for d, n, a in prof.saved_overrides if d == st.dat and n == st.game), ""),
+                        "default": prof.saved_games}
+                rows.append((item, f"{sysobj.name} {st.title} {st.game}".lower()))
+        rows.sort(key=lambda r: (r[0]["platform"].casefold(), r[0]["title"].casefold(), r[0]["game"].casefold()))
+        rs._saves_rows = (sig, rows)
+        return _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
+
+    def collection_saved(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/collection/saved {choice: keep | archive | leave | default, games: [{dat, game}]}``: what the Collection
+        does with the saves of single games the shared rules replace or archive (``default`` = follow ``saved_games``)."""
+        if not self._saves_anywhere():
+            raise ApiError(HTTPStatus.CONFLICT, "No save source is set up (RetroArch or an emulator), so saves are not looked at.", "no_retroarch")
+        library = self._library_mod()
+        choice = _str_arg(body.get("choice"))
+        if choice not in library.SAVED_GAMES + ("default",):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "choice must be keep, archive, leave or default")
+        games = body.get("games")
+        if not isinstance(games, list) or not games or len(games) > 5000 or not all(
+                isinstance(g, dict) and _str_arg(g.get("dat")) and _str_arg(g.get("game")) for g in games):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "games must be a list of {dat, game} (1 to 5000)")
+        current = self._collection_cfg()["global"]
+        own = {(d, n): a for d, n, a in current.get("saved_overrides", [])}
+        for g in games:
+            key = (_str_arg(g["dat"]), _str_arg(g["game"]))
+            if choice == "default":
+                own.pop(key, None)
+            else:
+                own[key] = choice
+        rules = {k: v for k, v in current.items() if k != "saved_overrides"}
+        if own:
+            rules["saved_overrides"] = [[d, n, a] for (d, n), a in own.items()]
+        self._collection_save(**{"global": _mod("collection").clean_global(rules)})
+        return self._collection_info()
+
     # ---- the scan
     def _collection_root(self, cfg: dict[str, Any]) -> Path:
         if not cfg["root"]:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the ROM folder first.", "no_root")
         return self._validate_dir(cfg["root"])
 
-    def _collection_aside(self, cfg: dict[str, Any], root: Path) -> Path:
-        sortroot = _mod("sortroot")
-        aside = Path(os.path.abspath(os.path.expanduser(cfg["aside"]))) if cfg["aside"].strip() else sortroot.default_aside(root)
+    def _collection_aside(self, cfg: dict[str, Any], root: Path) -> Path | None:
+        """The archive folder of the Collection: its own, else the one in Settings; None when neither is set (there is no
+        default: nothing is archived)."""
+        chosen = cfg["aside"].strip() or self._archive_settings(self._config())["dir"]
+        if not chosen:
+            return None
+        aside = Path(os.path.abspath(os.path.expanduser(chosen)))
         problem = _mod("collection").check_folders(root, aside)
         if problem:
             raise ApiError(HTTPStatus.BAD_REQUEST, problem.replace("destination", "archive folder"), "bad_aside")
         return aside
 
-    def _collection_scan_work(self, job: Job, root: Path) -> Any:
+    def _collection_scan_work(self, job: Job, root: Path, force: bool = False) -> Any:
         """Read every file under ``root`` ONCE and find its system: the cartridge / flat systems in one scan with all their
         DATs together, every disc image once against the DATs of all disc systems."""
         sortroot, scanner, discsys, collection = _mod("sortroot"), _mod("scanner"), _mod("discsys"), _mod("collection")
@@ -4076,7 +4454,8 @@ class App:
             matched_units, bad_units, _rest = discsys.scan_many(
                 root, disc_dats, files=files, progress=_staged(job, step, steps, "reading the disc images"), cancel=job.cancel,
                 chdman=self._chdman(), engine=str(cfgd.get("chd_engine") or "auto"),
-                workers=_mod("chdsched").default_workers(cfgd.get("chd_workers")), full=bool(cfgd.get("chd_verify_scan")))
+                workers=_mod("chdsched").default_workers(cfgd.get("chd_workers")), full=bool(cfgd.get("chd_verify_scan")),
+                refresh_cache=force)
             if job.cancel.is_set():
                 return None
             for u, _system in matched_units:
@@ -4090,7 +4469,8 @@ class App:
         if flat_dats:
             res = scanner.scan(root, flat_dats, recursive=True, progress=_staged(job, step, steps, "reading every file"),
                                cancel=job.cancel, alt_hashes=tuple(alt), containers=tuple(containers),
-                               files=[f for f in files if f not in claimed])
+                               files=[f for f in files if f not in claimed], refresh_cache=force,
+                               id_matcher=self._switch_matcher())
             owners: dict[Path, set[str]] = {}
             for m in res.matched:
                 owners.setdefault(m.entry.path, set())
@@ -4146,18 +4526,19 @@ class App:
         cfg = self._collection_cfg()
         root = self._collection_root(cfg)
 
+        force = _bool_arg(body.get("force"))              # recalculate every checksum (else only new or changed files are read)
+
         def work(job: Job) -> Any:
-            rs = self._collection_scan_work(job, root)
-            if rs is None:
+            rs = self._collection_scan_work(job, root, force)
+            if rs is None:                                # (cancelled: what was read is kept, the next scan carries on from it)
                 return {"action": "collection_scan", "cancelled": True}
             self._rootscan = rs
             return {"action": "collection_scan", "scan": self._collection_scan_summary(self._collection_cfg())}
 
-        self._rootscan = None
         return {"job": self.jobs.start("collection", work).to_dict()}
 
     # ---- the layout: folder names, where each file goes, and the library of each system as it will be
-    def _collection_layout(self, rs: Any, cfg: dict[str, Any], root: Path, aside: Path) -> dict[str, Any]:
+    def _collection_layout(self, rs: Any, cfg: dict[str, Any], root: Path, aside: Path | None) -> dict[str, Any]:
         """Everything that follows from the scan, without touching the disk: the sort moves and a Mapper
         from where a file is to where it will be."""
         collection, sortroot = _mod("collection"), _mod("sortroot")
@@ -4227,15 +4608,15 @@ class App:
             return self._collection_run_elsewhere(job, cfg, rs, root, apply, allow_mass)
         return self._collection_run_inplace(job, cfg, rs, root, aside, apply)
 
-    def _collection_sort_summary(self, moves: list[Any], aside: Path) -> dict[str, Any]:
+    def _collection_sort_summary(self, moves: list[Any], aside: Path | None) -> dict[str, Any]:
         counts: dict[str, int] = {}
         for m in moves:
             counts[m.bucket] = counts.get(m.bucket, 0) + 1
-        return {"counts": counts, "total": len(moves), "bytes": sum(m.size for m in moves), "aside": str(aside),
+        return {"counts": counts, "total": len(moves), "bytes": sum(m.size for m in moves), "aside": str(aside) if aside else "",
                 "items": [{"from": str(m.src), "to": str(m.dst), "bucket": m.bucket, "kind": m.kind} for m in moves[:400]]}
 
     def _collection_single_pass(self, folder: Path, sort_moves: list[Any], plan: Any, root: Path, aside: Path,
-                                archive: bool) -> tuple[list[Any], list[Any], int]:
+                                archive: bool, per_system: bool = False) -> tuple[list[Any], list[Any], int]:
         """One move per file: the sort into the system's folder and the library plan are put together, so a file goes from where
         it is to its final name / place (or the archive) without stopping in between. Returns ``(ops, archive moves, sorted)``:
         the ``RenameOp`` list for ``organiser.apply_renames`` (inside the ROM folder), the moves to the archive folder (outside it,
@@ -4280,7 +4661,13 @@ class App:
                     except ValueError:
                         pass
                 if top in sortroot.ASIDE_FOLDERS:
-                    if top == sortroot.UNMATCHED:
+                    if top == sortroot.UNMATCHED and per_system:      # a single system: everything lies under its own folder name
+                        try:
+                            sub = op.src.relative_to(folder)
+                        except ValueError:
+                            sub = Path(op.src.name)
+                        new = aside / folder.name / top / sub
+                    elif top == sortroot.UNMATCHED:
                         try:
                             sub = op.src.relative_to(root)
                         except ValueError:
@@ -4300,9 +4687,10 @@ class App:
         sorted_n = sum(1 for op in ops if id(op) in from_sort)       # (those the rules archive are counted as archive moves)
         return ops, arch, sorted_n
 
-    def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, aside: Path, apply: bool) -> dict[str, Any]:
+    def _collection_run_inplace(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, aside: Path | None, apply: bool) -> dict[str, Any]:
         """Sort into the systems' folders, rename them, apply each system's library rules, move what is archived out."""
         sortroot, organiser = _mod("sortroot"), _mod("organiser")
+        archiving = aside is not None and cfg["sweep"]          # without an archive folder nothing leaves the ROM folders
         conv_counts = {s.name: (self._collection_convertible(s) if cfg["convert"] else 0) for s in rs.systems.values()}
         conv_logs: dict[str, str] = {}
         if apply and any(conv_counts.values()):
@@ -4330,7 +4718,7 @@ class App:
         if conv_logs:
             noted[0] = True
             self._collection_save(last=last)
-        keep = [root, aside, *layout["folder_of"].values()]
+        keep = [root, *([aside] if aside is not None else []), *layout["folder_of"].values()]
         prepared: dict[str, tuple[Any, Any, list[Any], int]] = {}
         if apply:
             # One move per file: each file goes from where it is to its final name / place (or the archive); the sort into the
@@ -4348,10 +4736,10 @@ class App:
                 job.report(0, steps, f"Planning {sysobj.name}")
                 state, plan = self._collection_plan_of(rs, sysobj, layout, cfg)
                 ops, arch, sorted_n = self._collection_single_pass(layout["folder_of"][sysobj.name], by_system.get(sysobj.name, []),
-                                                                   plan, root, aside, cfg["sweep"])
+                                                                   plan, root, aside, archiving)
                 prepared[sysobj.name] = (state, plan, ops, sorted_n)
                 now_moves += arch
-                smoves, sinfo = self._saves_moves(plan, layout["folder_of"][sysobj.name], aside if cfg["sweep"] else None)
+                smoves, sinfo = self._saves_moves(plan, layout["folder_of"][sysobj.name], aside if archiving else None)
                 if smoves:
                     saves_moves[sysobj.name] = (smoves, sinfo)
                     now_moves += smoves
@@ -4400,7 +4788,7 @@ class App:
             rows.append(row)
             if not apply:
                 try:
-                    info = self._saves_plan_info(plan, state.root, aside if cfg["sweep"] else None)
+                    info = self._saves_plan_info(plan, state.root, aside if archiving else None)
                     if info is not None:
                         row["saves_plan"] = info
                 except Exception:  # noqa: BLE001 - the saves line is a courtesy of the preview
@@ -4440,7 +4828,7 @@ class App:
                     last["emptied"] = str(note_path)
                 except OSError:
                     traceback.print_exc()
-        if cfg["sweep"] and not job.cancel.is_set():
+        if archiving and not job.cancel.is_set():
             sweep = sortroot.plan_sweep({n: f for n, f in layout["folder_of"].items()}, aside)
             out["aside"] = {"path": str(aside), "files": len(sweep), "bytes": sum(m.size for m in sweep)}
             if apply and sweep:
@@ -4460,6 +4848,7 @@ class App:
             job.report(steps - 1, steps, "Reading the folder again...")
             rs2 = self._collection_scan_work(job, root)           # the folders changed: the scan is made again (quick: cached)
             self._rootscan = rs2
+            self._forget_scans()                                  # (the scans of single systems no longer apply)
         return out
 
     def _collection_run_elsewhere(self, job: Job, cfg: dict[str, Any], rs: Any, root: Path, apply: bool, allow_mass: bool) -> dict[str, Any]:
@@ -4471,8 +4860,7 @@ class App:
         problem = _mod("collection").check_folders(root, dest)
         if problem:
             raise ApiError(HTTPStatus.BAD_REQUEST, problem, "bad_destination")
-        aside = _mod("sortroot").default_aside(root)
-        layout = self._collection_layout(rs, cfg, root, aside)
+        layout = self._collection_layout(rs, cfg, root, None)         # (a build elsewhere archives nothing)
         back = self._collection_real_files(rs, layout)
         systems = sorted(rs.systems.values(), key=lambda x: x.name.casefold())
         rows: list[dict[str, Any]] = []
@@ -4647,6 +5035,7 @@ class App:
         # what could not be taken back (a file in use, its old place taken) stays the "last build": Undo can be pressed again
         self._collection_save(last=again if (again["runs"] or again.get("sort") or again.get("sweep")) else {})
         self._rootscan = None
+        self._forget_scans()
         return {"removed": removed, "restored": restored, "skipped": left, "errors": errors}
 
     def collection_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -4659,6 +5048,8 @@ class App:
         cfg = self._collection_cfg()
         root = self._collection_root(cfg)
         aside = self._collection_aside(cfg, root)
+        if aside is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No archive folder is set.", "no_archive")
         rs = self._rootscan
         folders = {n: (s.current or s.std) for n, s in rs.systems.items()} if rs is not None else {}
         for plat in _mod("platforms").list_platforms():              # a system with nothing left in the root still has its folder
@@ -4667,6 +5058,7 @@ class App:
         moves = sortroot.plan_restore(folders, aside)
         res = sortroot.apply_moves(moves, _mod("paths").data_dir() / "collection-undo", "restore", keep=[aside, root])
         self._rootscan = None
+        self._forget_scans()
         return {"moved": res["moved"], "failed": res["failed"][:30]}
 
     def library_export_runs(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -5075,6 +5467,8 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/library/apply"): App.library_apply,
     ("POST", "/api/library/undo"): App.library_undo,
     ("GET", "/api/library/export/runs"): App.library_export_runs,
+    ("GET", "/api/emulators"): App.emulators_get,
+    ("POST", "/api/emulators/config"): App.emulators_config,
     ("GET", "/api/retroarch"): App.retroarch_get,
     ("POST", "/api/retroarch/select"): App.retroarch_select,
     ("POST", "/api/retroarch/plan"): App.retroarch_plan,
@@ -5087,8 +5481,18 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/retroarch/bios/scan"): App.retroarch_bios_scan,
     ("POST", "/api/retroarch/bios/apply"): App.retroarch_bios_apply,
     ("GET", "/api/collection"): App.collection_get,
+    ("POST", "/api/scan/select"): App.scan_select,
+    ("GET", "/api/switch"): App.switch_get,
+    ("POST", "/api/switch/config"): App.switch_config,
+    ("POST", "/api/switch/scan"): App.switch_scan,
+    ("POST", "/api/switch/rows"): App.switch_rows,
+    ("POST", "/api/switch/db/update"): App.switch_db_update,
+    ("POST", "/api/switch/verify"): App.switch_verify,
+    ("POST", "/api/settings/archive"): App.archive_save,
     ("POST", "/api/collection/scan"): App.collection_scan,
     ("POST", "/api/collection/save"): App.collection_save,
+    ("POST", "/api/collection/saves"): App.collection_saves,
+    ("POST", "/api/collection/saved"): App.collection_saved,
     ("POST", "/api/collection/plan"): App.collection_plan,
     ("POST", "/api/collection/apply"): App.collection_apply,
     ("POST", "/api/collection/aside/restore"): App.collection_restore,

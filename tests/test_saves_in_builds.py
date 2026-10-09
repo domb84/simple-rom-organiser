@@ -246,7 +246,7 @@ class CollectionSinglePass(SavesCase):
 
     def test_archive_mode_moves_rom_and_saves_once_with_one_journal_and_undo_restores_all(self) -> None:
         root = self.make()
-        archive = root.with_name(root.name + "-archive")
+        archive = root.with_name("rom-archive")
         saves = self.save("bsnes", "zed usa")                                       # named after the file the ROM has now
         self.save("bsnes", "solo", ("{n}.srm",))
         self.call("POST", "/api/collection/save", {"global": {"saved_games": "archive"}})
@@ -285,6 +285,39 @@ class CollectionSinglePass(SavesCase):
         self.assertEqual(sorted(x for x in tree(root) if x.startswith("snes/") and not x.endswith("/")),
                          ["snes/Solo (USA).sfc", "snes/Zed (Europe).sfc", "snes/Zed (USA).sfc"])
         self.assertEqual(self.saved_files(), ["bsnes/Zed (USA).srm"])
+
+    def test_one_games_own_choice_beats_the_default_in_a_collection(self) -> None:
+        root = self.make()
+        self.save("bsnes", "zed usa", ("{n}.srm",))
+        self.call("POST", "/api/collection/save", {"global": {"saved_games": "archive"}})
+        self.scan(root)
+        rows = self.call("POST", "/api/collection/saves", {})
+        self.assertEqual([(r["platform"], r["game"], r["effect"], r["choice"], r["default"]) for r in rows["items"]],
+                         [(SNES, "Zed (USA)", "archive", "", "archive")])
+        game = {"dat": rows["items"][0]["dat"], "game": "Zed (USA)"}
+        info = self.call("POST", "/api/collection/saved", {"choice": "keep", "games": [game]})
+        self.assertEqual(info["global"]["saved_overrides"], [[game["dat"], "Zed (USA)", "keep"]])
+        self.assertEqual(info["global"]["saved_games"], "archive")
+        self.call("POST", "/api/collection/save", {"global": {"saved_games": "archive", "latest_only": True}})   # other rules keep it
+        self.assertEqual(self.call("GET", "/api/collection")["global"]["saved_overrides"][0][2], "keep")
+        row = next(r for r in self.job("/api/collection/plan")["systems"] if r["platform"] == SNES)
+        self.assertEqual(row["saves_plan"]["kept"], 1)
+        self.assertEqual(row["saves_plan"]["archive"]["files"], 0)
+        self.assertEqual(self.call("POST", "/api/collection/saves", {})["items"][0]["effect"], "keep")
+        self.assert_clean(self.job("/api/collection/apply"))
+        self.assertTrue((root / "snes" / "Zed (USA).sfc").is_file())
+        self.assertEqual(self.saved_files(), ["bsnes/Zed (USA).srm"])
+        back = self.call("POST", "/api/collection/saved", {"choice": "default", "games": [game]})
+        self.assertNotIn("saved_overrides", back["global"])
+        self.call("POST", "/api/collection/save", {"global": {}})                    # "back to each system's defaults" clears all
+        self.assertEqual(self.call("GET", "/api/collection")["global"], {})
+
+    def test_the_system_list_shows_how_many_saves_a_system_has(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Solo (USA)")
+        self.save("bsnes", "Zed (USA)")
+        self.lib_plan(root)
+        row = next(p for p in self.call("GET", "/api/platforms") if p["name"] == SNES)
+        self.assertEqual(row["last_scan"]["saves"], {"files": 3, "sets": 1})       # .srm, .state1 and .A1.bin; the picture is not counted
 
     def test_archive_mode_in_a_copy_build_leaves_the_users_saves_alone(self) -> None:
         root = self.make()

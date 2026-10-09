@@ -98,7 +98,7 @@ class NoConfig(CollectionCase):
         scan = self.scan(root)
         self.assertNotIn("saves", scan)
         self.assertTrue(all("saves" not in s for s in scan["systems"]))
-        archive = root.with_name(root.name + "-archive")
+        archive = root.with_name("rom-archive")
         res = self.job("/api/collection/apply")
         self.assert_clean(res)
         self.assertTrue((archive / "_other" / "Dump" / "zed usa.srm").is_file())       # an ordinary non-ROM file

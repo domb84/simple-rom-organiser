@@ -39,6 +39,7 @@ from . import nointro as _nointro
 from . import paths, platforms
 from . import tosec as _tosec
 from . import ratings as _ratings
+from . import switchdb as _switchdb
 from . import redump as _redump
 from . import whdload as _whdload
 from .nointro import NOINTRO_DATS, NoIntroError
@@ -67,6 +68,11 @@ class UpdateError(Exception):
         super().__init__(message or code)
         self.code = code
         self.message = message or code
+
+
+# the systems whose "DAT" is made from one of the title databases (no DAT of checksums exists): DAT name -> the database
+MADE_DATS = {"Nintendo - Wii U": "gametdb", "Nintendo - Switch": "switchdb", "Nintendo - Switch (Updates)": "switchdb",
+             "Nintendo - Switch (DLC)": "switchdb"}
 
 
 class _Token:
@@ -112,8 +118,10 @@ class UpdateManager:
                  clock: Callable[[], float] = time.time,
                  state_path: Optional[Path] = None, whdload: Any = _whdload,
                  redump: Any = _redump, ratings: Any = _ratings,
-                 ratings_wanted: Optional[Callable[[], bool]] = None) -> None:
+                 ratings_wanted: Optional[Callable[[], bool]] = None, switchdb: Any = None, gametdb: Any = None) -> None:
         self.tosec = tosec
+        self.switchdb = switchdb  # the Nintendo Switch title database (blawar/titledb); None = not managed
+        self.gametdb = gametdb    # GameTDB's name lists for Wii, GameCube and Wii U discs; None = not managed
         self.nointro = nointro
         self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
         self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
@@ -152,6 +160,12 @@ class UpdateManager:
         self._ratings_error: Optional[str] = None
         self._ratings_offline = False
         self._ratings_queued = False
+        self._switchdb_checked: Optional[str] = None
+        self._switchdb_error: Optional[str] = None
+        self._switchdb_offline = False
+        self._gametdb_checked: Optional[str] = None
+        self._gametdb_error: Optional[str] = None
+        self._gametdb_offline = False
         self._updating: Optional[str] = None   # source being downloaded right now
         self._load_state()
 
@@ -179,6 +193,10 @@ class UpdateManager:
         self._redump_checked = red.get("checked_at") if isinstance(red.get("checked_at"), str) else None
         rat = data.get("ratings") if isinstance(data.get("ratings"), dict) else {}
         self._ratings_checked = rat.get("checked_at") if isinstance(rat.get("checked_at"), str) else None
+        sw = data.get("switchdb") if isinstance(data.get("switchdb"), dict) else {}
+        self._switchdb_checked = sw.get("checked_at") if isinstance(sw.get("checked_at"), str) else None
+        gt = data.get("gametdb") if isinstance(data.get("gametdb"), dict) else {}
+        self._gametdb_checked = gt.get("checked_at") if isinstance(gt.get("checked_at"), str) else None
 
     def _save_state(self) -> None:
         data = {"checked_at": self._last_checked,
@@ -186,7 +204,8 @@ class UpdateManager:
                 "nointro": {"checked_at": self._nointro_checked},
                 "whdload": {"checked_at": self._whdload_checked},
                 "redump": {"checked_at": self._redump_checked},
-                "ratings": {"checked_at": self._ratings_checked}}
+                "ratings": {"checked_at": self._ratings_checked},
+                "switchdb": {"checked_at": self._switchdb_checked}, "gametdb": {"checked_at": self._gametdb_checked}}
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -384,6 +403,8 @@ class UpdateManager:
                 "whdload": self._whdload_status(whd_installed, whd_local),
                 "redump": self._redump_status(red_installed, red_local),
                 "ratings": self._ratings_status(),
+                "switchdb": self._extra_status("switchdb"),
+                "gametdb": self._extra_status("gametdb"),
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -404,13 +425,40 @@ class UpdateManager:
 
     # ------------------------------------------------------------------ control
 
+    def missing(self) -> list[str]:
+        """The databases that are not installed: ``tosec``, ``nointro``, ``whdload``, ``redump``, ``switchdb``, ``gametdb`` (the optional
+        ratings are fetched when a rating filter needs them, not here)."""
+        out: list[str] = []
+        if self._installed_tosec() is None:
+            out.append("tosec")
+        if {d.name for d in self.nointro.list_dats()} < set(NOINTRO_DATS):
+            out.append("nointro")
+        if self.whdload is not None and {d.name for d in self.whdload.list_dats()} < set(WHDLOAD_DATS):
+            out.append("whdload")
+        if self.redump is not None and {d.name for d in self.redump.list_dats()} < set(REDUMP_DATS):
+            out.append("redump")
+        for key in ("switchdb", "gametdb"):
+            mod = getattr(self, key, None)
+            if mod is not None and (not mod.db_info()["available"] or not self._made_dats_present(key)):
+                out.append(key)
+        return out
+
+    @staticmethod
+    def _made_dats_present(key: str) -> bool:
+        names = [d for d, k in MADE_DATS.items() if k == key]
+        from . import redump as _redump
+        have = {d.name for d in _redump.list_dats()}
+        return all(n in have for n in names)
+
     def start_background(self) -> None:
-        """Server startup: check + download what is newer on a daemon thread (idempotent)."""
+        """Server startup: download every database that is *missing* (the first start) on a daemon thread. Nothing is asked of the
+        network when all of them are installed: later starts need the "Check for updates" button (idempotent)."""
         with self._lock:
             if self._started or not self.enabled:
                 return
             self._started = True
-        self._spawn()
+        if self.missing():
+            self._spawn()
 
     def check(self, force: bool = False) -> bool:
         """The "Check for updates" button. False if disabled or an update is already running."""
@@ -518,6 +566,8 @@ class UpdateManager:
             src, names = scope
             if src == "ratings":
                 return self.ratings is not None and self.ratings.installed() is not None
+            if src == "extra":
+                return False
             if src == "tosec":
                 return self._installed_tosec() is not None
             if src == "whdload":
@@ -546,6 +596,9 @@ class UpdateManager:
             forward: Optional[Progress]) -> None:
         if scope is not None and scope[0] == "ratings":
             self._do_ratings(token, forward, explicit=True)
+            return
+        if scope is not None and scope[0] == "extra":              # the "DAT" of a system is made from one of the title databases
+            self._do_extra(scope[1][0], token, forward, True)
             return
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
@@ -780,6 +833,8 @@ class UpdateManager:
                         self._updating = None
         if scope is None:
             self._do_ratings(token, forward, explicit=False)      # its own errors never fail the DAT update
+            self._do_extra("switchdb", token, forward, True)          # (a check the user asked for, or the first fetch: no age gate)
+            self._do_extra("gametdb", token, forward, True)
         if errors:
             raise UpdateError("failed", "; ".join(errors))
 
@@ -843,6 +898,72 @@ class UpdateManager:
             with self._lock:
                 self._updating = None
 
+    _EXTRA_LABEL = {"switchdb": "Nintendo Switch title database", "gametdb": "GameTDB names (Wii, GameCube, Wii U)"}
+
+    def _do_extra(self, key: str, token: _Token, forward: Optional[Progress], force: bool) -> None:
+        """A name / title database that is not a DAT (the Switch's, GameTDB's): fetched when it is missing, or older than the module's
+        age limit / changed at its source (a recent copy is not even asked about unless the user asked). Errors and being offline
+        are shown in the database's own status block only; the DATs' status is not touched."""
+        mod = getattr(self, key)
+        if mod is None:
+            return
+        label = self._EXTRA_LABEL[key]
+        if token.is_set():
+            raise Cancelled()
+        self._set_progress(0, 0, f"Checking the {label}", key, forward)
+        row = mod.check_update(timeout=CHECK_TIMEOUT, gate=not force)
+        status = row.get("status")
+        with self._lock:
+            if status != "error" and not row.get("skipped"):
+                setattr(self, f"_{key}_checked", _iso(self.clock()))
+                self._save_state()
+        if status == "error":
+            with self._lock:
+                setattr(self, f"_{key}_offline", True)               # quiet: a database that is there stays in use
+            return
+        if status in ("missing", "update_available"):
+            with self._lock:
+                self._state = "downloading"
+                self._updating = key
+            try:
+                mod.download_and_build(progress=lambda d, t, m: self._set_progress(d, t, m, key, forward), cancel=token)
+            except InterruptedError:
+                raise Cancelled() from None
+            except Cancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    if _is_network_error(exc) or isinstance(exc, OSError):
+                        setattr(self, f"_{key}_offline", True)
+                        if mod.db_info()["available"] is False:
+                            setattr(self, f"_{key}_error", f"The {label} can not be downloaded (offline?): " + (str(exc) or type(exc).__name__))
+                    else:
+                        setattr(self, f"_{key}_error", str(exc) or exc.__class__.__name__)
+            else:
+                with self._lock:
+                    setattr(self, f"_{key}_error", None)
+                    setattr(self, f"_{key}_offline", False)
+                    setattr(self, f"_{key}_checked", _iso(self.clock()))
+                    self._save_state()
+            finally:
+                with self._lock:
+                    self._updating = None
+            return
+        with self._lock:
+            setattr(self, f"_{key}_error", None)
+            setattr(self, f"_{key}_offline", False)
+
+    def _extra_status(self, key: str) -> dict[str, Any]:
+        """(lock held) the ``switchdb`` / ``gametdb`` block of :meth:`status`."""
+        mod = getattr(self, key)
+        if mod is None:
+            return {"managed": False, "status": "absent"}
+        info = mod.db_info()
+        error = getattr(self, f"_{key}_error")
+        status = "updating" if self._updating == key else "error" if error else "up_to_date" if info["available"] else "absent"
+        return {"managed": True, "status": status, "installed": info.get("fetched") or None, "titles": info.get("titles"),
+                "checked_at": getattr(self, f"_{key}_checked"), "offline": getattr(self, f"_{key}_offline"), "error": error}
+
     def _ratings_progress(self, done: int, total: int, message: str, forward: Optional[Progress]) -> None:
         with self._lock:
             if message.lower().startswith(("build", "ratings index")):
@@ -874,6 +995,9 @@ class UpdateManager:
             raise UpdateError("offline", "The DATs for this system are not installed and "
                                          "automatic updates are disabled.")
         scope = (platforms.source_of(platform), tuple(platform.dats))
+        extra = next((k for dat, k in MADE_DATS.items() if dat in platform.dats and getattr(self, k, None) is not None), "")
+        if extra:
+            scope = ("extra", (extra,))
         last = None
         while True:
             if cancel is not None and cancel.is_set():
@@ -908,6 +1032,9 @@ class UpdateManager:
             raise UpdateError("cancelled", "Cancelled while updating the DATs")
         if st["error"]:
             raise UpdateError(st["error"]["code"], st["error"]["message"])
+        if extra and (getattr(self, f"_{extra}_offline", False) or getattr(self, f"_{extra}_error", None)):
+            raise UpdateError("offline", "The list of games for this system is not installed and could not be fetched. "
+                                         "Connect to the internet and retry.")
         if st["offline"]:
             raise UpdateError("offline", "The DATs for this system are not installed and the "
                                          "update servers can not be reached.")

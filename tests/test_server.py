@@ -1017,6 +1017,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.addCleanup(self.srv.server_close)
         self.addCleanup(self.srv.shutdown)
+        self.call("POST", "/api/settings/archive", {"dir": str(self.tmp / "rom-archive")})     # (there is no default archive folder)
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         headers = {"Host": f"127.0.0.1:{self.port}"}
@@ -1386,7 +1387,9 @@ class RealModulesIntegrationTests(unittest.TestCase):
         res = self.job("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})["result"]
         self.assertGreater(res["aside"]["moved"], 0)
         self.assertFalse([p for p in self.root.glob("_*")], "no reserved folder is left in the system folder")
-        self.assertTrue(any(aside.rglob("*.*")))
+        self.assertTrue(any((aside / self.root.name).rglob("*.*")))                       # everything under this system's own folder
+        self.assertEqual(sorted(p.name for p in aside.iterdir()), [self.root.name])
+        self.assertTrue(any((aside / self.root.name / "_unmatched").rglob("*.*")))
         self.job("/api/library/undo", {"log": res["undo_log"]})
         self.assertFalse(any(p.is_file() for p in aside.rglob("*")))                      # all of it came back first
         self.assertTrue((self.root / "incoming" / "game_d1.adf").is_file())
@@ -1469,7 +1472,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(res["sort"]["result"]["failed"], [])
         self.assertTrue((mixed / "gba" / "Alpha Run (USA).gba").is_file() and (mixed / "gba" / "Beta Bash (USA).gba").is_file())
         self.assertTrue(any((mixed / "amiga").rglob("Workbench v1.3*.adf")))
-        aside = self.tmp / "mixed-archive"
+        aside = self.tmp / "rom-archive"
         self.assertTrue((aside / "_unmatched" / "Dump" / "mystery.gba").is_file())
         self.assertTrue((aside / "_other" / "Dump" / "notes.txt").is_file())
         self.assertFalse(list((mixed / "gba").glob("_*")) + list((mixed / "amiga").glob("_*")))   # the ROM folders hold only what is kept
@@ -1512,12 +1515,30 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertTrue((roms / "Dump" / "delta.smc").is_file())
         self.assertFalse(list(roms.glob("snes/*.sfc")))
 
+    def test_saves_named_after_a_playlist_follow_the_playlist(self) -> None:
+        saves, ra = self.tmp / "saves", self.tmp / "ra"
+        (ra / "info").mkdir(parents=True)
+        saves.mkdir()
+        (ra / "retroarch.cfg").write_text(f'savefile_directory = "{saves}"\nsavestate_directory = "{saves}"\n')
+        (self.root / "game.m3u").write_text("incoming/game_d1.adf\nincoming/game_d2.adf\n")     # the user's own playlist
+        (saves / "game.srm").write_bytes(b"save")                                               # what RetroArch made from it
+        (saves / "game.state1").write_bytes(b"state")
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra)})
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        totals = self.call("GET", "/api/status")["scan"]["saves"]
+        self.assertEqual((totals["sets"], totals["unmatched_sets"]), (1, 0))                     # it is the game's, not a stray
+        plan = self.call("POST", "/api/library/plan", {"limit": 100})
+        self.assertEqual(plan["saves"]["rename"], {"files": 2, "games": 1, "conflicts": 0})
+        self.job("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.assertEqual(sorted(p.name for p in saves.iterdir()), ["Game (1990)(Pub).srm", "Game (1990)(Pub).state1"])
+        self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
+
     def test_a_duplicate_goes_from_where_it_is_straight_to_the_archive(self) -> None:
         mixed = self._mixed()
         (mixed / "Dump" / "Alpha copy.bin").write_bytes((mixed / "Dump" / "Alpha.bin").read_bytes())
         self._scan_collection(mixed)
         self.job("/api/collection/apply", {})
-        archive = self.tmp / "mixed-archive"
+        archive = self.tmp / "rom-archive"
         self.assertEqual(len(list((archive / "gba" / "_duplicates").rglob("*.*"))), 1)
         self.assertFalse((mixed / "gba" / "_duplicates").exists())                         # it never stopped in the ROM folder
         self.assertEqual(len(list((mixed / "gba").glob("Alpha*"))), 1)
@@ -1550,7 +1571,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         (roms / "Loose" / "notes.txt").write_text("hello")
         self._scan_collection(roms)
         self.job("/api/collection/apply", {})
-        aside = self.tmp / "roms-aside-test-archive"
+        aside = self.tmp / "rom-archive"
         self.assertTrue((roms / "gba" / "Alpha Run (USA).gba").is_file())
         self.assertTrue((aside / "_unmatched" / "Loose" / "mystery.gba").is_file())
         self.assertTrue((aside / "_other" / "Loose" / "notes.txt").is_file())
@@ -1661,7 +1682,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.call("POST", "/api/library/export/settings", {"enabled": True, "dest": "/x/y", "mode": "move"})
         saved = self.call("GET", "/api/status")["library_export"]
         self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "move", "sidecars": False, "sync": False,
-                                 "aside": False, "aside_dir": ""})
+                                 "aside": True})
 
 
 class ReviewFixTests(ServerTestCase):

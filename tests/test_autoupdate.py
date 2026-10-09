@@ -205,6 +205,55 @@ class Base(unittest.TestCase):
                                         redump=self.redump, clock=self.clock, **kw)
 
 
+class StartupTest(Base):
+    """The first start downloads every database that is missing; later starts ask the network for nothing."""
+
+    def install_everything(self) -> None:
+        self.tosec.installed = "2025-03-13"
+        self.nointro.local = {n: "a" for n in NOINTRO_DATS}
+        self.whdload.local = {WHD: "w1"}
+        self.redump.local = {n: self.redump.remote for n in autoupdate.REDUMP_DATS}
+        for dat in autoupdate.MADE_DATS:
+            (paths.redump_dir()).mkdir(parents=True, exist_ok=True)
+            (paths.redump_dir() / f"{dat}.dat").write_text("x")
+            self.redump.local[dat] = self.redump.remote
+
+    def test_the_first_start_fetches_what_is_missing(self) -> None:
+        self.assertIn("nointro", self.mgr.missing())
+        self.mgr.start_background()
+        wait_idle(self.mgr)
+        self.assertTrue(self.nointro.downloads)
+
+    def test_a_later_start_does_not_touch_the_network(self) -> None:
+        self.install_everything()
+        calls: list[str] = []
+        for fake in (self.nointro, self.whdload, self.redump):
+            original = fake.check_updates
+            fake.check_updates = lambda *a, _o=original, **k: (calls.append("check"), _o(*a, **k))[1]
+        sw = FakeSwitchdb()
+        sw.available = True
+        gt = FakeSwitchdb()
+        gt.available = True
+        mgr = self.make(switchdb=sw, gametdb=gt)
+        self.assertEqual(mgr.missing(), [])
+        mgr.start_background()
+        time.sleep(0.2)
+        wait_idle(mgr)
+        self.assertEqual((calls, self.tosec.pack_downloads, sw.checks, gt.checks, mgr.status()["running"]), ([], 0, [], [], False))
+
+    def test_the_button_still_checks_everything(self) -> None:
+        self.install_everything()
+        sw = FakeSwitchdb()
+        sw.available, sw.answer = True, {"status": "up_to_date"}
+        mgr = self.make(switchdb=sw)
+        mgr.start_background()
+        wait_idle(mgr)
+        self.assertEqual(sw.checks, [])
+        self.assertTrue(mgr.check())
+        wait_idle(mgr)
+        self.assertEqual(sw.checks, [False])
+
+
 class BackgroundTest(Base):
     def test_startup_downloads_everything_and_is_idempotent(self) -> None:
         self.mgr.start_background()
@@ -469,3 +518,74 @@ class ScanRaceTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeSwitchdb:
+    """The Switch title database as the update manager sees it."""
+
+    def __init__(self) -> None:
+        self.available = False
+        self.answer = {"status": "missing"}
+        self.checks: list[bool] = []
+        self.builds = 0
+        self.fail: BaseException | None = None
+
+    def check_update(self, timeout=None, gate=True):
+        self.checks.append(gate)
+        return dict(self.answer)
+
+    def download_and_build(self, progress=None, cancel=None):
+        self.builds += 1
+        if progress:
+            progress(1, 2, "Switch title database: names")
+        if self.fail is not None:
+            raise self.fail
+        self.available = True
+        return {"titles": 1, "ncas": 1}
+
+    def db_info(self):
+        return {"available": self.available, "fetched": "2026-10-09 10:00" if self.available else "", "titles": 1 if self.available else 0}
+
+
+class SwitchDatabaseTest(Base):
+    def setUp(self) -> None:
+        super().setUp()
+        self.sw = FakeSwitchdb()
+        self.mgr = self.make(switchdb=self.sw)
+
+    def run_update(self, force: bool = False) -> dict:
+        self.mgr.check(force=force) if force else self.mgr.start_background()
+        wait_idle(self.mgr)
+        return self.mgr.status()
+
+    def test_a_missing_database_is_downloaded_at_startup(self) -> None:
+        st = self.run_update()
+        self.assertEqual((self.sw.builds, st["switchdb"]["status"], st["switchdb"]["titles"]), (1, "up_to_date", 1))
+        self.assertIsNone(st["error"])
+        self.assertTrue(st["switchdb"]["checked_at"])
+
+    def test_a_current_database_is_left_alone(self) -> None:
+        self.sw.available, self.sw.answer = True, {"status": "up_to_date", "skipped": True}
+        st = self.run_update()
+        self.assertEqual((self.sw.builds, self.sw.checks), (0, [False]))          # (nothing newer; a check the user asked for has no age gate)
+        self.assertEqual(st["switchdb"]["status"], "up_to_date")
+
+    def test_a_changed_source_downloads_again_and_the_button_ignores_the_age_gate(self) -> None:
+        self.sw.available, self.sw.answer = True, {"status": "update_available"}
+        self.run_update(force=True)
+        self.assertEqual((self.sw.builds, self.sw.checks), (1, [False]))
+
+    def test_offline_keeps_what_is_there_without_an_error(self) -> None:
+        self.sw.available, self.sw.answer = True, {"status": "error", "error": "no route"}
+        st = self.run_update()
+        self.assertEqual((self.sw.builds, st["switchdb"]["offline"], st["switchdb"]["error"], st["switchdb"]["status"]), (0, True, None, "up_to_date"))
+
+    def test_a_failed_first_download_is_reported_in_its_own_block_only(self) -> None:
+        self.sw.fail = OSError("no route")
+        st = self.run_update()
+        self.assertEqual(st["switchdb"]["status"], "error")
+        self.assertIn("title database", st["switchdb"]["error"])
+        self.assertIsNone(st["error"])                              # (the DATs' own status is not touched)
+
+    def test_not_managed_by_default(self) -> None:
+        self.assertEqual(self.make().status()["switchdb"], {"managed": False, "status": "absent"})

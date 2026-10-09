@@ -69,9 +69,7 @@ class Rules(unittest.TestCase):
                 libexport.check_destination(top, inside / "library")
             with self.assertRaises(libexport.ExportError):
                 libexport.check_destination(inside, top)
-            aside = sortroot.default_aside(top)                    # no folder lies next to a drive: no exception, and refused
-            self.assertIsNotNone(collection.check_folders(top, aside))
-        self.assertEqual(sortroot.default_aside(Path("/a/roms")), Path("/a/roms-archive"))
+            self.assertIsNotNone(collection.check_folders(top, top / "archive"))     # (an archive inside the drive's top is refused)
 
     def test_overlap_is_seen_through_other_spellings_of_the_same_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

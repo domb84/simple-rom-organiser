@@ -58,7 +58,7 @@ class Ps2EndpointTests(PsServerCase):
         self.assertFalse(rows[PSX]["dats"][0]["present"])
         self.assertEqual(rows[PS2]["disc"]["iso_mode"], "createdvd")
         self.assertEqual({d["name"] for d in self.call("/api/status")["redump"]["dats"]},
-                         {"Sega - Dreamcast", PSX_DAT, PS2_DAT, "Nintendo - GameCube"})
+                         {"Sega - Dreamcast", PSX_DAT, PS2_DAT, "Nintendo - GameCube", "Nintendo - Wii"})
 
     def test_folder_is_saved_per_system_immediately(self) -> None:
         self.call("/api/folders", {"platform": PS2, "path": str(self.roms)})
@@ -116,34 +116,54 @@ class Ps2EndpointTests(PsServerCase):
 
 
 class DiscSavesTests(PsServerCase):
-    """A disc game with saves beside / apart from its CHD: kept, or archived with its saves (Amendment 30)."""
+    """A PlayStation 2 game with PCSX2 saves: kept, or archived with its saves (Amendment 30). PCSX2 tells a game by the serial on its
+    disc, so its saves never need a new name."""
 
     def setUp(self) -> None:
         super().setUp()
-        self.iso.update({"Gamma (USA)": T.make_iso(33, 5), "Gamma (Europe)": T.make_iso(34, 6)})
+        from test_nintendo import ps2_iso
+        home = self.base / "home"
+        home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        self.iso.update({"Gamma (USA)": ps2_iso("SLUS_209.46"), "Gamma (Europe)": ps2_iso("SLES_500.12")})
         T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
                     name=PS2_DAT, version="2026-06-15 03-41-38")
         self.call("/api/chdman", {"engine": "python"})
-        self.saves = self.base / "saves"
-        ra_dir = self.base / "RetroArch"
-        (ra_dir / "info").mkdir(parents=True)
-        (ra_dir / "info" / "play_libretro.info").write_text('display_name = "Sony - PlayStation 2 (Play!)"\ncorename = "Play!"\n'
-                                                            'supported_extensions = "elf|iso|cso|bin|isz"\n')
-        (self.saves / "Play!").mkdir(parents=True)
-        (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{self.saves}"\nsavestate_directory = "{self.saves}"\n'
-                                              'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
-        self.call("/api/retroarch/select", {"custom": str(ra_dir)})
-        self.put_iso("Gamma (USA)", "Gamma (USA)/Gamma (USA).chd")
-        self.put_iso("Gamma (Europe)", "Gamma (Europe)/Gamma (Europe).chd")
-        for n in ("Gamma (USA).srm", "Gamma (USA).state1", "Gamma (USA).state1.png"):
-            (self.saves / "Play!" / n).write_bytes(n.encode())
+        self.pcsx2 = self.base / "pcsx2"
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        (card / "BASLUS-20946GAMMA").mkdir(parents=True)
+        (card / "BASLUS-20946GAMMA" / "data.bin").write_bytes(b"save")
+        (card / "BESLES-50012OTHER").mkdir()
+        (card / "BESLES-50012OTHER" / "data.bin").write_bytes(b"other")
+        (self.pcsx2 / "sstates").mkdir()
+        (self.pcsx2 / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").write_bytes(b"state")
+        (self.pcsx2 / "inis").mkdir()
+        (self.pcsx2 / "inis" / "PCSX2.ini").write_text("[Folders]\n")
+        self.call("/api/emulators/config", {"source": "pcsx2", "folder": str(self.pcsx2)})
+        self.put_iso("Gamma (USA)", "Gamma (USA)/Gamma (USA).chd", dvd=True)
+        self.put_iso("Gamma (Europe)", "Gamma (Europe)/Gamma (Europe).chd", dvd=True)
         self.scan_ps2()
-        patcher = mock.patch("romorg.retroarch.is_running", return_value=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def games(self) -> list[str]:
         return sorted(p.relative_to(self.roms).as_posix() for p in self.roms.rglob("*.chd"))
+
+    def test_the_scan_counts_the_saves_of_each_game_and_the_browse_list_shows_them(self) -> None:
+        games = {g["name"]: g for g in self.call("/api/scan/results?kind=games")["items"]}
+        self.assertEqual(games["Gamma (USA)"]["saves"]["total"], 2)            # a card save and a state
+        self.assertEqual(games["Gamma (USA)"]["saves"]["saves"], 1)
+        self.assertEqual(games["Gamma (USA)"]["saves"]["states"], 1)
+        self.assertEqual(games["Gamma (Europe)"]["saves"]["total"], 1)
+        sets = self.call("/api/scan/results?kind=saves")["items"]
+        self.assertEqual({s["source"] for s in sets}, {"pcsx2"})
+
+    def test_a_system_without_its_emulator_has_no_saves_at_all(self) -> None:
+        self.call("/api/emulators/config", {"source": "pcsx2", "enabled": False})
+        self.scan_ps2()
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertNotIn("saves", plan)
+        self.assertNotIn("saved_games", self.call("/api/library/profile?platform=" + PS2.replace(" ", "%20"))["profile"])
 
     def test_keep_is_the_default_and_the_disc_game_stays(self) -> None:
         plan = self.call("/api/library/plan", {"platform": PS2})
@@ -157,20 +177,23 @@ class DiscSavesTests(PsServerCase):
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
         aside = self.base / "archive"
         plan = self.call("/api/library/plan", {"platform": PS2, "aside_to": str(aside)})
-        self.assertEqual(plan["saves"]["archive"]["files"], 3)
+        self.assertEqual(plan["saves"]["archive"]["files"], 2)
         self.call("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)
-        self.assertEqual(res["result"]["saves_archived"]["moved"], 3)
+        self.assertEqual(res["result"]["saves_archived"]["moved"], 2)
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])
-        self.assertEqual(sorted(p.name for p in (aside / "ps2" / "_saves" / "Play!").iterdir()),
-                         ["Gamma (USA).srm", "Gamma (USA).state1", "Gamma (USA).state1.png"])
-        self.assertEqual(list((self.saves / "Play!").iterdir()), [])
+        there = aside / "ps2" / "_saves"
+        self.assertTrue((there / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())
+        self.assertTrue((there / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
+        self.assertFalse((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA").exists())
+        self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BESLES-50012OTHER" / "data.bin").is_file())   # (the other game's save stays)
         self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
         back = self.job()
         self.assertEqual(back["status"], "done", back)
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
-        self.assertEqual(len(list((self.saves / "Play!").iterdir())), 3)
+        self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())
+        self.assertTrue((self.pcsx2 / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
 
     def test_collection_sort_a_disc_games_folder_keeps_everything_in_it_saves_beside_the_chd_included(self) -> None:
         """The user's real shape (psx/Spider - The Video Game (USA)/ with .srm .state .state1 beside the CHD) in a folder that
@@ -188,7 +211,7 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual(res["sort"]["result"]["failed"], [])
         there = mixed / "ps2" / "Gamma (Europe)"
         self.assertEqual(sorted(p.name for p in there.iterdir()), sorted(("Gamma (Europe).chd",) + names))
-        self.assertFalse((self.base / "mixed-archive" / "_other").exists())
+        self.assertFalse((self.base / "rom-archive" / "_other").exists())
         self.call("/api/collection/undo", {})
         self.assertEqual(sorted(p.name for p in game.iterdir()), sorted(("Gamma (Europe).chd",) + names))
 
@@ -204,6 +227,7 @@ class MixedRootSortTests(PsServerCase):
     def test_discs_of_two_systems_are_found_in_one_scan_and_sorted(self) -> None:
         from romorg import discsys
         self.call("/api/chdman", {"engine": "python"})
+        self.call("/api/settings/archive", {"dir": str(self.base / "rom-archive")})              # (there is no default archive folder)
         mixed = self.base / "mixed"
         dump = mixed / "Dump"
         dump.mkdir(parents=True)
@@ -236,8 +260,8 @@ class MixedRootSortTests(PsServerCase):
         self.assertEqual(res["sort"]["result"]["failed"], [])
         self.assertEqual(len(list((mixed / "dreamcast").rglob("*.chd"))), 1)
         self.assertEqual(len(list((mixed / "ps2").rglob("*.chd"))), 2)
-        self.assertTrue((self.base / "mixed-archive" / "_unmatched" / "Dump" / "unknown.chd").is_file())
-        self.assertTrue((self.base / "mixed-archive" / "_other" / "Dump" / "cover.jpg").is_file())
+        self.assertTrue((self.base / "rom-archive" / "_unmatched" / "Dump" / "unknown.chd").is_file())
+        self.assertTrue((self.base / "rom-archive" / "_other" / "Dump" / "cover.jpg").is_file())
 
     def test_collection_can_convert_raw_discs_to_chd_while_tidying(self) -> None:
         self.use_fake_chdman()

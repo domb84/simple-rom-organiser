@@ -42,7 +42,7 @@ ALIASES = {
 # The rule fields a collection can set for every system (the rest stay each system's default).
 GLOBAL_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n", "min_votes",
-               "keep_unrated", "rank_scope", "saved_games")
+               "keep_unrated", "rank_scope", "saved_games", "saved_overrides")
 _CAPABILITY_FLAGS = ("latest_only", "best_variant", "complete_only", "one_per_game", "borrow_other_editions")
 
 
@@ -172,6 +172,7 @@ class RootScan:
     # read from: filled by the server, and only when a RetroArch config is known (Amendment 31).
     save_reports: Dict[str, Any] = field(default_factory=dict)
     save_walk: Any = None
+    m3us: Optional[List[Path]] = None                         # the .m3u playlists under the root (read once, for the saves)
 
     def flat(self) -> Dict[Path, Optional[str]]:
         out: Dict[Path, Optional[str]] = {}

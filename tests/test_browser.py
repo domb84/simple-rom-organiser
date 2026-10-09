@@ -124,6 +124,13 @@ class UiTestCase(unittest.TestCase):
         self.page.eval("localStorage.clear()")
         self.page.goto(self.fx.url + hash_)
 
+    def set_archive(self, folder: str, platform: str = "") -> None:
+        """Choose the archive folder (there is no default one), the way Settings does; the page must be open."""
+        body = {"dir": folder, **({"platform": platform} if platform else {})}
+        self.page.eval("""(async()=>{const t=document.querySelector('meta[name=romorg-token]').content;
+ const r = await fetch('/api/settings/archive',{method:'POST',headers:{'Content-Type':'application/json','X-Romorg-Token':t},body:JSON.stringify(%s)});
+ return r.status})()""" % __import__("json").dumps(body))
+
     def scan(self, platform: str = "Commodore Amiga", root: str = "") -> None:
         js = """(async()=>{const t=document.querySelector('meta[name=romorg-token]').content;
  await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json','X-Romorg-Token':t},
@@ -308,6 +315,8 @@ class CollectionTests(UiTestCase):
         return base, mixed
 
     def _scan(self, mixed: Path) -> None:
+        self.open()
+        self.set_archive(str(mixed.parent / "rom-archive"))
         self.open("#/collection")
         self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
         self.assertFalse(self.page.eval("!!document.getElementById('col-detect')"))            # there is no "find the systems" step
@@ -330,7 +339,7 @@ class CollectionTests(UiTestCase):
         self.assertIn("standard short names", self.confirm_dialog())
         self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Done:'))", timeout=120)
         self.assertTrue(list((mixed / "amiga").rglob("*.adf")) and list((mixed / "gba").rglob("*.gba")))
-        self.assertTrue((base / "mixed-archive" / "_other" / "Dump" / "cover.jpg").is_file())
+        self.assertTrue((base / "rom-archive" / "_other" / "Dump" / "cover.jpg").is_file())
         self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
         self.click("#col-undo-btn")
         self.confirm_dialog()
@@ -368,11 +377,23 @@ class CollectionTests(UiTestCase):
         self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
         self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').click()")
         self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
-        self.page.goto(self.fx.url + "#/collection")
         self.page.eval("location.reload()")
+        time.sleep(1.5)                                          # (the old page is gone before the new one is asked anything)
         self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
         self.assertFalse(self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').checked"))
         self.no_js_errors()
+
+
+class NoMachineFolders:
+    """Mixin: no emulator is installed for the test (what this machine has must not be found and selected)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        home = Path(tempfile.mkdtemp(prefix="romorg-ui-home-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env.start()
+        self.addCleanup(env.stop)
 
 
 class RetroArchTests(UiTestCase):
@@ -450,7 +471,7 @@ class RetroArchTests(UiTestCase):
 
 
 
-class SavesUiTests(UiTestCase):
+class SavesUiTests(NoMachineFolders, UiTestCase):
     """RetroArch saves in the UI (Amendment 31): nothing at all without a RetroArch config; with one the Overview, the Library
     tab, the Browse tab and the Collection page show them, and the default / per-game choice is stored."""
     SAVES_SHOTS = os.environ.get("ROMORG_SHOT_DIR", "")
@@ -545,6 +566,40 @@ class SavesUiTests(UiTestCase):
         self.page.eval("location.hash = '#/system/commodore-amiga/overview'")             # (no reload: the preview stays)
         self.page.wait("!!document.getElementById('ov-saves-plan')")
         self.assertIn("keep 1 game the rules would archive", self.page.eval("document.getElementById('ov-saves-plan').textContent"))
+        self.no_js_errors()
+
+    def test_the_system_list_shows_a_saves_badge_after_a_scan(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.assertFalse(self.page.eval("!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves')"))
+        self.scan()
+        self.page.eval("location.reload()")                                               # the list is read again
+        self.page.wait("!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves')", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves').textContent"), "4 saves")
+        self.assertFalse(self.page.eval("!!document.querySelector('.nav-item[data-platform=\"Nintendo Game Boy Advance\"] .nav-saves')"))
+        self.no_js_errors()
+
+    def test_collection_lists_the_games_with_saves_and_stores_a_choice_for_one(self) -> None:
+        self.retroarch_with_saves()
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-colsv-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        mixed = base / "mixed"
+        (mixed / "Dump").mkdir(parents=True)
+        for f in self.fx.root.glob("*.adf"):
+            shutil.copy(f, mixed / "Dump" / f.name)
+        self.open("#/collection")
+        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
+        self.page.eval(f"""(() => {{ const i = document.getElementById('col-root'); i.value = {str(mixed)!r}; i.dispatchEvent(new Event('change')); }})()""")
+        self.page.eval("document.getElementById('col-scan-btn').click()")
+        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
+        self.page.wait("!document.getElementById('col-saves-games').classList.contains('hidden')")
+        self.page.eval("document.querySelector('#col-saves-games summary').click()")
+        self.page.wait("document.querySelectorAll('#col-saves-table tr').length >= 1", timeout=60)
+        self.assertIn("Alpha Quest", self.page.eval("document.getElementById('col-saves-table').textContent"))
+        self.page.eval("""(() => { const s = document.querySelector('#col-saves-table .saves-choice'); s.value = 'leave';
+            s.dispatchEvent(new Event('change')); })()""")
+        self.page.wait("(document.querySelector('#col-saves-table .saves-choice') || {}).value === 'leave'", timeout=60)
+        self.assertEqual([o[2] for o in self.api("GET", "/api/collection")["global"]["saved_overrides"]], ["leave"])
         self.no_js_errors()
 
     def test_library_rules_wording_the_saves_column_the_filter_and_the_per_game_choice(self) -> None:
@@ -671,12 +726,22 @@ class TidyFolderTests(UiTestCase):
     def test_build_in_place_can_move_the_set_aside_files_out_and_shows_time_and_data(self) -> None:
         aside = Path(tempfile.mkdtemp(prefix="romorg-ui-aside-"))
         self.addCleanup(shutil.rmtree, aside, True)
+        self.open()
+        self.assertFalse(self.page.eval("document.getElementById('lib-aside-none').classList.contains('hidden')"))   # no archive folder yet
+        self.assertTrue(self.page.eval("document.getElementById('lib-aside-opts').classList.contains('hidden')"))     # so no archiving
+        self.set_archive(str(aside.parent / "common-archive"))
         self.library_preview()
-        self.page.eval("document.getElementById('lib-aside-on').click()")
+        self.assertTrue(self.page.eval("document.getElementById('lib-aside-on').checked"))             # archiving is the default once there is one
+        self.assertEqual(self.page.eval("document.getElementById('lib-aside-dir').value"), str(aside.parent / "common-archive"))
+        listed = self.page.eval("[...document.querySelectorAll('#lib-aside-where li code')].map(c => c.textContent)")
+        self.assertEqual(listed, ["_excluded", "_superseded", "_incomplete", "_duplicates", "_unmatched"])
+        self.assertIn(f"common-archive/{self.fx.root.name}/", self.page.eval("document.querySelector('#lib-aside-where .archive-head code').textContent"))
         self.page.eval(f"""(() => {{ const i = document.getElementById('lib-aside-dir'); i.value = {str(aside)!r};
             i.dispatchEvent(new Event('change')); }})()""")
+        self.page.wait("!!document.getElementById('lib-aside-reset')", timeout=30)                       # now this system's own folder
         self.click("#lib-plan-btn")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('To move out to the archive folder')", timeout=30)
+        self.page.wait("document.getElementById('lib-plan-btn').dataset.busy === '0'", timeout=30)
         self.click("#lib-apply-btn")
         self.assertIn("is then moved out of this folder", self.confirm_dialog())
         self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('moved out to'))", timeout=60)
@@ -907,6 +972,8 @@ FOLDER_FIELDS = {          # "Folders..." button -> the field it fills (the in-a
     "col-root-browse": "col-root", "col-dest-browse": "col-dest", "col-aside-browse": "col-aside",
     "ra-custom-browse": "ra-custom", "ra-save-browse": "ra-save-dir", "ra-state-browse": "ra-state-dir",
     "ra-backup-browse": "ra-backup-dir", "ra-shared-browse": "ra-shared-base", "ra-bios-browse": "ra-bios-search",
+    "set-archive-browse": "set-archive-dir",
+    **{f"emu-{k}-browse": f"emu-{k}-folder" for k in ("dolphin", "cemu", "pcsx2", "eden", "ryujinx")},
 }
 LINUX_ONLY = r"~/|/home/deck|/run/media|Steam Deck|Discover|[Ff]latpak|fusermount|/path/to"
 
@@ -1003,7 +1070,7 @@ class PlatformTests(UiTestCase):
         self.assertEqual(self.page.eval("document.getElementById('shell').dataset.side"), "closed")
         self.click("#side-toggle")
         self.page.wait("document.getElementById('shell').dataset.side === 'open'")
-        self.assertEqual(self.page.eval("document.querySelectorAll('.nav-item[data-platform]').length"), 18)
+        self.assertEqual(self.page.eval("document.querySelectorAll('.nav-item[data-platform]').length"), 21)
         last = "[...document.querySelectorAll('.nav-item[data-platform]')].pop()"
         self.assertTrue(self.page.eval(f"(() => {{ const r = {last}.getBoundingClientRect(); return r.width > 100 && r.right <= innerWidth; }})()"))
         self.page.eval(f"{last}.click()")                                # picking a system closes the list again
@@ -1063,7 +1130,7 @@ class RobustnessTests(UiTestCase):
             f'game (\n\tname "{evil} (USA)"\n\tdescription "{evil} (USA)"\n\trom ( name "{evil} (USA).gba" size {len(data)} '
             f'crc {zlib.crc32(data):08x} md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} )\n)\n')
         odd = self.fx.gba / ("it's odd & co; x=1" if os.name == "nt" else "it's \"odd\" & <i>co</i>")
-        odd.mkdir()
+        odd.mkdir(parents=True)
         (odd / "dump.gba").write_bytes(data)
         self.open()
         self.scan("Nintendo Game Boy Advance", str(self.fx.gba))
@@ -1093,6 +1160,146 @@ class RobustnessTests(UiTestCase):
         self.page.wait("!document.getElementById('col-output').classList.contains('hidden')", timeout=60)
         self.assertIsNone(self.page.eval("window.__xss === undefined ? null : window.__xss"))
         self.assertEqual(self.page.eval("document.querySelectorAll('img, #xss-b, main script').length"), 0)
+        self.no_js_errors()
+
+
+class RememberedScanTests(UiTestCase):
+    """Going to another system and back needs no new scan; the Scan button becomes Rescan, with a way to recalculate everything."""
+
+    def test_back_to_a_scanned_system_shows_its_scan_and_the_buttons_say_rescan(self) -> None:
+        self.open()
+        self.scan()
+        self.scan(platform="Nintendo Game Boy Advance", root=str(self.fx.gba))
+        self.page.eval("location.reload()")
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("!!document.querySelector('#summary-cards .card')", timeout=30)                 # (restored: nobody pressed Scan)
+        self.page.wait("document.getElementById('scan-btn').textContent === 'Rescan folder'", timeout=30)
+        self.assertFalse(self.page.eval("document.getElementById('scan-force-btn').classList.contains('hidden')"))
+        self.assertEqual(self.page.eval("""fetch('/api/status').then(r => r.json()).then(s => s.scan && s.scan.platform)"""), "Commodore Amiga")
+        self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/overview")
+        self.page.wait("!!document.querySelector('#summary-cards .card') && document.getElementById('sys-title').textContent.includes('Game Boy Advance')", timeout=30)
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("document.getElementById('sys-title').textContent.includes('Amiga') && !!document.querySelector('#summary-cards .card')", timeout=30)
+        self.assertIn("Amiga", self.page.eval("document.getElementById('sys-title').textContent"))
+        self.page.goto(self.fx.url + "#/system/sega-mega-drive-genesis/overview")                     # never scanned
+        self.page.wait("document.getElementById('scan-btn').textContent === 'Scan folder'", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('scan-force-btn').classList.contains('hidden')"))
+        self.no_js_errors()
+
+
+class SettingsTests(UiTestCase):
+    """The archive folder is set once for every system (Settings); a system can have its own on the Library tab."""
+
+    def test_the_global_archive_folder_reaches_the_library_tab_and_a_system_can_override_it(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-set-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("!document.getElementById('view-settings').classList.contains('hidden')")
+        self.assertEqual(self.page.eval("document.getElementById('set-archive-dir').value"), "")
+        self.assertIn("nothing is archived", self.page.eval("document.getElementById('set-archive-default').textContent"))   # no default
+        self.page.eval(f"""(() => {{ const i = document.getElementById('set-archive-dir'); i.value = {str(base / "everything")!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+        self.page.wait("document.getElementById('set-archive-default').textContent.includes('unless it has its own')", timeout=30)
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait(f"document.getElementById('lib-aside-dir').value === {str(base / 'everything')!r}", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('lib-aside-none').classList.contains('hidden')"))
+        self.assertFalse(self.page.eval("!!document.getElementById('lib-aside-reset')"))
+        self.page.eval(f"""(() => {{ const i = document.getElementById('lib-aside-dir'); i.value = {str(base / "amiga-only")!r};
+            i.dispatchEvent(new Event('change')); }})()""")
+        self.page.wait("!!document.getElementById('lib-aside-reset')", timeout=30)
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("document.querySelectorAll('#set-archive-own li').length === 1", timeout=30)
+        self.assertIn("Commodore Amiga", self.page.eval("document.getElementById('set-archive-own').textContent"))
+        self.page.eval("document.querySelector('#set-archive-own button').click()")
+        self.page.wait("document.querySelectorAll('#set-archive-own li').length === 0", timeout=30)
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait(f"document.getElementById('lib-aside-dir').value === {str(base / 'everything')!r}", timeout=30)
+        self.no_js_errors()
+
+    def test_the_library_tab_no_longer_describes_folders_next_to_the_games(self) -> None:
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.assertNotIn("next to the games", self.page.eval("document.getElementById('tab-library').textContent"))
+        self.assertFalse(self.page.eval("!!document.getElementById('library-intro')"))
+        self.no_js_errors()
+
+
+class EmulatorsUiTests(NoMachineFolders, UiTestCase):
+    """The Emulators page: one row per emulator, found folders selected, a switch to ignore one."""
+
+    def test_found_folders_are_selected_and_an_emulator_can_be_switched_off(self) -> None:
+        home = Path(os.environ["HOME"])
+        (home / ".config" / "PCSX2" / "inis").mkdir(parents=True)
+        (home / ".config" / "PCSX2" / "inis" / "PCSX2.ini").write_text("[Folders]\n")
+        self.open("#/retroarch")
+        self.page.wait("document.querySelectorAll('#emu-list .emu-row').length === 5", timeout=30)
+        self.page.wait(f"document.getElementById('emu-pcsx2-folder').value === {str(home / '.config' / 'PCSX2')!r}", timeout=30)
+        self.assertIn("Found on this machine", self.page.eval("document.getElementById('emu-pcsx2-note').textContent"))
+        self.assertIn("Not found", self.page.eval("document.getElementById('emu-dolphin-note').textContent"))
+        self.page.eval("document.getElementById('emu-pcsx2-on').click()")
+        self.page.wait("document.getElementById('emu-pcsx2-note').textContent.includes('Switched off')", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('emu-pcsx2-folder').disabled"))
+        self.assertIn("Nintendo Switch", self.page.eval("document.querySelector('[data-emulator=eden]').textContent"))
+        self.no_js_errors()
+
+
+class SwitchUiTests(NoMachineFolders, UiTestCase):
+    """The Nintendo Switch as a system: games, updates and add-ons in one folder, matched by title ID and version, with the saves of the
+    emulators and the same Library tab as any system."""
+
+    def test_switch_is_a_system_with_its_games_and_saves(self) -> None:
+        import struct
+        from tests.test_switch import APP, small_db
+        from romorg import switchdb
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-sw-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        path = switchdb.db_path()
+        small_db(path)
+        (base / "versions.json").write_text('{"%s": {"65536": "2020-01-01"}}' % APP)
+        switchdb.build(path.with_name("t.json.gz"), path.with_name("c.json"), path, versions_json=base / "versions.json")
+        self.assertEqual(switchdb.build_dat(), 1)
+        name = f"{APP}{'0' * 16}.tik".encode() + b"\0"
+        entry = struct.pack("<QQI", 0, 1, 0) + bytes(4)
+
+        def nsp(file_name: str, title_id: str) -> None:
+            tik = f"{title_id}{'0' * 16}.tik".encode() + b"\0"
+            (base / "games" / file_name).write_bytes(b"PFS0" + struct.pack("<II", 1, len(tik)) + bytes(4) + entry + tik + b"t")
+
+        (base / "games").mkdir()
+        nsp(f"Some Game [{APP}][v0].nsp", APP)
+        nsp("Some Game update [0100AAAA0BBB0800][v65536].nsp", "0100AAAA0BBB0800")
+        nsp("Not in the database [0100FFFF0BBB0000][v0].nsp", "0100FFFF0BBB0000")
+        eden = base / "nand" / "user" / "save" / "0000000000000000" / ("A" * 32) / APP
+        eden.mkdir(parents=True)
+        (eden / "a.sav").write_bytes(b"1234")
+        self.open()
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        for key, folder in (("eden", base / "nand"),):
+            self.page.eval(f"""(async()=>{{const t=document.querySelector('meta[name=romorg-token]').content;
+ await fetch('/api/emulators/config',{{method:'POST',headers:{{'Content-Type':'application/json','X-Romorg-Token':t}},body:JSON.stringify({{source:{key!r},folder:{str(folder)!r}}})}});
+ await fetch('/api/folders',{{method:'POST',headers:{{'Content-Type':'application/json','X-Romorg-Token':t}},body:JSON.stringify({{platform:'Nintendo Switch',path:{str(base / 'games')!r}}})}}) }})()""")
+        time.sleep(0.5)
+        self.assertEqual(self.page.eval("document.querySelector('[data-platform=\"Nintendo Switch\"]').closest('.side-group').querySelector('.side-title').textContent"), "Cartridge consoles")
+        self.scan("Nintendo Switch", str(base / "games"))
+        self.page.eval("location.hash = '#/system/nintendo-switch/overview'")
+        self.page.wait("!document.getElementById('ov-saves').classList.contains('hidden')", timeout=60)
+        self.assertIn("Saves (Eden)", self.page.eval("document.getElementById('ov-saves-title').textContent"))
+        # the game and its update are two entries of the catalogue, both had; the file the database does not know is unmatched
+        self.page.eval("location.hash = '#/system/nintendo-switch/browse?view=matched'")
+        self.page.wait("document.querySelectorAll('#browse-body tbody tr').length >= 2", timeout=60)
+        text = self.page.eval("document.getElementById('browse-body').textContent")
+        self.assertIn("Some Game - Update", text)
+        self.page.eval("[...document.querySelectorAll('#result-tabs .tab')].find(t => t.textContent.includes('Unmatched')).click()")
+        self.page.wait("document.getElementById('browse-body').textContent.includes('Not in the database')", timeout=60)
+        self.assertIn("Not in the database", self.page.eval("document.getElementById('browse-body').textContent"))
+        # the Library tab is the same as any system's
+        self.page.eval("location.hash = '#/system/nintendo-switch/library'")
+        self.page.wait("!document.getElementById('library-rules-box').closest('.tabpanel').classList.contains('hidden')", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('library-rules-box') !== null"))
         self.no_js_errors()
 
 

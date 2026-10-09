@@ -237,13 +237,13 @@ class WindowsPackagingTests(unittest.TestCase):
         for needle in ("^OK    the scheduler", "^OK    the writer ", "^OK    package libFLAC", "^OK    package Zstandard",
                        "^OK    the app is complete", "^SELF-CHECK PASSED"):
             self.assertIn(needle, ps)
-        # all 18 systems by name, and the count
+        # all 21 systems by name, and the count
         names = re.search(r'for name in (.*?); do', sh, re.S).group(1)
         systems = re.findall(r'"([^"]+)"', names)
-        self.assertEqual(len(systems), 18)
+        self.assertEqual(len(systems), 21)
         for name in systems:
             self.assertIn(f'"{name}"', ps)
-        self.assertIn("$count -ne 18", ps)
+        self.assertIn("$count -ne 21", ps)
         # v0.2: the three new pages are in the HTML, their endpoints answer, the page's own files are served
         for needle in ('"view-collection"', '"view-retroarch"', '"view-chd"', '"/api/collection"', '"/api/retroarch"',
                        "/static/"):

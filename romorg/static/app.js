@@ -522,7 +522,10 @@
         }
         state.scanFailed[job.platform || ""] = failed ? job.error : "";
       }
-      if (job.status === "cancelled") toast(`${job.kind} cancelled`, "info");
+      if (job.status === "cancelled") {
+        const scanning = job.kind === "scan" || (job.kind === "collection" && job.result && job.result.action === "collection_scan");
+        toast(scanning ? "Scan stopped. What was read is kept: scanning again carries on from there." : `${job.kind} cancelled`, "info", scanning ? 7000 : undefined);
+      }
       const handler = this.handlers[job.kind];
       if (handler) handler(job);
     },
@@ -589,7 +592,7 @@
   /** "0.4%" for a sliver, "37%" otherwise: a scan of hundreds of gigabytes is below 1 % for minutes. */
   const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
-    m3u: "Playlists", collection: "Collection", retroarch: "RetroArch" };
+    m3u: "Playlists", collection: "Collection", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums" };
 
 
   const UNMATCHED = "_unmatched";
@@ -800,6 +803,11 @@
       if (parts[0] === "collection") return { view: "collection", slug: "", tab: "", params: {} };
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
       if (parts[0] === "chd") return { view: "chd", slug: "", tab: "", params: {} };
+      if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
+      if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "overview", params: {} };
+      if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "overview", params: {} };
+      if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "overview", params: {} };
+      if (parts[0] === "wiiu") return { view: "system", slug: "nintendo-wii-u", tab: "overview", params: {} };
       return { view: "home", slug: "", tab: "", params: {} };
     },
     build(slug, tab = "overview", params = {}) {
@@ -841,8 +849,8 @@
   /** Home groups come from what a system is (no system names here): disc systems, cartridge consoles, computers. */
   const GROUPS = [
     ["computers", "Computers", (p) => !isGameFolder(p) && p.source !== "nointro" && p.source !== "redump"],
-    ["consoles", "Cartridge consoles", (p) => !isGameFolder(p) && p.source === "nointro"],
-    ["discs", "Disc systems", (p) => isGameFolder(p) || p.source === "redump"],
+    ["consoles", "Cartridge consoles", (p) => !isGameFolder(p) && (p.source === "nointro" || p.name === "Nintendo Switch")],
+    ["discs", "Disc systems", (p) => isGameFolder(p) || (p.source === "redump" && p.name !== "Nintendo Switch")],
   ];
 
   const groupOf = (p) => (GROUPS.find((g) => g[2](p)) || GROUPS[0])[0];
@@ -873,14 +881,19 @@
     const have = rec ? rec.have : 0, total = rec ? rec.total : 0;
     const pct = rec ? (rec.pct !== undefined ? rec.pct : (total ? (100 * have) / total : 0)) : null;
     const kind = dat.kind === "missing" ? "warn" : rec && !stale ? "ok" : "off";
+    const saves = rec && rec.saves && rec.saves.files ? rec.saves : null;
     const tip = [p.name, p.folder || "No folder set", dat.text,
-      rec ? `${fmt(have)} of ${fmt(total)} (${pctText(pct)}), scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "Not scanned yet"].join("\n");
+      rec ? `${fmt(have)} of ${fmt(total)} (${pctText(pct)}), scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "Not scanned yet",
+      saves ? `${nPlural(saves.files, "save or save state", "saves and save states")} in RetroArch` : "",
+      ].filter(Boolean).join("\n");
     return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "overview" : "overview"),
       "data-platform": p.name, "data-kind": kind, title: tip,
       "aria-current": inSystem() && state.platform === p.name ? "true" : null },
       el("span", { class: `dot ${kind}` }),
       el("span", { class: "nav-name", text: p.name }),
-      el("span", { class: "nav-pct num", text: pct === null ? "" : `${Math.round(pct)}%` }),
+      el("span", { class: "nav-meta" },
+        saves ? el("span", { class: "nav-saves num", text: `${fmt(saves.files)} saves`, title: "Saves and save states found for this system" }) : null,
+        el("span", { class: "nav-pct num", text: pct === null ? "" : `${Math.round(pct)}%` })),
       el("span", { class: "nav-job hidden" }, el("span", { class: "progress" }, el("span", { class: "progress-bar" }))));
   }
 
@@ -890,13 +903,15 @@
     const q = $("side-q").value.trim().toLowerCase();
     const groups = GROUPS.map(([key, title]) => {
       const list = state.platforms.filter((p) => groupOf(p) === key && (!q || p.name.toLowerCase().includes(q)));
-      return list.length ? el("section", { class: "side-group", "aria-label": title },
-        el("h2", { class: "side-title", text: title }), ...list.map(sideItem)) : null;
+      const items = list.map(sideItem);
+      return items.length ? el("section", { class: "side-group", "aria-label": title },
+        el("h2", { class: "side-title", text: title }), ...items) : null;
     }).filter(Boolean);
     box.replaceChildren(...(groups.length ? groups : [el("div", { class: "muted small side-none", text: "No system matches." })]));
     $("collection-link").setAttribute("aria-current", state.route && state.route.view === "collection" ? "true" : "false");
     $("retroarch-link").setAttribute("aria-current", state.route && state.route.view === "retroarch" ? "true" : "false");
     $("chd-link").setAttribute("aria-current", state.route && state.route.view === "chd" ? "true" : "false");
+    $("settings-link").setAttribute("aria-current", state.route && state.route.view === "settings" ? "true" : "false");
     Jobs.setRunning(Jobs.running);
     if (Jobs.last) renderCardJob(Jobs.last);
   }
@@ -1044,6 +1059,24 @@
     return folderQueue[p.name];
   }
 
+  /** "Folder layout after building": what is in the system folder. What the rules leave out is there only while there is no archive
+   *  folder (otherwise it lies in the archive folder, shown on the Library tab). */
+  function renderLibraryLayout() {
+    const p = currentPlatform();
+    const gameFolder = isGameFolder(p);
+    const flat = isFlat(p);
+    const hasM3uLayout = !!(p && p.m3u_dats && p.m3u_dats.length) || gameFolder;
+    const archived = archiveOn();
+    $("library-layout").textContent = !p ? "" : [
+      flat ? "<console folder>/" : "<platform folder>/",
+      ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
+        discPlaylists(p) ? "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"
+          : "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc, no playlist)"] : []),
+      ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
+        : p.dats.map((d) => `  ${d.folder}/`)),
+      ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [], archived)].join("\n");
+  }
+
   function renderPlatform() {
     const p = currentPlatform();
     state.rendered = p ? p.name : null;
@@ -1070,29 +1103,11 @@
       p ? el("span", { class: "muted small", text: ` ${p.dats.length} DAT${p.dats.length === 1 ? "" : "s"} · ${sourceLabel(p.source)}` }) : null);
 
     // Library: what goes where for this layout.
-    const gameFolder = isGameFolder(p);
-    const flat = isFlat(p);
-    const hasM3uLayout = !!(p && p.m3u_dats && p.m3u_dats.length) || gameFolder;
-    $("library-layout").textContent = !p ? "" : [
-      flat ? "<console folder>/" : "<platform folder>/",
-      ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
-        discPlaylists(p) ? "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"
-          : "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc, no playlist)"] : []),
-      ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
-        : p.dats.map((d) => `  ${d.folder}/`)),
-      ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [])].join("\n");
+    renderLibraryLayout();
+    syncAsideDir();
     const hasM3u = !!(p && p.m3u_dats && p.m3u_dats.length);
     $("lib-labels-wrap").classList.toggle("hidden", !hasM3u && !discPlaylists(p));
     $("lib-savedisk-wrap").classList.toggle("hidden", !hasM3u);
-    $("library-intro").replaceChildren(
-      "One action tidies the whole folder: files are renamed and sorted, and unwanted, older and duplicate files are archived in their own folders next to the games (",
-      el("code", { text: `${EXCLUDED}/` }), ", ", el("code", { text: `${SUPERSEDED}/` }), ", ",
-      ...(hasM3u && !gameFolder ? [el("code", { text: `${INCOMPLETE}/` }), ", "] : []),
-      el("code", { text: `${DUPLICATES}/` }), "; never deleted; files that match nothing go to ", el("code", { text: `${UNMATCHED}/` }), ")",
-      hasM3u ? ", and playlists are written for complete multi-disk games."
-        : discPlaylists(p) ? ", and an .m3u playlist is written for every multi-disc game (all discs of the chosen release stay together; archived games move with their whole folder)."
-        : gameFolder ? " (the discs of a multi-disc game stay together; no playlists are written for this system - its emulator does not use them)." : ".",
-      " Preview first; ", el("b", { text: "Undo last" }), hasM3u ? " reverts everything, playlists included." : " reverts everything.");
     loadLibraryProfile();
     renderSystemHead();
     renderScanTarget();
@@ -1117,6 +1132,7 @@
     const p = currentPlatform();
     state.tab = tab;
     renderTabs();
+
     if (tab === "overview" || tab === "library") loadTotals();
     if (tab === "library") {
       renderLibraryGate();
@@ -1140,6 +1156,17 @@
     $("view-collection").classList.toggle("hidden", !collection);
     $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
     $("view-chd").classList.toggle("hidden", r.view !== "chd");
+    $("view-settings").classList.toggle("hidden", r.view !== "settings");
+    if (r.view === "settings") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "Settings - Simple ROM Organiser";
+      state.viewWas = "settings";
+      Settings.show();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
     if (r.view === "chd") {
       $("view-home").classList.add("hidden");
       $("view-system").classList.add("hidden");
@@ -1153,8 +1180,9 @@
     if (r.view === "retroarch") {
       $("view-home").classList.add("hidden");
       $("view-system").classList.add("hidden");
-      document.title = "RetroArch - Simple ROM Organiser";
+      document.title = "Emulators and saves - Simple ROM Organiser";
       state.viewWas = "retroarch";
+      Emu.show();
       RetroArch.show();
       renderHome();
       window.scrollTo(0, 0);
@@ -1218,6 +1246,8 @@
     $("scan-error-text").textContent = state.scanFailed[name] || "";
     renderPlatform();
     applyScan();
+    syncAsideDir();
+    if (!state.scan) restoreScan(name);
   }
 
   /** In-app folder browser; writes the chosen folder into a target input element. */
@@ -1281,13 +1311,31 @@
     startScan();
   }
 
-  async function startScan() {
+  async function startScan(force = false) {
     const p = currentPlatform();
     if (!p) { toast("Choose a system first", "error"); return; }
     const path = folderOf(p).trim();
     if (!path) { toast(`Choose the ${p.name} folder first`, "error"); return; }
     if (!(await commitFolder(p, true))) return;   // remember the folder first (a bad path says why)
-    Jobs.start("/api/scan", { path, platform: p.name });
+    if (force && !(await confirmDialog({ title: "Recalculate every checksum", okText: "Recalculate",
+      body: el("p", { text: "Every file of this system is read again and its checksums are calculated again. A normal rescan reads only new and changed files, which is almost always enough. This can take a long time." }) }))) return;
+    Jobs.start("/api/scan", { path, platform: p.name, ...(force ? { force: true } : {}) });
+  }
+
+  /** The scan buttons: "Rescan" once there is a scan (it reads new and changed files only), and the way to read everything again. */
+  function renderScanButtons() {
+    const scanned = !!state.scan;
+    $("scan-btn").textContent = scanned ? "Rescan folder" : "Scan folder";
+    $("scan-btn").title = scanned ? "Reads new and changed files only: what was read before is remembered (also after a stopped scan)" : "";
+    $("scan-force-btn").classList.toggle("hidden", !scanned);
+  }
+
+  /** Coming back to a system whose scan is still kept by the server: no new scan. */
+  async function restoreScan(name) {
+    try {
+      const r = await post("/api/scan/select", { platform: name });
+      if (r.selected && state.platform === name) await refreshScan();
+    } catch (_) { /* the Scan button is still there */ }
   }
 
   Jobs.handlers.scan = async (job) => {
@@ -1309,6 +1357,7 @@
     const s = state.status || {};
     state.lastScan = s.scan || null;
     state.scan = state.lastScan && state.lastScan.platform === state.platform ? state.lastScan : null;
+    renderScanButtons();
     if (state.scan && state.resultDat && !state.scan.dat_names.includes(state.resultDat)) state.resultDat = "";
     browseDirty = true;
     Previews.onScan();                // a preview of the same system stays (marked out of date), others are dropped
@@ -1492,7 +1541,7 @@
       if (plan.leave && plan.leave.files) will.push(`leave ${nPlural(plan.leave.files, "file", "files")} of archived games where they are`);
     }
     box.replaceChildren(
-      el("h2", { id: "ov-saves-title", text: "Saves (RetroArch)" }),
+      el("h2", { id: "ov-saves-title", text: `Saves (${(t.sources && t.sources.length ? t.sources : ["RetroArch"]).join(", ")})` }),
       el("div", { class: "saves-line", id: "ov-saves-line", text: line }),
       t.sets ? el("div", { class: "sub", text: `${savesText(t)}${t.screenshots ? ` \u00b7 ${nPlural(t.screenshots, "state screenshot", "state screenshots")} (not counted)` : ""} \u00b7 ${fmtBytes(t.bytes)}` }) : null,
       plan ? el("div", { class: "sub", id: "ov-saves-plan", text: will.length ? `A build with the current rules would ${will.join(", ")}.` : "A build with the current rules changes none of them." })
@@ -1518,7 +1567,7 @@
         folder ? `${what} needs the scan results of ${p ? p.name : "this system"}.${stale ? " The results are not kept when the app restarts." : ""}`
           : `Choose the folder of ${p ? p.name : "this system"} on the Overview tab, then scan it.`),
       folder
-        ? el("button", { class: "btn btn-primary", text: "Scan folder", "data-needs-idle": "", on: { click: startScan } })
+        ? el("button", { class: "btn btn-primary", text: "Scan folder", "data-needs-idle": "", on: { click: () => startScan(false) } })
         : el("button", { class: "btn btn-primary", text: "Go to Overview", on: { click: () => openTab("overview") } }));
     Jobs.setRunning(Jobs.running);
   }
@@ -1955,7 +2004,7 @@
             },
             { label: "Saves", sortKey: "files", sortFirst: "desc", cls: "num", render: (i) => el("div", {}, el("div", { class: "saves-total", text: fmt(i.files) }),
               el("div", { class: "sub", text: savesText(i) + (i.screenshots ? ` \u00b7 ${nPlural(i.screenshots, "screenshot", "screenshots")}` : "") })) },
-            { label: "Core", render: (i) => (i.cores.length ? i.cores.join(", ") : "-") },
+            { label: "From", render: (i) => (i.source && i.source !== "retroarch" ? i.label : i.cores.length ? i.cores.join(", ") : "-") },
           ],
         };
       case "unmatched":
@@ -2308,12 +2357,13 @@
 
   // ---------------------------------------------------- 3. Build library
   // The reserved folders: all direct children of the platform folder (the layout sketch lists them).
-  const reserved = (hasM3u, convertible, protectedDirs = []) => [
-    [UNMATCHED, "only files that matched nothing"],
-    [EXCLUDED, "bad dumps, betas, demos, language/flag exclusions (library rules)"],
-    [SUPERSEDED, "older versions / worse variants"],
-    ...(hasM3u ? [[INCOMPLETE, "multi-disk games with missing disks"]] : []),
-    [DUPLICATES, "extra copies of the same ROM"],
+  const reserved = (hasM3u, convertible, protectedDirs = [], archived = false) => [
+    ...(archived ? [] : [
+      [UNMATCHED, "only files that matched nothing"],
+      [EXCLUDED, "bad dumps, betas, demos, language/flag exclusions (library rules)"],
+      [SUPERSEDED, "older versions / worse variants"],
+      ...(hasM3u ? [[INCOMPLETE, "multi-disk games with missing disks"]] : []),
+      [DUPLICATES, "extra copies of the same ROM"]]),
     ...(convertible ? [[CONVERTED, "originals kept by Convert"]] : []),
     ...protectedDirs.map((d) => [d, "your files - left alone by every step"]),
   ].map(([name, text]) => `  ${(name + "/").padEnd(23)}${text}`);
@@ -2339,17 +2389,72 @@
   const asideActive = () => !$("lib-where-other").checked && $("lib-aside-on").checked && !!$("lib-aside-dir").value.trim();
   const asideOptions = () => (asideActive() ? { aside_to: $("lib-aside-dir").value.trim() } : {});
   const buildOptions = () => ({ ...libOptions(), ...exportOptions(), ...asideOptions() });
-  /** Next to the ROM folders, named like their folder with -archive (the same default as Collection). */
-  function defaultAsideFor(folder) {
-    const parts = String(folder || "").replace(/[\\/]+$/, "").split(/[\\/]/);
-    if (parts.length < 3) return "";
-    const parent = parts.slice(0, -1);
-    const sep = String(folder).includes("\\") ? "\\" : "/";
-    return `${parent.join(sep)}-archive`;
+  /** The archive folder for every system: the one set in Settings (there is no default: with none, nothing is archived). */
+  const archiveBase = () => (state.status && state.status.archive && state.status.archive.dir) || "";
+  /** The archive folder of one system: its own when it has one, else the base. */
+  const archiveFor = (p) => (p && state.status && state.status.archive && state.status.archive.overrides[p.name]) || archiveBase();
+  /** Archiving exists for a system only when an archive folder is set (for every system, or for it alone). */
+  const archiveAvailable = (p) => !!archiveFor(p);
+  const archiveOn = () => !$("lib-where-other").checked && $("lib-aside-on").checked && archiveAvailable(currentPlatform());
+  /** Show the archive options, or the note that there is no archive folder. */
+  function renderAsideVisibility() {
+    const avail = archiveAvailable(currentPlatform()), other = $("lib-where-other").checked;
+    $("lib-aside-opts").classList.toggle("hidden", other || !avail);
+    $("lib-aside-row").classList.toggle("hidden", other || !avail || !$("lib-aside-on").checked);
+    $("lib-aside-none").classList.toggle("hidden", other || avail);
+  }
+  /** Put the archive folder of the open system into its field. */
+  function syncAsideDir() {
+    const p = currentPlatform();
+    if (!p) return;
+    $("lib-aside-dir").value = archiveFor(p);
+    renderAsideVisibility();
+    renderAsideWhere();
+    renderLibraryLayout();
+  }
+  /** The field was edited: a folder other than the base is this system's own, the base itself clears it. */
+  async function archiveFieldChanged() {
+    const p = currentPlatform();
+    if (!p) return;
+    const typed = $("lib-aside-dir").value.trim();
+    const own = typed && typed !== archiveBase() ? typed : "";
+    try {
+      state.status.archive = await post("/api/settings/archive", { platform: p.name, dir: own });
+    } catch (err) { toast(err.message, "error"); }
+    if (Previews.has("lib")) resetLibraryPreview();       // (before the field shows the new folder: nothing is waited for after it)
+    syncAsideDir();
+  }
+  /** Says where the archived files of this system will go, as a list: <archive folder>/<this system's folder name>/... */
+  function renderAsideWhere() {
+    const box = $("lib-aside-where");
+    const p = currentPlatform();
+    const dir = $("lib-aside-dir").value.trim().replace(/[\\/]+$/, "");
+    const folder = String(folderOf(p) || "").replace(/[\\/]+$/, "");
+    const show = archiveOn() && !!dir && !!folder;
+    box.classList.toggle("hidden", !show);
+    if (!show) return;
+    const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+    const own = `${dir}${sep}${folder.split(/[\\/]/).pop()}${sep}`;
+    const hasM3u = !!(p.m3u_dats && p.m3u_dats.length);
+    const mine = !!(state.status.archive && state.status.archive.overrides[p.name]);
+    box.replaceChildren(
+      el("div", { class: "archive-source" }, mine ? "This system's own archive folder. " : "The archive folder for every system (Settings). ",
+        mine ? el("button", { class: "btn btn-small btn-ghost", id: "lib-aside-reset", text: "Use the common folder",
+          on: { click: () => { $("lib-aside-dir").value = archiveBase(); archiveFieldChanged(); } } }) : null),
+      el("div", { class: "archive-head" }, "Files the rules leave out go to ", el("code", { text: own }), ":"),
+      el("ul", { class: "archive-list" }, [
+        [EXCLUDED, "bad dumps, betas, demos, language and flag exclusions"],
+        [SUPERSEDED, "older versions and worse variants"],
+        ...(hasM3u ? [[INCOMPLETE, "multi-disk games with missing disks"]] : []),
+        [DUPLICATES, "extra copies of the same ROM"],
+        [UNMATCHED, "files that match no database"],
+      ].map(([name, why]) => el("li", {}, el("code", { text: name }), el("span", { class: "muted", text: ` ${why}` })))));
   }
   function asideChanged() {
-    $("lib-aside-row").classList.toggle("hidden", !$("lib-aside-on").checked || $("lib-where-other").checked);
-    if ($("lib-aside-on").checked && !$("lib-aside-dir").value.trim()) $("lib-aside-dir").value = defaultAsideFor(folderOf(currentPlatform()));
+    renderAsideVisibility();
+    if ($("lib-aside-on").checked) syncAsideDir();
+    renderAsideWhere();
+    renderLibraryLayout();
     saveExportSettings();
     if (Previews.has("lib")) resetLibraryPreview();
   }
@@ -2357,12 +2462,12 @@
     try {
       await post("/api/library/export/settings", { enabled: $("lib-where-other").checked, dest: $("lib-export-dest").value.trim(),
         mode: $("lib-export-mode").value, sidecars: $("lib-export-sidecars").checked, sync: $("lib-export-sync").checked,
-        aside: $("lib-aside-on").checked, aside_dir: $("lib-aside-dir").value.trim() });
+        aside: $("lib-aside-on").checked });
     } catch (_) { /* a convenience only */ }
   }, 300);
   function exportSettingsChanged() {
-    $("lib-aside-opts").classList.toggle("hidden", $("lib-where-other").checked);
-    $("lib-aside-row").classList.toggle("hidden", !$("lib-aside-on").checked || $("lib-where-other").checked);
+    renderAsideWhere();
+    renderAsideVisibility();
     if ($("lib-export-mode").value === "move") $("lib-export-sync").checked = false;
     $("lib-export-sync").disabled = $("lib-export-mode").value === "move";
     $("lib-export-opts").classList.toggle("hidden", !$("lib-where-other").checked);
@@ -2380,10 +2485,9 @@
     $("lib-export-dest").value = e.dest || "";
     $("lib-export-mode").value = e.mode || "copy";
     $("lib-export-sidecars").checked = !!e.sidecars;
-    $("lib-aside-on").checked = !!e.aside;
-    $("lib-aside-dir").value = e.aside_dir || "";
-    $("lib-aside-opts").classList.toggle("hidden", !!e.enabled);
-    $("lib-aside-row").classList.toggle("hidden", !e.aside || !!e.enabled);
+    $("lib-aside-on").checked = e.aside !== false;
+    syncAsideDir();
+    renderAsideVisibility();
     $("lib-export-sync").checked = !!e.sync && e.mode !== "move";
     $("lib-export-sync").disabled = e.mode === "move";
     $("lib-export-opts").classList.toggle("hidden", !e.enabled);
@@ -2968,13 +3072,17 @@
       state.raFollow = true;
       get("/api/retroarch").then((i) => { state.raFollow = i.follow; syncFollowBoxes(); }).catch(() => {});
     }
+    const found = where === "col" ? (Collection.info && Collection.info.scan && Collection.info.scan.saves) || null
+      : state.scan && state.scan.saves ? state.scan.saves : null;
+    const renames = !found || found.renames !== false;                  // (only RetroArch's saves are named after the ROM)
+    const names = found && found.sources && found.sources.length ? found.sources.join(", ") : "RetroArch";
     return el("div", { class: "rules-group", id: `${where}-saves-group` },
-      el("div", { class: "rules-head", text: "Saves (RetroArch)" }),
+      el("div", { class: "rules-head", text: `Saves (${names})` }),
       el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: "When a rule replaces or archives a game you have saves for: " }), select),
       el("div", { class: "sub note", id: `${where}-saved-games-note`, text: choice.text }),
-      el("label", { class: "check rule-check", title: "The same setting as on the RetroArch page" }, follow,
+      renames ? el("label", { class: "check rule-check", title: "The same setting as on the RetroArch page" }, follow,
         el("span", { class: "rule-text" }, el("span", { class: "rule-line" }, el("span", { class: "rule-label", text: "Rename saves with their ROMs" })),
-          el("span", { class: "sub", text: "When a build gives a ROM its database name, its saves and save states get the new name too (a build in another folder copies them). Each core's folder stays separate; nothing is overwritten." }))),
+          el("span", { class: "sub", text: "When a build gives a ROM its database name, its saves and save states get the new name too (a build in another folder copies them). Each core's folder stays separate; nothing is overwritten." }))) : null,
       el("div", { class: "sub note", text: where === "col"
         ? "This is the default for every game. Building into another folder archives nothing from your folders: the saves stay where they are, and only the games it copies are chosen by this setting."
         : "This is the default for every game; on the Library tab you can choose differently for a single game. Building into another folder archives nothing here, so saves are left alone there; the setting still decides which games are copied." }));
@@ -3626,16 +3734,17 @@
     const r = plan.reasons || {}, pl = plan.playlists || {};
     const warnings = plan.warnings || [];
     const line = (n, text) => (n ? el("li", { text: `${fmt(n)} ${text}` }) : null);
+    const into = plan.aside ? " in the archive folder" : "";           // (or in the system's own folder while there is no archive)
     const body = el("div", {},
       ...warnings.map((w) => el("p", { class: "notice", text: w })),
       el("p", { text: `Build the library inside ${state.scan.root}:` }),
       el("ul", {},
         line((r.renamed || 0) + (r.moved || 0), `file(s) renamed / moved to their place (${fmt(r.kept)} kept in total)`),
-        line(r.excluded, `excluded file(s) → ${EXCLUDED}/`),
-        line(r.superseded, `superseded file(s) → ${SUPERSEDED}/`),
-        line(r.incomplete, `file(s) of incomplete sets → ${INCOMPLETE}/`),
-        line(r.duplicates, `duplicate(s) → ${DUPLICATES}/`),
-        line(r.unmatched, `unmatched file(s) → ${UNMATCHED}/ (they match nothing in the DATs; subfolders are kept)`),
+        line(r.excluded, `excluded file(s) → ${EXCLUDED}/${into}`),
+        line(r.superseded, `superseded file(s) → ${SUPERSEDED}/${into}`),
+        line(r.incomplete, `file(s) of incomplete sets → ${INCOMPLETE}/${into}`),
+        line(r.duplicates, `duplicate(s) → ${DUPLICATES}/${into}`),
+        line(r.unmatched, `unmatched file(s) → ${UNMATCHED}/${into} (they match nothing in the DATs; subfolders are kept)`),
         line((plan.vanish || {}).titles, "title(s) have no kept version (see \"Games that vanish\")"),
         line(pl.write, "playlist(s) written"),
         line(pl.remove, "outdated playlist(s) made by this app removed"),
@@ -3887,6 +3996,44 @@
       archive: { files: sum((s) => s.archive.files), games: sum((s) => s.archive.games), states: sum((s) => s.archive.states), to: "the _saves folder of each system in the archive" } };
   }
 
+  // ------------------------------------------------------------------ the emulators whose saves are looked at (besides RetroArch)
+  const Emu = {
+    list: [],
+
+    async show() {
+      try { this.list = (await get("/api/emulators")).emulators; } catch (err) { toast(err.message, "error"); return; }
+      this.render();
+      Switch.load();
+    },
+
+    render() {
+      $("emu-list").replaceChildren(...this.list.map((e) => {
+        const input = el("input", { type: "text", class: "input grow mono", id: `emu-${e.key}-folder`, value: e.folder, spellcheck: "false", autocomplete: "off",
+          placeholder: e.what, "aria-label": `${e.label}: ${e.what}`, disabled: e.enabled ? null : true,
+          on: { change: () => this.save(e.key, { folder: input.value.trim() }) } });
+        const note = !e.enabled ? "Switched off: its saves are ignored."
+          : e.found ? (e.auto ? "Found on this machine and selected." : "Your folder.")
+          : e.folder ? "That folder does not exist." : "Not found: choose its folder, or leave it if you do not use it.";
+        return el("div", { class: "emu-row", "data-emulator": e.key },
+          el("div", { class: "row" },
+            el("label", { class: "check" }, el("input", { type: "checkbox", id: `emu-${e.key}-on`, checked: e.enabled ? true : null,
+              on: { change: (ev) => this.save(e.key, { enabled: ev.target.checked }) } }), el("b", { text: e.label })),
+            el("span", { class: "muted small", text: e.platforms.join(", ") })),
+          el("div", { class: "row" }, input,
+            el("button", { class: "btn", id: `emu-${e.key}-browse`, text: "Folders...", disabled: e.enabled ? null : true,
+              on: { click: () => FolderBrowser.open(input, `Choose ${e.label}'s folder`) } })),
+          el("div", { class: "muted small", id: `emu-${e.key}-note`, text: note }));
+      }));
+    },
+
+    async save(key, change) {
+      try {
+        this.list = (await post("/api/emulators/config", { source: key, ...change })).emulators;
+        this.render();
+      } catch (err) { toast(err.message, "error"); }
+    },
+  };
+
   const RetroArch = {
     info: null,
     loaded: false,
@@ -4136,6 +4283,67 @@
     $("ra-output").classList.add("hidden");
   };
 
+  // ------------------------------------------------------------------ Nintendo Switch: games and the saves of Eden and Ryujinx
+  const Switch = {
+    info: null,        // GET /api/switch
+
+    async load() {
+      try { this.info = await get("/api/switch"); } catch (err) { toast(err.message, "error"); return; }
+      const i = this.info, db = i.db;
+      $("sw-db-line").textContent = db.available ? `Title database: ${fmt(db.titles)} games and ${fmt(db.ncas)} files known, fetched ${db.fetched}.`
+        : "No title database yet: it is downloaded on the first start (or press Check for updates). Until then Switch games cannot be matched.";
+      $("sw-keys-line").textContent = i.keys.path ? `prod.keys: ${i.keys.chosen ? "chosen" : "found"} (used only to read the title ID of a game card dump)`
+        : "prod.keys: not found (a game card dump is then told by its name only).";
+    },
+
+    bind() {
+      $("sw-verify-btn").addEventListener("click", () => Jobs.start("/api/switch/verify", {}));
+      $("sw-db-btn").addEventListener("click", () => Jobs.start("/api/switch/db/update", {}));
+    },
+  };
+  Jobs.handlers.switchverify = async (job) => {
+    if (job.status === "done" && job.result && job.result.verify) {
+      const v = job.result.verify;
+      toast(`Checksums: ${fmt(v.checked)} files checked${v.skipped ? `, ${fmt(v.skipped)} already known` : ""}, ${fmt(v.damaged)} damaged`, v.damaged ? "error" : "ok", 8000);
+    }
+  };
+  Jobs.handlers.switchdb = async (job) => {
+    if (job.status === "done") { await Switch.load(); toast("Switch title database updated", "ok"); }
+  };
+
+  // ------------------------------------------------------------------ settings for every system
+  const Settings = {
+    show() { this.render(); },
+
+    render() {
+      const a = (state.status && state.status.archive) || { dir: "", overrides: {} };
+      $("set-archive-dir").value = a.dir || "";
+      const p = currentPlatform();
+      $("set-archive-default").textContent = a.dir ? "Every system archives to this folder, unless it has its own (below)."
+        : "Not set: nothing is archived. What the rules leave out stays in each system's folder (_excluded, _superseded ...) and Collection leaves files that match nothing where they are. Choose a folder to turn archiving on.";
+      const own = Object.entries(a.overrides || {}).sort(([x], [y]) => x.localeCompare(y));
+      $("set-archive-own-box").classList.toggle("hidden", !own.length);
+      $("set-archive-own").replaceChildren(...own.map(([name, dir]) => el("li", {},
+        el("b", { text: name }), " ", el("code", { text: dir }), " ",
+        el("button", { class: "btn btn-small btn-ghost", text: "Use the common folder", on: { click: () => this.save("", name) } }))));
+    },
+
+    async save(dir, platform = "") {
+      try {
+        state.status.archive = await post("/api/settings/archive", { dir, ...(platform ? { platform } : {}) });
+        this.render();
+        syncAsideDir();
+        if (Previews.has("lib")) resetLibraryPreview();
+        toast(platform ? `${platform} uses the common archive folder` : dir ? "Archive folder saved" : "Archive folder: back to the default", "ok");
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    bind() {
+      $("set-archive-dir").addEventListener("change", () => this.save($("set-archive-dir").value.trim()));
+      $("set-archive-browse").addEventListener("click", () => FolderBrowser.open($("set-archive-dir"), "Choose the archive folder"));
+    },
+  };
+
   // ------------------------------------------------------------------ collection (v0.2): a whole ROM folder
   // One scan reads every file once and finds its system in all the databases; the preview and the builds only sort that scan's
   // metadata, so they are quick.
@@ -4144,6 +4352,7 @@
     loaded: false,
     last: null,           // the last preview / build answer
     saveSeq: 0,
+    savesSeq: 0,
 
     async show() {
       if (!this.loaded) {
@@ -4165,6 +4374,42 @@
     },
 
     adopt(info) { this.info = info; this.render(); },
+
+    /** Saves of single games (RetroArch): the games the shared rules affect that have saves, each with its own choice. Loaded when
+     *  the list is opened; a choice is stored in the shared rules (``saved_overrides``). */
+    async loadSavesGames() {
+      const box = $("col-saves-games"), info = this.info;
+      const show = !!(info && info.profile && info.profile.saved_games !== undefined && info.scan && info.scan.saves && info.scan.saves.sets);
+      box.classList.toggle("hidden", !show);
+      if (!show || !box.open) return;
+      const n = ++this.savesSeq;
+      let data;
+      try { data = await post("/api/collection/saves", { q: $("col-saves-q").value.trim(), limit: 200 }); }
+      catch (err) { $("col-saves-note").textContent = err.message; return; }
+      if (n !== this.savesSeq) return;
+      $("col-saves-games-title").textContent = `Saves of single games: choose for each game (${fmt(data.total)})`;
+      $("col-saves-table").replaceChildren(...data.items.map((i) => {
+        const eff = SAVED_EFFECT[i.effect];
+        return el("tr", {},
+          el("td", { text: i.platform }),
+          el("td", {}, el("div", { text: i.title }), i.game !== i.title ? el("div", { class: "sub", text: i.game }) : null),
+          el("td", { text: savesText(i) }),
+          el("td", {}, eff ? badge(eff[0], eff[1]) : null),
+          el("td", {}, el("select", { class: "input select saves-choice", "aria-label": `If a rule replaces ${i.game}: what happens to its saves`,
+            on: { change: (e) => this.setSavedChoice(i, e.target.value) } },
+          ...SAVED_OPTIONS.map(([v, label]) => el("option", { value: v, text: label, selected: v === i.choice })))));
+      }));
+      $("col-saves-note").textContent = data.total > data.items.length ? `Showing the first ${fmt(data.items.length)} of ${fmt(data.total)}: search to find the others.`
+        : data.total ? "" : "No game with saves is affected by the rules above.";
+    },
+
+    async setSavedChoice(i, choice) {
+      try {
+        const info = await post("/api/collection/saved", { choice: choice || "default", games: [{ dat: i.dat, game: i.game }] });
+        this.adopt(info);
+        toast(`${i.title}: ${choice ? SAVED_OPTIONS.find((o) => o[0] === choice)[1].toLowerCase() : "back to the default"} - press Preview to see what it changes`, "ok", 6000);
+      } catch (err) { toast(err.message, "error"); }
+    },
 
     async save(changes) {
       const n = ++this.saveSeq;               // answers can arrive out of order: only the newest one is shown
@@ -4196,6 +4441,9 @@
       const chdN = scan ? scan.systems.filter((x) => x.chd).reduce((n, x) => n + (x.convert || 0), 0) : 0;
       $("col-convert-wrap").classList.toggle("hidden", !inp || !toConvert);
       $("col-convert-label").textContent = `Convert first: ${chdN ? `${fmt(chdN)} raw disc set(s) to CHD` : ""}${chdN && toConvert > chdN ? " and " : ""}${toConvert > chdN ? `${fmt(toConvert - chdN)} SNES / N64 dump(s) to the database's format` : ""} (the originals move to _converted_originals/; this takes a while)`;
+      $("col-scan-btn").textContent = scan ? "Rescan folder" : "Scan folder";
+      $("col-scan-btn").title = scan ? "Reads new and changed files only: what was read before is remembered (also after a stopped scan)" : "";
+      $("col-scan-force-btn").classList.toggle("hidden", !scan);
       if (!scan) {
         $("col-scan-info").textContent = $("col-root").value.trim()
           ? "Not scanned yet. The scan reads every file once; after it, previewing and tidying are quick."
@@ -4218,11 +4466,15 @@
         $("col-saves-th").classList.toggle("hidden", !scan.saves);
         $("col-saves-line").classList.toggle("hidden", !scan.saves);
         $("col-saves-line").textContent = scan.saves
-          ? `Saves (RetroArch): ${scan.saves.sets ? `${nPlural(scan.saves.files, "save file", "save files")} for ${nPlural(scan.saves.sets, "game", "games")} (${fmt(scan.saves.rom_sets)} with a ROM here, ${fmt(scan.saves.dat_sets)} without, ${fmt(scan.saves.unmatched_sets)} unmatched)` : "none found"}.` : "";
+          ? `Saves (${(scan.saves.sources && scan.saves.sources.length ? scan.saves.sources : ["RetroArch"]).join(", ")}): ${scan.saves.sets ? `${nPlural(scan.saves.files, "save file", "save files")} for ${nPlural(scan.saves.sets, "game", "games")} (${fmt(scan.saves.rom_sets)} with a ROM here, ${fmt(scan.saves.dat_sets)} without, ${fmt(scan.saves.unmatched_sets)} unmatched)` : "none found"}.` : "";
         $("col-leftovers").textContent = scan.unmatched || scan.other
           ? `${fmt(scan.unmatched)} ${scan.unmatched === 1 ? "file matches" : "files match"} no game and ${fmt(scan.other)} ${scan.other === 1 ? "is not a ROM" : "are not ROMs"}: they are listed in the preview.` : "";
       }
-      $("col-aside").placeholder = info.aside_default ? `Default: ${info.aside_default}` : "Default: next to the ROM folder, named like it with -archive";
+      $("col-aside").placeholder = info.aside_default ? `Default: ${info.aside_default}` : "Archive folder (or set one for every system in Settings)";
+      const hasArchive = !!($("col-aside").value.trim() || info.aside_default);
+      $("col-sweep").disabled = !hasArchive;
+      $("col-aside-none").classList.toggle("hidden", hasArchive);
+      $("col-restore").classList.toggle("hidden", !hasArchive || !inp);
       $("col-undo-btn").dataset.blocked = info.last && Object.keys(info.last).length && (info.last.runs && Object.keys(info.last.runs).length || info.last.sort || (info.last.archive && info.last.archive.length) || info.last.rename || info.last.sweep) ? "0" : "1";
       this.renderRules();
       Jobs.setRunning(Jobs.running);
@@ -4277,6 +4529,7 @@
       }
       if (p.saved_games !== undefined) groups.push(savesGroup(p.saved_games, (v) => this.setRules({ saved_games: v }), "col"));
       $("col-rules").replaceChildren(...groups);
+      this.loadSavesGames();
       const custom = Object.keys(info.global).length > 0;
       $("col-rules-note").textContent = custom ? "Shared rules are set." : "Nothing set: every system uses its own defaults.";
       $("col-rules-summary").textContent = custom ? `${p.exclude.length} exclusions \u00B7 ${p.languages.length ? p.languages.join(", ") : "all languages"} \u00B7 ${p.region_priority.slice(0, 2).join(" > ")} first` : "defaults";
@@ -4288,6 +4541,15 @@
       if (!root) { toast("Choose the folder with your ROMs first.", "error"); return; }
       $("col-output").classList.add("hidden");
       await Jobs.start("/api/collection/scan", { root });
+    },
+
+    async rescanAll() {
+      const root = $("col-root").value.trim();
+      if (!root) return;
+      if (!(await confirmDialog({ title: "Recalculate every checksum", okText: "Recalculate",
+        body: el("p", { text: "Every file is read again and its checksums are calculated again. A normal rescan reads only new and changed files, which is almost always enough. This can take a long time." }) }))) return;
+      $("col-output").classList.add("hidden");
+      await Jobs.start("/api/collection/scan", { root, force: true });
     },
 
     async run(path, body = {}) {
@@ -4312,8 +4574,9 @@
             el("li", { text: "Every file moves into its system's folder, named with the standard short names. Folders left empty are removed." }),
             ...([el("li", { text: "Files are renamed to the databases' names and sorted by the rules." }),
               ...($("col-convert").checked && !$("col-convert-wrap").classList.contains("hidden") ? [el("li", { text: $("col-convert-label").textContent.replace(/\.$/, "") + "." })] : []),
-              el("li", { text: $("col-sweep").checked ? `What the rules archive is moved out into ${$("col-aside").value.trim() || this.info.aside_default}.` : "What the rules archive goes to _excluded, _superseded ... inside each system's folder." })]),
-            el("li", { text: "Files that match nothing, and files that are not ROMs (a save or a note beside a ROM too), go to the archive folder. Nothing is deleted." }),
+              el("li", { text: $("col-sweep").checked && $("col-aside").value.trim() + this.info.aside_default ? `What the rules archive is moved out into ${$("col-aside").value.trim() || this.info.aside_default}.` : "What the rules archive goes to _excluded, _superseded ... inside each system's folder." })]),
+            el("li", { text: $("col-aside").value.trim() + this.info.aside_default ? "Files that match nothing, and files that are not ROMs (a save or a note beside a ROM too), go to the archive folder. Nothing is deleted."
+              : "Files that match nothing, and files that are not ROMs, stay where they are (no archive folder is set). Nothing is deleted." }),
             ...(this.last ? savesLines(colSavesTotal(this.last)) : []),
             el("li", { text: "\"Undo last\" puts everything back." }))) } : {
         title: "Build the collection", okText: "Build collection",
@@ -4452,6 +4715,7 @@
 
     bind() {
       $("col-scan-btn").addEventListener("click", () => this.scan());
+      $("col-scan-force-btn").addEventListener("click", () => this.rescanAll());
       $("col-root").addEventListener("keydown", (e) => { if (e.key === "Enter") this.scan(); });
       $("col-root").addEventListener("change", () => this.save({ root: $("col-root").value.trim() }));
       $("col-root-browse").addEventListener("click", () => FolderBrowser.open($("col-root"), "Choose the folder with your ROMs"));
@@ -4468,6 +4732,8 @@
         $(id).addEventListener("change", () => { this.save({ place: this.inplace() ? "inplace" : "elsewhere" }); this.render(); $("col-output").classList.add("hidden"); });
       }
       $("col-rules-reset").addEventListener("click", () => this.save({ global: {} }));
+      $("col-saves-games").addEventListener("toggle", () => this.loadSavesGames());
+      $("col-saves-q").addEventListener("input", debounce(() => this.loadSavesGames(), 250));
       $("col-plan-btn").addEventListener("click", () => this.run("/api/collection/plan"));
       $("col-apply-btn").addEventListener("click", () => this.apply());
       $("col-undo-btn").addEventListener("click", () => this.undo());
@@ -4526,7 +4792,7 @@
   function bind() {
     bindMoreMenu();
     initSide();
-    for (const id of ["scan-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn"]) {
+    for (const id of ["scan-btn", "scan-force-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn"]) {
       $(id).setAttribute("data-needs-idle", "");
     }
     $("updates-btn").addEventListener("click", () => Updates.check());
@@ -4542,7 +4808,8 @@
     for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
     $("lib-export-dest").addEventListener("change", exportSettingsChanged);
     $("lib-aside-on").addEventListener("change", asideChanged);
-    $("lib-aside-dir").addEventListener("change", asideChanged);
+    $("lib-aside-dir").addEventListener("change", archiveFieldChanged);
+    $("lib-aside-dir").addEventListener("input", renderAsideWhere);
     $("lib-aside-browse").addEventListener("click", () => FolderBrowser.open($("lib-aside-dir"), "Choose the folder for the archived files"));
     $("lib-export-browse-btn").addEventListener("click", () => FolderBrowser.open($("lib-export-dest"), "Choose the folder to build the library in"));
     $("library-reset").addEventListener("click", async () => {
@@ -4560,7 +4827,10 @@
     $("fb-up").addEventListener("click", () => FolderBrowser.parent && FolderBrowser.list(FolderBrowser.parent));
     $("fb-hidden").addEventListener("change", () => FolderBrowser.current && FolderBrowser.list(FolderBrowser.current));
     $("fb-choose").addEventListener("click", () => FolderBrowser.choose());
-    $("scan-btn").addEventListener("click", startScan);
+    Settings.bind();
+    Switch.bind();
+    $("scan-btn").addEventListener("click", () => startScan(false));
+    $("scan-force-btn").addEventListener("click", () => startScan(true));
     bindFolderField();
     for (const tab of TABS) $(`tabbtn-${tab}`).addEventListener("click", () => openTab(tab));
     tabKeys($("sys-tabs"));

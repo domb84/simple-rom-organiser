@@ -2430,3 +2430,80 @@ EmuDeck layouts (those paths only count when a `retroarch.cfg` is there), a runn
   bar while the job has not counted its work, and has no text of its own (the job bar at the top says what is happening; the
   sidebar has it as a tooltip). Percentages below 10 % show a decimal ("0.4%"): a scan of hundreds of gigabytes is below 1 %
   for minutes.
+
+## Saves, round 3 (2026-10-08)
+
+* **Per-game choices in a Collection:** `saved_overrides` is a global rule key (`collection.GLOBAL_KEYS`), stored with the shared rules.
+  `POST /api/collection/saves` lists the games with saves that the shared rules replace / archive / keep (one row per game, from the
+  per-system plans), `POST /api/collection/saved {choice, games}` sets or clears a choice. `collection_save` keeps the overrides when
+  the rules panel saves the other rules; `global: {}` ("back to the defaults") clears them.
+* **Multi-disc `.m3u`:** `saveindex.build(..., playlists=[(name, [disc names])])`: a playlist whose first disc is a game of the system is a name
+  its saves can have (`SaveReport.playlists`, `playlist_of`). `App._saves_report` finds the playlists with `m3u.find_m3us(root)` (a
+  Collection looks once, `RootScan.m3us`). `_saves_plan` counts a playlist as gone when all its discs are; `_playlist_pairs` pairs an
+  existing playlist with the planned one for the same (renamed) discs, and `_ra_follow` renames the saves along. Not done: a save made
+  from disc 1 on its own is not moved to the playlist name; a playlist that does not exist yet has no saves.
+* **System-list badge:** `scan_record(..., saves=)` keeps `{files, sets}` in the system's last-scan record; `sideItem` shows it.
+
+## Scans are remembered (2026-10-08)
+
+* `scanner.HashCache` / `discsys.ChdCache`: a hit by path, size and mtime as before, else by `(dev, ino, size, mtime_ns)`
+  (`scanner.file_ident`; columns `dev`, `ino` added to `hashes` / `alt_hashes` by `ALTER TABLE`) or, for CHDs, by header sha1,
+  size and mtime. A file that was only moved or renamed (a build, a sort, the user) is not hashed again. An RVZ container row uses
+  `-ino` so it is never taken for the hash of the file's own bytes. `refresh_cache=True` (API: `force`) reads nothing from the cache
+  and writes everything again ("Recalculate checksums"). A stopped scan keeps what it hashed (the caches are closed in `finally`).
+* `App._scans` keeps the last six finished single-system scans (`_remember_scan`); `POST /api/scan/select {platform}` makes one the
+  current scan when the system's folder is still the scanned one (no scanning); the UI calls it when a system is selected and has
+  no scan. A Collection build / undo drops them all (`_forget_scans`: the files moved). A stopped Collection scan keeps the previous one.
+* Single-system Library with an archive folder: what the rules leave out goes straight to `<archive>/<system folder>/_excluded ...`,
+  `_unmatched` included (`per_system=True` of `_collection_single_pass`). A saved `<folder>-aside` suggestion that does not exist
+  on disk follows the new `-archive` default (`_renamed_default_archive`).
+
+## Settings: one archive folder (2026-10-09)
+
+* `sortroot.default_aside(root)` is `rom-archive` next to the ROM folder (was `<root>-archive`). Config: `archive_dir` (every system;
+  empty = the default) and `archive_overrides` (`{system: folder}`); `POST /api/settings/archive {dir, platform?}`, and
+  `/api/status.archive` carries both. A Collection uses its own `aside`, else `archive_dir`, else the default; `/api/collection`
+  has `aside_default` and `aside_is_global`. `library_export.aside` (archiving on a system's Library tab) is on unless switched
+  off; the old `library_export.aside_dir` is ignored (the folder is the global one or the system's own).
+* UI: a Settings page (`#/settings`, `Settings`), the Library tab fills its archive field from them (`archiveFor`), lists the folders
+  files go to (`renderAsideWhere`) and the "Folder layout" no longer shows the reason folders while archiving is on. The Library intro
+  paragraph is gone.
+
+## Nintendo Switch (2026-10-09)
+
+New modules `switchfmt` (PFS0 / HFS0 containers, title ID arithmetic, `.cnmt.xml`), `switchkeys` (pure-Python AES-128 and XTS for one NCA
+header sector, `prod.keys`), `switchdb` (title database from blawar/titledb into `<data>/switch/titles.sqlite`), `switchscan`,
+`switchsaves`, `switchapp`; API `GET /api/switch`, `POST /api/switch/config|scan|rows|db/update`; page `#/switch`. Details, measured facts
+and the plan for moving saves: `docs/SWITCH_PLAN.md`.
+
+Switch, second step: `switchverify` (NCA content ID = SHA-256[:16], checked on request), `switchtidy` (rules and plan), API `POST /api/switch/verify|tidy/plan|tidy/apply|tidy/undo`,
+save rows now carry every save game per emulator (`count`, `items`) and a `total`.
+
+## No default archive folder (2026-10-09)
+
+`sortroot.default_aside` is gone. The archive folder is `archive_dir` (Settings) or a system's / the Collection's own; with none,
+`_collection_aside` returns None: `plan_sort` makes no move for unmatched / non-ROM files, the sweep and the archive part of
+`_collection_single_pass` are off (the rules' reason folders stay inside each system folder), "Bring archived files back" answers 409,
+and the Library tab / Collection page show a note instead of the archive options. The Switch tidy likewise keeps `_superseded` ...
+in the games folder. The title database of the Switch is downloaded at start-up by `UpdateManager` (`_do_switchdb`: missing, or
+the ETags of the two source files changed; not asked about for 3 days) and has a `switchdb` block in the update status.
+
+## Nintendo Wii and Wii U (2026-10-09)
+
+`nintendodisc` (Wii / GameCube header at 0 / RVZ-WIA 0x58 / WBFS 0x200 / CISO 0x8000; Wii U product code from a WUX's first sector),
+`nintendosaves` (Dolphin `Wii/title/00010000/<hex id>/data` and `GC/<region>/Card A/*.gci`; Cemu `mlc01/usr/save/00050000/<low id>/user/*`,
+`title_list_cache.xml`, flatpak and native detection), `gametdb` (GameTDB `wiitdb.txt` / `wiiutdb.txt` into `<data>/nintendo/gametdb.sqlite`,
+downloaded at start-up by `UpdateManager._do_extra`, which now serves the Switch database and this one), `nintendoapp` (the two pages'
+scan and rows). API `GET /api/nintendo?console=`, `POST /api/nintendo/config|scan|rows`; pages `#/wii`, `#/wiiu`, listed with the disc systems
+(`EXTRA_SYSTEMS` in `app.js`).
+
+## Auto-selected folders and PCSX2 (2026-10-09)
+
+`nintendoapp.effective(console, cfg)` / `switchapp.effective(cfg)`: a folder the user left empty is what was found on this machine
+(emulator data folder, its first existing game folder; Ryujinx: a portable folder next to the games before `~/.config/Ryujinx`). `store`
+saves "" for a value that is the found one, so it stays automatic. `pcsx2.py`: `detect_pcsx2` (flatpak / native / Windows, `PCSX2.ini`
+folders and slots, portal paths resolved), `read_serial` (ISO 9660 `SYSTEM.CNF` from an `.iso` or a CD / DVD `.chd`), folder cards and
+card images (PS2 memory card file system: superblock, indirect FAT, directory entries), save states; `gametdb` also holds PCSX2's
+`GameIndex.yaml` (serial to name). Console `ps2` of `/api/nintendo`, page `#/ps2`. Card images were checked against images made by the
+test helper only (the user's card is a folder card); the folder card, the serials of seven real CHDs and 33 real save states were read as is.
+

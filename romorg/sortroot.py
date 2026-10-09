@@ -28,7 +28,7 @@ from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
 __all__ = ["SMove", "ASIDE_FOLDERS", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
-           "default_aside", "rom_like", "remove_empty_tree", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
+           "rom_like", "remove_empty_tree", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
            "read_journal"]
 
 # the folders a library build sets things aside in (the converted originals are the user's safety copies: they stay)
@@ -48,18 +48,6 @@ class SMove:
     note: str = ""
     kind: str = "file"          # file | folder
     size: int = 0
-
-
-def default_aside(root: Path) -> Path:
-    """Next to the ROM folder: ``<root>-archive``.
-
-    The top of a drive (``E:\\``, a share, ``/``) has no name and nothing lies next to it: the answer is then a folder
-    inside it, which the overlap check refuses with the request to choose an archive folder elsewhere (rather than an
-    exception from here that breaks the whole page)."""
-    root = Path(root)
-    if not root.name:
-        return root / "_archive"
-    return root.with_name(root.name + "-archive")
 
 
 def inside(path: Path, folder: Path) -> bool:
@@ -103,7 +91,7 @@ def _size(path: Path) -> int:
         return 0
 
 
-def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path, Optional[str]],
+def plan_sort(root: Path, aside: Optional[Path], folders: Dict[str, Path], flat: Dict[Path, Optional[str]],
               discs: Sequence[dict], unmatched: Iterable[Path], other: Iterable[Path],
               exists: Optional[Callable[[Path], bool]] = None) -> List[SMove]:
     """The moves that sort ``root``.
@@ -113,11 +101,12 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
     ``unmatched``: ROM-like files that match nothing; ``other``: everything else.
 
     Rules: an identified file already inside its own system's folder stays; elsewhere it moves to that folder (flat).
+    Without an archive folder (``aside`` None) files that match nothing and non-ROM files are not moved at all.
     Unmatched files that lie loose (outside every system folder) go to ``<aside>/_unmatched``; those inside a system folder
     are left for that system's library build. Every other file goes to ``<aside>/_other`` (with its path kept): a note or a
     file that happens to lie beside a ROM is no ROM and does not follow it into the system's folder. The one exception is
     a disc game's own folder: whatever is in it stays there and travels with the game."""
-    root, aside = Path(root), Path(aside)
+    root = Path(root)
     names = Names(exists)
     moves: List[SMove] = []
     sys_dirs = list(folders.values())
@@ -151,6 +140,9 @@ def plan_sort(root: Path, aside: Path, folders: Dict[str, Path], flat: Dict[Path
         else:
             for f in d["files"]:
                 moves.append(SMove(Path(f), names.free(target / Path(f).name), plat, size=_size(Path(f))))
+    if aside is None:                                  # no archive folder: files that match nothing, and non-ROMs, stay where they are
+        return moves
+    aside = Path(aside)
     for path in sorted(unmatched, key=lambda p: p.as_posix().lower()):
         if any(inside(path, s) for s in sys_dirs) or any(inside(path, t) for t in unit_tops):
             continue
