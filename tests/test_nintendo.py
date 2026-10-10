@@ -461,5 +461,22 @@ class Running(unittest.TestCase):
         self.assertFalse(emulators.running("nothing"))
 
 
+
+class DatabasesList(unittest.TestCase):
+    def test_every_dat_of_every_system_is_in_the_list_with_an_address(self) -> None:
+        from romorg import autoupdate, databases, platforms
+        rows = databases.describe({"nointro": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in __import__("romorg.nointro", fromlist=["x"]).NOINTRO_DATS]},
+                                   "redump": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.REDUMP_DATS]},
+                                   "whdload": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.WHDLOAD_DATS]},
+                                   "switchdb": {"status": "up_to_date"}, "gametdb": {"status": "up_to_date"}})
+        listed = {r["name"] for r in rows}
+        every_dat = {d for p in platforms.list_platforms() for d in p.dats}
+        tosec = {d for d in every_dat if d.startswith("Commodore Amiga - ") and d != "Commodore - Amiga - WHDLoad"}
+        self.assertEqual(every_dat - listed - tosec, set(), "a DAT of a system that the Databases page does not list")
+        self.assertTrue(all(r["url"].startswith("http") for r in rows))
+        self.assertEqual(next(r for r in rows if r["name"] == "Nintendo - Wii")["url"], "http://redump.org/datfile/wii/")
+        self.assertEqual(next(r for r in rows if r["name"] == "Nintendo - Switch (Updates)")["used_by"], ["Nintendo Switch"])
+
+
 if __name__ == "__main__":
     unittest.main()

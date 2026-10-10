@@ -2311,6 +2311,10 @@ class App:
     def updates_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return self.updates_status()
 
+    def databases_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/databases``: every database the app uses with its address, the systems that use it and its state."""
+        return {"databases": _mod("databases").describe(self.updates_status())}
+
     def updates_check(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """The "Check for updates" button: check now and download whatever is newer, in the background."""
         started = bool(self.updates.check(force=_bool_arg((body or {}).get("force"))))
@@ -5543,6 +5547,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/dats"): App.dats_list,
     ("POST", "/api/dats/update"): App.dats_update,
     ("GET", "/api/updates"): App.updates_get,
+    ("GET", "/api/databases"): App.databases_get,
     ("POST", "/api/updates/check"): App.updates_check,
     ("POST", "/api/updates/cancel"): App.updates_cancel,
     ("GET", "/api/ratings"): App.ratings_get,

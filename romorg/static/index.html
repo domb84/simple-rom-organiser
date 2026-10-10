@@ -21,7 +21,6 @@
       <div class="menu" id="more-menu">
         <button class="btn btn-small btn-ghost" id="more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-pop">More</button>
         <div class="menu-pop hidden" id="more-pop" role="menu">
-          <button class="menu-item" role="menuitem" id="databases-btn" aria-expanded="false" aria-controls="databases-panel" title="The installed and newest version of every database (TOSEC, No-Intro, WHDLoad, Redump, ratings)">Databases</button>
           <button class="menu-item" role="menuitem" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
           <button class="menu-item" role="menuitem" id="density-btn" aria-pressed="false" title="Smaller rows: more of a long list on screen">Compact rows</button>
           <button class="menu-item" role="menuitem" id="quit-btn" title="Stop the app">Quit</button>
@@ -29,7 +28,6 @@
       </div>
     </div>
     <div class="topbar-extra">
-      <div class="databases-panel hidden" id="databases-panel"></div>
       <div class="progress hidden" id="updates-progress"><div class="progress-bar" id="updates-progress-bar"></div></div>
       <div class="muted small hidden" id="updates-progress-text"></div>
       <div class="muted small hidden" id="updates-note"></div>
@@ -49,6 +47,7 @@
       <a class="nav-item nav-collection" href="#/collection" id="collection-link"><span class="nav-name">Collection <span class="muted small">all systems</span></span></a>
       <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
       <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">Emulators <span class="muted small">saves and config</span></span></a>
+      <a class="nav-item nav-collection" href="#/databases" id="databases-link"><span class="nav-name">Databases <span class="muted small">where the lists come from</span></span></a>
       <a class="nav-item nav-collection" href="#/settings" id="settings-link"><span class="nav-name">Settings <span class="muted small">for every system</span></span></a>
       <nav id="home-groups" aria-label="Systems by group"><div class="empty">Loading systems...</div></nav>
       <div class="muted small side-foot" id="dats-dir"></div>
@@ -171,6 +170,16 @@
 
     <!-- ===================== NINTENDO SWITCH: games and the saves of Eden and Ryujinx ===================== -->
     <!-- ===================== SETTINGS: what applies to every system ===================== -->
+    <!-- ===================== DATABASES: every list the app uses ===================== -->
+    <section class="view hidden" id="view-databases" aria-labelledby="databases-title">
+      <div class="sys-head">
+        <h1 id="databases-title">Databases</h1>
+        <span class="muted small grow">Every list the app uses to tell a game, and which systems use it. They are downloaded on the first start; after that only when you ask.</span>
+        <button class="btn" id="databases-check" data-needs-idle>Check for updates</button>
+      </div>
+      <div id="databases-body"><div class="empty">Loading...</div></div>
+    </section>
+
     <section class="view hidden" id="view-settings" aria-labelledby="settings-title">
       <div class="sys-head">
         <h1 id="settings-title">Settings</h1>

@@ -209,7 +209,7 @@ Each system has a dot (green: scanned, amber: its DAT is missing, hollow: not sc
 folder, DAT and last scan. A running scan shows its progress under the system. **Find a system** filters the list.
 Clicking a system opens it on the right with its **Overview / Library / Browse / Tools** tabs, and the tab you are on stays
 selected when you switch system. **Hide list** collapses the list (remembered); in a narrow window it becomes a **Systems**
-button above the page. **More** in the header holds Databases, Check for updates, Compact rows and Quit. The last scan
+button above the page. **More** in the header holds Check for updates, Compact rows and Quit; **Databases** (in the list on the left, with Collection and Settings) lists every database the app uses: its address, the systems that use it, the installed and newest version. The last scan
 summary of every system is a tiny record in `config.json` (counts, time, folder - never file lists), so the list survives a
 restart; the full results (Browse, Library) exist only for the system scanned last and need a new scan after a restart.
 Opening `#/` goes to the system you used last.

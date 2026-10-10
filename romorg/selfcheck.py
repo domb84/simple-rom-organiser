@@ -373,14 +373,14 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 APP_MODULES = (
     "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "collection", "convert", "datfile", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
-    "bios", "biosdata", "discmatch", "emulators", "idsaves", "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
+    "bios", "biosdata", "databases", "discmatch", "emulators", "idsaves", "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ratings", "redump", "retroarch", "rvz", "saveindex", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tosec",
     "totals", "whdload", "winproc", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("index.html", "app.js", "style.css")
 # the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added
-UI_VIEWS = ("view-home", "view-system", "view-collection", "view-retroarch", "view-chd", "view-settings")
+UI_VIEWS = ("view-home", "view-system", "view-collection", "view-retroarch", "view-chd", "view-settings", "view-databases")
 
 
 def check_app() -> Tuple[bool, str]:

@@ -685,7 +685,6 @@
         } else {
           const res = await post("/api/updates/check", {});
           if (!res.started) toast("An update is already running.", "info");
-          toggleDatabases(true);            // show what is being checked, database by database
           this.apply(res.updates);
           return;
         }
@@ -727,7 +726,7 @@
     btn.textContent = u.running ? "Cancel update" : "Check for updates";
     btn.disabled = !u.enabled && !u.running;
     btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro, WHDLoad, Redump and the ratings for newer versions and install them" : "Automatic updates are switched off in this run";
-    renderDatabases(u);
+    if (Databases.open) Databases.load();
 
     const pr = u.progress || {};
     const bar = $("updates-progress-bar");
@@ -749,42 +748,41 @@
     $("updates-note").classList.toggle("stale", !!u.scan_stale && !err);
   }
 
-  /** The "Databases" panel: every database the app uses, one row per DAT, with the installed and the newest known version. */
+  /** The Databases page: every list the app uses, with its address, the systems that use it and its state. */
   const DB_STATUS = { up_to_date: ["ok", "up to date"], update_available: ["move", "update available"], updating: ["move", "updating"],
-    absent: ["missing", "not installed"], missing: ["missing", "not installed"], unknown: ["skip", "not checked this session"], error: ["conflict", "check failed"] };
-  function renderDatabases(u) {
-    const box = $("databases-panel");
-    if (!box || box.classList.contains("hidden")) return;
-    const rows = [];
-    const status = (st) => { const [cls, text] = DB_STATUS[st] || ["skip", st || "-"]; return el("span", { class: `badge ${cls}`, text }); };
-    const row = (source, name, installed, latest, st, checked) => rows.push(el("tr", {},
-      el("td", { text: source }), el("td", { class: "wrap", text: name }),
-      el("td", { class: "num", text: installed || "not installed" }), el("td", { class: "num", text: latest || "-" }),
-      el("td", {}, status(st)), el("td", { class: "num muted", text: checked ? checkedText(checked) : "never" })));
-    const t = u.tosec || {};
-    row("TOSEC", "Full DAT pack (all TOSEC systems)", t.installed, t.latest, t.status, t.checked_at);
-    for (const [key, label] of [["nointro", "No-Intro"], ["whdload", "WHDLoad"], ["redump", "Redump"]]) {
-      const b = u[key] || {};
-      const dats = b.dats || [];
-      if (!dats.length) row(label, "-", b.installed, b.latest, b.status, b.checked_at);
-      for (const d of dats) row(label, d.name, d.version, d.latest || (d.status === "up_to_date" ? d.version : null), d.status, b.checked_at);
-    }
-    const r = u.ratings || {};
-    row("Ratings", `LaunchBox community ratings${r.games ? ` (${fmt(r.games)} games)` : ""}`, r.installed, r.latest, r.status, r.checked_at);
-    box.replaceChildren(
-      el("div", { class: "table-wrap" }, el("table", {},
-        el("thead", {}, el("tr", {}, ["Source", "Database", "Installed", "Newest known", "Status", "Last checked"].map((h) => el("th", { text: h })))),
-        el("tbody", {}, rows))),
-      el("div", { class: "muted small", text: "Versions are the date in each DAT. \"Newest known\" is what the last check found online; No-Intro and WHDLoad are compared by content, so they show the installed date once they are current." }));
-  }
+    absent: ["missing", "not installed"], missing: ["missing", "not installed"], unknown: ["skip", "not checked this session"], error: ["conflict", "check failed"],
+    bundled: ["ok", "ships with the app"] };
+  const Databases = {
+    rows: [],
+    open: false,
 
-  function toggleDatabases(open) {
-    const box = $("databases-panel"), btn = $("databases-btn");
-    const show = open === undefined ? box.classList.contains("hidden") : open;
-    box.classList.toggle("hidden", !show);
-    btn.setAttribute("aria-expanded", show ? "true" : "false");
-    if (show && state.updates) renderDatabases(state.updates);
-  }
+    async show() {
+      this.open = true;
+      await this.load();
+    },
+
+    async load() {
+      try { this.rows = (await get("/api/databases")).databases; } catch (err) { toast(err.message, "error"); return; }
+      this.render();
+    },
+
+    render() {
+      const status = (st) => { const [cls, text] = DB_STATUS[st] || ["skip", st || "-"]; return el("span", { class: `badge ${cls}`, text }); };
+      const groups = [...new Set(this.rows.map((r) => r.group))];
+      $("databases-body").replaceChildren(...groups.map((g) => el("section", { class: "panel" },
+        el("h2", { text: g }),
+        el("div", { class: "table-wrap" }, el("table", {},
+          el("thead", {}, el("tr", {}, ["Source", "Database", "Used by", "Installed", "Newest known", "Status", "Last checked"].map((h) => el("th", { text: h })))),
+          el("tbody", {}, this.rows.filter((r) => r.group === g).map((r) => el("tr", {},
+            el("td", { text: r.source }),
+            el("td", { class: "wrap" }, el("a", { href: r.url, target: "_blank", rel: "noopener noreferrer", text: r.name }),
+              el("div", { class: "sub mono-path", text: r.url }), r.note ? el("div", { class: "sub", text: r.note }) : null),
+            el("td", { class: "wrap small", text: r.used_by.length > 4 ? `${r.used_by.length} systems` : r.used_by.join(", ") || "-", title: r.used_by.join(", ") }),
+            el("td", { class: "num", text: r.installed || "not installed" }), el("td", { class: "num", text: r.latest || "-" }),
+            el("td", {}, status(r.status)), el("td", { class: "num muted", text: r.checked_at ? checkedText(r.checked_at) : (r.status === "bundled" ? "-" : "never") }))))))))
+        .concat([el("div", { class: "muted small", text: "Versions are the date in each DAT. \"Newest known\" is what the last check found online; No-Intro and WHDLoad are compared by content, so they show the installed date once they are current. The Nintendo Wii U and Switch lists are made here from the names and IDs below them: no checksum list exists for those systems." })]));
+    },
+  };
 
   // ------------------------------------------------------------- routing
   // Hash routes (no server support needed; back / forward / reload just work):
@@ -806,6 +804,7 @@
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
       if (parts[0] === "chd") return { view: "chd", slug: "", tab: "", params: {} };
       if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
+      if (parts[0] === "databases") return { view: "databases", slug: "", tab: "", params: {} };
       if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "overview", params: {} };
       if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "overview", params: {} };
       if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "overview", params: {} };
@@ -914,6 +913,7 @@
     $("retroarch-link").setAttribute("aria-current", state.route && state.route.view === "retroarch" ? "true" : "false");
     $("chd-link").setAttribute("aria-current", state.route && state.route.view === "chd" ? "true" : "false");
     $("settings-link").setAttribute("aria-current", state.route && state.route.view === "settings" ? "true" : "false");
+    $("databases-link").setAttribute("aria-current", state.route && state.route.view === "databases" ? "true" : "false");
     Jobs.setRunning(Jobs.running);
     if (Jobs.last) renderCardJob(Jobs.last);
   }
@@ -1158,6 +1158,18 @@
     $("view-collection").classList.toggle("hidden", !collection);
     $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
     $("view-chd").classList.toggle("hidden", r.view !== "chd");
+    $("view-databases").classList.toggle("hidden", r.view !== "databases");
+    Databases.open = r.view === "databases";
+    if (r.view === "databases") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "Databases - Simple ROM Organiser";
+      state.viewWas = "databases";
+      Databases.show();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
     $("view-settings").classList.toggle("hidden", r.view !== "settings");
     if (r.view === "settings") {
       $("view-home").classList.add("hidden");
@@ -4851,7 +4863,7 @@
     $("lib-convert").addEventListener("change", saveConvertOption);
     $("chd-verify-scan").addEventListener("change", (e) => saveChdman({ verify_scan: e.target.checked }));
     $("quit-btn").addEventListener("click", quit);
-    $("databases-btn").addEventListener("click", () => toggleDatabases());
+    $("databases-check").addEventListener("click", () => $("updates-btn").click());
     document.addEventListener("click", (e) => {
       for (const m of document.querySelectorAll(".col-menu[open]")) if (!m.contains(e.target)) m.open = false;
     });

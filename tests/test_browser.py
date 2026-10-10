@@ -176,24 +176,32 @@ class StartupTests(UiTestCase):
 
 
 class DatabasesPanelTests(UiTestCase):
-    def test_every_database_is_listed_with_its_version(self) -> None:
+    def test_every_database_is_listed_with_its_address_and_version(self) -> None:
         self.open()
         self.page.wait("document.getElementById('updates-line').textContent.includes('Redump')")
         line = self.page.eval("document.getElementById('updates-line').textContent")
         for source in ("TOSEC", "No-Intro", "WHDLoad", "Redump"):
             self.assertIn(source, line)
-        self.click("#databases-btn")
-        self.page.wait("document.querySelectorAll('#databases-panel tbody tr').length > 5")
-        rows = self.page.eval("[...document.querySelectorAll('#databases-panel tbody tr')].map(r => [...r.cells].map(c => c.textContent.trim()))")
-        names = {r[1]: r for r in rows}
-        for wanted in ("Sega - Dreamcast", "Sony - PlayStation", "Sony - PlayStation 2", "Nintendo - Game Boy Advance",
-                       "Commodore - Amiga - WHDLoad"):
+        self.assertFalse(self.page.eval("!!document.getElementById('databases-btn')"))               # (not in the More menu any more)
+        self.assertEqual(self.page.eval("document.getElementById('databases-link').closest('aside') !== null"), True)
+        self.click("#databases-link")
+        self.page.wait("document.querySelectorAll('#databases-body tbody tr').length > 12", timeout=30)
+        rows = self.page.eval("""[...document.querySelectorAll('#databases-body tbody tr')].map(r => ({
+            source: r.cells[0].textContent.trim(), name: r.cells[1].querySelector('a').textContent.trim(),
+            url: r.cells[1].querySelector('a').href, used: r.cells[2].textContent.trim(), installed: r.cells[3].textContent.trim(),
+            status: r.cells[5].textContent.trim()}))""")
+        names = {r["name"]: r for r in rows}
+        for wanted in ("Sega - Dreamcast", "Sony - PlayStation 2", "Nintendo - Wii", "Nintendo - Game Boy Advance", "Commodore - Amiga - WHDLoad",
+                       "Nintendo - Wii U", "Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"):
             self.assertIn(wanted, names)
-        self.assertEqual(names["Nintendo - Game Boy Advance"][2], "20250101-000000")     # the fixture's DAT version
-        self.assertEqual(names["Sega - Dreamcast"][2], "not installed")
-        self.assertEqual({r[0] for r in rows}, {"TOSEC", "No-Intro", "WHDLoad", "Redump", "Ratings"})
-        self.click("#databases-btn")
-        self.assertTrue(self.page.eval("document.getElementById('databases-panel').classList.contains('hidden')"))
+        self.assertEqual(names["Nintendo - Game Boy Advance"]["installed"], "20250101-000000")     # the fixture's DAT version
+        self.assertEqual(names["Sega - Dreamcast"]["installed"], "not installed")
+        self.assertEqual(names["Nintendo - Wii"]["url"], "http://redump.org/datfile/wii/")
+        self.assertTrue(names["Nintendo - Game Boy Advance"]["url"].endswith("Nintendo%20-%20Game%20Boy%20Advance.dat"))
+        self.assertIn("Nintendo Wii U", names["Nintendo - Wii U"]["used"])
+        self.assertEqual({r["source"] for r in rows} >= {"TOSEC", "No-Intro", "WHDLoad", "Redump", "titledb", "GameTDB", "PCSX2", "LaunchBox", "libretro"}, True)
+        self.assertTrue(all(r["url"].startswith("http") for r in rows))
+        self.assertEqual(next(r for r in rows if r["source"] == "libretro")["status"], "ships with the app")
         self.no_js_errors()
 
 
