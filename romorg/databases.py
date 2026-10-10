@@ -14,13 +14,12 @@ from . import biosdata, platforms
 
 __all__ = ["describe"]
 
-GROUP_DAT = "Game lists (DATs)"
-GROUP_NAMES = "Names and IDs (made into the catalogues of the Wii U and Switch)"
+GROUP_DAT = "Game lists (DATs with checksums)"
+GROUP_MADE = "Game lists made from title lists (no checksum list exists for these systems)"
 GROUP_OTHER = "Other"
 
 TOSEC_URL = "https://www.tosecdev.org/downloads"
 NOINTRO_URL = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
-NOINTRO_HOME = "https://no-intro.org/"
 WHDLOAD_URL = "https://github.com/MrV2K/WHDLoad-Database"
 REDUMP_URL = "http://redump.org/datfile/"
 REDUMP_SLUG = {"Sega - Dreamcast": "dc", "Sony - PlayStation": "psx", "Sony - PlayStation 2": "ps2", "Nintendo - GameCube": "gc",
@@ -63,24 +62,20 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
         for d in b.get("dats") or ():
             rows.append(_row(GROUP_DAT, label, d["name"], url_of(d["name"]), used.get(d["name"], []),
                              {**d, "installed": d.get("version"), "checked_at": b.get("checked_at"),
-                              "latest": d.get("latest") or (d.get("version") if d.get("status") == "up_to_date" else None)},
-                             note=("No-Intro DATs come from the libretro-database mirror of " + NOINTRO_HOME) if key == "nointro" else ""))
+                              "latest": d.get("latest") or (d.get("version") if d.get("status") == "up_to_date" else None)}))
     sw, gt = u.get("switchdb") or {}, u.get("gametdb") or {}
-    sw_installed = sw.get("installed")
-    rows.append(_row(GROUP_NAMES, "titledb", "Nintendo Switch titles: names, languages, stores, NCA content IDs, every update version",
-                     TITLEDB_URL, ["Nintendo Switch"], sw, note="about 100 MB over the wire; US, GB and JP store lists, cnmts.json, versions.json"))
-    for dat in ("Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"):
-        rows.append(_row(GROUP_DAT, "made from titledb", dat, TITLEDB_URL, used.get(dat, []), {**sw, "installed": sw_installed},
-                         note="no checksums exist: matched by title ID (and version)"))
-    rows.append(_row(GROUP_NAMES, "GameTDB", "Wii and Wii U: disc titles by game ID", GAMETDB_URL + "wiitdb.txt", ["Nintendo Wii", "Nintendo Wii U"], gt,
-                     note="wiitdb.txt, wiiutdb.txt"))
-    rows.append(_row(GROUP_NAMES, "GameTDB", "Wii U: disc games with region and languages", GAMETDB_WIIU, ["Nintendo Wii U"], gt))
-    rows.append(_row(GROUP_NAMES, "No-Intro", "Wii U (Digital): the spelling and languages of the Wii U names", NOINTRO_WIIU, ["Nintendo Wii U"], gt,
-                     note="fetched with GameTDB's lists; optional"))
-    rows.append(_row(GROUP_NAMES, "PCSX2", "PlayStation 2: game names by serial (GameIndex.yaml)", PCSX2_INDEX, ["Sony PlayStation 2"], gt,
-                     note="fetched with GameTDB's lists; names unmatched saves"))
-    rows.append(_row(GROUP_DAT, "made from GameTDB", "Nintendo - Wii U", GAMETDB_WIIU, used.get("Nintendo - Wii U", []), gt,
-                     note="no checksums exist: matched by the product code"))
+    switch = [p for p in ("Nintendo Switch",)]
+    rows.append(_row(GROUP_MADE, "titledb", "Nintendo Switch: games, every update version, add-ons", TITLEDB_URL, switch, sw,
+                     note="the three DATs \"Nintendo - Switch\", \"(Updates)\" and \"(DLC)\" are made from it; files are matched by title ID and "
+                          "version; about 100 MB over the wire (the US, GB and JP stores, cnmts.json, versions.json)"))
+    rows.append(_row(GROUP_MADE, "GameTDB", "Nintendo Wii U: the disc games, with region and languages", GAMETDB_WIIU, ["Nintendo Wii U"], gt,
+                     note="the DAT \"Nintendo - Wii U\" is made from it; a disc is matched by its product code"))
+    rows.append(_row(GROUP_MADE, "No-Intro", "Nintendo Wii U (Digital): the spelling and languages of those names", NOINTRO_WIIU, ["Nintendo Wii U"], gt,
+                     note="optional; fetched together with GameTDB's list"))
+    rows.append(_row(GROUP_OTHER, "GameTDB", "Wii disc titles (by game ID)", GAMETDB_URL + "wiitdb.txt", ["Nintendo Wii"], gt,
+                     note="names a Wii disc that is not the original image (.rvz, .wbfs ...) so it can be found in Redump's list"))
+    rows.append(_row(GROUP_OTHER, "PCSX2", "PlayStation 2 game names by serial (GameIndex.yaml)", PCSX2_INDEX, ["Sony PlayStation 2"], gt,
+                     note="names the PCSX2 saves that have no game file here; fetched together with GameTDB's lists"))
     r = u.get("ratings") or {}
     rows.append(_row(GROUP_OTHER, "LaunchBox", f"Community ratings{' (%s games)' % r['games'] if r.get('games') else ''}", LAUNCHBOX_URL,
                      [p.name for p in platforms.list_platforms()], r, note="optional: fetched when a rating filter needs it"))

@@ -472,10 +472,13 @@ class DatabasesList(unittest.TestCase):
         listed = {r["name"] for r in rows}
         every_dat = {d for p in platforms.list_platforms() for d in p.dats}
         tosec = {d for d in every_dat if d.startswith("Commodore Amiga - ") and d != "Commodore - Amiga - WHDLoad"}
-        self.assertEqual(every_dat - listed - tosec, set(), "a DAT of a system that the Databases page does not list")
+        made = {"Nintendo - Wii U", "Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"}      # (each is said by the list it is made from)
+        self.assertEqual(every_dat - listed - tosec - made, set(), "a DAT of a system that the Databases page does not list")
+        covered = {s for r in rows if r["group"].startswith("Game lists made") for s in r["used_by"]}
+        self.assertEqual({p.name for p in platforms.list_platforms() if set(p.dats) & made}, covered)
         self.assertTrue(all(r["url"].startswith("http") for r in rows))
         self.assertEqual(next(r for r in rows if r["name"] == "Nintendo - Wii")["url"], "http://redump.org/datfile/wii/")
-        self.assertEqual(next(r for r in rows if r["name"] == "Nintendo - Switch (Updates)")["used_by"], ["Nintendo Switch"])
+        self.assertEqual(next(r for r in rows if r["source"] == "titledb")["used_by"], ["Nintendo Switch"])
 
 
 if __name__ == "__main__":

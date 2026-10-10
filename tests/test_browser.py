@@ -192,16 +192,23 @@ class DatabasesPanelTests(UiTestCase):
             status: r.cells[5].textContent.trim()}))""")
         names = {r["name"]: r for r in rows}
         for wanted in ("Sega - Dreamcast", "Sony - PlayStation 2", "Nintendo - Wii", "Nintendo - Game Boy Advance", "Commodore - Amiga - WHDLoad",
-                       "Nintendo - Wii U", "Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"):
+                       "Nintendo Switch: games, every update version, add-ons", "Nintendo Wii U: the disc games, with region and languages"):
             self.assertIn(wanted, names)
         self.assertEqual(names["Nintendo - Game Boy Advance"]["installed"], "20250101-000000")     # the fixture's DAT version
         self.assertEqual(names["Sega - Dreamcast"]["installed"], "not installed")
         self.assertEqual(names["Nintendo - Wii"]["url"], "http://redump.org/datfile/wii/")
         self.assertTrue(names["Nintendo - Game Boy Advance"]["url"].endswith("Nintendo%20-%20Game%20Boy%20Advance.dat"))
-        self.assertIn("Nintendo Wii U", names["Nintendo - Wii U"]["used"])
+        self.assertIn("Nintendo Wii U", names["Nintendo Wii U: the disc games, with region and languages"]["used"])
         self.assertEqual({r["source"] for r in rows} >= {"TOSEC", "No-Intro", "WHDLoad", "Redump", "titledb", "GameTDB", "PCSX2", "LaunchBox", "libretro"}, True)
         self.assertTrue(all(r["url"].startswith("http") for r in rows))
         self.assertEqual(next(r for r in rows if r["source"] == "libretro")["status"], "ships with the app")
+        self.assertNotIn("no-intro.org", self.page.eval("document.getElementById('databases-body').textContent"))
+        # leaving Settings for Databases must not leave Settings on the page
+        self.page.eval("location.hash = '#/settings'")
+        self.page.wait("!document.getElementById('view-settings').classList.contains('hidden')")
+        self.click("#databases-link")
+        self.page.wait("document.getElementById('view-settings').classList.contains('hidden')")
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('.view:not(.hidden)')].map(v => v.id)"), ["view-databases"])
         self.no_js_errors()
 
 

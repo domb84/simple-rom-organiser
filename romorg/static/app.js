@@ -1158,6 +1158,7 @@
     $("view-collection").classList.toggle("hidden", !collection);
     $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
     $("view-chd").classList.toggle("hidden", r.view !== "chd");
+    $("view-settings").classList.toggle("hidden", r.view !== "settings");      // (every page is shown or hidden before any of them returns)
     $("view-databases").classList.toggle("hidden", r.view !== "databases");
     Databases.open = r.view === "databases";
     if (r.view === "databases") {
@@ -1170,7 +1171,6 @@
       window.scrollTo(0, 0);
       return;
     }
-    $("view-settings").classList.toggle("hidden", r.view !== "settings");
     if (r.view === "settings") {
       $("view-home").classList.add("hidden");
       $("view-system").classList.add("hidden");
