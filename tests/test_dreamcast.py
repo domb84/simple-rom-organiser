@@ -187,27 +187,22 @@ class ScanTest(unittest.TestCase):
         liar.write_chd(p)
         r = self.w.scan()
         self.assertEqual(r.matched[0].level, "identified")
-        res = dreamcast.verify_units(r, cache_path=self.w.cache)
-        self.assertEqual((res["verified"], len(res["failed"])), (0, 1))
-        self.assertIn("track 2", res["failed"][0]["error"])
-        r2 = self.w.scan()                                # the cache now holds every hash: not a match any more
+        r2 = self.w.scan(full=True)                       # every track is decoded: not a match any more
         self.assertEqual(r2.matched, [])
-        self.assertIn("track 2", r2.unmatched[0].reason)
+        self.assertIn("audio tracks do not match", r2.unmatched[0].reason)
         self.assertIsNotNone(d)
 
     def test_verify_fully_upgrades_identified_to_verified(self) -> None:
         self.w.chd("Beta (Europe)", "Beta/Beta (Europe).chd")
         r = self.w.scan()
         self.assertEqual(r.summary()["identified"], 1)
-        ticks = []
-        res = dreamcast.verify_units(r, progress=lambda d, t, m: ticks.append(m), cache_path=self.w.cache)
-        self.assertEqual((res["verified"], res["failed"], res["checked"]), (1, [], 1))
-        self.assertTrue(any("Verifying" in m for m in ticks))
+        full = self.w.scan(full=True)                     # "Check every track while scanning"
+        self.assertEqual((full.summary()["verified"], full.summary()["identified"]), (1, 0))
         with mock.patch.object(dreamcast.chdlib, "hash_track", side_effect=AssertionError("decoded again")):
             r2 = self.w.scan()
+            r3 = self.w.scan(full=True)
         self.assertEqual((r2.summary()["verified"], r2.summary()["identified"]), (1, 0))
-        res2 = dreamcast.verify_units(r2, cache_path=self.w.cache)
-        self.assertEqual((res2["checked"], res2["already"]), (0, 1))
+        self.assertEqual(r3.summary()["verified"], 1)
 
     def test_cancel_during_scan(self) -> None:
         self.w.chd("Beta (Europe)", "Beta/Beta (Europe).chd")
@@ -876,9 +871,9 @@ class ChdmanEngineTest(unittest.TestCase):
         self.assertIn("not enough temporary space", r.temp["last"]["reason"])
 
     def test_verify_uses_chdman_when_present(self) -> None:
-        r = self.w.scan(engine="python")
-        res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache, engine="chdman")
-        self.assertEqual((res["verified"], res["failed"]), (1, []))
+        self.w.scan(engine="python")
+        full = self.w.scan(chdman=self.chdman, engine="chdman", full=True)
+        self.assertEqual(full.summary()["verified"], 1)
         self.assertIn("extractcd", (self.w.base / "log.txt").read_text())
         self.assertEqual(self.w.scan(engine="python").summary()["verified"], 1)
 

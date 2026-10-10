@@ -24,7 +24,7 @@ from unittest import mock
 from xml.sax.saxutils import quoteattr
 os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a RetroArch installed on this machine
 
-from romorg import convert, kickstart, library, m3u, organiser, paths, platforms, scanner
+from romorg import convert, library, m3u, organiser, paths, platforms, scanner
 
 GAMES = "Commodore Amiga - Games - [ADF]"
 WB = "Commodore Amiga - Operating Systems - Workbench"
@@ -295,26 +295,6 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(a5.lines[1:], self.alpha)
         self.assertEqual(mops5["Workbench v1.3 (1988)(Commodore).m3u"].path.parent, self.root / WB)
         self.assertEqual(m3u.write_m3us(mops5.values())["written"], 2)
-
-        # --- kickstarts: copy the firmware ROM into a RetroArch system dir
-        dest = Path(self.tmp.name) / "system"
-        fw_md5 = hashlib.md5(self.data["fw"]).hexdigest()
-        table = [("kick34005.A500", fw_md5, "Kickstart v1.3 rev 34.005"),
-                 ("kick40068.A1200", "0" * 32, "Kickstart v3.1 rev 40.068")]
-        with mock.patch.object(kickstart, "PUAE_BIOS", table):
-            kops = {op.target.name: op for op in kickstart.plan_kickstarts(res5, dest, self.platform.kickstart_dat)}
-            self.assertEqual(kops["kick34005.A500"].status, "copy")
-            self.assertEqual(kops["kick34005.A500"].rom_name, self.fw_name)
-            self.assertEqual(kops["kick40068.A1200"].status, "missing")
-            k = kickstart.apply_kickstarts(kops.values(), root=self.root)
-            self.assertEqual((k["copied"], k["failed"]), (1, []))
-            self.assertEqual((dest / "kick34005.A500").read_bytes(), self.data["fw"])
-            self.assertTrue((self.root / FW / self.fw_name).is_file())  # copied, not moved
-            again = {op.target.name: op.status for op in kickstart.plan_kickstarts(res5, dest, FW)}
-            self.assertEqual(again["kick34005.A500"], "ok")
-            (dest / "kick40068.A1200").write_bytes(b"other")
-            self.assertEqual(kickstart.apply_kickstarts(kickstart.plan_kickstarts(res5, dest, FW))["copied"], 0)
-            self.assertEqual((dest / "kick40068.A1200").read_bytes(), b"other")
 
 
 

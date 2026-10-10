@@ -49,8 +49,3 @@ def tools_dir() -> Optional[Path]:
 def lib_dir() -> Optional[Path]:
     t = tools_dir()
     return t / "lib" if t and (t / "lib").is_dir() else None
-
-
-def licenses_dir() -> Optional[Path]:
-    root = bundle_root()
-    return root / "licenses" if root and (root / "licenses").is_dir() else None

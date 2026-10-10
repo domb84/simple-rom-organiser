@@ -93,7 +93,7 @@ try {
     Assert-Match $status '"os": "windows"' "status does not say the app runs on Windows"
 
     # the pages of the UI: home, a system, and the three v0.2 added; and the files the page loads
-    foreach ($view in "view-home", "view-system", "view-collection", "view-retroarch", "view-chd", "view-settings", "view-databases") {
+    foreach ($view in "view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases") {
         Assert-Match $index ('id="' + $view + '"') "the page lacks $view"
     }
     foreach ($file in [regex]::Matches($index, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value }) {
@@ -128,15 +128,15 @@ try {
     Assert-Match $chdman '"writer": "auto"' "/api/chdman does not report the built-in writer: $chdman"
     Write-Host "GET /api/chdman -> built-in writer, native FLAC"
     # the pages v0.2 added answer with JSON (their modules are imported by name, on first use)
-    $collectionText = Get-Text "/api/collection"
-    Assert-Match $collectionText '"rules"' "/api/collection missing"
-    $collection = $collectionText | ConvertFrom-Json
-    if ($null -eq $collection.profile -or $null -eq $collection.rules) { throw "smoke test failed: /api/collection lacks the rules" }
+    $defaultsText = Get-Text "/api/library/defaults"
+    Assert-Match $defaultsText '"catalog"' "/api/library/defaults missing"
+    $defaults = $defaultsText | ConvertFrom-Json
+    if ($null -eq $defaults.profile -or $null -eq $defaults.catalog) { throw "smoke test failed: /api/library/defaults lacks the rules" }
     $retroarchText = Get-Text "/api/retroarch"
     Assert-Match $retroarchText '"installs"' "/api/retroarch missing"
     $retroarch = $retroarchText | ConvertFrom-Json
     if ($null -eq $retroarch.PSObject.Properties["installs"]) { throw "smoke test failed: /api/retroarch lacks the installs" }
-    Write-Host "GET /api/collection, /api/retroarch -> ok"
+    Write-Host "GET /api/library/defaults, /api/retroarch -> ok"
 
     $null = Invoke-WebRequest "$script:url/api/quit" -Method Post -UseBasicParsing -TimeoutSec 30 `
         -Headers $auth -ContentType "application/json" -Body "{}"

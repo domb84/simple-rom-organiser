@@ -108,23 +108,19 @@ def _valid_votes(v: Any) -> bool:
     return n is not None and n >= 1
 
 
-def _norm_overrides(raw: Any) -> tuple[tuple[str, str, str], ...]:
-    """``((dat, game, "keep" | "exclude"), ...)``: valid entries only, one per game (the last wins), sorted."""
+def _norm_overrides(raw: Any, choices: tuple = OVERRIDE_ACTIONS) -> tuple[tuple[str, str, str], ...]:
+    """``((dat, game, choice), ...)`` with a choice of ``choices``: valid entries only, one per game (the last wins), sorted."""
     found: dict[tuple[str, str], str] = {}
     for entry in raw if isinstance(raw, (list, tuple)) else ():
         if isinstance(entry, (list, tuple)) and len(entry) == 3 and all(isinstance(x, str) for x in entry) \
-                and entry[0] and entry[1] and entry[2] in OVERRIDE_ACTIONS:
+                and entry[0] and entry[1] and entry[2] in choices:
             found[(entry[0], entry[1])] = entry[2]
     return tuple(sorted((d, n, a) for (d, n), a in found.items()))
 
 
 def _norm_saved_overrides(raw: Any) -> tuple[tuple[str, str, str], ...]:
-    """``((dat, game, "keep" | "archive" | "leave"), ...)``: valid entries only, one per game (the last wins), sorted."""
-    found: dict[tuple[str, str], str] = {}
-    for entry in raw if isinstance(raw, (list, tuple)) else ():
-        if isinstance(entry, (list, tuple)) and len(entry) == 3 and all(isinstance(x, str) for x in entry)                 and entry[0] and entry[1] and entry[2] in SAVED_GAMES:
-            found[(entry[0], entry[1])] = entry[2]
-    return tuple(sorted((d, n, a) for (d, n), a in found.items()))
+    """``((dat, game, "keep" | "archive" | "leave"), ...)``: see :func:`_norm_overrides`."""
+    return _norm_overrides(raw, SAVED_GAMES)
 
 
 def _norm_votes(v: Any) -> int:
@@ -275,21 +271,189 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         borrow_other_editions=_borrow_scope(platform))
 
 
-def load_profile(cfg: dict, platform: "Platform") -> LibraryProfile:
-    """The platform's profile from ``cfg["library"][name]`` (legacy ``cfg["latest_only"][name]`` honoured)."""
-    defaults = default_profile(platform)
+# --------------------------------------------------------------------------- defaults and overrides
+# The rules a library is built by are set once, for every system (``cfg["library_defaults"]``: only what differs from the app's own
+# defaults). A system uses them unless it overrides a rule (``cfg["library_overrides"][system]``: only the rules it overrides, plus the
+# choices made for single games, which are always the system's own). The profile a system builds with is, from the bottom:
+#   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
+RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
+               "region_priority", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
+               "min_votes", "keep_unrated", "rank_scope", "saved_games")
+GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
+
+
+def applicable_fields(platform: "Platform") -> frozenset:
+    """The rules of the profile that mean something for this system (its databases carry the tags they read)."""
+    style = _style_of_platform(platform)
+    has_langs = bool(_dats(platform, "language_dats"))
+    has_regions = bool(_dats(platform, "region_dats"))
+    tosec = bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC
+    out = {"exclude", "saved_games"}
+    for field, ok in (("latest_only", bool(_dats(platform, "latest_dats"))), ("best_variant", bool(_dats(platform, "best_variant_dats"))),
+                      ("complete_only", bool(_dats(platform, "m3u_dats"))), ("languages", has_langs), ("keep_other_language", has_langs),
+                      ("keep_flags", tosec), ("rescue_only_dump", bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC),
+                      ("region_priority", has_regions), ("one_per_game", has_regions), ("borrow_other_editions", _borrow_scope(platform))):
+        if ok:
+            out.add(field)
+    if _ratings_supported(platform):
+        out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
+    return frozenset(out)
+
+
+def app_defaults() -> LibraryProfile:
+    """The app's own defaults for every rule (what Settings shows before you change anything)."""
+    return LibraryProfile()
+
+
+def global_profile(cfg: dict) -> LibraryProfile:
+    """Your defaults: the app's own with what is stored in ``cfg["library_defaults"]`` on top."""
+    stored = cfg.get("library_defaults") if isinstance(cfg, dict) else None
+    stored = {k: v for k, v in stored.items() if k in RULE_FIELDS} if isinstance(stored, dict) else {}
+    return LibraryProfile.from_dict(stored, app_defaults())
+
+
+def store_global(cfg: dict, profile: LibraryProfile) -> None:
+    """Remember your defaults: only the rules that differ from the app's own."""
+    base, mine = app_defaults().to_dict(), profile.to_dict()
+    changed = {f: mine[f] for f in RULE_FIELDS if mine[f] != base[f]}
+    if changed:
+        cfg["library_defaults"] = changed
+    else:
+        cfg.pop("library_defaults", None)
+
+
+def effective_profile(platform: "Platform", defaults: Optional[Mapping[str, Any]] = None,
+                      overrides: Optional[Mapping[str, Any]] = None) -> LibraryProfile:
+    """The system's capability defaults, your defaults on top (only the rules the system has), the system's overrides on top of those."""
+    base = default_profile(platform)
+    ok = applicable_fields(platform)
+    mine = {k: v for k, v in (defaults or {}).items() if k in RULE_FIELDS and k in ok}
+    prof = LibraryProfile.from_dict(mine, base)
+    ov = {k: v for k, v in (overrides or {}).items() if k in GAME_FIELDS or (k in RULE_FIELDS and k in ok)}
+    return LibraryProfile.from_dict({**prof.to_dict(), **ov}, base)
+
+
+def _legacy_overrides(cfg: dict, platform: "Platform") -> Optional[dict]:
+    """What an older config kept for the system (a full profile in ``cfg["library"]``, or the ``latest_only`` flag), as overrides: the
+    rules in which it differs from what the system would use without any."""
     lib = cfg.get("library") if isinstance(cfg, dict) else None
     entry = lib.get(platform.name) if isinstance(lib, dict) else None
+    plain = effective_profile(platform, cfg.get("library_defaults") or {}, {})
     if entry is not None:
-        return LibraryProfile.from_dict(entry, defaults)
+        saved = LibraryProfile.from_dict(entry, default_profile(platform))
+        ok = applicable_fields(platform)
+        mine, base = saved.to_dict(), plain.to_dict()
+        out = {f: mine[f] for f in RULE_FIELDS if f in ok and mine[f] != base[f]}
+        for f in GAME_FIELDS:
+            if mine[f]:
+                out[f] = mine[f]
+        return out
     legacy = cfg.get("latest_only") if isinstance(cfg, dict) else None
     if isinstance(legacy, dict) and isinstance(legacy.get(platform.name), bool):
-        return replace(defaults, latest_only=legacy[platform.name] and defaults.latest_only)
-    return defaults
+        value = legacy[platform.name] and plain.latest_only
+        return {"latest_only": value} if value != plain.latest_only else {}
+    return None
+
+
+def overrides_of(cfg: dict, platform: "Platform") -> dict:
+    """The system's overrides (a copy): only the rules it overrides, and its per-game choices."""
+    table = cfg.get("library_overrides") if isinstance(cfg, dict) else None
+    entry = table.get(platform.name) if isinstance(table, dict) else None
+    if isinstance(entry, dict):
+        return dict(entry)
+    return _legacy_overrides(cfg, platform) or {}
+
+
+def overridden_fields(cfg: dict, platform: "Platform") -> list:
+    """The rules this system overrides (in the order of ``RULE_FIELDS``)."""
+    ov, ok = overrides_of(cfg, platform), applicable_fields(platform)
+    return [f for f in RULE_FIELDS if f in ov and f in ok]
+
+
+def load_profile(cfg: dict, platform: "Platform") -> LibraryProfile:
+    """The profile the system builds with (see the top of this section)."""
+    defaults = cfg.get("library_defaults") if isinstance(cfg, dict) else None
+    return effective_profile(platform, defaults if isinstance(defaults, dict) else {}, overrides_of(cfg, platform))
 
 
 def store_profile(cfg: dict, platform: "Platform", profile: LibraryProfile) -> None:
-    cfg.setdefault("library", {})[platform.name] = profile.to_dict()
+    """Remember what ``profile`` changes: a rule that differs from what the system uses now becomes an override of the system's;
+    one it already overrides stays so (also when it is set back to the default). The per-game choices are the system's own."""
+    ov = overrides_of(cfg, platform)
+    current = load_profile(cfg, platform).to_dict()
+    mine = profile.to_dict()
+    ok = applicable_fields(platform)
+    for f in RULE_FIELDS:
+        if f in ok and mine[f] != current[f]:
+            ov[f] = mine[f]
+    for f in GAME_FIELDS:
+        if mine[f]:
+            ov[f] = mine[f]
+        else:
+            ov.pop(f, None)
+    _put_overrides(cfg, platform, ov)
+
+
+def _put_overrides(cfg: dict, platform: "Platform", ov: dict) -> None:
+    table = cfg.setdefault("library_overrides", {})
+    if ov:
+        table[platform.name] = ov
+    else:
+        table.pop(platform.name, None)
+    if not table:
+        cfg.pop("library_overrides", None)
+    legacy = cfg.get("library")
+    if isinstance(legacy, dict):
+        legacy.pop(platform.name, None)
+        if not legacy:
+            cfg.pop("library", None)
+
+
+def set_override(cfg: dict, platform: "Platform", fields: Iterable[str], on: bool) -> None:
+    """Override ``fields`` for this system (they start at what the system uses now) or go back to your defaults for them."""
+    ov = overrides_of(cfg, platform)
+    current = load_profile(cfg, platform).to_dict()
+    ok = applicable_fields(platform)
+    for f in fields:
+        if f not in RULE_FIELDS or f not in ok:
+            continue
+        if on:
+            ov.setdefault(f, current[f])
+        else:
+            ov.pop(f, None)
+    _put_overrides(cfg, platform, ov)
+
+
+def reset_overrides(cfg: dict, platform: "Platform") -> None:
+    """Back to your defaults for every rule (the choices made for single games stay)."""
+    ov = {k: v for k, v in overrides_of(cfg, platform).items() if k in GAME_FIELDS}
+    _put_overrides(cfg, platform, ov)
+
+
+def migrate_config(cfg: dict) -> bool:
+    """Bring an older config to the layout above, in place; True when it changed anything. A Collection's shared rules (that page is
+    gone) become your defaults, each system's saved profile becomes its list of overrides (only where it differs from the defaults)."""
+    changed = False
+    coll = cfg.get("collection")
+    if isinstance(coll, dict):
+        mine = coll.get("global") if isinstance(coll.get("global"), dict) else {}
+        if mine and "library_defaults" not in cfg:
+            prof = LibraryProfile.from_dict({k: v for k, v in mine.items() if k in RULE_FIELDS}, app_defaults())
+            store_global(cfg, prof)
+        cfg.pop("collection", None)
+        changed = True
+    legacy = cfg.get("library")
+    if isinstance(legacy, dict):
+        from .platforms import list_platforms
+        for platform in list_platforms():
+            if platform.name in legacy or (isinstance(cfg.get("latest_only"), dict) and platform.name in cfg["latest_only"]):
+                found = _legacy_overrides(cfg, platform)
+                if found is not None:
+                    _put_overrides(cfg, platform, found)
+                    changed = True
+        cfg.pop("library", None)
+        changed = True
+    return changed
 
 
 # --------------------------------------------------------------------------- data
@@ -988,7 +1152,6 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     return sel
 
 
-
 # --------------------------------------------------------------------------- the rating filter
 
 def _stable(obj: Any) -> str:
@@ -1141,6 +1304,7 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
                   "keep_unrated": profile.keep_unrated, "rank_scope": profile.rank_scope,
                   "games": len(units), "rated": rated_games, "unrated": len(units) - rated_games,
                   "kept": kept_games, "excluded": len(units) - kept_games, "excluded_by": dropped}
+
 
 def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
     """Titles of which no local variant is kept, with the reason (language first, then flags, rules)."""
@@ -1821,8 +1985,10 @@ def available_languages(source: Any, platform: Any = None) -> list[dict[str, Any
 
 
 def _ratings_supported(platform: Any) -> bool:
-    from . import ratings
-
+    try:
+        from . import ratings
+    except ImportError:           # (the rating data is an extra: a rule set must still load without it)
+        return False
     return ratings.supported(platform)
 
 

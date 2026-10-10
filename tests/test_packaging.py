@@ -245,7 +245,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertIn(f'"{name}"', ps)
         self.assertIn("$count -ne 21", ps)
         # v0.2: the three new pages are in the HTML, their endpoints answer, the page's own files are served
-        for needle in ('"view-collection"', '"view-retroarch"', '"view-chd"', '"/api/collection"', '"/api/retroarch"',
+        for needle in ('"view-databases"', '"view-retroarch"', '"view-chd"', '"/api/library/defaults"', '"/api/retroarch"',
                        "/static/"):
             self.assertIn(needle, ps)
         # a miss fails the build; the app is quit through the API and the whole process tree is gone either way
@@ -318,7 +318,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(sorted(server.STATIC_TYPES), static)                  # and the server serves each of them
         page = (ROOT / "romorg" / "static" / "index.html").read_text(encoding="utf-8")
         self.assertEqual(sorted(re.findall(r'<section class="view[^"]*" id="(view-[a-z]+)"', page)), sorted(selfcheck.UI_VIEWS))
-        for name in ("collection", "libexport", "meter", "retroarch", "sortroot"):   # the modules v0.2 added
+        for name in ("libexport", "meter", "retroarch", "sortroot"):   # the modules v0.2 added
             self.assertIn(name, selfcheck.APP_MODULES)
         ok, text = selfcheck.check_app()
         self.assertTrue(ok, text)
@@ -352,11 +352,11 @@ class WindowsPackagingTests(unittest.TestCase):
             ok, text = selfcheck.check_app()
         self.assertFalse(ok)
         self.assertIn("static/app.js", text)
-        old_page = real_read("index.html").replace(b'id="view-collection"', b'id="view-old"')
+        old_page = real_read("index.html").replace(b'id="view-databases"', b'id="view-old"')
         with mock.patch.object(server, "read_static", lambda name: old_page if name == "index.html" else real_read(name)):
             ok, text = selfcheck.check_app()
         self.assertFalse(ok)
-        self.assertIn("view-collection", text)
+        self.assertIn("view-databases", text)
         # an incomplete app fails the whole self-check, in a source tree too
         with mock.patch.object(bundle, "bundle_root", return_value=None), \
                 mock.patch.object(selfcheck, "check_chdman", return_value=("SKIP", "-")), \

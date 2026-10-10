@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from tests.test_collection_api import CollectionCase, SNES, put, tree  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
+from tests.servercase import ServerCase, SNES, put, tree  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
 from tests.test_saves_in_builds import SavesCase, SAVE_NAMES
 
 from romorg import library, retroarch, saveindex
@@ -25,7 +25,7 @@ def profile_url(platform: str = SNES) -> str:
     return "/api/library/profile?platform=" + urllib.parse.quote(platform)
 
 
-class NoConfig(CollectionCase):
+class NoConfig(ServerCase):
     """No RetroArch config: saves are not even looked at."""
     GAMES = SavesCase.GAMES
 
@@ -87,24 +87,6 @@ class NoConfig(CollectionCase):
                 shutil.rmtree(sub)
         self.assertEqual(plan_of(True), without)
 
-    def test_collection_scan_has_no_saves_field_and_a_loose_save_goes_to_other(self) -> None:
-        root = self.tmp / "My ROMs"
-        put(root / "Dump" / "zed usa.sfc", self.rom["Zed (USA)"])
-        put(root / "Dump" / "zed usa.srm", b"a loose save beside a cartridge ROM")
-        patches = self.trap()
-        for p in patches:
-            p.start()
-            self.addCleanup(p.stop)
-        scan = self.scan(root)
-        self.assertNotIn("saves", scan)
-        self.assertTrue(all("saves" not in s for s in scan["systems"]))
-        archive = root.with_name("rom-archive")
-        res = self.job("/api/collection/apply")
-        self.assert_clean(res)
-        self.assertTrue((archive / "_other" / "Dump" / "zed usa.srm").is_file())       # an ordinary non-ROM file
-        self.assertFalse((root / "snes" / "zed usa.srm").exists())                     # (and no sidecar following its ROM)
-        self.undo()
-        self.assertTrue((root / "Dump" / "zed usa.srm").is_file())
 
 
 class Pure(unittest.TestCase):
@@ -269,17 +251,6 @@ class Index(SavesCase):
         t = self.call("GET", "/api/status")["scan"]["saves"]
         self.assertEqual((t["rom_sets"], t["unmatched_sets"], t["per_core"]), (1, 1, False))
 
-    def test_collection_reports_saves_per_system_and_in_total(self) -> None:
-        root = self.tmp / "My ROMs"
-        put(root / "Dump" / "zed usa.sfc", self.rom["Zed (USA)"])
-        put(root / "Dump" / "run.gba", self.rom["Run (USA)"])
-        self.save("bsnes", "zed usa", ("{n}.srm", "{n}.state1"))
-        self.save("bsnes", "Solo (USA)", ("{n}.srm",))                              # a DAT game without a ROM
-        scan = self.scan(root)
-        row = {s["name"]: s for s in scan["systems"]}
-        self.assertEqual((row[SNES]["saves"]["files"], row[SNES]["saves"]["rom_sets"], row[SNES]["saves"]["dat_sets"]), (3, 1, 1))
-        self.assertEqual(row["Nintendo Game Boy Advance"]["saves"]["files"], 0)
-        self.assertEqual(scan["saves"]["files"], 3)
 
 
 class Policies(SavesCase):
@@ -437,32 +408,7 @@ class Renames(SavesCase):
         self.call("POST", "/api/library/export/undo", {"dest": str(dest), "follow": res["saves"]["journal"]})
         self.assertEqual(self.saved_files(), sorted(old))
 
-    def test_collection_in_place_renames_in_one_pass(self) -> None:
-        root = self.tmp / "My ROMs"
-        put(root / "Dump" / "zed usa.sfc", self.rom["Zed (USA)"])
-        put(root / "Dump" / "run.gba", self.rom["Run (USA)"])
-        self.save("bsnes", "zed usa", ("{n}.srm", "{n}.A1.bin"))
-        self.save("mGBA", "run", ("{n}.sav",))
-        self.scan(root)
-        plan = self.job("/api/collection/plan")
-        row = next(r for r in plan["systems"] if r["platform"] == SNES)
-        self.assertEqual(row["saves_plan"]["rename"]["files"], 2)
-        res = self.job("/api/collection/apply")
-        self.assert_clean(res)
-        self.assertEqual([x for x in self.saved_files() if "bsnes" in x], ["bsnes/Zed (USA).A1.bin", "bsnes/Zed (USA).srm"])
 
-    def test_collection_elsewhere_copies_the_saves_with_the_new_names(self) -> None:
-        root = self.tmp / "My ROMs"
-        put(root / "Dump" / "zed usa.sfc", self.rom["Zed (USA)"])
-        self.save("bsnes", "zed usa", ("{n}.srm", "{n}.state1"))
-        self.call("POST", "/api/collection/save", {"place": "elsewhere", "dest": str(self.tmp / "clean"), "mode": "copy"})
-        self.scan(root)
-        plan = self.job("/api/collection/plan")
-        row = next(r for r in plan["systems"] if r["platform"] == SNES)
-        self.assertEqual(row["saves_plan"]["rename"]["files"], 2)
-        self.assertTrue(row["saves_plan"]["elsewhere"])
-        self.job("/api/collection/apply")
-        self.assertEqual(self.saved_files(), sorted(["bsnes/zed usa.srm", "bsnes/zed usa.state1", "bsnes/Zed (USA).srm", "bsnes/Zed (USA).state1"]))
 
 
 class ProfileRoundTrip(unittest.TestCase):

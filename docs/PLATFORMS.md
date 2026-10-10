@@ -47,7 +47,7 @@ betas, prototypes and demos (1,742 discs over the five systems, one retail title
 A file that matches no game may be something an emulator needs. It is told by its **checksum** against the list libretro's cores use
 (`System.dat`, 514 files of 60 systems, bundled with the app), whatever it is called and whichever system's folder it is in. Such a file
 is treated like a ROM: it stays with the ROMs, a Library build gives it the name the emulators expect (`scph1001.bin`), and it never goes
-to `_unmatched` or the archive (Collection leaves it where it is). The key files of the Switch and Wii U emulators (`prod.keys`,
+to `_unmatched` or the archive. The key files of the Switch and Wii U emulators (`prod.keys`,
 `title.keys`, `keys.txt`) have no common checksum; they are told by name and left as they are. A file that only *has* a BIOS's name is
 an ordinary unmatched file.
 

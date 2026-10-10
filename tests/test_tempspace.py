@@ -282,12 +282,12 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual(tree(self.w.root), before)
 
     def test_verify_fully_uses_the_policy(self) -> None:
-        r = self.w.scan(engine="python")
+        self.w.scan(engine="python")
         before = tree(self.w.root)
         with self.watch():
-            res = dreamcast.verify_units(r, self.chdman, cache_path=self.w.cache, engine="chdman")
-        self.assertEqual((res["verified"], res["failed"]), (1, []))
-        self.assertEqual(res["temp"]["ram"], 1)
+            full = self.w.scan(chdman=self.chdman, engine="chdman", full=True)
+        self.assertEqual(full.summary()["verified"], 1)
+        self.assertEqual(tempspace.report()["ram"], 1)
         self.assertEqual(self.seen[0][0], str(self.ram))
         self.assertEqual(tree(self.w.root), before)
 

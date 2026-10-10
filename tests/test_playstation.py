@@ -291,9 +291,8 @@ class Ps2ScanTest(unittest.TestCase):
 
     def test_verify_fully_decodes_a_dvd_chd_then_it_is_verified_and_cached(self) -> None:
         self.w.dvd_chd("Beta (Europe) (En,Fr,De)", "Beta.chd")
-        r = self.w.scan()
-        res = discsys.verify_units(r, cache_path=self.w.cache)
-        self.assertEqual((res["verified"], res["failed"], res["checked"]), (1, [], 1))
+        self.assertEqual(self.w.scan().matched[0].level, "identified")
+        self.assertEqual(self.w.scan(full=True).matched[0].level, "verified")
         with mock.patch.object(chdlib, "hash_track", side_effect=AssertionError("decoded again")):
             r2 = self.w.scan()
         self.assertEqual((r2.matched[0].level, r2.matched[0].unit.via), ("verified", "python"))
@@ -309,8 +308,7 @@ class Ps2ScanTest(unittest.TestCase):
         p.write_bytes(bytes(raw))
         r = self.w.scan()
         self.assertEqual(r.matched[0].level, "identified")            # the claim alone cannot say better
-        res = discsys.verify_units(r, cache_path=self.w.cache)
-        self.assertEqual((res["verified"], len(res["failed"])), (0, 1))
+        self.assertEqual(self.w.scan(full=True).matched, [])
         self.assertEqual(self.w.scan().matched, [])
 
     def test_zstd_dvd_chd_is_identified_by_its_header_and_verify_says_needs_chdman(self) -> None:
@@ -319,9 +317,8 @@ class Ps2ScanTest(unittest.TestCase):
         T.build_dvd_chd(p, iso, codecs=("zstd", "lzma", "zlib", "wxyz"), pick=lambda h: "wxyz" if h == 2 else "zlib")
         r = self.w.scan()
         self.assertEqual(r.matched[0].level, "identified")
-        res = discsys.verify_units(r, cache_path=self.w.cache)
-        self.assertEqual(res["verified"], 0)
-        self.assertIn("needs chdman", res["failed"][0]["error"])
+        full = self.w.scan(full=True)                                  # it cannot be decoded here: still only identified
+        self.assertEqual([m.level for m in full.matched], ["identified"])
 
     def test_cd_chd_with_an_undecodable_codec_is_left_in_place(self) -> None:
         p = self.w.root / "Odd" / "Odd.chd"

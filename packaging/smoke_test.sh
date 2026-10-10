@@ -58,7 +58,7 @@ grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
 # the pages of v0.2 (also checked by packaging/smoke_test.ps1 on Windows)
-for view in view-home view-system view-collection view-retroarch view-chd view-settings view-databases; do
+for view in view-home view-system view-retroarch view-chd view-settings view-databases; do
   grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
 done
 
@@ -87,9 +87,9 @@ if [[ -n "$TOKEN" ]]; then
   grep -q '"native": true' <<<"$CH" || { echo "/api/chdman does not report native FLAC: $CH" >&2; exit 1; }
   grep -q '"writer": "auto"' <<<"$CH" || { echo "/api/chdman does not report the built-in writer: $CH" >&2; exit 1; }
   echo "GET /api/chdman -> built-in writer, native FLAC"
-  grep -q '"rules"' <<<"$(curl -fsS "$URL/api/collection")" || { echo "/api/collection missing" >&2; exit 1; }
+  grep -q '"catalog"' <<<"$(curl -fsS "$URL/api/library/defaults")" || { echo "/api/library/defaults missing" >&2; exit 1; }
   grep -q '"installs"' <<<"$(curl -fsS "$URL/api/retroarch")" || { echo "/api/retroarch missing" >&2; exit 1; }
-  echo "GET /api/collection, /api/retroarch -> ok"
+  echo "GET /api/library/defaults, /api/retroarch -> ok"
 fi
 if [[ -n "$TOKEN" ]] && curl -fsS -X POST -H "X-Romorg-Token: $TOKEN" -H 'Content-Type: application/json' \
      -d '{}' "$URL/api/quit" >/dev/null; then

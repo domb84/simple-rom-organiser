@@ -39,7 +39,6 @@ from . import nointro as _nointro
 from . import paths, platforms
 from . import tosec as _tosec
 from . import ratings as _ratings
-from . import switchdb as _switchdb
 from . import redump as _redump
 from . import whdload as _whdload
 from .nointro import NOINTRO_DATS, NoIntroError, all_dat_names

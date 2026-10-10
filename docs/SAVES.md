@@ -22,14 +22,13 @@ PS2 and Switch) shows no saves anywhere.*
   account folder (and the common one). PCSX2: one per save folder in a card, plus the save states (`SERIAL (CRC).01.p2s`; `.backup` copies
   are ignored). Switch: one per profile / device save, per emulator.
 * **Where it shows.** Overview ("Saves (Dolphin)" card), Browse (a Saves column, a "games with saves" filter and a Saves list that says
-  which saves have no ROM here), the Library preview (rows say *kept*, *archive* or *leave*), the systems list (a save count), and
-  Collection (per system, with the same choices).
+  which saves have no ROM here), the Library preview (rows say *kept*, *archive* or *leave*), and the systems list (a save count).
 * **Two copies of one game.** An ID-based save belongs to the *first* file of that ID in the list; the second copy has none and the rules
   may archive it. RetroArch saves belong to the file with that exact name.
-* **Choices.** Per game on the Library tab, or one default for the system (Library rules) or for Collection.
+* **Choices.** Per game on the Library tab, or one default (your Library defaults, which a system can override).
 * **Running programs.** Before saves are archived the app looks for the program's process (Linux `/proc`, Windows process list). Saves of a
   running program stay where they are; the others in the same build still move, and the preview and the result say which program it was.
-* **Collection and emulator folders.** An emulator's data folder that lies inside the Collection's ROM folder (a portable Ryujinx with the
+* **Emulator folders inside a ROM folder.** An emulator's data folder that lies inside a system's ROM folder (a portable Ryujinx with the
   games in it, say) is left alone: its saves, caches and settings are never sorted or archived as "files that are not ROMs". Only the
   Switch game files inside a Ryujinx folder are looked at.
 * **Not built.** Copying saves between emulators (Eden to Ryujinx, per `docs/SWITCH_PLAN.md`), saves of other standalone emulators

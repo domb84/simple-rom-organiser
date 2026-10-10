@@ -1,4 +1,4 @@
-"""Tests for romorg.sortroot: sorting a mixed folder into system folders, and sweeping what a build set aside."""
+"""Tests for romorg.sortroot: sweeping what a build set aside, moves that never duplicate a file, and the journal."""
 
 from __future__ import annotations
 
@@ -33,108 +33,6 @@ class World(unittest.TestCase):
         return p
 
 
-class Sort(World):
-    def test_files_go_to_their_system_and_the_rest_goes_aside(self) -> None:
-        loose = self.f("Random/mario.sfc")
-        misplaced = self.f("gba/zelda.sfc")                    # a SNES ROM in the GBA folder
-        right = self.f("gba/ok.gba")
-        mystery = self.f("Random/mystery.gba")
-        note = self.f("Random/readme.txt")
-        save = self.f("Random/mario.srm")
-        moves = sr.plan_sort(self.root, self.aside, self.folders,
-                             {loose: "Super Nintendo Entertainment System", misplaced: "Super Nintendo Entertainment System",
-                              right: "Nintendo Game Boy Advance"}, [], [mystery], [note, save])
-        by = {m.src.name: m for m in moves}
-        self.assertEqual(by["mario.sfc"].dst, self.root / "snes" / "mario.sfc")
-        self.assertEqual(by["zelda.sfc"].dst, self.root / "snes" / "zelda.sfc")
-        self.assertNotIn("ok.gba", by)                                         # already home
-        self.assertEqual(by["mystery.gba"].dst, self.aside / "_unmatched" / "Random" / "mystery.gba")
-        self.assertEqual(by["readme.txt"].dst, self.aside / "_other" / "Random" / "readme.txt")
-        # a save beside a ROM is no ROM: it does not follow it into the system's folder, it is "other" like any non-ROM file
-        self.assertEqual(by["mario.srm"].dst, self.aside / "_other" / "Random" / "mario.srm")
-        self.assertEqual(by["mario.srm"].bucket, "_other")
-
-    def test_unmatched_inside_a_system_folder_is_left_for_its_library_build(self) -> None:
-        inside = self.f("gba/unknown.gba")
-        moves = sr.plan_sort(self.root, self.aside, self.folders, {}, [], [inside], [])
-        self.assertEqual(moves, [])
-
-    def test_names_never_collide(self) -> None:
-        a, b = self.f("one/Game.sfc"), self.f("two/Game.sfc")
-        self.f("snes/Game.sfc")
-        moves = sr.plan_sort(self.root, self.aside, self.folders,
-                             {a: "Super Nintendo Entertainment System", b: "Super Nintendo Entertainment System"}, [], [], [])
-        self.assertEqual(sorted(m.dst.name for m in moves), ["Game (2).sfc", "Game (3).sfc"])
-
-    def test_disc_games_move_as_a_folder_and_their_own_files_are_not_other(self) -> None:
-        game = self.root / "Stuff" / "Crash (USA)"
-        (game).mkdir(parents=True)
-        (game / "Crash (USA).chd").write_bytes(b"c")
-        (game / "Crash (USA).zip").write_bytes(b"z")           # the Redump verification files stay with the CHD
-        (game / "Crash (USA).md5").write_bytes(b"m")
-        (game / "Crash (USA).cue").write_bytes(b"q")
-        folders = {**self.folders, "Sony PlayStation": self.root / "psx"}
-        moves = sr.plan_sort(self.root, self.aside, folders, {},
-                             [{"platform": "Sony PlayStation", "top": game, "folder": True, "files": [game / "Crash (USA).chd"]}],
-                             [], [game / "Crash (USA).zip", game / "Crash (USA).md5", game / "Crash (USA).cue"])
-        self.assertEqual([(m.src, m.dst, m.kind) for m in moves], [(game, self.root / "psx" / "Crash (USA)", "folder")])
-
-    def test_a_disc_games_folder_keeps_whatever_is_in_it_saves_included(self) -> None:
-        # the user's real shape: psx/Spider - The Video Game (USA)/ has .srm .state .state1 beside the CHD. Saves beside
-        # ROMs are ordinary files: the folder moves as one, nothing in it is sent to _other.
-        game = self.root / "Stuff" / "Spider - The Video Game (USA)"
-        game.mkdir(parents=True)
-        stem = "Spider - The Video Game (USA)"
-        names = [f"{stem}.chd", f"{stem}.srm", f"{stem}.state", f"{stem}.state1", f"{stem}.state1.png", f"{stem}.cue", f"{stem} notes.txt"]
-        for n in names:
-            (game / n).write_bytes(b"x")
-        folders = {**self.folders, "Sony PlayStation": self.root / "psx"}
-        other = [game / n for n in names[1:]]
-        moves = sr.plan_sort(self.root, self.aside, folders, {},
-                             [{"platform": "Sony PlayStation", "top": game, "folder": True, "files": [game / names[0]]}], [], other)
-        self.assertEqual([(m.src, m.dst, m.kind) for m in moves], [(game, self.root / "psx" / stem, "folder")])
-        self.assertFalse(hasattr(moves[0], "leave"))
-
-    def test_a_disc_game_without_a_folder_moves_only_its_own_files(self) -> None:
-        img = self.f("Stuff/Crash (USA).chd")
-        save = self.f("Stuff/Crash (USA).srm")
-        folders = {**self.folders, "Sony PlayStation": self.root / "psx"}
-        moves = sr.plan_sort(self.root, self.aside, folders, {},
-                             [{"platform": "Sony PlayStation", "top": img, "folder": False, "files": [img]}], [], [save])
-        self.assertEqual({m.src.name: m.dst for m in moves},
-                         {"Crash (USA).chd": self.root / "psx" / "Crash (USA).chd",
-                          "Crash (USA).srm": self.aside / "_other" / "Stuff" / "Crash (USA).srm"})
-
-    def test_a_loose_save_beside_a_rom_that_stays_goes_to_other_too(self) -> None:
-        rom = self.f("snes/Game.sfc")
-        save = self.f("snes/Game.srm")
-        moves = sr.plan_sort(self.root, self.aside, self.folders, {rom: "Super Nintendo Entertainment System"}, [], [], [save])
-        self.assertEqual([(m.src, m.dst) for m in moves], [(save, self.aside / "_other" / "snes" / "Game.srm")])
-
-    def test_apply_undo_and_empty_folders_go(self) -> None:
-        a = self.f("Random/mario.sfc", b"mario")
-        t = self.f("Random/readme.txt", b"hi")
-        moves = sr.plan_sort(self.root, self.aside, self.folders, {a: "Super Nintendo Entertainment System"}, [], [], [t])
-        res = sr.apply_moves(moves, self.aside.parent / "j", "sort", keep=[self.root])
-        self.assertEqual((res["moved"], res["failed"]), (2, []))
-        self.assertEqual((self.root / "snes" / "mario.sfc").read_bytes(), b"mario")
-        self.assertTrue((self.aside / "_other" / "Random" / "readme.txt").is_file())
-        self.assertFalse((self.root / "Random").exists())                       # emptied: removed
-        out = sr.undo_moves(Path(res["journal"]), keep=[self.root])
-        self.assertEqual((out["restored"], out["skipped"]), (2, []))
-        self.assertEqual((self.root / "Random" / "mario.sfc").read_bytes(), b"mario")
-        self.assertFalse((self.root / "snes").exists())
-
-    def test_nothing_is_overwritten_when_the_target_appeared(self) -> None:
-        a = self.f("x/g.sfc", b"new")
-        moves = sr.plan_sort(self.root, self.aside, self.folders, {a: "Super Nintendo Entertainment System"}, [], [], [])
-        self.f("snes/g.sfc", b"mine")                                            # appeared after the preview
-        res = sr.apply_moves(moves, self.aside.parent / "j", "sort", keep=[self.root])
-        self.assertEqual(res["moved"], 0)
-        self.assertEqual((self.root / "snes" / "g.sfc").read_bytes(), b"mine")
-        self.assertEqual(a.read_bytes(), b"new")
-
-
 class Sweep(World):
     def test_set_aside_folders_leave_the_rom_folder_and_come_back(self) -> None:
         keep = self.f("gba/keep.gba")
@@ -149,9 +47,9 @@ class Sweep(World):
         self.assertTrue((self.aside / "snes" / "_superseded" / "Sub" / "old.sfc").is_file())
         self.assertTrue(keep.is_file() and orig.is_file())
         self.assertFalse((self.root / "gba" / "_excluded").exists())
-        back = sr.plan_restore(self.folders, self.aside)
-        self.assertEqual(sorted(m.dst for m in back), sorted([ex, sup]))
-        sr.apply_moves(back, self.aside.parent / "j", "restore", keep=[self.aside])
+        journal = sr.read_journal(Path(res["journal"]))                   # (the build's undo takes them back)
+        self.assertEqual(sorted(Path(m["to"]).name for m in journal["moves"]), ["beta.gba", "old.sfc"])
+        sr.undo_moves(Path(res["journal"]))
         self.assertTrue(ex.is_file() and sup.is_file())
 
 
@@ -348,7 +246,6 @@ class MovesNeverDuplicate(World):
             res = sr.apply_moves([sr.SMove(a, self.root / "snes" / "a.sfc", "x"), sr.SMove(b, self.root / "snes" / "b.sfc", "x")],
                                  self.aside.parent / "j", "sort", keep=[self.root])
             self.assertEqual((res["moved"], res["failed"]), (2, []))
-            sr.remove_empty_tree(self.root, keep=[self.root / "snes"])
             self.assertFalse((self.root / "free").exists())
             if os.name == "nt":
                 self.assertTrue((self.root / "busy").is_dir())     # Windows cannot remove another program's current folder

@@ -52,7 +52,7 @@ from . import chd as chdlib
 from . import cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from . import meter, winproc
 from .datfile import DatFile, Rom
-from .folders import CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR
+from .folders import CONVERTED_DIR, DUPLICATES_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
 
 CHD_EXT = ".chd"
@@ -129,10 +129,6 @@ def system_for_dat(name: str) -> DiscSystem:
 def system_for_platform(name: str) -> Optional[DiscSystem]:
     _load()
     return _BY_PLATFORM.get(name)
-
-
-def is_disc_platform(name: str) -> bool:
-    return system_for_platform(name) is not None
 
 
 # --------------------------------------------------------------------------- the Redump index
@@ -329,9 +325,6 @@ class DcUnit:
     @property
     def top(self) -> Path:
         return self.folder if self.folder is not None else self.path
-
-    def total_bytes(self) -> int:
-        return sum(int(t.get("size") or 0) for t in self.tracks)
 
 
 @dataclass
@@ -873,6 +866,11 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
     for i in order:
         if not meta[i]["sha1"]:
             hasher([i])
+        elif full and meta[i].get("claimed"):          # a DVD CHD's header only claims its SHA-1: read the disc
+            try:
+                hasher([i])
+            except chdlib.ChdUnsupported:              # it cannot be decoded here: the claim stands (identified)
+                pass
         alive = [g for g in alive if _rom_ok(g.tracks[i], meta[i])]
         if not alive:
             return [], "", "the data tracks do not match any Redump game with this track layout"
@@ -1259,106 +1257,6 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
         temp=tempspace.report(), system=system)
 
 
-def scan_many(root, dats: Sequence[DatFile], files: Optional[Sequence[Path]] = None,
-              progress: Optional[ProgressFn] = None, cancel: Any = None, cache_path: Optional[Path] = None,
-              use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None, engine: str = "auto",
-              workers: int = 1, full: bool = False,
-              refresh_cache: bool = False) -> tuple[list[tuple[DcUnit, "DiscSystem"]], list[DcUnit], list[Path]]:
-    """Every disc image under ``root`` against the Redump DATs of ALL disc systems in ONE pass: the folder is walked and the
-    CHDs / sheets found once, each disc is read once (its track hashes are cached and shared by every DAT it is tried
-    against; a disc whose track sizes fit no game of a DAT is rejected without decoding anything).
-
-    Returns ``(matched [(unit, system)], unmatched units, other files)``. ``files`` is the list from
-    ``scanner.collect_files`` when the caller already has it."""
-    root = Path(root).expanduser().absolute()
-    if not root.is_dir():
-        raise NotADirectoryError(str(root))
-    indexes = [get_index(d) for d in dats]
-    swept = chdtool.sweep_stale(root) + tempspace.sweep_stale()
-    tempspace.reset_report()
-    if files is None:
-        files = scanner.collect_files(root, True, [], ())
-    units, rest = discover_units(root, list(files), None)
-    units = [u for u in units if not folders.is_converted(_parts(u.path, root))]
-    cache = ChdCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
-    fcache = scanner.HashCache((cache_path or scanner.default_cache_path()) if use_cache else None, refresh=refresh_cache)
-    use_chdman = chdman is not None and engine == "chdman"
-    sched = chdsched.make_scheduler(workers)
-    try:
-        total, files_todo = _estimate(units, cache, use_chdman, full)
-        prog = _Progress(progress, max(total, 1), cancel)
-        prog.files_total = files_todo
-        prog.emit("Reading the disc images...")
-        pool = None if use_chdman else sched
-
-        def one_chd(u: DcUnit) -> None:
-            prog.check()
-            prog.emit(f"Checking {u.path.name}")
-            for idx in indexes:
-                u.game, u.level, u.reason, u.candidates = None, "", "", []
-                identify_unit(u, idx, cache, root, chdman, engine, prog, pool, full)
-                if u.game is not None:
-                    u.system_key = idx.system.key
-                    break
-            if u.decoded:
-                prog.file_done()
-
-        chd_units = [u for u in units if u.kind == "chd"]
-        try:
-            if pool is not None and pool.pooled and len(chd_units) > 1:
-                with ThreadPoolExecutor(max_workers=min(max(2, pool.workers), len(chd_units))) as ex:
-                    for fut in [ex.submit(one_chd, u) for u in chd_units]:
-                        fut.result()
-            else:
-                for u in chd_units:
-                    one_chd(u)
-            for u in units:
-                if u.kind == "chd":
-                    continue
-                prog.check()
-                prog.emit(f"Checking {u.path.name}")
-                before = prog.done
-                for idx in indexes:
-                    u.game, u.level, u.reason, u.candidates = None, "", "", []
-                    identify_raw(u, idx, fcache, prog)
-                    if u.game is not None:
-                        u.system_key = idx.system.key
-                        break
-                if prog.done > before:
-                    prog.file_done()
-        finally:
-            sched.close()
-    finally:
-        fcache.close()
-        cache.close()
-    matched = [(u, system_for_dat(u.game.rep.dat)) for u in units if u.game is not None]
-    return matched, [u for u in units if u.game is None], rest
-
-
-def identify_isos(paths: Sequence[Path], dats: Sequence[DatFile], progress: Optional[ProgressFn] = None,
-                  cancel: Any = None, cache_path: Optional[Path] = None) -> list[tuple[DcUnit, "DiscSystem"]]:
-    """Loose ``.iso`` files (PlayStation 2 DVD games) against the DATs of the ISO systems; the ones that match."""
-    indexes = [get_index(d) for d in dats if system_for_dat(d.name).iso]
-    out: list[tuple[DcUnit, DiscSystem]] = []
-    if not indexes or not paths:
-        return out
-    fcache = scanner.HashCache(cache_path or scanner.default_cache_path())
-    try:
-        prog = _Progress(progress, max(sum(Path(p).stat().st_size for p in paths if Path(p).exists()), 1), cancel)
-        for p in paths:
-            prog.check()
-            u = DcUnit("raw", Path(p), None, [Path(p)], Path(p).stem)
-            for idx in indexes:
-                u.game, u.level, u.reason, u.candidates = None, "", "", []
-                identify_raw(u, idx, fcache, prog)
-                if u.game is not None:
-                    out.append((u, idx.system))
-                    break
-    finally:
-        fcache.close()
-    return out
-
-
 # --------------------------------------------------------------------------- targets
 
 def _rename_in(name: str, old_stem: str, new_stem: str) -> str:
@@ -1743,109 +1641,6 @@ def apply_plan(ops: Iterable[RenameOp], root: Path, progress: Optional[ProgressF
 
 
 # --------------------------------------------------------------------------- Verify fully
-
-def verify_units(result: DcScanResult, chdman: Optional[chdtool.Chdman] = None, progress: Optional[ProgressFn] = None,
-                 cancel: Any = None, cache_path: Optional[Path] = None, engine: str = "auto",
-                 workers: int = 1) -> dict[str, Any]:
-    """Upgrade ``identified`` CHDs to ``verified``: decode EVERY track (audio too) and compare with Redump.
-
-    The built-in reader decodes (parallel scheduler, native FLAC); chdman ``extractcd`` only when the reader cannot
-    (``needs_chdman``) or when ``engine`` is ``chdman``. Results go into the hash cache; the caller re-scans.
-    Returns ``{"verified", "failed": [{file, error}], "already", "checked", "engine_info"}``.
-    """
-    root = Path(result.root)
-    cache = ChdCache(cache_path or scanner.default_cache_path())
-    todo = [m for m in result.matched if m.kind == "chd" and m.level != LEVEL_VERIFIED]
-    already = sum(1 for m in result.matched if m.kind == "chd" and m.level == LEVEL_VERIFIED)
-    force_chdman = chdman is not None and engine == "chdman"
-    fallback_ok = chdman is not None and engine != "python"
-    total = sum(m.unit.total_bytes() * (2 if force_chdman else 1) for m in todo) or 1
-    prog = _Progress(progress, total, cancel)
-    prog.files_total = len(todo)
-    verified, failed = 0, []
-    tempspace.sweep_stale()
-    tempspace.reset_report()
-    sched = chdsched.make_scheduler(workers)
-    pool = None if force_chdman else sched
-    lock = threading.Lock()
-    finished = [0]
-
-    def one(m: Any) -> None:
-        nonlocal verified
-        prog.check()
-        u: DcUnit = m.unit
-        prog.emit(f"Verifying {u.path.name}")
-        try:
-            info = chdlib.Chd(u.path, load_map=False)
-        except (OSError, chdlib.ChdError) as exc:
-            with lock:
-                failed.append({"file": _rel(u.path, root), "error": str(exc)})
-            return
-        try:
-            meta = _track_meta(info)
-            _merge_cached(meta, cache.get(str(u.path), u.size, u.mtime_ns, info.sha1))
-            via = "python"
-            wanted = [i for i, x in enumerate(meta) if not x["sha1"]]
-
-            def by_chdman() -> dict[int, dict]:
-                return hash_all_chdman(u.path, info, chdman, root, prog)
-
-            try:
-                if force_chdman:
-                    got = by_chdman()
-                    via = "chdman"
-                else:
-                    try:
-                        got = hash_tracks_python(info, wanted, prog, pool)
-                    except chdlib.ChdUnsupported as exc:
-                        if not (getattr(exc, "needs_chdman", False) and fallback_ok):
-                            raise
-                        prog.emit(f"{u.path.name}: {exc} - using chdman")
-                        got = by_chdman()
-                        via = "chdman"
-            except chdtool.ChdmanError as exc:
-                if exc.cancelled:
-                    raise scanner.ScanCancelled() from exc
-                tempspace.note_python(str(exc))
-                prog.emit(f"{u.path.name}: chdman not used ({str(exc).splitlines()[0]}) - built-in reader")
-                got = hash_tracks_python(info, wanted, prog, pool)
-                via = "python"
-            for i, h in got.items():
-                meta[i].update(crc32=h["crc32"], md5=h["md5"], sha1=h["sha1"])
-            bad = [str(meta[i]["number"]) for i in range(len(meta)) if not _rom_ok(u.game.tracks[i], meta[i])]
-            cache.put(str(u.path), u.size, u.mtime_ns, info.sha1, disc_kind(info),
-                      [{k: x[k] for k in ("number", "type", "size", "crc32", "md5", "sha1")} for x in meta],
-                      LEVEL_VERIFIED, via)
-            with lock:
-                if bad:
-                    failed.append({"file": _rel(u.path, root),
-                                   "error": f"track {', '.join(bad)} does not match Redump ({u.game.name})"})
-                else:
-                    verified += 1
-        except chdlib.ChdError as exc:
-            with lock:
-                failed.append({"file": _rel(u.path, root), "error": f"cannot decode: {exc}"})
-        finally:
-            info.close()
-            with lock:
-                finished[0] += 1
-                prog.files_done = finished[0]
-
-    try:
-        if sched.pooled and len(todo) > 1:
-            with ThreadPoolExecutor(max_workers=min(max(2, sched.workers), len(todo))) as ex:
-                for fut in [ex.submit(one, m) for m in todo]:
-                    fut.result()
-        else:
-            for m in todo:
-                one(m)
-    finally:
-        info_stats = prog.engine_stats(sched)
-        sched.close()
-        cache.close()
-    return {"verified": verified, "failed": failed, "already": already, "checked": len(todo),
-            "temp": tempspace.report(), "engine_info": info_stats, "engine_text": info_stats.get("text", "")}
-
 
 # --------------------------------------------------------------------------- Convert raw sets to CHD
 

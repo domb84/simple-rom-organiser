@@ -75,9 +75,10 @@ class Ps2EndpointTests(PsServerCase):
         res = self.scan_ps2()
         s = res
         self.assertEqual((s["verified"], s["identified"], s["system"], s["have"]), (3, 1, "ps2", 4))
-        res = self.run_job("/api/dc/verify", {})
-        self.assertEqual((res["verified"], res["failed"]), (1, []))
-        self.assertEqual(res["summary"]["identified"], 0)
+        self.call("/api/chdman", {"verify_scan": True})                # "Check every track while scanning": the DVD image is read too
+        full = self.scan_ps2()
+        self.assertEqual((full["verified"], full["identified"]), (4, 0))
+        self.call("/api/chdman", {"verify_scan": False})
         plan = self.call("/api/library/plan", {"platform": PS2})
         row = [r for r in plan["items"] if r.get("game") == "Alpha (USA)"][0]
         self.assertEqual((row["status"], row["to"], row["files"]), ("move", "Alpha (USA)/Alpha (USA).chd", 2))
@@ -210,99 +211,7 @@ class DiscSavesTests(PsServerCase):
         self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())
         self.assertTrue((self.pcsx2 / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
 
-    def test_collection_sort_a_disc_games_folder_keeps_everything_in_it_saves_beside_the_chd_included(self) -> None:
-        """The user's real shape (psx/Spider - The Video Game (USA)/ with .srm .state .state1 beside the CHD) in a folder that
-        has to be sorted: saves beside a ROM are ordinary files - the whole folder moves into the system's folder."""
-        mixed = self.base / "mixed"
-        game = mixed / "Dump" / "Gamma (Europe)"
-        game.mkdir(parents=True)
-        T.build_dvd_chd(game / "Gamma (Europe).chd", self.iso["Gamma (Europe)"])
-        names = ("Gamma (Europe).zip", "Gamma (Europe).md5", "Gamma (Europe).srm", "Gamma (Europe).state", "Gamma (Europe).state1")
-        for n in names:
-            (game / n).write_bytes(n.encode())
-        self.call("/api/collection/save", {"root": str(mixed)})
-        self.run_job("/api/collection/scan", {})
-        res = self.run_job("/api/collection/apply", {})
-        self.assertEqual(res["sort"]["result"]["failed"], [])
-        there = mixed / "ps2" / "Gamma (Europe)"
-        self.assertEqual(sorted(p.name for p in there.iterdir()), sorted(("Gamma (Europe).chd",) + names))
-        self.assertFalse((self.base / "rom-archive" / "_other").exists())
-        self.call("/api/collection/undo", {})
-        self.assertEqual(sorted(p.name for p in game.iterdir()), sorted(("Gamma (Europe).chd",) + names))
-
 
 if __name__ == "__main__":
     unittest.main()
 
-
-class MixedRootSortTests(PsServerCase):
-    """A folder of mixed discs: ONE scan reads every CHD once and tries it against the DATs of all disc systems; the sort and
-    the tidy then work from that scan."""
-
-    def test_discs_of_two_systems_are_found_in_one_scan_and_sorted(self) -> None:
-        from romorg import discsys
-        self.call("/api/chdman", {"engine": "python"})
-        self.call("/api/settings/archive", {"dir": str(self.base / "rom-archive")})              # (there is no default archive folder)
-        mixed = self.base / "mixed"
-        dump = mixed / "Dump"
-        dump.mkdir(parents=True)
-        self.discs["Beta (Europe)"].write_chd(dump / "dc game.chd")                       # a Dreamcast GD-ROM
-        T.build_chd(dump / "ps2 cd.chd", [{"type": "MODE1", "data": self.iso["Alpha (USA)"]}], gd=False)
-        T.build_dvd_chd(dump / "ps2 dvd.chd", self.iso["Beta (Europe) (En,Fr,De)"])
-        T.build_chd(dump / "unknown.chd", [{"type": "MODE1", "data": T.make_iso(36, 99)}], gd=False)
-        (dump / "cover.jpg").write_bytes(b"jpg")
-        self.call("/api/collection/save", {"root": str(mixed)})
-        reads: dict[tuple, int] = {}
-        real = discsys.hash_tracks_python
-
-        def spy(info, idx, *a, **k):
-            for i in idx:
-                key = (str(getattr(info, "path", "")), i)
-                reads[key] = reads.get(key, 0) + 1
-            return real(info, idx, *a, **k)
-
-        with mock.patch.object(discsys, "hash_tracks_python", spy):
-            scan = self.run_job("/api/collection/scan", {})["scan"]
-            self.assertEqual({s["name"]: s["games"] for s in scan["systems"]}, {"Sega Dreamcast": 1, PS2: 2})
-            self.assertEqual((scan["unmatched"], scan["other"]), (1, 1))
-            self.assertTrue(reads and max(reads.values()) == 1, f"a track was decoded more than once: {reads}")
-            before = dict(reads)
-            plan = self.run_job("/api/collection/plan", {})
-            self.assertEqual(reads, before)                                                  # the preview reads no disc again
-        self.assertEqual(plan["sort"]["counts"], {"Sega Dreamcast": 1, PS2: 2, "_unmatched": 1, "_other": 1}, plan["sort"])
-        self.assertTrue((dump / "cover.jpg").exists())
-        res = self.run_job("/api/collection/apply", {})
-        self.assertEqual(res["sort"]["result"]["failed"], [])
-        self.assertEqual(len(list((mixed / "dreamcast").rglob("*.chd"))), 1)
-        self.assertEqual(len(list((mixed / "ps2").rglob("*.chd"))), 2)
-        self.assertTrue((self.base / "rom-archive" / "_unmatched" / "Dump" / "unknown.chd").is_file())
-        self.assertTrue((self.base / "rom-archive" / "_other" / "Dump" / "cover.jpg").is_file())
-
-    def test_collection_can_convert_raw_discs_to_chd_while_tidying(self) -> None:
-        self.use_fake_chdman()
-        self.call("/api/chdman", {"engine": "python"})
-        raw_e = T.prepare_fake_raw(self.base / "fakeraw_c", self.discs["Epsilon (USA)"])
-        os.environ["FAKE_RAW"] = str(raw_e)
-        mixed = self.base / "mixed2"
-        self.discs["Epsilon (USA)"].write_raw(mixed / "Dump" / "raw set", "e")
-        self.call("/api/collection/save", {"root": str(mixed)})
-        scan = self.run_job("/api/collection/scan", {})["scan"]
-        row = next(s for s in scan["systems"] if s["name"] == "Sega Dreamcast")
-        self.assertEqual((row["convert"], row["chd"]), (1, True))
-        self.call("/api/collection/save", {"convert": True})
-        plan = self.run_job("/api/collection/plan", {})
-        self.assertEqual(next(r for r in plan["systems"] if r["platform"] == "Sega Dreamcast")["convert"], 1)
-        self.assertTrue((mixed / "Dump" / "raw set" / "e.gdi").is_file())                  # a preview converts nothing
-        res = self.run_job("/api/collection/apply", {})
-        self.assertFalse([r for r in res["systems"] if r["status"] != "ok"], res)
-        self.assertTrue(list((mixed / "dreamcast").rglob("*.chd")))
-        self.assertTrue(list((mixed / "dreamcast" / "_converted_originals").rglob("e.gdi")))
-        steps = []                                                                         # one move per file, converting included
-        for log in mixed.glob(".romorg-undo-*.json"):
-            steps += [json.loads(line) for line in log.read_text().splitlines()[1:]]
-        steps = [(s["src"], s["dst"]) for s in steps if s.get("op") == "move"]
-        self.assertEqual(len({a for a, _b in steps}), len(steps))
-        self.assertFalse({a for a, _b in steps} & {b for _a, b in steps})
-        self.call("/api/collection/undo", {})
-        self.assertTrue((mixed / "Dump" / "raw set" / "e.gdi").is_file())                  # the raw set is back where it was
-        self.assertFalse(list(mixed.glob("dreamcast/**/*.chd")))

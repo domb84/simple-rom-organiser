@@ -1,15 +1,9 @@
-"""Sort a folder full of ROMs into one folder per system, and keep the ROM folders clean.
+"""Moves of what a library build sets aside, and the journal that makes them undoable.
 
-Two jobs, both plain moves with a journal (so they can be undone) and neither ever overwrites a file:
-
-* :func:`plan_sort`: files that were identified (by checksum, against every system's DAT) go to their system's folder,
-  wherever they were; files that match nothing, and files that are not ROMs at all, go to an "aside" folder
-  OUTSIDE the ROM folder (``<aside>/_unmatched/...`` and ``<aside>/_other/...``, with their folders kept).
 * :func:`plan_sweep`: what a library build set aside inside a system's folder (``_excluded``, ``_superseded``,
-  ``_incomplete``, ``_duplicates``, ``_unmatched``) moves to ``<aside>/<system folder>/<same folder>``, so the ROM folder only
-  holds what you keep.
-
-The identification itself (scanning) is done by the server; this module takes its answer.
+  ``_incomplete``, ``_duplicates``, ``_unmatched``) moves to ``<archive>/<system folder>/<same folder>``, so the ROM folder only
+  holds what you keep. :func:`apply_moves` does any list of moves (never over an existing file, journalled);
+  :func:`undo_moves` takes them back.
 """
 
 from __future__ import annotations
@@ -20,15 +14,14 @@ import os
 import shutil
 import stat
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
-__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sort", "plan_sweep", "plan_restore", "apply_moves", "undo_moves", "inside",
-           "rom_like", "remove_empty_tree", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
+__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "apply_moves", "undo_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
            "read_journal"]
 
 # the folders a library build sets things aside in (the converted originals are the user's safety copies: they stay)
@@ -50,18 +43,33 @@ class SMove:
     size: int = 0
 
 
+def overlap(root: Path, dest: Path) -> str:
+    """How ``dest`` lies to ``root``: ``same``, ``inside`` (it is in ``root``), ``contains`` (``root`` is in it) or "" (apart).
+    Links are followed and, where the file system does, case is ignored."""
+    a, b = os.path.normcase(os.path.realpath(root)), os.path.normcase(os.path.realpath(dest))
+    if a == b:
+        return "same"
+    # (the top of a drive already ends in a separator: "E:\\" + "\\" is the start of no path, and the overlap went unseen)
+    if b.startswith(a.rstrip(os.sep) + os.sep):
+        return "inside"
+    if a.startswith(b.rstrip(os.sep) + os.sep):
+        return "contains"
+    return ""
+
+
+def check_folders(root: Path, dest: Path) -> Optional[str]:
+    """An error text when the archive folder and the ROM folder overlap, else ``None``."""
+    return {"same": "The destination is the ROM root itself. Choose another folder.",
+            "inside": "The destination is inside the ROM root. Choose a folder outside it.",
+            "contains": "The ROM root is inside the destination. Choose a folder that does not contain it."}.get(overlap(root, dest))
+
+
 def inside(path: Path, folder: Path) -> bool:
     try:
         Path(path).relative_to(folder)
         return True
     except ValueError:
         return False
-
-
-def rom_like(path: Path, extensions: Iterable[str]) -> bool:
-    """A file that could be a ROM or disc image of some system (by extension)."""
-    ext = Path(path).suffix.lower()
-    return ext in set(extensions) or ext in DISC_EXTS or ext in ARCHIVE_EXTS
 
 
 class Names:
@@ -91,69 +99,6 @@ def _size(path: Path) -> int:
         return 0
 
 
-def plan_sort(root: Path, aside: Optional[Path], folders: Dict[str, Path], flat: Dict[Path, Optional[str]],
-              discs: Sequence[dict], unmatched: Iterable[Path], other: Iterable[Path],
-              exists: Optional[Callable[[Path], bool]] = None) -> List[SMove]:
-    """The moves that sort ``root``.
-
-    ``folders``: system name -> its folder. ``flat``: identified ROM file -> system (None when it matches several systems:
-    left for the user). ``discs``: ``{"platform", "top", "folder": bool, "files": [...]}`` per identified disc game.
-    ``unmatched``: ROM-like files that match nothing; ``other``: everything else.
-
-    Rules: an identified file already inside its own system's folder stays; elsewhere it moves to that folder (flat).
-    Without an archive folder (``aside`` None) files that match nothing and non-ROM files are not moved at all.
-    Unmatched files that lie loose (outside every system folder) go to ``<aside>/_unmatched``; those inside a system folder
-    are left for that system's library build. Every other file goes to ``<aside>/_other`` (with its path kept): a note or a
-    file that happens to lie beside a ROM is no ROM and does not follow it into the system's folder. The one exception is
-    a disc game's own folder: whatever is in it stays there and travels with the game."""
-    root = Path(root)
-    names = Names(exists)
-    moves: List[SMove] = []
-    sys_dirs = list(folders.values())
-    unit_tops = [Path(d["top"]) for d in discs if d.get("folder")]
-
-    def rel(p: Path) -> Path:
-        try:
-            return p.relative_to(root)
-        except ValueError:
-            return Path(p.name)
-
-    for path in sorted(flat, key=lambda p: p.as_posix().lower()):
-        plat = flat[path]
-        if plat is None or plat not in folders:
-            continue
-        target = folders[plat]
-        if inside(path, target):
-            continue
-        dst = names.free(target / path.name)
-        moves.append(SMove(path, dst, plat, size=_size(path)))
-    for d in discs:
-        plat = d["platform"]
-        if plat not in folders:
-            continue
-        target = folders[plat]
-        top = Path(d["top"])
-        if inside(top, target) and top != target:
-            continue
-        if d.get("folder"):
-            moves.append(SMove(top, names.free(target / top.name, folder=True), plat, kind="folder"))
-        else:
-            for f in d["files"]:
-                moves.append(SMove(Path(f), names.free(target / Path(f).name), plat, size=_size(Path(f))))
-    if aside is None:                                  # no archive folder: files that match nothing, and non-ROMs, stay where they are
-        return moves
-    aside = Path(aside)
-    for path in sorted(unmatched, key=lambda p: p.as_posix().lower()):
-        if any(inside(path, s) for s in sys_dirs) or any(inside(path, t) for t in unit_tops):
-            continue
-        moves.append(SMove(path, names.free(aside / UNMATCHED / rel(path)), UNMATCHED, size=_size(path)))
-    for path in sorted(other, key=lambda p: p.as_posix().lower()):
-        if any(inside(path, t) for t in unit_tops):
-            continue                                               # a disc game's folder keeps what is in it
-        moves.append(SMove(path, names.free(aside / OTHER / rel(path)), OTHER, size=_size(path)))
-    return moves
-
-
 def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
     """Everything a build set aside inside the system folders, to ``<aside>/<system folder name>/<reserved folder>/...``."""
     aside = Path(aside)
@@ -172,22 +117,6 @@ def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
                     src = Path(dirpath) / f
                     moves.append(SMove(src, names.free(aside / folder.name / reserved / src.relative_to(base)), reserved,
                                        size=_size(src)))
-    return moves
-
-
-def plan_restore(folders: Dict[str, Path], aside: Path) -> List[SMove]:
-    """The reverse of a sweep: ``<aside>/<system folder name>/<reserved>/...`` back into the system's folder."""
-    names = Names()
-    moves: List[SMove] = []
-    for plat, folder in folders.items():
-        for reserved in ASIDE_FOLDERS:
-            base = Path(aside) / folder.name / reserved
-            if not base.is_dir():
-                continue
-            for dirpath, _dirs, filenames in os.walk(base):
-                for f in sorted(filenames):
-                    src = Path(dirpath) / f
-                    moves.append(SMove(src, names.free(folder / reserved / src.relative_to(base)), reserved, size=_size(src)))
     return moves
 
 
@@ -367,22 +296,6 @@ def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optiona
             except OSError:
                 break
             cur = cur.parent
-
-
-def remove_empty_tree(root: Path, keep: Iterable[Path] = ()) -> List[str]:
-    """Remove every folder under ``root`` that holds nothing (``keep`` and ``root`` itself stay). Returns the folders that
-    were removed, deepest first (an undo makes them again)."""
-    stops = {os.path.normcase(os.path.realpath(s)) for s in [root, *keep]}
-    removed: List[str] = []
-    for dirpath, _dirs, _files in os.walk(root, topdown=False):
-        if os.path.normcase(os.path.realpath(dirpath)) in stops or os.path.islink(dirpath):
-            continue
-        try:
-            remove_dir(dirpath)
-            removed.append(str(dirpath))
-        except OSError:
-            pass
-    return removed
 
 
 # ---- the journal

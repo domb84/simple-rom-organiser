@@ -73,7 +73,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Iterator, Mapping, Optional, Sequence
 
 from . import tags as _tags
-from .organiser import TEMP_MARKER, safe_filename
+from .organiser import TEMP_MARKER, _abs, _fold, safe_filename
 
 if TYPE_CHECKING:
     from .datfile import Rom
@@ -177,10 +177,6 @@ class SlotSet:
     @property
     def complete(self) -> bool:
         return not self.missing and len(self.slots) == self.total
-
-
-def _abs(path: Path, root: Path) -> Path:
-    return path if path.is_absolute() else root / path
 
 
 def _usable(entry: "Entry") -> bool:
@@ -554,10 +550,6 @@ class M3UOp:
     reason: str = ""
     dat: str = ""
     notes: list[str] = field(default_factory=list)    # "disk 2 borrowed from the (DE) edition (...)" per borrowed disk
-
-
-def _fold(p: Path) -> str:
-    return os.path.normcase(str(p)).casefold()
 
 
 _LOOK = threading.local()      # .memo: dict while inside one_look() on this thread

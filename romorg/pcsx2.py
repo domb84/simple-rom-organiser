@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from . import winproc
+
 __all__ = ["Ps2Save", "detect_pcsx2", "read_serial", "serial_from_cnf", "save_serial", "find_cards", "find_states", "read_card_image",
            "parse_game_index", "ini_value", "PS2_DISC_EXTS"]
 
@@ -327,9 +329,9 @@ def detect_pcsx2(home: Optional[Path] = None, root: Optional[Path] = None) -> Di
     it is not installed. With ``root`` only that folder is looked at (the user chose it)."""
     home = Path(home) if home else Path.home()
     cands = [home / ".var" / "app" / "net.pcsx2.PCSX2" / "config" / "PCSX2", home / ".config" / "PCSX2"]
-    for env, sub in (("APPDATA", "PCSX2"), ("USERPROFILE", "Documents/PCSX2")):
-        if os.environ.get(env):
-            cands.append(Path(os.environ[env]) / sub)
+    if os.environ.get("APPDATA"):
+        cands.append(Path(os.environ["APPDATA"]) / "PCSX2")
+    cands += [docs / "PCSX2" for docs in winproc.documents_dirs()]          # Windows: Documents\PCSX2 (wherever Documents is)
     cands.append(home / "Documents" / "PCSX2")
     if root is not None:
         cands = [Path(root)]

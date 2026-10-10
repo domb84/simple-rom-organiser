@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__, paths
-from .nointro import CHUNK, TIMEOUT, _now, _unlink
+from .datsource import CHUNK, TIMEOUT, now as _now, unlink as _unlink
 from .tosec import Cancelled
 
 SOURCE_URL = "https://gamesdb.launchbox-app.com/Metadata.zip"

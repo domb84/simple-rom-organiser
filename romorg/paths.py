@@ -168,3 +168,10 @@ def save_config(config: dict[str, Any]) -> None:
     keys other writers may have set since ``config`` was loaded)."""
     with _CONFIG_LOCK:
         _write_config(config)
+
+
+def scans_dir() -> Path:
+    """Directory holding the saved scan of each system (``scancache``)."""
+    d = data_dir() / "scans"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
-from romorg import datfile, paths, redump  # noqa: E402
+from romorg import __version__, datfile, paths, redump  # noqa: E402
 from romorg.tosec import Cancelled  # noqa: E402
 
 NAME = "Sega - Dreamcast"
@@ -87,7 +87,7 @@ class RedumpTest(unittest.TestCase):
         self.assertEqual((rows[0]["status"], rows[0]["latest"], rows[0]["installed"]),
                          ("missing", "2026-06-14 18-25-41", None))
         self.assertEqual(self.requests[0][0], "HEAD")
-        self.assertEqual(self.requests[0][2], f"simple-rom-organiser/{redump.__version__}")
+        self.assertEqual(self.requests[0][2], f"simple-rom-organiser/{__version__}")
         res = redump.update_dats(names=[redump.DAT_NAME], opener=self.opener(), directory=self.dir)
         self.assertEqual((res["downloaded"], res["failed"], res["count"]), (1, 0, 1))
         self.assertTrue((self.dir / f"{NAME}.dat").is_file())

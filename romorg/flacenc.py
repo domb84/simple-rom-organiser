@@ -13,7 +13,6 @@ import ctypes
 import sys
 import threading
 from array import array
-from typing import Optional
 
 from . import flacnative
 

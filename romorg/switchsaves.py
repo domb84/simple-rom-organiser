@@ -22,8 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-__all__ = ["SwitchSave", "find_eden", "find_ryujinx", "eden_users", "ryujinx_users", "group_by_title", "describe_pair",
-           "read_extra_data", "read_ini_value", "detect_eden", "detect_ryujinx", "eden_game_dirs", "SAVE_TYPES"]
+__all__ = ["SwitchSave", "find_eden", "find_ryujinx", "group_by_title", "read_extra_data", "read_ini_value", "detect_eden", "detect_ryujinx", "eden_game_dirs", "SAVE_TYPES"]
 
 _HEX16 = re.compile(r"^[0-9A-Fa-f]{16}$")
 _HEX32 = re.compile(r"^[0-9A-Fa-f]{32}$")
@@ -90,16 +89,6 @@ def find_eden(nand: Path) -> List[SwitchSave]:
     return out
 
 
-def eden_users(nand: Path) -> List[Dict[str, str]]:
-    """The profiles that have save folders in an Eden / yuzu NAND (the name is not stored with the saves)."""
-    base = Path(nand) / "user" / "save" / "0000000000000000"
-    try:
-        return [{"id": p.name.upper(), "name": ""} for p in sorted(base.iterdir()) if p.is_dir() and _HEX32.match(p.name)
-                and int(p.name, 16) != 0]
-    except OSError:
-        return []
-
-
 # --------------------------------------------------------------------------- Ryujinx
 def read_extra_data(path: Path) -> Optional[Tuple[str, str, int]]:
     """``(title ID, user ID, save type)`` from the save attribute at the start of an ``ExtraData0`` file."""
@@ -138,19 +127,6 @@ def find_ryujinx(data: Path) -> List[SwitchSave]:
     return out
 
 
-def ryujinx_users(data: Path) -> List[Dict[str, str]]:
-    """``[{id, name}]`` from Ryujinx's ``system/Profiles.json``."""
-    try:
-        doc = json.loads((Path(data) / "system" / "Profiles.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    out = []
-    for p in doc.get("profiles", []) if isinstance(doc, dict) else []:
-        if isinstance(p, dict) and isinstance(p.get("user_id"), str):
-            out.append({"id": p["user_id"].upper(), "name": str(p.get("name") or "")})
-    return out
-
-
 # --------------------------------------------------------------------------- matching
 def group_by_title(*lists: Iterable[SwitchSave]) -> Dict[str, List[SwitchSave]]:
     """All saves by title ID."""
@@ -159,19 +135,6 @@ def group_by_title(*lists: Iterable[SwitchSave]) -> Dict[str, List[SwitchSave]]:
         for s in saves:
             out.setdefault(s.title_id, []).append(s)
     return out
-
-
-def describe_pair(eden: Optional[SwitchSave], ryu: Optional[SwitchSave]) -> str:
-    """``eden only`` | ``ryujinx only`` | ``same`` (the same files at the same sizes) | ``eden newer`` | ``ryujinx newer``."""
-    if eden and not ryu:
-        return "eden only"
-    if ryu and not eden:
-        return "ryujinx only"
-    if not eden or not ryu:
-        return ""
-    if eden.listing == ryu.listing:
-        return "same"
-    return "eden newer" if eden.mtime >= ryu.mtime else "ryujinx newer"
 
 
 # --------------------------------------------------------------------------- where the emulators keep things

@@ -504,13 +504,12 @@ class ScanWithSchedulerTest(unittest.TestCase):
         w = World(self)
         for g in ("Beta (Europe)", "Gamma (Japan)"):
             w.chd(g, f"{g}/{g}.chd")
-        r = w.scan()
-        res = dreamcast.verify_units(r, cache_path=w.cache, workers=3)
-        self.assertEqual((res["verified"], res["failed"]), (2, []))
-        self.assertIn("Built-in reader", res["engine_text"])
-        r = w.scan(cache_path=w.base / "other.sqlite")
+        w.scan()
+        full = w.scan(full=True, workers=3)
+        self.assertEqual(full.summary()["verified"], 2)
+        w.scan(cache_path=w.base / "other.sqlite")
         with self.assertRaises(scanner.ScanCancelled):
-            dreamcast.verify_units(r, cache_path=w.base / "other.sqlite", workers=3, cancel=lambda: True)
+            w.scan(cache_path=w.base / "other.sqlite", full=True, workers=3, cancel=lambda: True)
 
 
 if __name__ == "__main__":

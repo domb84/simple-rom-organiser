@@ -31,7 +31,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Iterator, List, Optional
 
 from . import meter, sortroot, winproc
 
@@ -131,24 +131,20 @@ class ExportPlan:
 
 
 # --------------------------------------------------------------------------- the destination
-def _real(p: Path) -> str:
-    return os.path.normcase(os.path.realpath(p))
-
-
 def check_destination(root: Path, dest: Path) -> Path:
     """The absolute destination path, or :class:`ExportError`: the folders must not overlap, the destination must be
     a folder (or creatable) and writable."""
     if not str(dest).strip():
         raise ExportError("Choose the folder to build the library in.")
     dest = Path(os.path.abspath(os.path.expanduser(str(dest))))
-    a, b = _real(root), _real(dest)
-    if a == b:
+    how = sortroot.overlap(root, dest)
+    if how == "same":
         raise ExportError("The destination is the source folder itself. Choose another folder, or use "
                           "\"build in this folder\" to reorganise the source.")
-    if b.startswith(a.rstrip(os.sep) + os.sep):          # (rstrip: the top of a drive, "E:\\", ends in a separator)
+    if how == "inside":
         raise ExportError("The destination is inside the source folder: it would be scanned as part of the source. "
                           "Choose a folder outside it.")
-    if a.startswith(b.rstrip(os.sep) + os.sep):
+    if how == "contains":
         raise ExportError("The source folder is inside the destination. Choose a folder that does not contain the "
                           "source.")
     if dest.exists() and not dest.is_dir():

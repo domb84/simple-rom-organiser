@@ -44,7 +44,6 @@
    <div class="shell" id="shell" data-side="open">
     <aside class="side" id="side" aria-label="Systems">
       <input type="search" id="side-q" class="input side-q" placeholder="Find a system" aria-label="Find a system" autocomplete="off">
-      <a class="nav-item nav-collection" href="#/collection" id="collection-link"><span class="nav-name">Collection <span class="muted small">all systems</span></span></a>
       <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
       <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">Emulators <span class="muted small">saves and config</span></span></a>
       <a class="nav-item nav-collection" href="#/databases" id="databases-link"><span class="nav-name">Databases <span class="muted small">where the lists come from</span></span></a>
@@ -60,111 +59,7 @@
     <section class="view" id="view-home" aria-labelledby="home-title">
       <div class="view-head">
         <h1 id="home-title">Your systems</h1>
-        <span class="muted">Pick a system in the list to scan it, browse what you have and build a tidy library. Or build one library from a whole ROM folder with <a href="#/collection">Collection</a>.</span>
-      </div>
-    </section>
-
-    <!-- ===================== COLLECTION: a whole ROM root -> one clean library ===================== -->
-    <section class="view hidden" id="view-collection" aria-labelledby="col-title">
-      <div class="sys-head">
-        <a class="back-link" href="#/">&lsaquo; Systems</a>
-        <h1 id="col-title">Collection</h1>
-        <span class="muted small grow">Point at a folder of ROMs. Everything in it is matched against every database, then sorted and tidied.</span>
-      </div>
-
-      <div class="panel">
-        <h2>1. Scan</h2>
-        <label class="small" for="col-root">The folder with your ROMs (any layout: loose files, mixed folders, one folder per system)</label>
-        <div class="row">
-          <input type="text" id="col-root" class="input grow mono" placeholder="~/Emulation/roms" spellcheck="false" autocomplete="off">
-          <button class="btn" id="col-root-browse">Folders...</button>
-          <button class="btn btn-primary" id="col-scan-btn" data-needs-idle>Scan folder</button>
-          <button class="btn hidden" id="col-scan-force-btn" data-needs-idle title="Read every file again and calculate all its checksums again. A normal rescan reads only new and changed files.">Recalculate checksums</button>
-        </div>
-        <div id="col-scan-info" class="muted small"></div>
-        <div id="col-scan-notes" class="notice hidden"></div>
-      </div>
-
-      <div class="panel hidden" id="col-systems-panel">
-        <h2>2. Systems found</h2>
-        <p class="muted small">Every system that has games in the folder is built; there is nothing to switch on. <i>Own rules</i> uses a system's own Library tab rules instead of the shared rules below. Folders get the standard short names (the ones EmulationStation-DE, EmuDeck and RetroDECK use) when you apply.</p>
-        <div class="table-wrap"><table>
-          <thead><tr><th>System</th><th>Folder after organising</th><th class="num">Games</th><th class="num">Files</th><th class="num hidden" id="col-saves-th" title="RetroArch save files, and the games they belong to">Saves</th><th>Own rules</th></tr></thead>
-          <tbody id="col-systems"></tbody>
-        </table></div>
-        <div id="col-saves-line" class="small hidden"></div>
-        <div id="col-leftovers" class="muted small"></div>
-      </div>
-
-      <div class="panel hidden" id="col-do-panel">
-        <h2>3. What to do with it</h2>
-        <div class="row">
-          <label class="check"><input type="radio" name="col-place" id="col-place-inplace" checked> Build the library in the folder where it is</label>
-          <label class="check"><input type="radio" name="col-place" id="col-place-elsewhere"> Build a clean library in another folder</label>
-        </div>
-        <div id="col-inplace-opts">
-          <p class="muted small">Files go into their system's folder, are renamed to the databases' names and sorted by the rules. What matches nothing, is not a ROM, or is archived by the rules (excluded, superseded, incomplete, duplicates) moves to the archive folder, so the ROM folders hold only what you keep. Nothing is deleted; Undo puts everything back.</p>
-          <label class="small" for="col-aside">Archive folder (outside the ROM folders; empty = the one in <a href="#/settings">Settings</a>; with none, nothing is archived)</label>
-          <div class="row">
-            <input type="text" id="col-aside" class="input grow mono" placeholder="Archive folder (or set one for every system in Settings)" spellcheck="false" autocomplete="off">
-            <button class="btn" id="col-aside-browse">Folders...</button>
-          </div>
-          <label class="check"><input type="checkbox" id="col-sweep" checked> Move what the rules archive out of the ROM folders into the archive folder</label>
-          <div class="muted small hidden" id="col-aside-none">No archive folder is set, so nothing is archived: files that match nothing and files that are not ROMs stay where they are, and what the rules leave out goes into <code>_excluded</code>, <code>_superseded</code> ... inside each system's folder. Choose one above, or for every system in <a href="#/settings">Settings</a>.</div>
-          <label class="check hidden" id="col-convert-wrap"><input type="checkbox" id="col-convert"> <span id="col-convert-label"></span></label>
-        </div>
-        <div id="col-elsewhere" class="hidden">
-          <label class="small" for="col-dest">Build the library in</label>
-          <div class="row">
-            <input type="text" id="col-dest" class="input grow mono" placeholder="~/Emulation/library" spellcheck="false" autocomplete="off">
-            <button class="btn" id="col-dest-browse">Folders...</button>
-          </div>
-          <div class="row">
-            <label class="small">How files get there
-              <select id="col-mode" class="input">
-                <option value="copy">Copy (the ROM folders keep their files)</option>
-                <option value="move">Move (the files leave the ROM folders)</option>
-              </select></label>
-            <label class="check"><input type="checkbox" id="col-sidecars"> Also copy save files and other files next to discs</label>
-          </div>
-          <label class="check" title="Files this app built earlier that the rules no longer keep (or whose source is gone) are removed from the destination; changed source files are copied again. Your own files and files you edited there are never touched."><input type="checkbox" id="col-sync"> Keep the destination in sync: also remove what the rules no longer keep</label>
-        </div>
-      </div>
-
-      <details class="rules-panel hidden" id="col-rules-box" open>
-        <summary><span class="rules-title">4. Rules for every system</span><span class="rules-summary" id="col-rules-summary"></span><span class="edit-hint" aria-hidden="true"></span></summary>
-        <div class="rules-body" id="col-rules"></div>
-        <details class="saves-games hidden" id="col-saves-games">
-          <summary id="col-saves-games-title">Saves of single games: choose for each game</summary>
-          <p class="sub note">The games the rules above would replace or archive that you have RetroArch saves for. The choice at the top is the default; here you can give a single game another one.</p>
-          <input type="search" id="col-saves-q" class="input" placeholder="Search these games" aria-label="Search the games with saves" autocomplete="off">
-          <div class="table-wrap"><table>
-            <thead><tr><th>System</th><th>Game</th><th>Saves</th><th>The build</th><th>If a rule replaces it</th></tr></thead>
-            <tbody id="col-saves-table"></tbody>
-          </table></div>
-          <div class="muted small" id="col-saves-note"></div>
-        </details>
-        <div class="row">
-          <button class="btn btn-small" id="col-rules-reset">Back to each system's defaults</button>
-          <span class="muted small" id="col-rules-note"></span>
-        </div>
-      </details>
-
-      <div class="row hidden" id="col-actions">
-        <button class="btn" id="col-plan-btn" data-needs-idle>Preview</button>
-        <button class="btn btn-primary" id="col-apply-btn" data-needs-idle>Build library</button>
-        <button class="btn" id="col-undo-btn" data-needs-idle>Undo last</button>
-        <button class="btn" id="col-restore" data-needs-idle title="Move everything in the archive folder back into the systems' folders">Bring archived files back</button>
-        <div class="grow"></div>
-      </div>
-      <div id="col-renames" class="notice hidden"></div>
-      <div id="col-failures" class="notice hidden"></div>
-      <div id="col-output" class="hidden">
-        <div class="cards" id="col-cards"></div>
-        <div class="table-wrap"><table>
-          <thead id="col-thead"></thead>
-          <tbody id="col-table"></tbody>
-        </table></div>
+        <span class="muted">Pick a system in the list to scan it, browse what you have and build a tidy library.</span>
       </div>
     </section>
 
@@ -185,9 +80,18 @@
         <h1 id="settings-title">Settings</h1>
         <span class="muted small grow">What applies to every system. A system can still have its own on its Library tab.</span>
       </div>
+      <div class="panel" id="set-library-panel">
+        <h2>Library defaults</h2>
+        <p class="muted small">The library rules every system starts from. A system follows these until you override a rule on its own Library tab.</p>
+        <div class="rules-body" id="set-library-rules"></div>
+        <div class="row">
+          <button class="btn btn-small" id="set-library-reset">Back to the app's own settings</button>
+          <span class="muted small" id="set-library-note"></span>
+        </div>
+      </div>
       <div class="panel">
         <h2>Archive folder</h2>
-        <p class="muted small">Where the Library and Collection builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
+        <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
         <div class="row">
           <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
           <button class="btn" id="set-archive-browse">Folders...</button>
@@ -264,7 +168,6 @@
         <h2>Emulators</h2>
         <p class="muted small">Found on this machine and selected for you; change a folder if yours is somewhere else. Switch an emulator off and the app ignores its saves. RetroArch (below) serves every other system.</p>
         <div id="emu-list"></div>
-        </div>
       </div>
       <h2 class="section-title" id="ra-section-title">RetroArch</h2>
       <p class="muted small">Choose where saves and states live. The app moves them there and updates RetroArch's config to match.</p>
@@ -349,7 +252,7 @@
 
       <div class="panel" id="ra-bios-panel">
         <h2>BIOS, firmware and key files</h2>
-        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the Collection root, and any folder you add). Choose one system to limit it. The key files the Switch and Wii U emulators need (<code>prod.keys</code>, <code>title.keys</code> for Eden and Ryujinx, <code>keys.txt</code> for Cemu) are checked and looked for the same way; a key file found is always copied into place, never moved.</p>
+        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the and any folder you add). Choose one system to limit it. The key files the Switch and Wii U emulators need (<code>prod.keys</code>, <code>title.keys</code> for Eden and Ryujinx, <code>keys.txt</code> for Cemu) are checked and looked for the same way; a key file found is always copied into place, never moved.</p>
         <div class="row">
           <select id="ra-bios-platform" class="input" aria-label="System"></select>
           <input type="text" id="ra-bios-search" class="input grow mono" placeholder="Also look in this folder (optional)" spellcheck="false" autocomplete="off" aria-label="Another folder to search">
@@ -473,7 +376,7 @@
           </summary>
           <div class="rules-body" id="library-rules"></div>
           <div class="row">
-            <button class="btn btn-small" id="library-reset">Reset to defaults</button>
+            <button class="btn btn-small" id="library-reset">Reset all to defaults</button>
             <span class="muted small" id="library-rules-note"></span>
           </div>
         </details>

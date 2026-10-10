@@ -175,6 +175,102 @@ class StartupTests(UiTestCase):
         self.no_js_errors()
 
 
+class LibraryDefaultsTests(UiTestCase):
+    """Your defaults (Settings) and a system's overrides (its Library tab): a rule follows the default, greyed, until it is overridden."""
+
+    AMIGA = ".nav-item[data-platform=\"Commodore Amiga\"]"
+
+    def api(self, method: str, path: str, body: dict | None = None) -> dict:
+        import json
+        import urllib.request
+        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+                                     headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+
+    def library(self) -> None:
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("document.querySelectorAll('#library-rules .ov-unit').length > 3")
+
+    def test_every_rule_follows_the_defaults_until_it_is_overridden_and_the_list_marks_the_system(self) -> None:
+        self.open()
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.library()
+        self.assertEqual(self.page.eval("document.querySelectorAll('#library-rules .ov-unit.on').length"), 0)
+        self.assertIn("Using your defaults for all", self.page.eval("document.getElementById('library-rules-note').textContent"))
+        self.assertTrue(self.page.eval("document.getElementById('library-reset').disabled"))
+        self.assertFalse(self.page.eval(f"!!document.querySelector('{self.AMIGA} .nav-override')"))
+        # a rule that is not overridden is greyed and cannot be changed
+        self.assertTrue(self.page.eval("document.querySelector('#library-rules .ov-unit.off .ov-body').hasAttribute('inert')"))
+        self.click("#library-rules input[data-override=\"latest_only\"]")
+        self.page.wait("!!document.querySelector('#library-rules .ov-unit.on[data-fields=\"latest_only\"]')")
+        self.page.wait(f"!!document.querySelector('{self.AMIGA} .nav-override')")
+        self.assertIn("1 rule is overridden", self.page.eval("document.getElementById('library-rules-note').textContent"))
+        self.assertFalse(self.page.eval("document.getElementById('library-reset').disabled"))
+        self.assertIn("this system only", self.page.eval("document.querySelector('#library-rules .ov-unit.on').textContent"))
+        self.assertEqual(self.api("GET", "/api/platforms")[[p["name"] for p in self.api("GET", "/api/platforms")].index("Commodore Amiga")]["rule_overrides"],
+                         ["latest_only"])
+        # "use the default again" and "Reset all" both put the system back on your defaults
+        self.click("#library-rules .ov-unit.on .linklike")
+        self.page.wait("document.querySelectorAll('#library-rules .ov-unit.on').length === 0")
+        self.page.wait(f"!document.querySelector('{self.AMIGA} .nav-override')")
+        self.click("#library-rules input[data-override=\"latest_only\"]")
+        self.page.wait("document.querySelectorAll('#library-rules .ov-unit.on').length === 1")
+        self.click("#library-reset")
+        self.page.wait("document.querySelectorAll('#library-rules .ov-unit.on').length === 0")
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["inherit"]["overridden"], [])
+        self.no_js_errors()
+
+    def test_a_default_set_in_settings_reaches_the_systems_that_do_not_override_it(self) -> None:
+        self.open("#/settings")
+        self.page.wait("document.querySelectorAll('#set-library-rules input[data-opt]').length > 0 && document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.assertEqual(self.page.eval("document.querySelectorAll('#set-library-rules .ov-unit').length"), 0)       # (no Override boxes here)
+        want = not self.page.eval("document.querySelector('#set-library-rules input[data-opt=\"latest_only\"]').checked")
+        self.click("#set-library-rules input[data-opt=\"latest_only\"]")
+        self.page.wait("document.getElementById('set-library-note').textContent.includes('differs')")
+        self.assertEqual(self.api("GET", "/api/library/defaults")["profile"]["latest_only"], want)
+        self.library()
+        self.assertEqual(self.page.eval("document.querySelector('#library-rules input[data-opt=\"latest_only\"]').checked"), want)
+        self.assertEqual(self.page.eval("document.querySelectorAll('#library-rules .ov-unit.on').length"), 0)
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("!document.getElementById('set-library-reset').disabled")
+        self.click("#set-library-reset")
+        self.page.wait("document.getElementById('set-library-reset').disabled")
+        self.assertEqual(self.api("GET", "/api/library/defaults")["changed"], [])
+        self.no_js_errors()
+
+
+class SidebarTests(UiTestCase):
+    def test_the_progress_bar_of_a_running_scan_sits_under_the_name_and_the_figures(self) -> None:
+        self.open()
+        self.scan()
+        self.api_post("/api/library/profile", {"platform": "Commodore Amiga", "override": {"fields": ["latest_only"], "on": True}})
+        self.page.eval("location.reload()")
+        self.page.wait("!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-pct')?.textContent && "
+                       "!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-override')", timeout=30)
+        self.page.eval("""(() => { const i = document.querySelector('.nav-item[data-platform="Commodore Amiga"]');
+            i.classList.add('running'); i.querySelector('.nav-job').classList.remove('hidden');
+            i.querySelector('.progress-bar').style.width = '40%'; })()""")
+        got = self.page.eval("""(() => { const i = document.querySelector('.nav-item[data-platform="Commodore Amiga"]');
+            const r = (sel) => i.querySelector(sel).getBoundingClientRect(), item = i.getBoundingClientRect();
+            return {name: r('.nav-name').bottom, meta: r('.nav-meta').bottom, metaTop: r('.nav-meta').top, nameTop: r('.nav-name').top,
+                    jobTop: r('.nav-job').top, jobBottom: r('.nav-job').bottom, itemBottom: item.bottom, itemRight: item.right,
+                    jobRight: r('.nav-job .progress').right, metaRight: r('.nav-meta').right, metaLeft: r('.nav-meta').left,
+                    nameRight: r('.nav-name').right}; })()""")
+        self.assertGreaterEqual(got["jobTop"] + 0.5, max(got["name"], got["meta"]), got)          # the bar is below both
+        self.assertLessEqual(got["jobBottom"], got["itemBottom"] + 0.5, got)
+        self.assertLessEqual(abs(got["metaTop"] - got["nameTop"]), 12, got)                      # figures on the name's line, not under it
+        self.assertLessEqual(got["nameRight"], got["metaLeft"] + 0.5, got)
+        self.assertLessEqual(got["jobRight"], got["itemRight"] + 0.5, got)
+        self.no_js_errors()
+
+    def api_post(self, path: str, body: dict) -> None:
+        self.page.eval("""(async () => { const t = document.querySelector('meta[name=romorg-token]').content;
+            await fetch(%r, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Romorg-Token': t}, body: JSON.stringify(%s)}); })()"""
+                       % (path, __import__("json").dumps(body)))
+        time.sleep(0.5)
+
+
 class DatabasesPanelTests(UiTestCase):
     def test_every_database_is_listed_with_its_address_and_version(self) -> None:
         self.open()
@@ -306,98 +402,6 @@ class BuildElsewhereTests(UiTestCase):
         self.no_js_errors()
 
 
-class CollectionTests(UiTestCase):
-    def confirm_dialog(self) -> str:
-        self.page.wait("!document.getElementById('confirm-modal').classList.contains('hidden')")
-        text = self.page.eval("document.getElementById('confirm-body').innerText")
-        self.page.eval("document.getElementById('confirm-yes').click()")
-        return text
-
-    def fill(self, id_: str, value: str) -> None:
-        self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r};
-            i.dispatchEvent(new Event('change')); }})()""")
-
-    def _mixed(self) -> tuple[Path, Path]:
-        base = Path(tempfile.mkdtemp(prefix="romorg-ui-col-"))
-        self.addCleanup(shutil.rmtree, base, True)
-        mixed = base / "mixed"
-        (mixed / "Dump").mkdir(parents=True)
-        for f in list(self.fx.root.glob("*.adf")):
-            shutil.copy(f, mixed / "Dump" / f.name)
-        for f in list(self.fx.gba.glob("*.gba"))[:2]:
-            shutil.copy(f, mixed / "Dump" / f.name)
-        (mixed / "Dump" / "cover.jpg").write_bytes(b"jpg")
-        return base, mixed
-
-    def _scan(self, mixed: Path) -> None:
-        self.open()
-        self.set_archive(str(mixed.parent / "rom-archive"))
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.assertFalse(self.page.eval("!!document.getElementById('col-detect')"))            # there is no "find the systems" step
-        self.assertTrue(self.page.eval("document.getElementById('col-systems-panel').classList.contains('hidden')"))
-        self.fill("col-root", str(mixed))
-        self.click("#col-scan-btn")
-        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 2", timeout=90)
-        self.assertEqual(self.page.eval("[...document.querySelectorAll('#col-systems tr')].map(r => r.cells[0].textContent).sort()"),
-                         ["Commodore Amiga", "Nintendo Game Boy Advance"])
-        self.assertIn("Scanned", self.page.eval("document.getElementById('col-scan-info').textContent"))
-
-    def test_one_scan_then_a_quick_preview_and_sort_and_tidy_and_undo(self) -> None:
-        base, mixed = self._mixed()
-        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
-        self._scan(mixed)
-        self.click("#col-plan-btn")
-        self.page.wait("document.getElementById('col-cards').textContent.includes('Files to sort into systems')", timeout=60)
-        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # a preview moves nothing
-        self.click("#col-apply-btn")
-        self.assertIn("standard short names", self.confirm_dialog())
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Done:'))", timeout=120)
-        self.assertTrue(list((mixed / "amiga").rglob("*.adf")) and list((mixed / "gba").rglob("*.gba")))
-        self.assertTrue((base / "rom-archive" / "_other" / "Dump" / "cover.jpg").is_file())
-        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
-        self.click("#col-undo-btn")
-        self.confirm_dialog()
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Scan again'))", timeout=60)
-        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file() and not p.name.startswith(".romorg")), before)
-        self.no_js_errors()
-
-    def test_a_clean_library_built_elsewhere_from_the_scan(self) -> None:
-        base, mixed = self._mixed()
-        dest = base / "library"
-        before = sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file())
-        self._scan(mixed)
-        self.page.eval("document.getElementById('col-place-elsewhere').click()")
-        self.page.wait("!document.getElementById('col-elsewhere').classList.contains('hidden')")
-        self.fill("col-dest", str(dest))
-        self.click("#col-plan-btn")
-        self.page.wait("document.getElementById('col-cards').textContent.includes('To copy')", timeout=60)
-        self.assertFalse(dest.exists())
-        self.click("#col-apply-btn")
-        self.assertIn("ROM folder keeps its files", self.confirm_dialog())
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Built '))", timeout=120)
-        self.assertTrue(list((dest / "gba").glob("*.gba")))
-        self.assertEqual(sorted(str(p.relative_to(mixed)) for p in mixed.rglob("*") if p.is_file()), before)   # the source is untouched
-        self.page.wait("document.getElementById('col-undo-btn').dataset.blocked !== '1'")
-        self.click("#col-undo-btn")
-        self.confirm_dialog()
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Removed'))", timeout=60)
-        self.assertFalse([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts])
-        self.no_js_errors()
-
-    def test_shared_rules_are_saved_and_the_home_page_links_here(self) -> None:
-        self.open()
-        self.assertEqual(self.page.eval("document.getElementById('collection-link').getAttribute('href')"), "#/collection")
-        self.page.goto(self.fx.url + "#/collection")
-        self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
-        self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').click()")
-        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
-        self.page.eval("location.reload()")
-        time.sleep(1.5)                                          # (the old page is gone before the new one is asked anything)
-        self.page.wait("document.querySelectorAll('#col-rules input[type=checkbox]').length > 5")
-        self.assertFalse(self.page.eval("[...document.querySelectorAll('#col-rules label')].find(l => l.textContent.includes('One version per game')).querySelector('input').checked"))
-        self.no_js_errors()
-
 
 class NoMachineFolders:
     """Mixin: no emulator is installed for the test (what this machine has must not be found and selected)."""
@@ -488,7 +492,7 @@ class RetroArchTests(UiTestCase):
 
 class SavesUiTests(NoMachineFolders, UiTestCase):
     """RetroArch saves in the UI (Amendment 31): nothing at all without a RetroArch config; with one the Overview, the Library
-    tab, the Browse tab and the Collection page show them, and the default / per-game choice is stored."""
+    tab and the Browse tab show them, and the default / per-game choice is stored."""
     SAVES_SHOTS = os.environ.get("ROMORG_SHOT_DIR", "")
 
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -558,10 +562,9 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.assertFalse(self.page.eval("[...document.querySelectorAll('#result-table thead th')].some(th => th.textContent.includes('Saves'))"))
         self.assertFalse(self.page.eval("[...document.querySelectorAll('#result-tabs .tab')].some(t => t.textContent.includes('Saves'))"))
         self.assertFalse(self.page.eval("!!document.getElementById('saves-chips')"))
-        self.page.goto(self.fx.url + "#/collection")
-        self.page.wait("!!document.getElementById('col-rules') && document.getElementById('col-rules').children.length > 0")
-        self.assertFalse(self.page.eval("!!document.getElementById('col-saved-games')"))
-        self.assertTrue(self.page.eval("document.getElementById('col-saves-th').classList.contains('hidden')"))
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("document.getElementById('set-library-rules').children.length > 0 && !document.getElementById('set-library-rules').textContent.includes('Loading')")
+        self.assertNotIn("Saves (", self.page.eval("document.getElementById('set-library-rules').textContent"))
         self.no_js_errors()
 
     # ---- with one
@@ -592,29 +595,6 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.page.wait("!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves')", timeout=30)
         self.assertEqual(self.page.eval("document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves').textContent"), "4 saves")
         self.assertFalse(self.page.eval("!!document.querySelector('.nav-item[data-platform=\"Nintendo Game Boy Advance\"] .nav-saves')"))
-        self.no_js_errors()
-
-    def test_collection_lists_the_games_with_saves_and_stores_a_choice_for_one(self) -> None:
-        self.retroarch_with_saves()
-        base = Path(tempfile.mkdtemp(prefix="romorg-ui-colsv-"))
-        self.addCleanup(shutil.rmtree, base, True)
-        mixed = base / "mixed"
-        (mixed / "Dump").mkdir(parents=True)
-        for f in self.fx.root.glob("*.adf"):
-            shutil.copy(f, mixed / "Dump" / f.name)
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.page.eval(f"""(() => {{ const i = document.getElementById('col-root'); i.value = {str(mixed)!r}; i.dispatchEvent(new Event('change')); }})()""")
-        self.page.eval("document.getElementById('col-scan-btn').click()")
-        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
-        self.page.wait("!document.getElementById('col-saves-games').classList.contains('hidden')")
-        self.page.eval("document.querySelector('#col-saves-games summary').click()")
-        self.page.wait("document.querySelectorAll('#col-saves-table tr').length >= 1", timeout=60)
-        self.assertIn("Alpha Quest", self.page.eval("document.getElementById('col-saves-table').textContent"))
-        self.page.eval("""(() => { const s = document.querySelector('#col-saves-table .saves-choice'); s.value = 'leave';
-            s.dispatchEvent(new Event('change')); })()""")
-        self.page.wait("(document.querySelector('#col-saves-table .saves-choice') || {}).value === 'leave'", timeout=60)
-        self.assertEqual([o[2] for o in self.api("GET", "/api/collection")["global"]["saved_overrides"]], ["leave"])
         self.no_js_errors()
 
     def test_library_rules_wording_the_saves_column_the_filter_and_the_per_game_choice(self) -> None:
@@ -686,29 +666,6 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.assertIn("ROM here", text)
         self.assertIn("title, no ROM here", text)
         self.shot("browse-saves")
-        self.no_js_errors()
-
-    def test_the_collection_page_has_a_saves_column_and_the_rules_have_the_option(self) -> None:
-        self.retroarch_with_saves()
-        self.api("POST", "/api/collection/save", {"root": str(self.fx.tmp)})
-        self.api("POST", "/api/collection/scan", {})
-        for _ in range(300):
-            if self.api("GET", "/api/job")["status"] != "running":
-                break
-            time.sleep(0.1)
-        self.open("#/collection")
-        self.page.wait("!!document.getElementById('col-saved-games')")
-        self.page.wait("!document.getElementById('col-saves-th').classList.contains('hidden')")
-        cells = self.page.eval("[...document.querySelectorAll('#col-systems td[data-saves-of]')].map(td => [td.dataset.savesOf, td.textContent])")
-        self.assertEqual(dict(cells)["Nintendo Game Boy Advance"], "5 (3 games)")
-        self.assertIn("Saves (RetroArch):", self.page.eval("document.getElementById('col-saves-line').textContent"))
-        self.assertEqual(self.page.eval("document.getElementById('col-saved-games').value"), "keep")
-        self.select("col-saved-games", "leave")
-        self.page.wait("document.getElementById('col-rules-note').textContent.includes('Shared rules are set')")
-        self.assertEqual(self.api("GET", "/api/collection")["global"]["saved_games"], "leave")
-        self.assertIn("Building into another folder archives nothing", self.page.eval("document.getElementById('col-rules').textContent"))
-        self.shot("collection")
-        self.shot("collection", 700)
         self.no_js_errors()
 
     def test_the_retroarch_switch_is_the_same_setting_as_the_one_in_the_rules(self) -> None:
@@ -984,7 +941,6 @@ _FETCH_STUB = r"""(() => {
 # every "Browse..." button of the UI (the native folder dialog) and the field its answer belongs in
 FOLDER_FIELDS = {          # "Folders..." button -> the field it fills (the in-app folder browser, the same on every platform)
     "folder-browse-btn": "folder-input", "lib-export-browse-btn": "lib-export-dest", "lib-aside-browse": "lib-aside-dir",
-    "col-root-browse": "col-root", "col-dest-browse": "col-dest", "col-aside-browse": "col-aside",
     "ra-custom-browse": "ra-custom", "ra-save-browse": "ra-save-dir", "ra-state-browse": "ra-state-dir",
     "ra-backup-browse": "ra-backup-dir", "ra-shared-browse": "ra-shared-base", "ra-bios-browse": "ra-bios-search",
     "set-archive-browse": "set-archive-dir",
@@ -1009,13 +965,10 @@ class PlatformTests(UiTestCase):
     def test_a_windows_server_shows_windows_paths_and_no_linux_wording(self) -> None:
         self.stub({"path": "/api/status", "patch": {"os": "windows"}},
                   {"path": "/api/chdman", "patch": {"os": "windows"}})
-        self.open("#/collection")
-        self.page.wait("document.getElementById('col-root').placeholder.includes('Emulation')")
+        self.open("#/retroarch")
         self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
-        self.assertEqual(self.page.eval("document.getElementById('col-root').placeholder"), "D:\\Emulation\\roms")
-        self.assertEqual(self.page.eval("document.getElementById('col-dest').placeholder"), "D:\\Emulation\\library")
         found = []
-        for view in ("#/collection", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
+        for view in ("#/settings", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
                      "#/system/commodore-amiga/library", "#/system/sony-playstation/overview"):
             self.show(view)
             found += self.page.eval(r"""(() => { const bad = new RegExp(%r), out = [];
@@ -1030,10 +983,8 @@ class PlatformTests(UiTestCase):
 
     def test_a_linux_server_keeps_its_own_example_paths(self) -> None:
         self.stub({"path": "/api/status", "patch": {"os": "linux"}}, {"path": "/api/chdman", "patch": {"os": "linux"}})
-        self.open("#/collection")
+        self.open()
         self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
-        self.assertEqual(self.page.eval("document.getElementById('col-root').placeholder"), "~/Emulation/roms")
-        self.assertEqual(self.page.eval("document.getElementById('col-dest').placeholder"), "~/Emulation/library")
         self.show("#/system/commodore-amiga/overview")
         self.assertEqual(self.page.eval("document.getElementById('folder-input').placeholder"), "/run/media/deck/<SD>/roms/amiga")
         self.show("#/chd")
@@ -1055,7 +1006,7 @@ class PlatformTests(UiTestCase):
         self.page.eval(f"(() => {{ const i = document.getElementById('ra-custom'); i.value = {str(ra)!r}; }})()")
         self.click("#ra-custom-add")
         self.page.wait("!document.getElementById('ra-change-panel').classList.contains('hidden')")
-        self.show("#/collection")
+        self.show("#/settings")
         self.show("#/system/commodore-amiga/overview")
         self.assertEqual(self.page.eval("[...document.querySelectorAll('button')].filter(b => b.textContent.trim() === 'Browse...').length"), 0)
         self.assertEqual(self.page.eval("document.querySelectorAll('button[id*=\"-native\"]').length"), 0)
@@ -1064,8 +1015,8 @@ class PlatformTests(UiTestCase):
         for button in FOLDER_FIELDS:
             self.assertFalse(self.page.eval(f"document.getElementById({button!r}).classList.contains('hidden')"), button)
         # pressing one opens the in-app browser (a modal), for that field
-        self.show("#/collection")
-        self.page.eval("document.getElementById('col-root-browse').click()")
+        self.show("#/settings")
+        self.page.eval("document.getElementById('set-archive-browse').click()")
         self.page.wait("!document.getElementById('folder-modal').classList.contains('hidden')")
         self.no_js_errors()
 
@@ -1075,13 +1026,13 @@ class PlatformTests(UiTestCase):
         self.scan()
         for width in (700, 420):
             self.page.call("Emulation.setDeviceMetricsOverride", width=width, height=900, deviceScaleFactor=1, mobile=False)
-            for view in ("#/", "#/collection", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
+            for view in ("#/", "#/settings", "#/retroarch", "#/chd", "#/system/commodore-amiga/overview",
                          "#/system/commodore-amiga/library", "#/system/commodore-amiga/browse"):
                 with self.subTest(width=width, view=view):
                     self.show(view)
                     over = self.page.eval("document.documentElement.scrollWidth - document.documentElement.clientWidth")
                     self.assertLessEqual(over, 0, "the page is wider than the window")
-        self.show("#/collection")                                       # a page is open: the list is folded away
+        self.show("#/settings")                                         # a page is open: the list is folded away
         self.assertEqual(self.page.eval("document.getElementById('shell').dataset.side"), "closed")
         self.click("#side-toggle")
         self.page.wait("document.getElementById('shell').dataset.side === 'open'")
@@ -1099,33 +1050,12 @@ class RobustnessTests(UiTestCase):
 
     stub = PlatformTests.stub
 
-    def test_a_double_click_on_scan_starts_one_job_and_a_single_step_shows_its_percentage(self) -> None:
-        self.stub()
-        self.open("#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
-        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
-            const b = document.getElementById('col-scan-btn'); b.click(); b.click(); b.click(); }})()""")
-        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
-        self.assertEqual(self.page.eval("window.__calls.filter(c => c.path === '/api/collection/scan').length"), 1)
-        self.assertEqual(self.page.eval("[...document.querySelectorAll('#toasts .toast.error')].map(t => t.textContent)"), [])
-        self.page.wait("document.querySelector('#job-bar .job-msg')?.textContent === 'Finished'")
-        self.assertNotIn("/ 1", self.page.eval("document.querySelector('#job-bar .job-count').textContent"))   # not "1 / 1"
-        self.assertEqual(self.page.eval("document.querySelector('#job-bar .progress-bar').style.width"), "100%")
-        self.assertRegex(self.page.eval("document.querySelector('#job-bar .job-time').textContent"), r"^took \d+s · [\d.]+ KB scanned$")
-        self.no_js_errors()
-
     def test_a_failing_server_gives_messages_not_exceptions(self) -> None:
-        self.stub({"path": "/api/collection", "status": 500, "body": {"error": "RuntimeError: boom"}},
+        self.stub({"path": "/api/library/defaults", "status": 500, "body": {"error": "RuntimeError: boom"}},
                   {"path": "/api/retroarch", "status": 500, "body": {"error": "RuntimeError: bang"}},
                   {"path": "/api/chdman", "status": 500, "body": {"error": "RuntimeError: crash"}})
-        self.open("#/collection")
-        self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('boom'))")
-        # the page has no settings, but Scan still works; when the job ends the page must cope with having none
-        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
-            document.getElementById('col-scan-btn').click(); }})()""")
-        self.page.wait("document.querySelector('#job-bar .job-msg')?.textContent === 'Finished'", timeout=90)
-        time.sleep(0.5)
+        self.open("#/settings")
+        self.page.wait("document.getElementById('set-library-rules').textContent.includes('boom')")
         self.page.eval("location.hash = '#/retroarch'")
         self.page.wait("[...document.querySelectorAll('#toasts .toast')].some(t => t.textContent.includes('bang'))")
         self.page.eval("document.getElementById('ra-custom-add').click()")
@@ -1165,14 +1095,6 @@ class RobustnessTests(UiTestCase):
         self.page.wait("document.querySelector('#lib-table').innerText.includes('dump.gba')")
         self.click("#lib-table .cs-toggle")
         self.page.wait("document.querySelector('#lib-table .detail-row:not(.hidden) .cs-sums table')")
-        self.page.goto(self.fx.url + "#/collection")
-        self.page.wait("!document.getElementById('view-collection').classList.contains('hidden')")
-        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
-        self.page.eval(f"""(() => {{ document.getElementById('col-root').value = {str(self.fx.gba)!r};
-            document.getElementById('col-scan-btn').click(); }})()""")
-        self.page.wait("document.querySelectorAll('#col-systems tr').length >= 1", timeout=90)
-        self.click("#col-plan-btn")
-        self.page.wait("!document.getElementById('col-output').classList.contains('hidden')", timeout=60)
         self.assertIsNone(self.page.eval("window.__xss === undefined ? null : window.__xss"))
         self.assertEqual(self.page.eval("document.querySelectorAll('img, #xss-b, main script').length"), 0)
         self.no_js_errors()

@@ -251,20 +251,6 @@ class DcEndpointTests(DcServerCase):
         self.assertTrue((self.roms / "g" / "g.chd").is_file())
         self.assertFalse(list(self.roms.rglob("*.m3u")))
 
-    def test_verify_fully_job(self) -> None:
-        self.call("/api/chdman", {"engine": "python"})
-        self.put("Beta (Europe)", "Beta/Beta (Europe).chd")
-        s = self.scan()
-        self.assertEqual((s["identified"], s["verified"]), (1, 0))
-        res = self.run_job("/api/dc/verify", {})
-        self.assertEqual((res["verified"], res["failed"], res["action"]), (1, [], "verify"))
-        self.assertEqual((res["summary"]["identified"], res["summary"]["verified"]), (0, 1))
-        res = self.run_job("/api/dc/verify", {})
-        self.assertEqual(res["checked"], 0)
-
-    def test_verify_needs_a_dreamcast_scan(self) -> None:
-        self.call("/api/dc/verify", {}, expect=409)       # no scan yet
-
     def test_checksums_per_track_identified_verified_raw_missing_unmatched(self) -> None:
         import hashlib
         import zlib
@@ -289,8 +275,9 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual(t2["equal"], {"crc32": None, "md5": None, "sha1": None})
         self.assertEqual(t2["dat"]["sha1"], hashlib.sha1(disc.t2).hexdigest())      # but the DAT side is known
         self.assertEqual((beta["tracks"][1]["type"], t1["number"]), ("AUDIO", 1))
-        # verified after Verify fully: the audio track gets its hashes
-        self.run_job("/api/dc/verify", {})
+        # verified once a scan checks every track: the audio track gets its hashes
+        self.call("/api/chdman", {"verify_scan": True})
+        self.scan()
         beta = next(i for i in rows("matched") if i["game"] == "Beta (Europe)")["checksums"]
         self.assertEqual((beta["level"], beta["tracks"][1]["state"]), ("verified", "hashed"))
         self.assertEqual(beta["tracks"][1]["equal"]["sha1"], True)

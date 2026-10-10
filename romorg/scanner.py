@@ -359,20 +359,6 @@ def _covered_names(matches: Iterable[Match]) -> set[tuple[str, str]]:
     return {_rom_key(r) for m in matches for r in m.roms}
 
 
-def count_duplicates(matches: Iterable[Match]) -> int:
-    """Matched entries that add no new rom name (i.e. beyond the first for that rom).
-
-    Superseded by :func:`duplicate_groups` (what ``summary()`` and the organiser use)."""
-    seen: set[tuple[str, str]] = set()
-    dups = 0
-    for m in matches:
-        names = {_rom_key(r) for r in m.roms}
-        if names <= seen:
-            dups += 1
-        seen |= names
-    return dups
-
-
 def is_set_aside(path: Path, root: Path) -> bool:
     """True for files under a reason folder (``_excluded``, ``_superseded``, ``_incomplete``,
     ``_duplicates``; legacy ``_unmatched/<folder>/`` too): the organiser left them there on purpose."""
@@ -960,12 +946,6 @@ def default_cache_path() -> Optional[Path]:
 def find_7z() -> Optional[str]:
     """Locate a 7-Zip command line binary on PATH (on Windows also in Program Files and next to the app)."""
     return winproc.find_tool(("7z", "7zz", "7za"))
-
-
-def list_zip(path: Path) -> list[tuple[str, int, str]]:
-    """(member name, size, crc) for each file in a zip (directories skipped)."""
-    with zipfile.ZipFile(path) as zf:
-        return [(i.filename, i.file_size, f"{i.CRC & 0xFFFFFFFF:08x}") for i in zf.infolist() if not i.is_dir()]
 
 
 def parse_7z_slt(text: str) -> list[tuple[str, int, str]]:

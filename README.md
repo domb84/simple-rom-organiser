@@ -203,15 +203,17 @@ network a clear error with **Retry**), **Quit**, and - while something runs - th
 (scan, verify, build, convert ... with **Cancel**). The address uses `#` routes, so the browser's
 Back / Forward buttons and a reload keep you where you were.
 
-**The system list** is on the left of every screen (v0.2). **Collection** is at the top, then the systems grouped into
+**The system list** is on the left of every screen (v0.2): the systems grouped into
 *Computers*, *Cartridge consoles* and *Disc systems* (the groups come from the app, nothing is hard-coded in the page).
 Each system has a dot (green: scanned, amber: its DAT is missing, hollow: not scanned) and the % you own; hover for the
-folder, DAT and last scan. A running scan shows its progress under the system. **Find a system** filters the list.
-Clicking a system opens it on the right with its **Overview / Library / Browse / Tools** tabs, and the tab you are on stays
+folder, DAT and last scan. A small blue diamond after the name marks a system with library rules of its own (hover for which). A running scan shows its progress under the system. **Find a system** filters the list.
+Clicking a system opens it on the right with its **Overview / Library / Browse** tabs, and the tab you are on stays
 selected when you switch system. **Hide list** collapses the list (remembered); in a narrow window it becomes a **Systems**
-button above the page. **More** in the header holds Check for updates, Compact rows and Quit; **Databases** (in the list on the left, with Collection and Settings) lists every database the app uses: its address, the systems that use it, the installed and newest version. The last scan
+button above the page. **More** in the header holds Check for updates, Compact rows and Quit; **Databases** (in the list on the left, with Settings) lists every database the app uses: its address, the systems that use it, the installed and newest version. The last scan
 summary of every system is a tiny record in `config.json` (counts, time, folder - never file lists), so the list survives a
-restart; the full results (Browse, Library) exist only for the system scanned last and need a new scan after a restart.
+restart. The full result of each scan is also saved (`<data folder>/scans/<system>.scan`), so Browse and Library are there when
+you open a system after a restart, with no scan: while the folder (files, sizes, newest change), the databases and the scan options
+are what they were. Change any of them and the saved scan is not used (a rescan reads only what changed, so it is quick).
 Opening `#/` goes to the system you used last.
 
 **A system page (`#/system/<slug>/<tab>`)** has a *< Systems* link and four tabs (arrow keys
@@ -294,9 +296,10 @@ known* (hover for why) - the app never invents a hash:
   otherwise they are listed as *unsupported* (and treated as unmatched when organising).
 - Hashes are cached (keyed by path, size and modification time; a file that was only moved or renamed is recognised by its
   inode and is not read again), so re-scans are fast. **Rescan folder** reads only new and changed files; **Recalculate
-  checksums** (next to it, on a system and in Collection) reads everything again. A scan you stop keeps what it had read:
+  checksums** (next to it) reads everything again. A scan you stop keeps what it had read:
   scanning again carries on from there. The server keeps the scan of the last six systems you scanned, so going to another system
-  and back needs no new scan (after a restart the first scan is quick, because the hashes are cached).
+  and back needs no new scan, and a restart does not need one either while nothing changed (see above). Otherwise the scan after
+  a restart is quick, because the hashes are cached.
 - Hidden files, `.m3u` files and the app's undo logs are ignored. Leftovers of an
   interrupted move (`*.romorg-tmp-*`), partial output of an interrupted Convert
   (`*.romorg-convert-*`, removed by Undo) and dangling symbolic links are listed as errors.
@@ -396,7 +399,7 @@ language filter. What counts as a language of a release:
 - `[tr en]` marks an English translation and counts as English (`[tr de]` adds German).
 **No-Intro and Redump (consoles and discs):** a game with no version in your languages *anywhere in its DAT* (a
 Japan-only release, for example) is **kept** by default (option *Keep games that exist only in other languages*, in the
-rules and in Collection). The whole DAT decides, not the files you own: if an English version of the game exists in the DAT,
+rules). The whole DAT decides, not the files you own: if an English version of the game exists in the DAT,
 your Japanese copy is still left out, and the English one is "missing". Among several versions of such a game the usual
 region and revision order picks one. Turn the option off to have every title without a version in your languages left out.
 TOSEC and WHDLoad keep the rule below.
@@ -717,7 +720,7 @@ because emulators need the iNES header.
 - **One region, one entry.** `UK` (No-Intro) and `United Kingdom` (TOSEC's GB) are the same region: it is listed once as
   *United Kingdom*, saved settings that say `UK` are read as that, and names are parsed to it.
 - **The region list comes from your data.** Region priority lists the regions that exist in the installed DATs of the system
-  (in Collection: of the ticked systems), not a fixed list; your own priorities stay at the top.
+  (not a fixed list); your own priorities stay at the top.
 - **Preview and Build share the scan.** Preview reads and matches each system's folder; the Build that follows (and a second
   Preview) reuses that scan while the folder (file count, size, newest change) and the DATs are unchanged, and says so in the
   job bar. A build, a change in the folder or a scan of a single system clears it.
@@ -726,9 +729,7 @@ because emulators need the iNES header.
 
 The job bar at the top shows what is running with its percentage, how long it has been running, an estimate of the time left
 (from the second it can tell), how much data has been dealt with so far (files hashed, discs read, files copied or moved, in
-whatever unit fits: MB, GB, TB) and the rate. A Collection run reports one percentage over all systems, with the system and
-file in the message (`[2/6] Super Nintendo: ...`).
-
+whatever unit fits: MB, GB, TB) and the rate. 
 ## Build the library in another folder (v0.2)
 
 On the Library tab, **Where to build** chooses between *In this folder* (the classic build: files are moved) and
@@ -745,7 +746,7 @@ the source and are not copied. The choice is remembered.
   space is checked first. Running it again only adds what is missing.
 - **Undo last build** removes only what the build added (recorded in `<destination>/.romorg-library/library.sqlite`),
   and leaves any file you changed since. Your own files in the destination are never touched.
-- **Keep the destination in sync** (off by default; for one system and for a collection): the build then also brings the
+- **Keep the destination in sync** (off by default): the build then also brings the
   destination in line with the source.
   - A file this app built earlier that your rules no longer keep, or whose source is gone, is **removed**.
   - A file whose source changed is copied again.
@@ -758,44 +759,24 @@ the source and are not copied. The choice is remembered.
 - Save files and other files lying next to discs stay in the source unless "Also copy save files ..." is ticked.
 - The plan for the next steps is in `docs/V0_2_PLAN.md`.
 
-### Collection: a whole folder of ROMs
+### Library rules: your defaults and a system's own
 
-**Collection** (`#/collection`) takes any folder of ROMs, in any state: loose files, mixed folders, one folder per system.
+The library rules (exclusions, one version per game, latest versions, languages, region priority, kept variants, ratings, what
+happens to saves) are **one set for the whole app**: **Library defaults** on the **Settings** page. Every system follows it.
 
-1. **Scan.** Choose the folder and press **Scan folder**. The scan reads every file once and matches it against *every*
-   database (all the cartridge and console DATs together, and every disc image once against the disc DATs). There is no step
-   to find or switch on systems: every system that has games in the folder shows up, with its games and files. The scan is the
-   slow part (the job bar shows time, ETA and the data covered); a cache makes a second scan fast.
-2. **Systems found.** The table lists them. *Own rules* uses a system's own Library tab rules instead of the shared rules.
-3. **What to do** (both start with *Preview*, which only sorts the scan's metadata, so it is quick, and show the same things):
-   - **Build the library in the folder where it is** (the default): files are matched by checksum wherever they lie, and each
-     goes into its system's folder, named with the standard short names of EmulationStation-DE, EmuDeck and RetroDECK
-     (`mastersystem`, `megadrive`, `snes`, `psx` ...). Existing folders are never renamed: files are moved out of them and
-     the old, empty folders are removed. The games are renamed to the databases' names
-     and sorted by the rules (one per game, latest versions, languages, regions ...). What matches nothing, is not a ROM
-     (pictures, text ...), or is archived by the rules (`_excluded`, `_superseded`, `_incomplete`, `_duplicates`,
-     `_unmatched`) moves to an **archive folder** outside the ROM folders (the one set in **Settings**, or the Collection's own - there is no default: with none, nothing is archived and files that match nothing stay where they are;
-     `<archive>/_unmatched/...`, `<archive>/_other/...`, `<archive>/<system>/_excluded/...`), so the ROM folders hold
-     only what you keep. Every file is moved once: straight from where it is to its final name and place, or to the archive (only
-     a system that converts first has its files sorted into its folder before the conversion). Saves follow renamed games if RetroArch is set up
-     (and what happens to the saves of a game the rules replace or archive is your choice, see *RetroArch saves* below). A save or
-     note lying beside a ROM is an ordinary file: it goes to `<archive>/_other/...` like any other file that matches no database,
-     and inside a disc game's own folder everything stays with the game.
-   - **Build a clean library in another folder**: the same rules, but the files are **copied** (or **moved**) into
-     `<destination>/<standard name>/...` and the ROM folder keeps its names; *keep in sync* is available with Copy. Copy is the
-     default; Move takes the files out of the ROM folder and cannot be combined with sync.
-4. **Rules for every system.** One set of rules (exclusions, one version per game, latest versions, languages, region priority,
-   kept variants) for all systems; a rule a system does not have is simply not used there.
+On a system's **Library** tab each rule has an **Override** box. Until it is ticked the rule shows your default, greyed and
+unchangeable; tick it to give *this system only* a different value (the rule then says **this system only**, with a link,
+**use the default again**). The line under the rules says how many rules are overridden, and **Reset all to defaults** puts every
+rule of the system back on your defaults (the choices you made for single games stay). A system with overrides has a small blue
+diamond in the system list. A change to your defaults reaches every system that has not overridden that rule. A rule a system
+cannot use (a DAT without languages, a system with no save source ...) is not shown there.
 
-**Apply** does it and rescans the folder (quick); **Undo last** puts back the sort, the renames, the library changes and the archive
-files in the right order. **Bring archived files back** returns the archived files to the systems' folders. Nothing is ever
-deleted or overwritten: a name that is taken gets ` (2)`.
+A system with a different mix of files than the rest (a hack set, a translation set) is best made a system of its own.
 
 **Archive a single system's leftovers too.** On a system's Library tab, with *In this folder*, **Archive unmatched files (excluded,
 superseded, incomplete, duplicates) to another folder** is on by default - but only exists once an archive folder is set. There is
 **no default archive folder**: choose one for every system on the **Settings** page (the sidebar). Until you do, the Library tab says so
-and what the rules leave out stays in the system's folder in `_excluded`, `_superseded` ... as before, and Collection leaves files that
-match nothing where they are. A system can have its own folder: type another one on its Library tab (a button there goes back to the
+and what the rules leave out stays in the system's folder in `_excluded`, `_superseded` ... as before. A system can have its own folder: type another one on its Library tab (a button there goes back to the
 common one; Settings lists the systems that have their own). After the build, what the rules leave out is moved to the archive,
 **straight from where it was**, into a folder named like this system's own:
 `<archive>/<system folder name>/_excluded`, `_superseded`, `_incomplete`, `_duplicates` and `_unmatched`. The Library tab lists
@@ -813,8 +794,6 @@ the folders for the system you have open. The system folder then holds only what
   an .iso) to CHD first* for disc systems, *Clean up dumps first* for SNES (copier headers) and N64 (byte order). The Library
   preview counts them; the build converts first (each CHD is checked against Redump before the raw files move to
   `_converted_originals/`; nothing is deleted) and then builds the library. **Undo last** reverts both.
-- **Collection** has the same option (when sorting and tidying in place; it appears when the scan found something to convert):
-  each system's raw sets are converted after they are sorted into its folder.
 
 ## RetroArch: saves, states and the config (v0.2)
 
@@ -845,40 +824,36 @@ the folders for the system you have open. The system folder then holds only what
   Nothing is moved, the config is backed up, and **Undo last change** restores it.
 - **Saves follow the games:** RetroArch finds a save by the game's file name (`<name>.srm`, `<name>.state`, `.state1` ...,
   `<name>.state1.png`, Flycast's `<name>.A1.bin` memory cards ...). When a library build renames a game, its saves and states
-  are renamed to match, in the same core folder (cores stay separate). A build into another folder or a collection **copies**
+  are renamed to match, in the same core folder (cores stay separate). A build into another folder **copies**
   them to the new names and leaves the old ones. Nothing is overwritten (a file already at the new name is left alone).
   Undoing the build undoes the saves too. It waits if RetroArch is running (RetroArch writes its saves back when it closes).
-  The switch is on this page and, as **Rename saves with their ROMs**, in the Library rules and the Collection rules (one
+  The switch is on this page and, as **Rename saves with their ROMs**, in the Library rules (one
   stored setting).
 - **Saves in the scan, the library and the builds:** all of this exists only when the app knows a RetroArch config (it found an
   install, or you chose a `retroarch.cfg` on this page). Without one the app does not look at any save folder, shows no saves
   column and no saves setting, and sorts and builds exactly as if saves did not exist.
-  - *Scan:* every scan of a system (and of a Collection, per system) reads the save folders once and reports **how many saves
+  - *Scan:* every scan of a system reads the save folders once and reports **how many saves
     there are and which title each belongs to**: save files and states (a state's screenshot is kept apart and not counted), the
     games they belong to, and how many of those games have a ROM in the folder, are a title in the database you have no ROM for,
     or match nothing. A save belongs to a ROM when its name is that file's name (for a zip also the name inside); a Flycast memory
     card `<name>.A1.bin`, `<name>.state1`, `<name>.srm` ... all belong to `<name>`. Where RetroArch makes one folder per core only
     the cores that play the system count, so a Genesis save never belongs to a Super Nintendo game of the same name.
   - *Overview* of a system: "N save files for M games (K with a ROM here, L without, U unmatched)", and once the library is
-    previewed, what a build would do with them. *Collection:* the same per system in the systems table.
+    previewed, what a build would do with them.
   - *Browse:* a **Saves** column on the Games, Matched and Missing lists (the total of saves and states, `1 save · 6 states`
     under it, and the total of all editions of the title), also for titles you have no ROM for but have saves for; sortable; a
     **Games with saves** filter; and a **Saves** tab that lists every save set with the title it matched.
   - *Library:* a **Saves** column (sortable), the filters **Games with saves** and **Saves affected by this build**, and on each row
     the choice for that game (below).
   - *Rename:* when a build gives a ROM its database name its saves and states are renamed to match, in the same core folder
-    (a build into another folder, or a collection elsewhere, copies them). Nothing is overwritten; Undo gives the old names back.
-  - *When a rule replaces or archives a game you have saves for* you choose, in the Library rules (and the Collection's shared
-    rules) for every game, and on the Library tab for a single game: **Keep both ROMs** (the default: the ROM the rules would
+    (a build into another folder copies them). Nothing is overwritten; Undo gives the old names back.
+  - *When a rule replaces or archives a game you have saves for* you choose, in your Library defaults (and a system's own rules)
+    for every game, and on the Library tab for a single game: **Keep both ROMs** (the default: the ROM the rules would
     replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
     `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
     used; Undo brings them back) or **Leave the saves where they are**. Nothing is copied to the edition that replaces the game.
     Nothing is moved while RetroArch is running (the ROMs are still archived); a build into another folder never archives
     anything from your folders.
-  - *Collection, one game at a time:* under the shared rules, **Saves of single games: choose for each game** lists every game
-    with saves that the rules would replace or archive (all systems, searchable) with a choice for each: the default, keep both
-    ROMs, archive the saves with the ROM, or leave them. The choices are part of the shared rules (**Back to each system's
-    defaults** clears them).
   - *Multi-disc games:* RetroArch names the saves of a game started from a playlist after the `.m3u` (`Game.srm`), not after a
     disc. A playlist you have saves under counts as that game's name: its saves are listed with the game, follow the game when
     its rules say archive or leave, and are renamed when the build replaces your playlist with the one named after the
@@ -888,7 +863,7 @@ the folders for the system you have open. The system folder then holds only what
 - **BIOS and firmware:** press **Check** and the app reads the `.info` file of every installed core, lists the BIOS / firmware
   each wants (required or optional) and compares them with RetroArch's system folder, verified by MD5 where the core gives a
   checksum. By default it covers the cores of **every system that has a ROM folder** (or choose *Every installed core*, or one
-  system). Missing files are looked for in all those ROM folders, the Collection root and one more folder you can name: by name,
+  system). Missing files are looked for in all those ROM folders, one more folder you can name: by name,
   and, when the checksum is known, under any other BIOS-looking name. It is one pass with progress (a minute at most; it says
   when it stopped early). **Place found files** moves (or copies) them to the path the core expects inside the system folder.
   Nothing is overwritten, nothing is written outside the system folder, and **Undo last change** puts them back.

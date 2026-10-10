@@ -2507,3 +2507,61 @@ card images (PS2 memory card file system: superblock, indirect FAT, directory en
 `GameIndex.yaml` (serial to name). Console `ps2` of `/api/nintendo`, page `#/ps2`. Card images were checked against images made by the
 test helper only (the user's card is a folder card); the folder card, the serials of seven real CHDs and 33 real save states were read as is.
 
+
+# Amendment 32 - Library defaults and per-system overrides; Collection removed (v0.2)
+
+**Collection is gone** (`collection.py`, `/api/collection*`, `#/collection`, `view-collection`): a mixed folder is sorted by giving each
+kind of file a platform of its own. The shared sort/archive machinery stays in `sortroot` (`apply_moves`, `plan_sweep`, `check_folders`).
+
+**One rule set, layered** (`library.py`): `default_profile(platform)` (what the system can do) < `config["library_defaults"]` (your
+defaults, sparse against `LibraryProfile()`) < `config["library_overrides"][platform]` (sparse: only the rule fields the system
+overrides, plus its per-game choices `overrides` / `saved_overrides`). `effective_profile` merges them, `applicable_fields(platform)` drops
+rules the system cannot use, `set_override(cfg, platform, fields, on)` / `reset_overrides` edit the sparse record, `store_profile`
+records a rule that differs from what the system uses now as an override, `migrate_config` turns the old per-platform profiles
+(and Collection's global rules) into this shape once (a rule equal to the new default stays inherited, so behaviour is unchanged).
+
+**API.** `GET|POST /api/library/defaults` (the same answer and body as the profile of a system, no `platform`; `reset` = the app's own
+settings). `POST /api/library/profile` also takes `override: {fields, on}` and `reset: true` (all rules back to the defaults; per-game
+choices stay). The profile answer carries `inherit {overridden, applicable, defaults}`; `/api/platforms` rows carry `rule_overrides`.
+Changing a default drops every cached plan (`_drop_all_plans`).
+
+**UI.** `renderRules` draws the catalog for either panel through `rctx` (the system's Library tab, with `unit()` giving each rule its
+Override box, greyed `inert` body, "this system only" badge and "use the default again"; or Settings > Library defaults, plain).
+The sidebar item shows `.nav-override` for a system with overrides.
+
+# Amendment 33 - Dead code removed, one DAT-source implementation, Windows places (v0.2)
+
+**Removed (nothing in the UI reached them):** the Kickstart tool (`kickstart.py`, `/api/kickstart/*`, the saved `kickstart_dests` and
+its migration, `has_kickstart` / `kickstart_dest` in the answers; `Platform.kickstart_dat` / `kickstart_folder` stay: they are data),
+`/api/dc/verify` and `discsys.verify_units` (a scan with *Check every track while scanning* does it: `scan(full=True)`),
+`/api/dats`, `/api/dats/update`, the Switch page's endpoints (`/api/switch/scan|rows|verify|db/update`) with `switchapp.scan_all` /
+`rows` / `verify_all`, `switchscan.scan_folder` and the save-pair helpers of `switchsaves`; `GET /api/switch` + `POST
+/api/switch/config` stay (the *check checksums when scanning* option). Unreferenced helpers in `chd`, `chdhuff`, `discsys`, `scanner`,
+`emulators`, `bundle`, `nointro`, `library`, `server`, and unused functions / styles in the page.
+**Kept without a UI:** `/api/convert/plan|apply` and `/api/m3u/plan|apply` (`m3u.write_m3us`): the tests drive conversion through
+them (long Windows paths, both CHD writers).
+
+**`scan(full=True)` reads DVD images too.** A DVD CHD's header only *claims* the ISO's SHA-1; with `full`, `match_chd` now decodes
+the image and compares (a wrong claim is no match any more). Where it cannot be decoded here the claim stands (`identified`).
+
+**`datsource.py`** holds what `nointro`, `whdload` and `redump` had three times: the manifest, `header_version`, `list_dats`,
+`find_dat`, the download loop (`receive`), the ETag download and check (`download_etag`, `check_etag`: No-Intro and WHDLoad) and the
+run over several DATs (`update_all`). The three modules keep their names, addresses, error class and public functions (same
+signatures); Redump keeps its own zip download and version check. `sortroot.overlap` is the one test for folders that overlap
+(`check_folders`, `libexport.check_destination`).
+
+**Windows.** `winproc.documents_dirs()`: the Documents folder Windows names (`SHGetKnownFolderPath`: it may be redirected), then
+`%USERPROFILE%\Documents` and OneDrive's; Dolphin (`Documents\Dolphin Emulator`) and PCSX2 (`Documents\PCSX2`) are looked for
+in each. `emulators.running`: an image counts when its name *starts with* the emulator's (`pcsx2-qtx64-avx2.exe`,
+`Ryujinx.Ava.exe`); the Switch saves are busy while Eden **or Ryujinx** runs (every OS). The folder browser leaves out what Windows
+marks hidden or system unless *hidden* is ticked (`server._is_hidden`).
+
+# Amendment 34 - The scan is saved (v0.2)
+
+`scancache.py`: after a scan the result object is pickled to `<data>/scans/<system>.scan` with the folder's stamp (`folder_stamp`:
+file count, bytes, newest change of files and folders), the DAT signature, the scan options (`chd_verify_scan`, the Switch checksum
+option), the app version and a shape hash of the dataclasses a result is made of (`scanner`, `discsys`, `datfile`). `POST
+/api/scan/select` (what the UI calls when a system is opened with no scan in memory) loads it when every one of those is unchanged
+(`App._scan_from_disk`); otherwise nothing is selected and the file is left for the next scan to replace, or deleted when it cannot be
+read. The file is the app's own; it is never read from anywhere else. Measured on real folders: SNES 1.9 MB, Amiga 21 MB (load 1 s),
+Dreamcast 3.9 MB (the scan itself takes 43 s).

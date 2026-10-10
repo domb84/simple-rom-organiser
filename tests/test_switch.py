@@ -204,18 +204,17 @@ class Scanning(Base):
         self.put("games/f/mystery.nsp", pfs0({"11" * 16 + ".nca": b"."}))                                                              # nothing
         self.put("games/g/broken.nsp", b"not a container")
         self.put("games/h/readme.txt", b"ignored")
-        scan = switchscan.scan_folder(self.tmp / "games", db, key)
-        self.assertEqual(scan.files, 7)
-        got = {f.path.name: (f.title_id, f.kind, f.version, f.how) for g in scan.games.values() for f in g.files}
+        told = {p.name: switchscan.identify(p, db, key) for p in sorted((self.tmp / "games").rglob("*.*")) if p.suffix in (".nsp", ".xci")}
+        got = {name: (f.title_id, f.kind, f.version, f.how) for name, f in told.items() if f.title_id}
         self.assertEqual(got["game.nsp"], (APP, "application", 0, "cnmt.xml in the file"))
         self.assertEqual(got["renamed.nsp"], (UPDATE, "update", 65536, "title database (NCA ids)"))
         self.assertEqual(got["ticket.nsp"][:2], (DLC, "addon"))
         self.assertEqual(got["Card [0100BBBB0CCC0000][v0].xci"], ("0100BBBB0CCC0000", "application", 0, "file name"))
         self.assertEqual(got["anonymous.xci"][::3], ("0100CCCC0DDD0000", "NCA header (prod.keys)"))
-        self.assertEqual(sorted(f.path.name for f in scan.unidentified), ["broken.nsp", "mystery.nsp"])
-        self.assertEqual(sorted(g.name for g in scan.games.values())[0:1], ["Card"])           # (no database name: from the file name)
-        self.assertEqual(scan.games[APP].name, "Some Game")                                       # (the database's)
-        self.assertEqual(sorted(f.kind for f in scan.games[APP].files), ["addon", "application", "update"])    # one game, three files
+        self.assertEqual(sorted(name for name, f in told.items() if not f.title_id), ["broken.nsp", "mystery.nsp"])
+        self.assertEqual(told["Card [0100BBBB0CCC0000][v0].xci"].name, "Card")                   # (no database name: from the file name)
+        self.assertEqual(told["game.nsp"].name, "Some Game")                                      # (the database's)
+        self.assertEqual({told[n].base_id for n in ("game.nsp", "renamed.nsp", "ticket.nsp")}, {APP})    # one game, three files
 
     def test_a_wrong_name_is_caught_when_the_keys_can_tell(self) -> None:
         key = bytes(range(32))
@@ -259,29 +258,7 @@ class Saves(Base):
         e, r = switchsaves.find_eden(eden), switchsaves.find_ryujinx(ryu)
         self.assertEqual(sorted((s.title_id, s.kind) for s in e), [(APP, "account"), ("0100EEEE0FFF0000", "account"), ("0100EEEE0FFF0000", "device")])
         self.assertEqual(sorted((s.title_id, s.kind) for s in r), [(APP, "account"), (APP, "device"), ("0100AAAA1BBB0000", "account")])
-        mine = {s.emulator: s for s in e + r if s.title_id == APP and s.kind == "account"}
-        self.assertEqual(switchsaves.describe_pair(mine["eden"], mine["ryujinx"]), "same")
-        self.assertEqual(switchsaves.describe_pair(mine["eden"], None), "eden only")
-        self.assertEqual(switchsaves.ryujinx_users(ryu), [{"id": "00000000000000010000000000000000", "name": "Dom"}])
-        self.assertEqual(switchsaves.eden_users(eden)[0]["id"], self.USER)
         self.assertEqual(r[0].user, "00000000000000010000000000000000")
-
-    def test_the_full_scan_joins_games_and_saves(self) -> None:
-        eden, ryu = self.tmp / "nand", self.tmp / "portable"
-        eden_save(eden, self.USER, APP, {"a.sav": b"1234", "b.sav": b"9"})
-        ryu_save(ryu, "0000000000000001", APP, 1, 1, {"a.sav": b"1234"})
-        ryu_save(ryu, "0000000000000002", "0100AAAA1BBB0000", 1, 1, {"z.sav": b"zz"})
-        self.put("games/Some Game [0100AAAA0BBB0000][v0].nsp", pfs0({f"{APP}{'0' * 16}.tik": b"t"}))
-        cfg = {"games": str(self.tmp / "games"), "eden": str(eden), "ryujinx": str(ryu), "keys": ""}
-        out = switchapp.scan_all(cfg, lambda *_a: None, None)
-        self.assertEqual((out["summary"]["games"], out["summary"]["saves"]["titles"], out["summary"]["saves"]["both"]), (1, 2, 1))
-        by = {s["title_id"]: s for s in out["saves"]}
-        self.assertEqual((by[APP]["has_game"], by[APP]["state"]), (True, "eden newer" if by[APP]["eden"]["mtime"] >= by[APP]["ryujinx"]["mtime"] else "ryujinx newer"))
-        self.assertEqual((by["0100AAAA1BBB0000"]["has_game"], by["0100AAAA1BBB0000"]["state"]), (False, "ryujinx only"))
-        self.assertEqual(out["games"][0]["saves"], {"eden": True, "ryujinx": True})
-        page = switchapp.rows(out, "saves", lambda items, o, l, q: {"items": [i for i, _t in items]}, {"only": "nogame"})
-        self.assertEqual([s["title_id"] for s in page["items"]], ["0100AAAA1BBB0000"])
-
 
 import hashlib
 
@@ -344,28 +321,12 @@ class Detection(Base):
         self.assertEqual(switchsaves.detect_ryujinx(self.tmp / "nowhere"), {})
 
 
-class SaveCounts(Base):
-    def test_every_save_game_of_a_title_is_counted_per_emulator(self) -> None:
-        eden, ryu = self.tmp / "nand", self.tmp / "portable"
-        eden_save(eden, "A" * 32, APP, {"a.sav": b"1"})
-        eden_save(eden, "B" * 32, APP, {"a.sav": b"22"})                                          # a second profile
-        eden_save(eden, "0" * 32, APP, {"dev.sav": b"3"})                                         # and device data
-        ryu_save(ryu, "0000000000000001", APP, 1, 1, {"a.sav": b"1"})
-        ryu_save(ryu, "0000000000000002", APP, 0, 3, {"dev.sav": b"3"})
-        out = switchapp.scan_all({"games": "", "eden": str(eden), "ryujinx": str(ryu), "keys": "", "archive": "",
-                                  "tidy": {}, "last_tidy": ""}, lambda *_a: None, None)
-        row = out["saves"][0]
-        self.assertEqual((row["eden"]["count"], row["ryujinx"]["count"], row["total"]), (3, 2, 5))
-        self.assertEqual(sorted(i["kind"] for i in row["eden"]["items"]), ["account", "account", "device"])
-        self.assertEqual({k: out["summary"]["saves"][k] for k in ("eden", "ryujinx", "total", "titles")}, {"eden": 3, "ryujinx": 2, "total": 5, "titles": 1})
-
-
 from unittest import mock
 
-from tests.test_collection_api import CollectionCase  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
+from tests.servercase import ServerCase  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
 
 
-class Api(CollectionCase):
+class Api(ServerCase):
     """The Switch page's endpoints over HTTP."""
 
     def setUp(self) -> None:
@@ -386,25 +347,11 @@ class Api(CollectionCase):
         info = self.call("GET", "/api/switch")
         self.assertEqual(info["config"]["eden"], str(self.eden))
         self.assertFalse(info["db"]["available"])
-        self.assertIsNone(info["scan"])
         (self.tmp / "afile").write_bytes(b"x")
         code, _ = self.http("POST", "/api/switch/config", {"games": str(self.tmp / "afile")})
         self.assertEqual(code, 400)
         self.call("POST", "/api/switch/config", {"ryujinx": ""})
         self.assertEqual(self.call("GET", "/api/switch")["config"]["ryujinx"], "")
-
-    def test_scan_then_rows(self) -> None:
-        out = self.job("/api/switch/scan")
-        self.assertEqual((out["summary"]["games"], out["summary"]["saves"]["both"], out["summary"]["unidentified"]), (1, 1, 0))
-        games = self.call("POST", "/api/switch/rows", {"view": "games"})
-        self.assertEqual([(g["title_id"], g["has_base"], g["saves"]) for g in games["items"]], [(APP, True, {"eden": True, "ryujinx": True})])
-        saves = self.call("POST", "/api/switch/rows", {"view": "saves", "only": "both"})
-        self.assertEqual([s["title_id"] for s in saves["items"]], [APP])
-        self.assertEqual(self.call("POST", "/api/switch/rows", {"view": "saves", "only": "nogame"})["total"], 0)
-        self.assertEqual(self.call("POST", "/api/switch/rows", {"view": "games", "q": "nothing like it"})["total"], 0)
-        code, _ = self.http("POST", "/api/switch/rows", {"view": "bogus"})
-        self.assertEqual(code, 400)
-        self.assertEqual(self.call("GET", "/api/switch")["scan"]["games"], 1)
 
     def test_what_is_found_on_the_machine_is_used_until_the_user_chooses_otherwise(self) -> None:
         # Eden's own settings name its NAND and a games folder; a portable Ryujinx lies next to that games folder
@@ -426,41 +373,6 @@ class Api(CollectionCase):
         info = self.call("POST", "/api/switch/config", {"ryujinx": str(other), "eden": str(nand)})
         self.assertEqual((info["config"]["ryujinx"], info["auto"]), (str(other), ["eden", "games"]))
         self.assertEqual(self.call("GET", "/api/config" if False else "/api/switch")["config"]["eden"], str(nand))
-        # a scan uses what was found
-        self.call("POST", "/api/switch/config", {"ryujinx": ""})
-        self.assertEqual(self.job("/api/switch/scan")["summary"]["games_folder"], str(portable / "games"))
-
-    def test_nothing_chosen_is_refused(self) -> None:
-        self.call("POST", "/api/switch/config", {"games": "", "eden": "", "ryujinx": ""})
-        code, _ = self.http("POST", "/api/switch/scan", {})
-        self.assertEqual(code, 400)
-
-    def test_verify_checks_every_file(self) -> None:
-        for f in (self.tmp / "games").iterdir():
-            f.unlink()
-        (self.tmp / "games" / "messy").mkdir()
-        (self.tmp / "games" / "messy" / "a.nsp").write_bytes(game_nsp("0100AAAA0BBB0000", 0))
-        (self.tmp / "games" / "messy" / "b.nsp").write_bytes(game_nsp("0100AAAA0BBB0800", 65536))
-        (self.tmp / "games" / "messy" / "c.nsp").write_bytes(game_nsp("0100AAAA0BBB0800", 131072))
-        scan = self.job("/api/switch/scan")
-        self.assertEqual(scan["summary"]["checksums"], {"ok": 0, "damaged": 0, "unchecked": 3})
-        done = self.job("/api/switch/verify")
-        self.assertEqual((done["verify"]["ok"], done["summary"]["checksums"]["ok"]), (3, 3))
-        self.assertEqual(self.call("POST", "/api/switch/rows", {"view": "games"})["items"][0]["checksums"], "ok")
-
-    def test_the_title_database_is_fetched_and_built(self) -> None:
-        def fake(url, dest, progress=None, cancel=None, label=""):
-            doc = {"1": {"id": APP, "name": "Some Game", "publisher": "P", "releaseDate": 1}} if url == switchdb.TITLES_URL else \
-                {APP: {"65536": "2020-01-01"}} if url == switchdb.VERSIONS_URL else \
-                {APP: {"0": {"titleId": APP, "titleType": 128, "contentEntries": [{"ncaId": "ab" * 16, "type": 1}]}}}
-            with gzip.open(dest, "wt") as f:
-                json.dump(doc, f)
-        with mock.patch.object(switchdb, "download", fake):
-            out = self.job("/api/switch/db/update")
-        self.assertEqual((out["titles"], out["ncas"], out["db"]["available"]), (1, 1, True))
-        self.assertEqual(self.job("/api/switch/scan")["summary"]["database"], True)
-        self.assertEqual(self.call("POST", "/api/switch/rows", {"view": "games"})["items"][0]["name"], "Some Game")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -301,11 +301,6 @@ def all_dat_names() -> set[str]:
     return {d for p in PLATFORMS.values() for d in p.dats}
 
 
-def has_kickstart(platform: Any) -> bool:
-    """True when the platform has a Kickstart step (TOSEC firmware DAT or its own Kickstart folder)."""
-    return bool(getattr(platform, "kickstart_dat", None) or getattr(platform, "kickstart_folder", ""))
-
-
 def fetch_source(platform: Platform) -> str:
     """Which updater keeps the platform's DATs current: the GameCube's and the Wii's come with the No-Intro ones (libretro's mirror)."""
     from .nointro import MIRRORED_REDUMP

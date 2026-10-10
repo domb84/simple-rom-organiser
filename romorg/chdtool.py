@@ -33,7 +33,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -576,16 +575,20 @@ def extract_cd(chdman: Chdman, chd: Path, workdir: Path, kind: str, track_sizes:
     return Extraction(sheet, tracks)
 
 
-def create_cd(chdman: Chdman, source: Path, out_chd: Path, progress: Optional[ProgressFn] = None,
-              cancel: Any = None) -> None:
-    """``chdman createcd -i <gdi|cue> -o out.chd`` (``out_chd`` must not exist)."""
+def _create(command: str, chdman: Chdman, source: Path, out_chd: Path, progress: Optional[ProgressFn], cancel: Any) -> None:
     check_access(chdman, Path(source).parent)
     check_access(chdman, Path(out_chd).parent)
     if out_chd.exists():
         raise ChdmanError(f"refusing to overwrite {out_chd}")
-    run(chdman, ["createcd", "-i", str(source), "-o", str(out_chd)], progress, "Compressing", cancel)
+    run(chdman, [command, "-i", str(source), "-o", str(out_chd)], progress, "Compressing", cancel)
     if not out_chd.is_file():
         raise ChdmanError("chdman did not write the CHD")
+
+
+def create_cd(chdman: Chdman, source: Path, out_chd: Path, progress: Optional[ProgressFn] = None,
+              cancel: Any = None) -> None:
+    """``chdman createcd -i <gdi|cue> -o out.chd`` (``out_chd`` must not exist)."""
+    _create("createcd", chdman, source, out_chd, progress, cancel)
 
 
 def extract_dvd(chdman: Chdman, chd: Path, workdir: Path, size: int = 0,
@@ -606,13 +609,7 @@ def extract_dvd(chdman: Chdman, chd: Path, workdir: Path, size: int = 0,
 def create_dvd(chdman: Chdman, source: Path, out_chd: Path, progress: Optional[ProgressFn] = None,
                cancel: Any = None) -> None:
     """``chdman createdvd -i <iso> -o out.chd`` (``out_chd`` must not exist)."""
-    check_access(chdman, Path(source).parent)
-    check_access(chdman, Path(out_chd).parent)
-    if out_chd.exists():
-        raise ChdmanError(f"refusing to overwrite {out_chd}")
-    run(chdman, ["createdvd", "-i", str(source), "-o", str(out_chd)], progress, "Compressing", cancel)
-    if not out_chd.is_file():
-        raise ChdmanError("chdman did not write the CHD")
+    _create("createdvd", chdman, source, out_chd, progress, cancel)
 
 
 def hash_range(path: Path, offset: int, size: int, progress: Optional[Callable[[int], None]] = None,

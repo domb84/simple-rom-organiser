@@ -195,7 +195,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dis
   (`/static/app.js`, `/static/style.css`), `/api/status` (version, No-Intro, Redump, updates, `"os": "windows"`),
   `/api/platforms` (all 18 systems by name, and exactly 18), `/api/updates`, `/api/library/profile` (Amiga rules,
   Dreamcast `"style": "redump"`), `/api/chdman` (built-in writer, native FLAC), the pages of the UI in the HTML
-  (`view-home`, `view-system`, `view-collection`, `view-retroarch`, `view-chd`), `GET /api/collection` and
+  (`view-home`, `view-system`, `view-retroarch`, `view-chd`, `view-settings`, `view-databases`), `GET /api/library/defaults` and
   `GET /api/retroarch` (JSON), and finally `POST /api/quit`, after which no process of the package may be left. A
   miss fails the build. Whatever happens, the whole process tree is stopped (the onefile exe runs the app in a child
   process; a child left behind would keep `dist\*.exe` locked). By hand:

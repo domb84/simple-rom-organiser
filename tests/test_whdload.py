@@ -25,7 +25,7 @@ os.environ.setdefault("ROMORG_RETROARCH_DETECT", "0")      # never pick up a Ret
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from romorg import autoupdate, datfile, folders, kickstart, library, organiser, paths, platforms  # noqa: E402
+from romorg import autoupdate, datfile, folders, library, organiser, paths, platforms  # noqa: E402
 from romorg import scanner, server, tags, whdload  # noqa: E402
 from romorg.tosec import Cancelled, DatInfo  # noqa: E402
 
@@ -445,7 +445,6 @@ class PlatformTest(FolderCase):
         self.assertEqual((p.source, p.layout, p.extensions, p.m3u_dats, p.kickstart_dat),
                          ("whdload", "flat", (".lha", ".lzx"), (), None))
         self.assertEqual((p.kickstart_folder, p.protected_dirs), ("Kickstarts", ("Kickstarts",)))
-        self.assertTrue(platforms.has_kickstart(p))
         amiga = platforms.get_platform("Commodore Amiga")
         self.assertNotIn(DAT, amiga.dats)
         self.assertEqual((amiga.kickstart_folder, amiga.protected_dirs), ("", ()))
@@ -545,59 +544,6 @@ class OrganiseTest(FolderCase):
         self.assertEqual(plan2.playlists, [])
 
 
-class KickstartFolderTest(FolderCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.ks = self.root / "Kickstarts"
-        (self.ks / "sub").mkdir(parents=True)
-        self.rom = b"R" * 3000
-        self.md5 = hashlib.md5(self.rom).hexdigest()
-        table = list(kickstart.PUAE_BIOS)
-        table[3] = ("kick34005.A500", self.md5, "Kickstart v1.3 (test)")
-        p = mock.patch.object(kickstart, "PUAE_BIOS", table)
-        p.start()
-        self.addCleanup(p.stop)
-        (self.ks / "sub" / "my13.rom").write_bytes(self.rom)
-        (self.ks / "other.bin").write_bytes(b"nope")
-        (self.ks / ".hidden").write_bytes(self.rom)
-        (self.ks / "huge.bin").write_bytes(b"h" * (kickstart.MAX_KICKSTART_SIZE + 5))
-        self.dest = self.work / "bios"
-        self.dest.mkdir()
-
-    def test_plan_by_md5_unmatched_reported(self) -> None:
-        ops = kickstart.plan_kickstarts_from_folder(self.ks, self.dest)
-        st = {}
-        for o in ops:
-            st.setdefault(o.status, []).append(o)
-        self.assertEqual([o.target.name for o in st["copy"]], ["kick34005.A500"])
-        self.assertEqual(len(st["missing"]), 13)
-        self.assertEqual(sorted(o.target.name for o in st["unmatched"]), ["huge.bin", "other.bin"])
-        self.assertIn("too large", [o.reason for o in st["unmatched"] if o.target.name == "huge.bin"][0])
-
-    def test_apply_copies_never_overwrites_never_moves(self) -> None:
-        res = kickstart.apply_kickstarts(kickstart.plan_kickstarts_from_folder(self.ks, self.dest))
-        self.assertEqual(res["copied"], 1)
-        self.assertEqual((self.dest / "kick34005.A500").read_bytes(), self.rom)
-        self.assertTrue((self.ks / "sub" / "my13.rom").is_file())            # copied, not moved
-        again = kickstart.plan_kickstarts_from_folder(self.ks, self.dest)
-        self.assertEqual([o.status for o in again if o.target.name == "kick34005.A500"], ["ok"])
-        (self.dest / "kick34005.A500").write_bytes(b"different")
-        c = kickstart.plan_kickstarts_from_folder(self.ks, self.dest)
-        self.assertEqual([o.status for o in c if o.target.name == "kick34005.A500"], ["conflict"])
-        kickstart.apply_kickstarts(c)
-        self.assertEqual((self.dest / "kick34005.A500").read_bytes(), b"different")
-
-    def test_missing_folder_is_all_missing(self) -> None:
-        ops = kickstart.plan_kickstarts_from_folder(None, self.dest)
-        self.assertEqual({o.status for o in ops}, {"missing"})
-
-    def test_tosec_plan_unchanged_signature(self) -> None:
-        # the DAT-based planner still exists with its old signature and statuses
-        res = scanner.ScanResult(self.root, [], [], [], [], [], [], 0, {})
-        ops = kickstart.plan_kickstarts(res, self.dest)
-        self.assertEqual({o.status for o in ops}, {"missing"})
-
-
 # --------------------------------------------------------------------------- server
 
 
@@ -643,11 +589,6 @@ class ServerWhdloadTest(ServerCase):
         self.root = self.work / "whd"
         self.root.mkdir()
         self.rom = b"K" * 2500
-        table = list(kickstart.PUAE_BIOS)
-        table[3] = ("kick34005.A500", hashlib.md5(self.rom).hexdigest(), "KS 1.3 (test)")
-        p = mock.patch.object(kickstart, "PUAE_BIOS", table)
-        p.start()
-        self.addCleanup(p.stop)
         self.entries = [("Alpha", "Alpha_v1.0.lha", _blob(rng)), ("Beta (German)", "Beta_v1.0_De.lha", _blob(rng))]
         (paths.whdload_dir() / f"{DAT}.dat").write_text(_dat_text(self.entries), encoding="utf-8")
         for _g, n, b in self.entries:
@@ -660,12 +601,11 @@ class ServerWhdloadTest(ServerCase):
     def test_platform_listed_with_own_dat_and_kickstart_folder(self) -> None:
         rows = {p["name"]: p for p in self.call("/api/platforms")}
         w = rows[PLAT]
-        self.assertEqual((w["source"], w["layout"], w["kickstart_folder"], w["has_kickstart"], w["kickstart_dat"]),
-                         ("whdload", "flat", "Kickstarts", True, None))
+        self.assertEqual((w["source"], w["layout"], w["kickstart_folder"], w["kickstart_dat"]),
+                         ("whdload", "flat", "Kickstarts", None))
         self.assertEqual([(d["name"], d["version"], d["present"]) for d in w["dats"]], [(DAT, "2026-07-05", True)])
         self.assertEqual(rows["Commodore Amiga"]["kickstart_folder"], "")
         self.assertFalse(rows["Commodore Amiga"]["dats"][0]["present"])      # TOSEC DATs are absent: no cross-match
-        self.assertFalse(rows["Nintendo 64"]["has_kickstart"])
 
     def test_scan_games_and_library_profile(self) -> None:
         self.call("/api/folders", {"platform": PLAT, "path": str(self.root)})
@@ -687,46 +627,8 @@ class ServerWhdloadTest(ServerCase):
         # profile persists under its own key
         self.call("/api/library/profile", {"platform": PLAT, "languages": ["En", "De"]})
         cfg = json.loads(paths.config_path().read_text())
-        self.assertEqual(cfg["library"][PLAT]["languages"], ["En", "De"])
-        self.assertNotIn("Commodore Amiga", cfg["library"])
-
-    def test_kickstart_endpoints_scoped_by_platform(self) -> None:
-        q = urllib.request.quote(PLAT)
-        d = self.call(f"/api/kickstart/dirs?platform={q}")
-        self.assertEqual((d["kickstart_folder"], d["kickstart_dat"], d["last"]), ("Kickstarts", None, None))
-        # no folder chosen yet -> 409 with a hint
-        self.call("/api/kickstart/plan", {"platform": PLAT, "dest": str(self.bios)}, expect=409)
-        self.call("/api/folders", {"platform": PLAT, "path": str(self.root)})
-        plan = self.call("/api/kickstart/plan", {"platform": PLAT, "dest": str(self.bios)})
-        self.assertEqual((plan["source"], plan["counts"].get("copy"), plan["source_exists"]), ("folder", 1, True))
-        self.assertTrue(plan["source_dir"].endswith("Kickstarts"))
-        # the TOSEC Amiga needs its own scan (and uses its own DAT source)
-        self.call("/api/kickstart/plan", {"platform": "Commodore Amiga", "dest": str(self.bios)}, expect=409)
-        self.call("/api/kickstart/plan", {"platform": "Nintendo 64", "dest": str(self.bios)}, expect=409)
-        self.call("/api/kickstart/apply", {"platform": PLAT, "dest": str(self.bios)})
-        j = self.job()
-        self.assertEqual((j["status"], j["result"]["copied"], j["result"]["platform"]), ("done", 1, PLAT))
-        self.assertEqual((self.bios / "kick34005.A500").read_bytes(), self.rom)
-        self.assertTrue((self.root / "Kickstarts" / "ks13.rom").is_file())
-        st = self.call("/api/status")
-        self.assertEqual(st["kickstart_dests"], {PLAT: str(self.bios.resolve())})
-        self.assertNotIn("Commodore Amiga", st["kickstart_dests"])
-        self.assertEqual(self.call(f"/api/kickstart/dirs?platform={q}")["last"], str(self.bios.resolve()))
-        self.assertIsNone(self.call("/api/kickstart/dirs?platform=Commodore%20Amiga")["last"])
-
-    def test_kickstart_dest_endpoint_saves_immediately(self) -> None:
-        r = self.call("/api/kickstart/dest", {"platform": PLAT, "dest": str(self.bios)})
-        self.assertEqual(r["platform"], PLAT)
-        self.assertEqual(json.loads(paths.config_path().read_text())["kickstart_dests"], {PLAT: str(self.bios.resolve())})
-        self.call("/api/kickstart/dest", {"platform": "Nintendo 64", "dest": str(self.bios)}, expect=409)
-        self.call("/api/kickstart/dest", {"platform": PLAT, "dest": "relative"}, expect=400)
-
-    def test_missing_kickstarts_folder_lists_everything_missing(self) -> None:
-        import shutil
-        shutil.rmtree(self.root / "Kickstarts")
-        self.call("/api/folders", {"platform": PLAT, "path": str(self.root)})
-        plan = self.call("/api/kickstart/plan", {"platform": PLAT, "dest": str(self.bios)})
-        self.assertEqual((plan["source_exists"], set(plan["counts"])), (False, {"missing"}))
+        self.assertEqual(cfg["library_overrides"][PLAT]["languages"], ["En", "De"])
+        self.assertNotIn("Commodore Amiga", cfg["library_overrides"])
 
     def test_library_plan_ignores_kickstarts(self) -> None:
         self.call("/api/scan", {"path": str(self.root), "platform": PLAT})
@@ -739,18 +641,6 @@ class ServerWhdloadTest(ServerCase):
 
 
 class ConfigTest(DataDirCase):
-    def test_legacy_kickstart_dest_migrates_to_amiga_only(self) -> None:
-        paths.save_config({"kickstart_dest": "/x/bios", "folders": {"Nintendo 64": "/n"}})
-        app = server.App(auto_update=False)
-        self.assertEqual(server._kick_dest(app._config(), "Commodore Amiga"), "/x/bios")
-        self.assertIsNone(server._kick_dest(app._config(), PLAT))
-        app._config_update(last_platform="Nintendo 64")
-        cfg = paths.load_config()
-        self.assertNotIn("kickstart_dest", cfg)
-        self.assertEqual(cfg["kickstart_dests"], {"Commodore Amiga": "/x/bios"})
-        self.assertEqual(cfg["folders"], {"Nintendo 64": "/n"})
-        self.assertEqual(app.status({}, None)["kickstart_dest"], "/x/bios")
-
     def test_concurrent_writers_never_lose_keys(self) -> None:
         app = server.App(auto_update=False)
         library_mod = library
@@ -766,7 +656,7 @@ class ConfigTest(DataDirCase):
                         app._save_profile(platform, dataclasses.replace(library_mod.default_profile(platform),
                                                                       languages=("En",) if i % 2 else ()))
                     else:
-                        app._config_update(kickstart_for=(f"K{n}-{i}", f"/k/{n}/{i}"), last_platform=f"P{n}")
+                        app._config_update(archive_for=(f"K{n}-{i}", f"/k/{n}/{i}"), last_platform=f"P{n}")
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
@@ -779,8 +669,8 @@ class ConfigTest(DataDirCase):
         cfg = paths.load_config()
         folders_ = cfg["folders"]
         self.assertEqual(len(folders_), 3 * 25)                  # nothing was overwritten by a stale snapshot
-        self.assertEqual(len(cfg["kickstart_dests"]), 3 * 25)
-        self.assertIn(PLAT, cfg["library"])
+        self.assertEqual(len(cfg["archive_overrides"]), 3 * 25)
+        self.assertIn(PLAT, cfg["library_overrides"])
 
     def test_update_config_reads_latest_and_keeps_damaged_copy(self) -> None:
         paths.config_path().write_text("{not json")
@@ -809,10 +699,9 @@ class FolderPersistenceTest(ServerCase):
             dirs[p["name"]] = str(d.resolve())
             self.call("/api/folders", {"platform": p["name"], "path": str(d)})
         self.assertEqual(len(dirs), len(platforms.list_platforms()))
-        # a profile save, a kickstart dest and a scan-time update later, nothing is forgotten
+        # a profile save and a scan-time update later, nothing is forgotten
         self.call("/api/library/profile", {"platform": "Nintendo 64", "languages": ["En", "De"]})
         self.call("/api/platforms/options", {"platform": "Nintendo 64", "latest_only": False})
-        self.call("/api/kickstart/dest", {"platform": "Commodore Amiga", "dest": str(self.work)})
         # "restart": a brand-new App/server on the same data dir
         self._stop()
         self.srv = server.make_server("127.0.0.1", 0, token="t", auto_update=False)

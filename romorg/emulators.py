@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 
 from . import nintendoapp, switchapp
 
-__all__ = ["SOURCES", "KEYS", "describe", "store", "platforms_of", "enabled_for", "running", "source_running", "source_label"]
+__all__ = ["SOURCES", "KEYS", "describe", "store", "running", "source_running", "source_label"]
 
 # key, label, platforms it plays, what the folder is
 SOURCES = (
@@ -108,25 +108,17 @@ def store(key: str, nin: Dict[str, Dict[str, str]], switch: Dict[str, Any], fold
             switch["off"] = ",".join(off)
 
 
-def platforms_of(key: str) -> List[str]:
-    return list(_BY_KEY[key]["platforms"])
-
-
-def enabled_for(platform: str, nin: Dict[str, Dict[str, str]], switch: Dict[str, Any]) -> List[str]:
-    """The emulators (keys) that are on, have a folder that exists and play ``platform``: where its saves come from besides RetroArch."""
-    return [e["key"] for e in describe(nin, switch) if e["active"] and platform in e["platforms"]]
-
-
-# the process each emulator runs as: the start of its name on Linux (/proc/<pid>/comm is cut at 15 characters), the image on Windows
+# the process each emulator runs as: the start of its name, on Linux (/proc/<pid>/comm is cut at 15 characters) and of its image on
+# Windows (builds differ: Dolphin.exe, pcsx2-qt.exe, pcsx2-qtx64-avx2.exe, Ryujinx.Ava.exe ...)
 _PROCESS = {
-    "dolphin": (("dolphin-emu",), ("dolphin.exe",)),
-    "cemu": (("cemu",), ("cemu.exe",)),
-    "pcsx2": (("pcsx2",), ("pcsx2-qt.exe", "pcsx2.exe")),
-    "eden": (("eden", "yuzu", "sudachi", "suyu"), ("eden.exe", "yuzu.exe", "sudachi.exe", "suyu.exe")),
-    "ryujinx": (("ryujinx",), ("ryujinx.exe",)),
+    "dolphin": (("dolphin-emu",), ("dolphin",)),
+    "cemu": (("cemu",), ("cemu",)),
+    "pcsx2": (("pcsx2",), ("pcsx2",)),
+    "eden": (("eden", "yuzu", "sudachi", "suyu"), ("eden", "yuzu", "sudachi", "suyu")),
+    "ryujinx": (("ryujinx",), ("ryujinx",)),
 }
-# the save source of a save set -> the emulator whose process must be closed before its files are moved
-_SOURCE_EMULATOR = {"dolphin": "dolphin", "cemu": "cemu", "pcsx2": "pcsx2", "switch": "eden"}
+# the save source of a save set -> the emulators whose process must be closed before its files are moved
+_SOURCE_EMULATORS = {"dolphin": ("dolphin",), "cemu": ("cemu",), "pcsx2": ("pcsx2",), "switch": ("eden", "ryujinx")}
 
 
 def running(key: str) -> bool:
@@ -146,7 +138,8 @@ def running(key: str) -> bool:
             return False
         if sys.platform == "win32":
             from . import retroarch
-            return any(str(name).lower() in images for _pid, name in retroarch._win_processes())
+            return any(str(name).lower().endswith(".exe") and str(name).lower().startswith(images)
+                       for _pid, name in retroarch._win_processes())
         return subprocess.run(["pgrep", "-i", "-f", names[0]], capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.SubprocessError, AttributeError, ImportError):
         return False
@@ -157,8 +150,8 @@ def source_running(source: str) -> bool:
     if source == "retroarch":
         from . import retroarch
         return retroarch.is_running()
-    return running(_SOURCE_EMULATOR.get(source, ""))
+    return any(running(key) for key in _SOURCE_EMULATORS.get(source, ()))
 
 
 def source_label(source: str) -> str:
-    return {"retroarch": "RetroArch", "dolphin": "Dolphin", "cemu": "Cemu", "pcsx2": "PCSX2", "switch": "Eden"}.get(source, source)
+    return {"retroarch": "RetroArch", "dolphin": "Dolphin", "cemu": "Cemu", "pcsx2": "PCSX2", "switch": "Eden / Ryujinx"}.get(source, source)

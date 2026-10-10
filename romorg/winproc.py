@@ -48,6 +48,49 @@ def popen_kwargs(new_session: bool = False) -> dict:
     return {"start_new_session": True} if new_session else {}
 
 
+def _known_documents() -> str:
+    """The user's Documents folder as Windows knows it ("" when it cannot be asked): it can be redirected to OneDrive or to
+    another drive, and then is not ``%USERPROFILE%\\Documents``."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Guid(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+        documents = Guid(0xFDD39AD0, 0x238F, 0x46AF, (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
+        shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+        shell32.SHGetKnownFolderPath.argtypes = (ctypes.POINTER(Guid), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p))
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+        out = ctypes.c_wchar_p()
+        if shell32.SHGetKnownFolderPath(ctypes.byref(documents), 0, None, ctypes.byref(out)) != 0:
+            return ""
+        try:
+            return out.value or ""
+        finally:
+            ole32.CoTaskMemFree(out)
+    except (OSError, AttributeError, ImportError, ValueError):
+        return ""
+
+
+def documents_dirs() -> list[Path]:
+    """Where a Windows user's Documents can be, the likeliest first: the folder Windows names, then ``Documents`` under the
+    profile and under OneDrive. Empty where there is no ``USERPROFILE`` (not Windows)."""
+    out: list[Path] = []
+    known = _known_documents() if IS_WINDOWS else ""
+    if known:
+        out.append(Path(known))
+    profile = os.environ.get("USERPROFILE")
+    if profile:
+        out += [Path(profile) / "Documents", Path(profile) / "OneDrive" / "Documents"]
+    onedrive = os.environ.get("OneDrive")
+    if onedrive and profile:
+        out.append(Path(onedrive) / "Documents")
+    seen: set[str] = set()
+    return [d for d in out if not (os.path.normcase(str(d)) in seen or seen.add(os.path.normcase(str(d))))]
+
+
 def app_dirs() -> list[Path]:
     """The folders a user means by "next to the app": the single-file exe's folder (frozen), the top folder of the
     Windows .zip package (``<top>\\python\\python.exe`` + ``<top>\\app\\romorg``, see ``build_windows.ps1``), and the

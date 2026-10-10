@@ -1,4 +1,4 @@
-"""Scan a folder of Switch games: what each ``.nsp`` / ``.nsz`` / ``.xci`` / ``.xcz`` is, grouped by game.
+"""Tell what a Switch game file is: an ``.nsp`` / ``.nsz`` / ``.xci`` / ``.xcz``.
 
 Each file is read for a few kilobytes (``switchfmt``); its title is told in this order, the first that answers wins:
 
@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from . import switchfmt
 from .switchdb import SwitchDb
 from .switchkeys import nca_title_id
 
-__all__ = ["SwitchFile", "SwitchGame", "SwitchScan", "identify", "scan_folder"]
+__all__ = ["SwitchFile", "identify"]
 
-ProgressFn = Callable[[int, int, str], None]
 _TAGS = re.compile(r"\s*[\[(][^\])]*[\])]")
 
 
@@ -52,39 +51,6 @@ class SwitchFile:
                 "title_id": self.title_id, "base_id": self.base_id, "kind": self.kind, "version": self.version, "how": self.how,
                 "note": self.note, "name": self.name, "ncas": self.ncas, "known": self.known, "checksums": self.checksums,
                 "checksum_note": self.checksum_note}
-
-
-@dataclass
-class SwitchGame:
-    base_id: str
-    name: str
-    files: List[SwitchFile] = field(default_factory=list)
-
-    @property
-    def size(self) -> int:
-        return sum(f.size for f in self.files)
-
-    def public(self) -> Dict[str, Any]:
-        base = [f for f in self.files if f.kind == switchfmt.APPLICATION]
-        updates = sorted({f.version for f in self.files if f.kind == switchfmt.UPDATE and f.version is not None})
-        return {"title_id": self.base_id, "name": self.name, "files": len(self.files), "size": self.size,
-                "has_base": bool(base), "base_version": next((f.version for f in base if f.version is not None), None),
-                "updates": updates, "addons": sum(1 for f in self.files if f.kind == switchfmt.ADDON),
-                "how": sorted({f.how for f in self.files if f.how}),
-                "checksums": ("damaged" if any(f.checksums == "damaged" for f in self.files)
-                              else "ok" if all(f.checksums == "ok" for f in self.files) else
-                              "partly" if any(f.checksums == "ok" for f in self.files) else ""),
-                "known": f"{sum(f.known for f in self.files)} of {sum(f.ncas for f in self.files)}" if any(f.known for f in self.files) else "",
-                "paths": [str(f.path) for f in self.files]}
-
-
-@dataclass
-class SwitchScan:
-    folder: Path
-    games: Dict[str, SwitchGame] = field(default_factory=dict)
-    unidentified: List[SwitchFile] = field(default_factory=list)
-    files: int = 0
-    bytes: int = 0
 
 
 def _clean_name(file_name: str) -> str:
@@ -162,40 +128,3 @@ def identify(path: Path, db: Optional[SwitchDb] = None, header_key: Optional[byt
     known = db.title(out.base_id) if db is not None and db.available else None
     out.name = known["name"] if known else _clean_name(path.name)
     return out
-
-
-def scan_folder(folder: Path, db: Optional[SwitchDb] = None, header_key: Optional[bytes] = None,
-                progress: Optional[ProgressFn] = None, cancel: Any = None, verdicts: Any = None) -> SwitchScan:
-    """Every Switch file under ``folder``, told and grouped by game."""
-    folder = Path(folder)
-    found: List[Path] = []
-    for dirpath, dirnames, names in os.walk(folder):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        for name in sorted(names):
-            if name.lower().endswith(switchfmt.CONTAINER_EXTS) and not name.startswith("."):
-                found.append(Path(dirpath) / name)
-    scan = SwitchScan(folder)
-    for i, path in enumerate(found):
-        if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-            break
-        if progress:
-            progress(i, len(found), path.name)
-        info = identify(path, db, header_key)
-        if verdicts is not None:                       # (what an earlier "check the checksums" found, if the file is the same)
-            got = verdicts.get(path)
-            if got is not None:
-                info.checksums, info.checksum_note = got.status, ", ".join(got.bad[:3])
-        scan.files += 1
-        scan.bytes += info.size
-        if not info.title_id:
-            scan.unidentified.append(info)
-            continue
-        game = scan.games.get(info.base_id)
-        if game is None:
-            game = scan.games[info.base_id] = SwitchGame(info.base_id, info.name)
-        elif info.kind == switchfmt.APPLICATION and info.name:
-            game.name = info.name
-        game.files.append(info)
-    if progress:
-        progress(len(found), len(found), "")
-    return scan

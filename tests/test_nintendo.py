@@ -418,10 +418,10 @@ class Names(Base):
         self.assertFalse(gametdb.GameTdb(self.tmp / "none.sqlite").available)
 
 
-from tests.test_collection_api import CollectionCase  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
+from tests.servercase import ServerCase  # noqa: E402  (sets ROMORG_RETROARCH_DETECT=0 first)
 
 
-class Api(CollectionCase):
+class Api(ServerCase):
     ARCHIVE = False
 
     def setUp(self) -> None:
@@ -456,6 +456,53 @@ class Api(CollectionCase):
 
 
 
+class WindowsPlaces(unittest.TestCase):
+    """Where the emulators keep their data on Windows: under %APPDATA%, or in Documents - which may be redirected (OneDrive)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="romorg-win-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.profile = self.tmp / "Users" / "me"
+        self.onedrive = self.tmp / "OneDrive - Home"
+        (self.profile / "AppData" / "Roaming").mkdir(parents=True)
+        env = mock.patch.dict(os.environ, {"HOME": str(self.tmp / "nohome"), "APPDATA": str(self.profile / "AppData" / "Roaming"),
+                                           "USERPROFILE": str(self.profile), "OneDrive": str(self.onedrive)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_documents_is_looked_for_where_windows_says_and_in_the_usual_places(self) -> None:
+        from romorg import winproc
+        self.assertEqual(winproc.documents_dirs(), [self.profile / "Documents", self.profile / "OneDrive" / "Documents",
+                                                    self.onedrive / "Documents"])
+        elsewhere = self.tmp / "D" / "Docs"
+        with mock.patch.object(winproc, "IS_WINDOWS", True), mock.patch.object(winproc, "_known_documents", return_value=str(elsewhere)):
+            self.assertEqual(winproc.documents_dirs()[0], elsewhere)                  # the folder Windows names comes first
+        with mock.patch.dict(os.environ, {"USERPROFILE": "", "OneDrive": ""}):
+            self.assertEqual(winproc.documents_dirs(), [])
+
+    def test_dolphin_and_pcsx2_are_found_in_a_redirected_documents_folder(self) -> None:
+        from romorg import nintendosaves, pcsx2
+        dolphin = self.onedrive / "Documents" / "Dolphin Emulator"
+        (dolphin / "Wii").mkdir(parents=True)
+        ps2 = self.onedrive / "Documents" / "PCSX2"
+        (ps2 / "memcards").mkdir(parents=True)
+        self.assertEqual(nintendosaves.detect_dolphin(self.tmp / "nohome")["data"], str(dolphin))
+        self.assertEqual(pcsx2.detect_pcsx2(self.tmp / "nohome")["root"], str(ps2))
+
+    def test_appdata_is_where_the_current_builds_are(self) -> None:
+        from romorg import nintendosaves, switchsaves
+        roaming = self.profile / "AppData" / "Roaming"
+        (roaming / "Dolphin Emulator" / "GC").mkdir(parents=True)
+        (roaming / "Cemu" / "mlc01").mkdir(parents=True)
+        (roaming / "eden" / "nand").mkdir(parents=True)
+        (roaming / "Ryujinx" / "bis").mkdir(parents=True)
+        home = self.tmp / "nohome"
+        self.assertEqual(nintendosaves.detect_dolphin(home)["data"], str(roaming / "Dolphin Emulator"))
+        self.assertEqual(nintendosaves.detect_cemu(home)["mlc"], str(roaming / "Cemu" / "mlc01"))
+        self.assertEqual(switchsaves.detect_eden(home)["nand"], str(roaming / "eden" / "nand"))
+        self.assertEqual(switchsaves.detect_ryujinx(home)["data"], str(roaming / "Ryujinx"))
+
+
 class Running(unittest.TestCase):
     def test_the_process_of_an_emulator_is_recognised_on_windows(self) -> None:
         from romorg import emulators, retroarch
@@ -466,6 +513,16 @@ class Running(unittest.TestCase):
             self.assertTrue(emulators.source_running("dolphin"))
             self.assertFalse(emulators.source_running("switch"))
         self.assertFalse(emulators.running("nothing"))
+
+    def test_other_builds_of_an_emulator_and_ryujinx_count_too(self) -> None:
+        from romorg import emulators, retroarch
+        images = [(1, "pcsx2-qtx64-avx2.exe"), (2, "Ryujinx.Ava.exe"), (3, "cemuhook.dll"), (4, "edenic-notes.txt")]
+        with mock.patch.object(emulators.sys, "platform", "win32"), mock.patch.object(retroarch, "_win_processes", return_value=images):
+            self.assertTrue(emulators.running("pcsx2"))
+            self.assertTrue(emulators.running("ryujinx"))
+            self.assertFalse(emulators.running("cemu"))                 # (not a program)
+            self.assertFalse(emulators.running("eden"))
+            self.assertTrue(emulators.source_running("switch"))         # Ryujinx has the Switch saves open as well
 
 
 

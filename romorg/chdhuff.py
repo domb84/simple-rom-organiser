@@ -90,37 +90,6 @@ class Huffman:
             lengths.extend([nb] * rep)
         self._build(lengths)
 
-    def import_tree_huffman(self, br: BitReader) -> None:
-        """Code lengths that are themselves Huffman coded with a small 24-symbol tree (the ``huff`` codec)."""
-        small = Huffman(24, 6)
-        lengths = [br.read(3)]
-        start = br.read(3) + 1
-        count = 0
-        for index in range(1, 24):
-            if index < start or count == 7:
-                lengths.append(0)
-            else:
-                count = br.read(3)
-                lengths.append(0 if count == 7 else count)
-        small._build(lengths)
-        rlefullbits = (self.numcodes - 9).bit_length()
-        n = self.numcodes
-        out: List[int] = []
-        last = 0
-        while len(out) < n:
-            value = small.decode_one(br)
-            if value != 0:
-                last = value - 1
-                out.append(last)
-            else:
-                count = br.read(3) + 2
-                if count == 7 + 2:
-                    count += br.read(rlefullbits)
-                out.extend([last] * min(count, n - len(out)))
-            if br.overflow:
-                raise HuffError("truncated Huffman tree")
-        self._build(out)
-
     def _build(self, lengths: List[int]) -> None:
         maxbits = self.maxbits
         histo = [0] * 33

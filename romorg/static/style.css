@@ -81,7 +81,6 @@ h1 { margin: 0; font-size: 24px; }
 .tabpanel > p { margin: 0 0 12px; }
 
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
-.info-line { font-size: 17px; }
 
 /* ---------- controls ---------- */
 .btn {
@@ -117,7 +116,6 @@ h1 { margin: 0; font-size: 24px; }
   margin: 10px 0; padding: 10px 14px; border-radius: 8px;
   background: rgba(240, 180, 41, 0.12); border-left: 4px solid var(--warn);
 }
-.dats-row { margin-top: 14px; }
 .layout {
   margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--bg);
   font-size: 14px; color: var(--muted); white-space: pre; overflow-x: auto;
@@ -265,25 +263,9 @@ details summary { cursor: pointer; min-height: 32px; display: flex; align-items:
 .dat-card-stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
 .mono-path { overflow-wrap: anywhere; }   /* break inside a word only when a whole word cannot fit */
 
-/* ---------- Kickstart destinations ---------- */
-.dest-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; margin: 8px 0; }
-.dest-option {
-  text-align: left; font: inherit; color: var(--text); cursor: pointer;
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 14px; min-height: var(--tap);
-}
-.dest-option:hover { border-color: var(--accent); }
-.dest-option:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.dest-option.active { border-color: var(--accent); background: rgba(79, 156, 255, 0.18); }
-.dest-label { font-weight: 600; display: flex; gap: 8px; align-items: center; }
-.dest-option .sub { word-break: break-all; }
-
 /* ---------- folder field ---------- */
 .folder-row { display: flex; gap: 8px; align-items: center; min-width: 0; flex-wrap: wrap; }
 .folder-row .input { min-width: 240px; }
-.badge.src-tosec { color: var(--info); border-color: var(--info); }
-.badge.src-nointro { color: var(--ok); border-color: var(--ok); }
-.badge.src-whdload { color: var(--accent); border-color: var(--accent); }
 /* saved / unsaved state of a system's folder field */
 .folder-state { font-size: 12px; font-weight: 600; white-space: nowrap; min-width: 64px; text-align: center; }
 .folder-state.saved { color: var(--ok); }
@@ -341,13 +323,10 @@ tr.row-missing .game-name { color: var(--muted); }
 .rules-panel > summary, .advanced > summary, .incomplete-box > summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 .rules-panel > summary .muted { margin-left: 0.4em; font-weight: 400; }
 .rules-body { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
-.rules-col { display: flex; flex-direction: column; min-width: 0; }
 .rules-head { font-weight: 600; color: var(--muted); font-size: 14px; margin: 4px 0; }
 .rule-check { min-height: 38px; align-items: flex-start; padding: 4px 0; }
 .rule-check input { flex: none; margin-top: 1px; }
 .rule-check .sub { display: block; }
-.advanced-block { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
-.advanced-block h4 { margin: 0 0 8px; font-size: 16px; }
 .incomplete-box { margin: 10px 0; padding: 8px 12px; background: var(--bg); border-radius: 8px; }
 .incomplete-list { margin: 8px 0 0; padding-left: 20px; max-height: 260px; overflow: auto; }
 .incomplete-list li { margin: 3px 0; }
@@ -356,7 +335,6 @@ tr.row-missing .game-name { color: var(--muted); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
 .tag-excl { color: var(--warn); border-color: #7a5d1a; }
 .chip-bad.active { border-color: var(--bad); background: rgba(255, 107, 107, 0.16); }
-
 
 /* ---------- library rules panel (rendered from the server's catalog) ---------- */
 .rules-group { padding: 8px 12px 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
@@ -419,10 +397,7 @@ tr.row-missing .game-name { color: var(--muted); }
 .vanish-hints { align-items: center; }
 .vanish-box .table-wrap { margin-top: 6px; }
 
-/* ---------- Sega Dreamcast ---------- */
-.badge.src-redump { color: var(--warn); border-color: var(--warn); }
-.dc-bar { background: var(--panel); border-left: 4px solid var(--warn); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
-.dc-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* ---------- Disc images (CHD) ---------- */
 .chdman-box { background: var(--panel); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
 .chdman-box.missing { border-left-color: var(--bad); }
 .chdman-line { font-weight: 600; margin-bottom: 6px; }
@@ -436,7 +411,6 @@ tr.row-missing .game-name { color: var(--muted); }
 .badge.raw { color: var(--warn); border-color: var(--warn); }
 
 .borrow-note { color: var(--muted); margin-top: 2px; }
-
 
 /* ---------- shell: system list on the left, the open page on the right ---------- */
 .shell { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -460,15 +434,16 @@ tr.row-missing .game-name { color: var(--muted); }
 .nav-item:hover { background: var(--panel-2); }
 .nav-item:focus-visible { outline: 3px solid var(--accent); outline-offset: -2px; }
 .nav-item[aria-current="true"] { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.nav-item > .dot, .nav-item > .nav-name, .nav-item > .nav-meta { grid-row: 1; }   /* (the running bar is the second row, never beside them) */
 .nav-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-pct { color: var(--muted); font-size: 13px; }
-.nav-meta { display: flex; align-items: center; gap: 6px; }
+.nav-meta { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .nav-saves { color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
 .dot.warn { background: var(--warn); }
 .dot.off { background: transparent; box-shadow: inset 0 0 0 2px var(--border); }
 .nav-collection { grid-template-columns: minmax(0, 1fr); font-weight: 600; margin-bottom: 2px; }
-.nav-job { grid-column: 2 / 4; display: grid; gap: 2px; padding-top: 3px; font-size: 12px; color: var(--muted); }
+.nav-job { grid-column: 2 / 4; grid-row: 2; min-width: 0; display: grid; gap: 2px; padding-top: 3px; font-size: 12px; color: var(--muted); }
 /* the sidebar builds the bar from <span>s: an inline box has no width or height, so the fill was never drawn */
 .nav-job .progress, .nav-job .progress-bar { display: block; }
 .nav-job .progress { height: 5px; }
@@ -519,7 +494,6 @@ a.dat-card { text-decoration: none; }
 .rules-panel[open] > summary { margin-bottom: 6px; }
 .rules-panel > summary:focus-visible, .advanced > summary:focus-visible, .dat-details > summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .tool .row:first-of-type { margin-top: 4px; }
-.dc-bar { margin: 4px 0; }
 .empty .btn { margin-top: 10px; }
 .empty p { margin: 0; }
 
@@ -665,13 +639,6 @@ body.dense .sel-col input { width: 16px; height: 16px; }
 td.why-col { width: 20%; min-width: 180px; }
 td.change-col { width: 44%; min-width: 300px; }
 .th-sort { text-align: left; }
-.databases-panel { margin: 6px 0 8px; }
-.databases-panel .table-wrap { max-height: min(60vh, 520px); margin-bottom: 6px; }
-.databases-panel td, .databases-panel th { padding: 6px 12px; }
-
-/* collection (v0.2) */
-.collection-promo { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.collection-promo .muted { flex: 1 1 320px; }
 #view-collection .panel label.small { display: block; margin: 8px 0 4px; }
 #view-collection td input[type=text] { width: 100%; min-width: 220px; }
 #col-table .notes { white-space: normal; }
@@ -699,8 +666,21 @@ select.saves-choice { min-width: 0; width: 100%; max-width: 230px; padding: 3px 
 .archive-list li { margin: 1px 0; }
 .archive-source { color: var(--muted); margin-bottom: 2px; }
 
-
 /* ---- Emulators page */
 .emu-row { padding: 10px 0; border-top: 1px solid var(--line, rgba(128,128,128,.25)); display: grid; gap: 6px; }
 .emu-row:first-child { border-top: 0; }
 .section-title { margin: 20px 0 4px; }
+
+/* ---- Library rules: each rule of a system follows your defaults until it is overridden there ---- */
+.ov-unit { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 4px 12px; align-items: start; padding: 6px 0; border-top: 1px solid var(--border); }
+.rules-body > .ov-unit:first-child, .rating-rows > .ov-unit:first-child { border-top: 0; }
+.ov-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.ov-unit.on .ov-toggle { color: var(--accent); font-weight: 600; }
+.ov-main { min-width: 0; }
+.ov-unit.off .ov-body { opacity: .5; filter: grayscale(.6); pointer-events: none; }
+.ov-unit.on { background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 6px; }
+.ov-note { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 2px; font-size: 12px; }
+.ov-badge { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border-radius: 8px; padding: 0 8px; font-weight: 600; }
+.linklike { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+.nav-override { width: 8px; height: 8px; border-radius: 2px; background: var(--accent); flex: none; transform: rotate(45deg); }
+@media (max-width: 600px) { .ov-unit { grid-template-columns: minmax(0, 1fr); } }

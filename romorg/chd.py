@@ -60,7 +60,7 @@ from . import cdecc, chdhuff, flacnative, zstdnative
 from .chdhuff import BitReader as _BitReader, Huffman as _HuffmanBase
 
 __all__ = ["Chd", "ChdError", "ChdUnsupported", "Track", "TrackHash", "hash_track", "plan_chunks",
-           "open_chd", "is_chd", "frames_to_bytes", "find_parent"]
+           "find_parent"]
 
 CD_FRAME = 2448
 CD_SECTOR = 2352
@@ -95,19 +95,12 @@ class ChdUnsupported(ChdError):
 
 CD_CODECS = ("cdlz", "cdzl", "cdfl", "cdzs")      # CD hunks: sectors + ECC bitmap, subcode stored separately
 
+
 def _unsupported_codec(codec: str) -> ChdUnsupported:
     exc = ChdUnsupported(f"needs chdman: the CHD uses the compression '{codec}', which the built-in reader does "
                          "not know (a format newer than this app?)")
     exc.needs_chdman = True
     return exc
-
-
-def is_chd(path) -> bool:
-    try:
-        with open(path, "rb") as f:
-            return f.read(8) == b"MComprHD"
-    except OSError:
-        return False
 
 
 # --------------------------------------------------------------------------- CRC16
@@ -127,13 +120,6 @@ _CRC16 = _crc16_table()
 def crc16(data: bytes, crc: int = 0xFFFF) -> int:
     """CRC-16/CCITT as the CHD map uses it (init 0xFFFF, no final xor) = ``binascii.crc_hqx`` (C speed)."""
     return binascii.crc_hqx(data, crc)
-
-
-def crc16_reference(data: bytes, crc: int = 0xFFFF) -> int:
-    t = _CRC16
-    for b in data:
-        crc = ((crc << 8) & 0xFFFF) ^ t[(crc >> 8) ^ b]
-    return crc
 
 
 # --------------------------------------------------------------------------- map decode
@@ -206,17 +192,9 @@ class Track:
     def size(self) -> int:
         return self.data_frames * self.sector_size
 
-    @property
-    def virtual_pregap(self) -> bool:
-        return self.pregap > 0 and self.pgtype.startswith("V")
-
     def to_dict(self) -> dict:
         return {"number": self.number, "type": self.type, "frames": self.frames, "pad": self.pad,
                 "size": self.size, "audio": self.is_audio}
-
-
-def frames_to_bytes(track: Track) -> int:
-    return track.size
 
 
 _KV = re.compile(r"(\w+):(\S+)")
@@ -1056,11 +1034,6 @@ class Chd:
             yield data[off * CD_SECTOR:(off + take) * CD_SECTOR], h in self._swapped
             f += take
 
-    def iter_frames(self, first_frame: int, count: int) -> Iterator[bytes]:
-        """Raw 2352-byte sectors (no subcode) of ``count`` frames from CHD frame ``first_frame``."""
-        for chunk, _swapped in self._frames(first_frame, count):
-            yield chunk
-
     def _extracted(self, track: Track, chunk: bytes, swapped: bool = False) -> bytes:
         """Whole sectors of ``chunk`` (raw 2352-byte sectors of one track) as ``chdman extractcd`` writes them."""
         ssize, soff = track.sector_size, track.sector_offset
@@ -1126,9 +1099,6 @@ class Chd:
             yield data
         if remaining:
             raise ChdError("the CHD holds less data than its header says")
-
-    def _iter_dvd(self, cancel: Optional[Callable[[], bool]] = None) -> Iterator[bytes]:
-        return self.iter_raw(cancel)
 
     # -- verification (chdman verify)
     def overall_sha1(self, raw_digest: bytes) -> str:
@@ -1206,10 +1176,6 @@ def plan_chunks(chd: "Chd", track: Track, target_bytes: int) -> List[Tuple[int, 
 def _strip_subcode(raw: bytes) -> bytes:
     n = len(raw) // CD_FRAME
     return b"".join(raw[i * CD_FRAME:i * CD_FRAME + CD_SECTOR] for i in range(n))
-
-
-def open_chd(path) -> Chd:
-    return Chd(path)
 
 
 # --------------------------------------------------------------------------- hashing

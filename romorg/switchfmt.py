@@ -18,7 +18,6 @@ Title IDs: an application ends in ``000``, its update is the same ID plus ``0x80
 
 from __future__ import annotations
 
-import os
 import re
 import struct
 import xml.etree.ElementTree as ET
