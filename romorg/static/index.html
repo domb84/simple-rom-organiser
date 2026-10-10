@@ -264,15 +264,6 @@
         <h2>Emulators</h2>
         <p class="muted small">Found on this machine and selected for you; change a folder if yours is somewhere else. Switch an emulator off and the app ignores its saves. RetroArch (below) serves every other system.</p>
         <div id="emu-list"></div>
-        <div class="emu-row" id="emu-switch">
-          <div class="row"><b>Nintendo Switch games</b></div>
-          <div id="sw-db-line" class="small"></div>
-          <div id="sw-keys-line" class="small muted"></div>
-          <div class="row">
-            <button class="btn" id="sw-verify-btn" data-needs-idle title="Hashes every NCA in every game file and compares it with its own name. Reads all the files; the result is remembered for files that do not change.">Check the Switch files' checksums</button>
-            <button class="btn" id="sw-db-btn" data-needs-idle>Update the title database now</button>
-            <span class="muted small">Fetched on the first start, then only when you ask (about 100 MB from github.com/blawar/titledb); this does it now.</span>
-          </div>
         </div>
       </div>
       <h2 class="section-title" id="ra-section-title">RetroArch</h2>
@@ -357,8 +348,8 @@
       </div>
 
       <div class="panel" id="ra-bios-panel">
-        <h2>BIOS and firmware</h2>
-        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the Collection root, and any folder you add). Choose one system to limit it.</p>
+        <h2>BIOS, firmware and key files</h2>
+        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the Collection root, and any folder you add). Choose one system to limit it. The key files the Switch and Wii U emulators need (<code>prod.keys</code>, <code>title.keys</code> for Eden and Ryujinx, <code>keys.txt</code> for Cemu) are checked and looked for the same way; a key file found is always copied into place, never moved.</p>
         <div class="row">
           <select id="ra-bios-platform" class="input" aria-label="System"></select>
           <input type="text" id="ra-bios-search" class="input grow mono" placeholder="Also look in this folder (optional)" spellcheck="false" autocomplete="off" aria-label="Another folder to search">
@@ -426,6 +417,11 @@
             <h3 id="totals-lib-title">With your library rules</h3>
             <div id="totals-lib-body" role="status" aria-live="polite"></div>
           </section>
+        </div>
+
+        <div class="panel hidden" id="sw-verify-row">
+          <label class="check" title="Reads every game file in full and compares each part with its own name (a Switch file carries its own checksums). The first scan takes long; a file that has not changed since it was checked is not read again.">
+            <input type="checkbox" id="sw-verify-scan"> Also check every file's checksums when scanning (reads all the files; remembered for files that do not change)</label>
         </div>
 
         <div class="panel">

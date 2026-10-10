@@ -102,3 +102,62 @@ class LibraryTest(ps.PsServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeyFilesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from romorg import keyfiles
+        self.k = keyfiles
+        self.tmp = Path(tempfile.mkdtemp(prefix="romorg-keys-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.eden = self.tmp / "eden" / "nand"
+        self.ryu = self.tmp / "ryujinx"
+        self.cemu = self.tmp / "cemu"
+        for d in (self.eden, self.ryu, self.cemu):
+            d.mkdir(parents=True)
+        self.nin = {"wii": {"data": "", "games": "", "off": ""}, "wiiu": {"data": str(self.cemu), "games": "", "off": ""},
+                    "ps2": {"data": "", "games": "", "off": ""}}
+        self.switch = {"eden": str(self.eden), "ryujinx": str(self.ryu)}
+        self.good = b"header_key = " + bytes(range(32)).hex().encode() + b"\n"
+
+    def rows(self, *dirs: Path) -> dict:
+        res = self.k.check(self.nin, self.switch, dirs, home=self.home)
+        return {(r["emulator"], r["file"]): r for r in res["rows"]}
+
+    def test_a_missing_key_is_found_in_the_other_emulators_folder_and_copied_into_place(self) -> None:
+        (self.ryu / "system").mkdir()
+        (self.ryu / "system" / "prod.keys").write_bytes(self.good)
+        rows = self.rows()
+        self.assertEqual(rows[("ryujinx", "prod.keys")]["status"], "ok")
+        eden = rows[("eden", "prod.keys")]
+        self.assertEqual((eden["status"], eden["source"], eden["target"]), ("found", str(self.ryu / "system" / "prod.keys"), str(self.tmp / "eden" / "keys" / "prod.keys")))
+        self.assertEqual(rows[("eden", "title.keys")]["status"], "missing")
+        self.assertFalse(rows[("eden", "title.keys")]["required"])
+        res = self.k.place(rows.values())
+        self.assertEqual(res["placed"], 1)
+        self.assertTrue((self.tmp / "eden" / "keys" / "prod.keys").is_file())
+        self.assertTrue((self.ryu / "system" / "prod.keys").is_file())                  # (copied: the original stays)
+        self.assertEqual(self.k.place(rows.values())["placed"], 0)                    # (again: the file is there now, nothing is overwritten)
+
+    def test_a_key_file_in_a_searched_folder_is_found_and_a_foreign_file_with_the_name_is_not_taken(self) -> None:
+        dl = self.tmp / "roms" / "switch"
+        dl.mkdir(parents=True)
+        (dl / "keys.txt").write_text("not keys at all\n")
+        (dl / "prod.keys").write_bytes(b"nothing useful")
+        rows = self.rows(self.tmp / "roms")
+        self.assertEqual(rows[("cemu", "keys.txt")]["status"], "missing")
+        self.assertEqual(rows[("eden", "prod.keys")]["status"], "missing")
+        (dl / "keys.txt").write_text("# the Wii U keys\n" + "00112233445566778899aabbccddeeff # common key\n")
+        rows = self.rows(self.tmp / "roms")
+        self.assertEqual((rows[("cemu", "keys.txt")]["status"], rows[("cemu", "keys.txt")]["source"]), ("found", str(dl / "keys.txt")))
+        (self.cemu / "keys.txt").write_text("garbage")
+        self.assertEqual(self.rows(self.tmp / "roms")[("cemu", "keys.txt")]["status"], "invalid")      # (there, but not usable: left alone)
+        self.assertEqual(self.k.place(self.rows(self.tmp / "roms").values())["placed"], 0)
+
+    def test_an_emulator_that_is_not_set_up_has_no_rows(self) -> None:
+        self.switch = {"eden": "", "ryujinx": ""}
+        self.nin["wiiu"]["data"] = ""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "APPDATA": "", "USERPROFILE": ""}):
+            self.assertEqual(self.k.check(self.nin, self.switch, [], home=self.home)["rows"], [])

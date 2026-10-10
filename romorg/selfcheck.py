@@ -373,7 +373,7 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 APP_MODULES = (
     "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "collection", "convert", "datfile", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
-    "bios", "biosdata", "databases", "discmatch", "emulators", "idsaves", "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
+    "bios", "biosdata", "databases", "discmatch", "emulators", "idsaves", "keyfiles", "kickstart", "libexport", "library", "m3u", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ratings", "redump", "retroarch", "rvz", "saveindex", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tosec",
     "totals", "whdload", "winproc", "zstddec", "zstdnative",

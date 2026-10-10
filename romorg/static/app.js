@@ -984,6 +984,7 @@
     $("sys-source").textContent = platformSource(p);
     $("sys-source").className = `badge src-${p.source}`;
     $("sys-sub").textContent = p.extensions && p.extensions.length ? p.extensions.join(" ") : "";
+    Switch.load();
     const example = folderExample(p.folder_hint || "...");
     $("folder-example").textContent = example;
     $("folder-input").placeholder = example;
@@ -1476,6 +1477,7 @@
       card(fmt(s.matched_files), "Matched files", "ok", L("matched")),
       card(fmt(s.unmatched_files), "Unmatched files", s.unmatched_files ? "warn" : "", L("unmatched")),
       ...(s.correctly_placed !== undefined ? [card(fmt(s.correctly_placed), isFlat(currentPlatform()) ? "In place (named correctly)" : "In place (named + in DAT folder)", "ok", L("matched"))] : []),
+      ...(s.checks ? [card(fmt(s.checks.damaged), "Damaged files (checksums)", s.checks.damaged ? "bad" : "ok", L("matched"))] : []),
       card(fmt(s.duplicates), "Duplicates", s.duplicates ? "warn" : "", L("matched")),
       ...(normalised ? [card(fmt(normalised), "Matched with header / byte-swapped", "info", L("matched"))] : []),
       ...(s.chd_files !== undefined ? [
@@ -1984,6 +1986,7 @@
               },
             },
             { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
+            { label: "Checksums", when: (d) => d.items.some((i) => i.checks), render: (i) => (i.checks === "ok" ? badge("ok", "correct") : i.checks === "damaged" ? badge("bad", "damaged") : badge("skip", "not checked")) },
             { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
           ],
         };
@@ -4021,7 +4024,6 @@
     async show() {
       try { this.list = (await get("/api/emulators")).emulators; } catch (err) { toast(err.message, "error"); return; }
       this.render();
-      Switch.load();
     },
 
     render() {
@@ -4217,28 +4219,38 @@
 
     showBios(r) {
       this.bios = r;
-      const c = r.counts;
+      const c = { ...r.counts };
+      const keys = (r.keys && r.keys.rows) || [];
+      c.found += keys.filter((k) => k.status === "found").length;
+      this.biosFound = c.found;
       $("ra-bios-out").classList.remove("hidden");
       $("ra-bios-cards").replaceChildren(
         card(fmt(r.cores.length), "Cores", "info"), card(fmt(c.ok + c.present), "In place", "ok"),
         ...(c.wrong ? [card(fmt(c.wrong), "Wrong checksum", "bad")] : []),
         ...(c.found ? [card(fmt(c.found), "Found, not placed yet", "info")] : []),
         card(fmt(c.missing), "Missing", c.missing ? "warn" : ""),
-        card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"));
+        card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"),
+        ...(keys.length ? [card(fmt(keys.filter((k) => k.required && k.status !== "ok").length), "Key files not in place", keys.some((k) => k.required && k.status !== "ok") ? "bad" : "ok")] : []));
       $("ra-bios-where").textContent = `Cores of ${r.scope}. System folder: ${r.system_dir}. Searched: ${r.searched.length ? r.searched.join(", ") : "nothing"}.${r.complete ? "" : " The search stopped early (time limit): files found by checksum under another name may be missing from the list."}`;
       const LABEL = { ok: "verified", present: "there (no checksum to compare)", wrong: "there, wrong checksum", found: "found - not in place", missing: "missing" };
-      $("ra-bios-table").replaceChildren(...r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
+      const firmware = r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
         el("td", { text: core.core, title: (core.serves || []).join(", ") }), el("td", { class: "mono small", text: f.path }), el("td", { text: f.optional ? "optional" : "required" }),
         el("td", {}, badge(f.status === "ok" || f.status === "present" ? "ok" : f.status === "found" ? "info" : f.status === "wrong" ? "bad" : f.optional ? "skip" : "warn", LABEL[f.status])),
-        el("td", { class: "mono small", text: f.source || "" })))));
+        el("td", { class: "mono small", text: f.source || "" }))));
+      const KEY_LABEL = { ok: "there", invalid: "there, but not a usable key file", found: "found - not in place (copied, never moved)", missing: "missing" };
+      const keyRows = keys.map((k) => el("tr", {},
+        el("td", { text: k.label, title: `The key file ${k.platform} needs` }), el("td", { class: "mono small", text: k.target }), el("td", { text: k.required ? "required" : "optional" }),
+        el("td", {}, badge(k.status === "ok" ? "ok" : k.status === "found" ? "info" : k.status === "invalid" ? "bad" : k.required ? "warn" : "skip", KEY_LABEL[k.status])),
+        el("td", { class: "mono small", text: k.source || "" })));
+      $("ra-bios-table").replaceChildren(...firmware, ...keyRows);
     },
 
     async biosApply() {
       const r = this.bios;
       if (!r) { toast("Press Check first to see what can be placed.", "info"); return; }
-      if (!r.counts.found) { toast("No file to place: nothing missing was found in the folders searched.", "info"); return; }
+      if (!this.biosFound) { toast("No file to place: nothing missing was found in the folders searched.", "info"); return; }
       const mode = $("ra-bios-mode").value;
-      if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} file(s) into ${r.system_dir}? Nothing is overwritten; Undo puts them back.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
+      if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} firmware file(s) into ${r.system_dir}${(r.keys && r.keys.rows.some((k) => k.status === "found")) ? ", and copy the key files found into the emulators' folders (key files are always copied)" : ""}? Nothing is overwritten; Undo puts the moved files back.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
       Jobs.start("/api/retroarch/bios/apply", { ...this.biosBody(), mode });
     },
 
@@ -4303,31 +4315,25 @@
   };
 
   // ------------------------------------------------------------------ Nintendo Switch: games and the saves of Eden and Ryujinx
+  /** The Switch's option "also check every file's checksums when scanning" (its own stored setting). */
   const Switch = {
-    info: null,        // GET /api/switch
-
     async load() {
-      try { this.info = await get("/api/switch"); } catch (err) { toast(err.message, "error"); return; }
-      const i = this.info, db = i.db;
-      $("sw-db-line").textContent = db.available ? `Title database: ${fmt(db.titles)} games and ${fmt(db.ncas)} files known, fetched ${db.fetched}.`
-        : "No title database yet: it is downloaded on the first start (or press Check for updates). Until then Switch games cannot be matched.";
-      $("sw-keys-line").textContent = i.keys.path ? `prod.keys: ${i.keys.chosen ? "chosen" : "found"} (used only to read the title ID of a game card dump)`
-        : "prod.keys: not found (a game card dump is then told by its name only).";
+      const p = currentPlatform();
+      const row = $("sw-verify-row");
+      row.classList.toggle("hidden", !(p && p.name === "Nintendo Switch"));
+      if (row.classList.contains("hidden")) return;
+      try { $("sw-verify-scan").checked = !!(await get("/api/switch")).config.verify_scan; } catch (err) { toast(err.message, "error"); }
     },
 
     bind() {
-      $("sw-verify-btn").addEventListener("click", () => Jobs.start("/api/switch/verify", {}));
-      $("sw-db-btn").addEventListener("click", () => Jobs.start("/api/switch/db/update", {}));
+      $("sw-verify-scan").addEventListener("change", async (e) => {
+        const box = e.target;
+        try {
+          await post("/api/switch/config", { verify_scan: box.checked });
+          toast(box.checked ? "The next scan checks every file's checksums" : "Scans no longer check the checksums", "ok");
+        } catch (err) { box.checked = !box.checked; toast(err.message, "error"); }
+      });
     },
-  };
-  Jobs.handlers.switchverify = async (job) => {
-    if (job.status === "done" && job.result && job.result.verify) {
-      const v = job.result.verify;
-      toast(`Checksums: ${fmt(v.checked)} files checked${v.skipped ? `, ${fmt(v.skipped)} already known` : ""}, ${fmt(v.damaged)} damaged`, v.damaged ? "error" : "ok", 8000);
-    }
-  };
-  Jobs.handlers.switchdb = async (job) => {
-    if (job.status === "done") { await Switch.load(); toast("Switch title database updated", "ok"); }
   };
 
   // ------------------------------------------------------------------ settings for every system

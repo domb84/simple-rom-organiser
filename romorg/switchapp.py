@@ -26,6 +26,7 @@ def normalise(raw: Any) -> Dict[str, Any]:
     (the platform's); what was set here before is only a fallback."""
     raw = raw if isinstance(raw, dict) else {}
     out: Dict[str, Any] = {k: str(raw.get(k) or "") for k in TEXT_KEYS}
+    out["verify_scan"] = bool(raw.get("verify_scan"))             # a scan also checks every file's checksums (reads all the files)
     return out
 
 

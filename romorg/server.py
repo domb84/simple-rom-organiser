@@ -1513,6 +1513,11 @@ class App:
                            id_matcher=self._switch_matcher())
         if cancellable and job.cancel.is_set():
             return None
+        if platform.name == "Nintendo Switch" and self._switch_cfg().get("verify_scan"):
+            try:
+                self._switch_check_files(result, rep, job.cancel if cancellable else None)
+            except InterruptedError:
+                return None
         dat_names = list(getattr(result, "dat_names", None) or [getattr(d, "name", "") for d in dats])
         result.cache_units = True      # a finished scan is never edited: its organiser units can be reused
         state = ScanState(result=result, root=root, platform=platform, dat_names=dat_names,
@@ -1530,6 +1535,36 @@ class App:
         switchapp, switchmatch = _mod("switchapp"), _mod("switchmatch")
         key = switchapp.header_key(self._switch_cfg())
         return lambda roms: switchmatch.make_matcher(roms, key)
+
+    @staticmethod
+    def _switch_check_files(result: Any, rep: Callable[..., None], cancel: Any) -> None:
+        """The option "also check every file's checksums": each matched ``.nsp`` / ``.xci`` has every NCA hashed and compared with its own
+        name (``switchverify``). The verdict of a file that has not changed since it was last checked is remembered. ``result.checks`` is
+        ``{path: ok | damaged | not checked}``."""
+        switchverify = _mod("switchverify")
+        files = sorted({m.entry.path for m in result.matched if getattr(m.entry, "member", None) is None
+                        and m.entry.path.suffix.lower() in (".nsp", ".xci")}, key=os.fspath)
+        cache = switchverify.VerifyCache()
+        checks: dict[str, str] = {}
+        try:
+            todo = []
+            for path in files:
+                got = cache.get(path)
+                if got is not None:
+                    checks[os.fspath(path)] = got.status
+                else:
+                    todo.append(path)
+            total = sum(p.stat().st_size for p in todo)
+            base = 0
+            for path in todo:
+                size = path.stat().st_size
+                verdict = switchverify.verify_file(path, None, lambda done, _t, label, b=base: rep(b + done, total, f"Checking {label}"), cancel)
+                cache.put(path, verdict)
+                checks[os.fspath(path)] = verdict.status
+                base += size
+        finally:
+            cache.close()
+        result.checks = checks
 
     SCANS_KEPT = 6
 
@@ -1580,6 +1615,11 @@ class App:
     def _summary(self, state: ScanState) -> dict[str, Any]:
         if state.summary is None:
             summary = dict(state.result.summary())
+            checks = getattr(state.result, "checks", None)
+            if checks is not None:
+                values = list(checks.values())
+                summary["checks"] = {"ok": values.count("ok"), "damaged": values.count("damaged"),
+                                     "not_checked": len(values) - values.count("ok") - values.count("damaged")}
             summary["missing_dats"] = list(state.missing_dats)
             state.summary = summary
         return dict(state.summary)
@@ -2009,6 +2049,7 @@ class App:
         return {
             "file": _entry_rel(entry, root), "size": entry.size, "crc": entry.crc,
             "dat": dat, "roms": names, "game": primary[0].game if primary else "",
+            **({"checks": state.result.checks.get(path, "not checked")} if getattr(state.result, "checks", None) is not None else {}),
             "set_name": getattr(primary[0], "set_name", "") if primary else "",
             "other_dats": sorted({_rom_dat(r) for r in match.roms} - {dat, ""}),
             "named_ok": named,
@@ -3957,12 +3998,17 @@ class App:
             dirs.append(Path(os.path.expanduser(extra)))
         return ra, sel, cores, dirs, systems, label
 
+    def _keys_check(self, dirs: list[Path], progress: Callable[[str], None] | None) -> dict[str, Any]:
+        """The key files of the emulators that need them (Eden / yuzu, Ryujinx, Cemu): see ``keyfiles``."""
+        return _mod("keyfiles").check(self._nin_cfg(), self._switch_eff(), dirs, progress=progress)
+
     def retroarch_bios(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/bios {platform?, search_dir?}``: the firmware the cores expect, what is in place and where the
         missing files lie (synchronous; the UI uses ``/bios/scan``, a job with progress)."""
         ra, sel, cores, dirs, systems, label = self._ra_bios_scope(body)
         out = ra.check_bios_cores(sel, cores, dirs, platforms=systems)
         out["scope"], out["searched"] = label, [str(d) for d in dirs]
+        out["keys"] = self._keys_check(dirs, None)
         return out
 
     def retroarch_bios_scan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -3972,6 +4018,7 @@ class App:
             job.report(0, 0, "Reading the cores' firmware lists...")
             out = ra.check_bios_cores(sel, cores, dirs, platforms=systems, progress=lambda m: job.report(0, 0, m))
             out["scope"], out["searched"], out["action"] = label, [str(d) for d in dirs], "retroarch_bios_check"
+            out["keys"] = self._keys_check(dirs, lambda m: job.report(0, 0, m))
             return out
 
         return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
@@ -3991,6 +4038,10 @@ class App:
             items = list({i["target"]: i for i in items}.values())
             job.report(0, len(items), "Placing files...")
             res = ra.apply_bios(sel, items, journal_dir, mode)
+            keys = _mod("keyfiles").place(r for r in self._keys_check(dirs, lambda m: job.report(0, 0, m))["rows"]
+                                          if not wanted or r["source"] in wanted)
+            res["keys_placed"] = keys["placed"]
+            res["failed"] = list(res.get("failed", [])) + keys["failed"]
             res["action"] = "retroarch_bios"
             return res
 
@@ -4019,6 +4070,8 @@ class App:
                     if key != "keys" and os.path.isfile(value):
                         raise ApiError(HTTPStatus.BAD_REQUEST, "That is a file, not a folder.", "bad_switch_folder")
                 _mod("switchapp").store(key, value, cfg)
+        if "verify_scan" in body:
+            cfg["verify_scan"] = _bool_arg(body.get("verify_scan"), False)
         self._config_update(switch=cfg, strict=True)
         return self.switch_get({}, None)
 

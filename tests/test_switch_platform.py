@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import test_dc_server as base  # noqa: E402
-from test_switch import APP, UPDATE, game_nsp, small_db  # noqa: E402
+from test_switch import APP, UPDATE, game_nsp, nca_named, pfs0, small_db  # noqa: E402
 from romorg import switchdb  # noqa: E402
 
 SW = "Nintendo Switch"
@@ -61,6 +61,24 @@ class SwitchLibraryTests(SwitchPlatformCase):
         self.assertIn("superseded", text)
         self.assertIn("Some Game", text)
         self.assertEqual(plan["reasons"].get("superseded"), 1)
+
+
+class SwitchChecksumOptionTests(SwitchPlatformCase):
+    def test_a_scan_also_checks_every_file_when_the_option_is_on(self) -> None:
+        name, body = nca_named(b"original")
+        (self.games / "update 2.nsp").unlink()
+        (self.games / "update 2 [v131072].nsp").write_bytes(pfs0({name: body[:-1] + b"X", f"{UPDATE}{'0' * 16}.tik": b"t"}))      # one byte changed
+        self.scan()
+        self.assertNotIn("checks", self.call("/api/status")["scan"]["summary"])                                       # (off: nothing is read)
+        self.assertNotIn("checks", self.call("/api/scan/results?kind=matched")["items"][0])
+        self.call("/api/switch/config", {"verify_scan": True})
+        self.assertTrue(self.call("/api/switch")["config"]["verify_scan"])
+        self.scan()
+        checks = self.call("/api/status")["scan"]["summary"]["checks"]
+        self.assertEqual((checks["ok"], checks["damaged"]), (2, 1))
+        by = {m["file"]: m["checks"] for m in self.call("/api/scan/results?kind=matched")["items"]}
+        self.assertEqual(by["Some Game [v0].nsp"], "ok")
+        self.assertEqual(by["update 2 [v131072].nsp"], "damaged")
 
 
 if __name__ == "__main__":

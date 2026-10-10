@@ -934,9 +934,10 @@ with shader caches) are ignored.
   An update whose version the database does not list is unmatched.
 * **Library.** The ordinary rules: *latest update only* applies to the updates catalogue (older updates go to the archive's
   `_superseded`), duplicates, region on the games, unmatched files to `_unmatched`, and files are renamed to the catalogue names.
-* **Checksums.** A Switch file names each NCA by the first 16 bytes of its SHA-256, so it carries its own checksums. **Check the Switch
-  files' checksums** (Emulators page) hashes every NCA of every game file and compares it with its name (`.nsz` / `.xcz` are not
-  checked); the result is remembered for files that do not change.
+* **Checksums.** A Switch file names each NCA by the first 16 bytes of its SHA-256, so it carries its own checksums. The option **Also
+  check every file's checksums when scanning** (on the Switch system's Overview) hashes every NCA of every matched `.nsp` / `.xci` and
+  compares it with its name (`.nsz` / `.xcz` are not checked). Browse shows each file as correct or damaged, and Overview counts the
+  damaged ones. The first scan reads every file; the verdict of a file that has not changed is remembered.
 * **Saves** (Eden and Ryujinx, by title ID, shown on the system's Overview and Browse): see below. Copying saves between the emulators is
   planned, see `docs/SWITCH_PLAN.md`.
 
@@ -978,6 +979,12 @@ list libretro's cores use (`System.dat`: 514 files of 60 systems, bundled; names
 called. It is then treated like a ROM: it stays with the ROMs, a Library build renames it to the name the emulators expect
 (`scph1001.bin`, `dc_boot.bin` ...), and it is never moved to `_unmatched` or the archive. The Browse tab marks it *BIOS / firmware* in
 the Unmatched list. `prod.keys`, `title.keys` and `keys.txt` (Switch and Wii U emulators) are told by name and left alone.
+
+The **BIOS, firmware and key files** check on the Emulators page also looks for the key files the emulators need: `prod.keys` and
+`title.keys` for Eden / yuzu (`<user folder>/keys`) and Ryujinx (`system`), `keys.txt` for Cemu (its data folder). For each emulator that
+is set up it shows whether the file is there and usable (a `prod.keys` needs the header key, a `keys.txt` a 32-digit key), and when it is
+missing it looks in the other Switch emulator's folder, the ROM folders and the downloads. **Place found files** *copies* a found key file
+into place - never moves it, never over a file that is there.
 
 ## Kickstarts for RetroArch (PUAE)
 
