@@ -42,7 +42,7 @@ from . import ratings as _ratings
 from . import switchdb as _switchdb
 from . import redump as _redump
 from . import whdload as _whdload
-from .nointro import NOINTRO_DATS, NoIntroError
+from .nointro import NOINTRO_DATS, NoIntroError, all_dat_names
 from .ratings import RatingsError
 from .redump import REDUMP_DATS, RedumpError
 from .whdload import WHDLOAD_DATS, WhdloadError
@@ -70,8 +70,6 @@ class UpdateError(Exception):
         self.message = message or code
 
 
-# the systems whose files are told with the help of a list of names besides their DAT: DAT name -> the list
-NAME_LISTS = {"Nintendo - Wii": "gametdb"}
 # the systems whose "DAT" is made from one of the title databases (no DAT of checksums exists): DAT name -> the database
 MADE_DATS = {"Nintendo - Wii U": "gametdb", "Nintendo - Switch": "switchdb", "Nintendo - Switch (Updates)": "switchdb",
              "Nintendo - Switch (DLC)": "switchdb"}
@@ -232,7 +230,7 @@ class UpdateManager:
             local = {d.name: d.version or None for d in self.nointro.list_dats()}
         except Exception:  # noqa: BLE001 - status must never fail
             local = {}
-        versions = [v for n, v in local.items() if n in NOINTRO_DATS and v]
+        versions = [v for n, v in local.items() if n in all_dat_names() and v]
         return (max(versions) if versions else None), local
 
     def _installed_whdload(self) -> tuple[Optional[str], dict[str, Optional[str]]]:
@@ -367,7 +365,7 @@ class UpdateManager:
         with self._lock:
             tos_status = self._tosec_status(tos_installed)
             rows = []
-            for name in NOINTRO_DATS:
+            for name in all_dat_names():
                 row = self._nointro_rows.get(name, {})
                 st = row.get("status")
                 if self._updating == "nointro" and st in ("update_available", "unknown", "missing"):
@@ -433,7 +431,7 @@ class UpdateManager:
         out: list[str] = []
         if self._installed_tosec() is None:
             out.append("tosec")
-        if not set(NOINTRO_DATS) <= {d.name for d in self.nointro.list_dats()}:
+        if not set(all_dat_names()) <= {d.name for d in self.nointro.list_dats()}:
             out.append("nointro")
         if self.whdload is not None and not set(WHDLOAD_DATS) <= {d.name for d in self.whdload.list_dats()}:
             out.append("whdload")
@@ -604,7 +602,7 @@ class UpdateManager:
             return
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
-        names = (list(scope[1]) if scope is not None else list(NOINTRO_DATS)) if want_nointro else []
+        names = (list(scope[1]) if scope is not None else list(all_dat_names())) if want_nointro else []
         want_whd = self.whdload is not None and (scope is None or scope[0] == "whdload")
         whd_names = (list(scope[1]) if scope is not None else list(WHDLOAD_DATS)) if want_whd else []
         want_red = self.redump is not None and (scope is None or scope[0] == "redump")
@@ -984,24 +982,6 @@ class UpdateManager:
     def _present(platform: platforms.Platform) -> bool:
         return bool(platforms.locate_dats(platform))
 
-    def _ensure_names(self, platform: platforms.Platform, progress: Optional[Progress], cancel: Any) -> None:
-        """A system whose files are told through a list of names besides its DAT (the Wii: GameTDB gives a disc's title) gets that list
-        when it is missing. Best effort: without it a disc is told by its header's own title, and nothing here fails a scan."""
-        key = next((k for dat, k in NAME_LISTS.items() if dat in platform.dats and getattr(self, k, None) is not None), "")
-        if not key or not self.enabled:
-            return
-        try:
-            if getattr(self, key).db_info()["available"]:
-                return
-            with self._lock:
-                if self._running:
-                    return
-                self._running = True
-                self._begin()
-            self._run(scope=("extra", (key,)), cancel=cancel, forward=progress, claimed=True)
-        except Exception:  # noqa: BLE001
-            pass
-
     def ensure(self, platform: platforms.Platform, progress: Optional[Progress] = None,
                cancel: Any = None) -> None:
         """Return when at least one DAT of ``platform`` is installed, updating first if needed.
@@ -1009,13 +989,12 @@ class UpdateManager:
         Waits for a running update (forwarding its progress) or runs one here (single-flight).
         Raises :class:`UpdateError` (``offline`` | ``failed`` | ``cancelled``).
         """
-        self._ensure_names(platform, progress, cancel)
         if self._present(platform):
             return
         if not self.enabled:
             raise UpdateError("offline", "The DATs for this system are not installed and "
                                          "automatic updates are disabled.")
-        scope = (platforms.source_of(platform), tuple(platform.dats))
+        scope = (platforms.fetch_source(platform), tuple(platform.dats))
         extra = next((k for dat, k in MADE_DATS.items() if dat in platform.dats and getattr(self, k, None) is not None), "")
         if extra:
             scope = ("extra", (extra,))

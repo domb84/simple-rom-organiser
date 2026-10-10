@@ -306,6 +306,14 @@ def has_kickstart(platform: Any) -> bool:
     return bool(getattr(platform, "kickstart_dat", None) or getattr(platform, "kickstart_folder", ""))
 
 
+def fetch_source(platform: Platform) -> str:
+    """Which updater keeps the platform's DATs current: the GameCube's and the Wii's come with the No-Intro ones (libretro's mirror)."""
+    from .nointro import MIRRORED_REDUMP
+    if any(d in MIRRORED_REDUMP for d in platform.dats):
+        return DatSource.NOINTRO.value
+    return source_of(platform)
+
+
 def source_of(platform: Platform) -> str:
     """The DAT source of a platform as a plain string ("tosec" | "nointro" | "whdload")."""
     src = platform.source
@@ -321,8 +329,9 @@ def locate_dats(platform: Platform, directory: Optional[Union[str, Path]] = None
                 redump_directory: Optional[Union[str, Path]] = None) -> dict[str, "DatInfo"]:
     """``{dat name: DatInfo}`` for the platform's DATs present locally (exact names)."""
     if _source(platform) == DatSource.REDUMP.value:
-        from . import redump
+        from . import nointro, redump
         local = {d.name: d for d in redump.list_dats(redump_directory)}
+        local.update({d.name: d for d in nointro.list_dats(nointro_directory) if d.name in nointro.MIRRORED_REDUMP})   # (libretro's mirror: the GameCube, the Wii)
     elif _source(platform) == DatSource.NOINTRO.value:
         from . import nointro
         local = {d.name: d for d in nointro.list_dats(nointro_directory)}

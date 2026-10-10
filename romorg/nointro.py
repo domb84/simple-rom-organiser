@@ -43,6 +43,10 @@ NOINTRO_DATS = (
     "Sega - 32X",
     "Atari - Lynx",
 )
+# Redump's GameCube and Wii lists as libretro's mirror has them (clrmamepro text, with each disc's serial; no betas, prototypes or demos
+# the mirror left out): downloaded here, with the No-Intro DATs, from the mirror's own folder. The platforms' source stays "redump".
+MIRRORED_REDUMP = ("Nintendo - GameCube", "Nintendo - Wii")
+REDUMP_MIRROR_URL = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
 MANIFEST = "manifest.json"   # {name: {"version", "etag", "sha1", "size", "url", "downloaded_at"}}
 
 _VERSION_RE = re.compile(rb'\bversion\s+"([^"]*)"')
@@ -61,7 +65,12 @@ def _dir(directory: Optional[PathLike]) -> Path:
 
 
 def dat_url(name: str) -> str:
-    return BASE_URL + urllib.parse.quote(name + ".dat")
+    return (REDUMP_MIRROR_URL if name in MIRRORED_REDUMP else BASE_URL) + urllib.parse.quote(name + ".dat")
+
+
+def all_dat_names() -> tuple:
+    """Every DAT this module keeps current: the No-Intro ones and the mirrored Redump ones."""
+    return tuple(NOINTRO_DATS) + MIRRORED_REDUMP
 
 
 def header_version(path: PathLike) -> str:

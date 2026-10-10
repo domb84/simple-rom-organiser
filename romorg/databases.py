@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from . import biosdata, platforms
+from .nointro import MIRRORED_REDUMP as MIRRORED
 
 __all__ = ["describe"]
 
@@ -22,8 +23,8 @@ TOSEC_URL = "https://www.tosecdev.org/downloads"
 NOINTRO_URL = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
 WHDLOAD_URL = "https://github.com/MrV2K/WHDLoad-Database"
 REDUMP_URL = "http://redump.org/datfile/"
-REDUMP_SLUG = {"Sega - Dreamcast": "dc", "Sony - PlayStation": "psx", "Sony - PlayStation 2": "ps2", "Nintendo - GameCube": "gc",
-               "Nintendo - Wii": "wii"}
+REDUMP_SLUG = {"Sega - Dreamcast": "dc", "Sony - PlayStation": "psx", "Sony - PlayStation 2": "ps2"}
+REDUMP_MIRROR = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
 TITLEDB_URL = "https://github.com/blawar/titledb"
 GAMETDB_URL = "https://www.gametdb.com/"
 GAMETDB_WIIU = "https://www.gametdb.com/wiiutdb.zip"
@@ -55,14 +56,16 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
     t = u.get("tosec") or {}
     rows.append(_row(GROUP_DAT, "TOSEC", "Full DAT pack (all TOSEC systems)", TOSEC_URL, used.get("Commodore Amiga - Games - [ADF]", []), t,
                      note="about 100 MB; fetched only when its release date changes"))
-    for key, label, url_of in (("nointro", "No-Intro", lambda n: NOINTRO_URL + quote(n) + ".dat"),
+    for key, label, url_of in (("nointro", "No-Intro", lambda n: (REDUMP_MIRROR if n in MIRRORED else NOINTRO_URL) + quote(n) + ".dat"),
                                ("whdload", "WHDLoad", lambda n: WHDLOAD_URL),
                                ("redump", "Redump", lambda n: REDUMP_URL + REDUMP_SLUG.get(n, "") + "/" if n in REDUMP_SLUG else REDUMP_URL)):
         b = u.get(key) or {}
         for d in b.get("dats") or ():
-            rows.append(_row(GROUP_DAT, label, d["name"], url_of(d["name"]), used.get(d["name"], []),
+            mirrored = key == "nointro" and d["name"] in MIRRORED
+            rows.append(_row(GROUP_DAT, "Redump, via libretro" if mirrored else label, d["name"], url_of(d["name"]), used.get(d["name"], []),
                              {**d, "installed": d.get("version"), "checked_at": b.get("checked_at"),
-                              "latest": d.get("latest") or (d.get("version") if d.get("status") == "up_to_date" else None)}))
+                              "latest": d.get("latest") or (d.get("version") if d.get("status") == "up_to_date" else None)},
+                             note="libretro's copy of Redump's list: with each disc's serial, without betas, prototypes and demos" if mirrored else ""))
     sw, gt = u.get("switchdb") or {}, u.get("gametdb") or {}
     switch = [p for p in ("Nintendo Switch",)]
     rows.append(_row(GROUP_MADE, "titledb", "Nintendo Switch: games, every update version, add-ons", TITLEDB_URL, switch, sw,
@@ -72,8 +75,6 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
                      note="the DAT \"Nintendo - Wii U\" is made from it; a disc is matched by its product code"))
     rows.append(_row(GROUP_MADE, "No-Intro", "Nintendo Wii U (Digital): the spelling and languages of those names", NOINTRO_WIIU, ["Nintendo Wii U"], gt,
                      note="optional; fetched together with GameTDB's list"))
-    rows.append(_row(GROUP_OTHER, "GameTDB", "Wii disc titles (by game ID)", GAMETDB_URL + "wiitdb.txt", ["Nintendo Wii"], gt,
-                     note="names a Wii disc that is not the original image (.rvz, .wbfs ...) so it can be found in Redump's list"))
     rows.append(_row(GROUP_OTHER, "PCSX2", "PlayStation 2 game names by serial (GameIndex.yaml)", PCSX2_INDEX, ["Sony PlayStation 2"], gt,
                      note="names the PCSX2 saves that have no game file here; fetched together with GameTDB's lists"))
     r = u.get("ratings") or {}

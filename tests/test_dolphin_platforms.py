@@ -35,6 +35,17 @@ def write_dat(name: str, games: list) -> None:
                                         "</header>" + "".join(rows) + "</datafile>", encoding="utf-8")
 
 
+def write_mirror_dat(name: str, games: list) -> None:
+    """A DAT as libretro's mirror of Redump has it: clrmamepro text, with each disc's serial (``(name, data, serial)``)."""
+    out = [f'clrmamepro (\n\tname "{name}"\n\tversion "2026.10.07"\n)\n']
+    for game, data, serial in games:
+        out.append(f'game (\n\tname "{game}"\n\tserial "{serial}"\n\trom ( name "{game}.iso" size {len(data)} crc {zlib.crc32(data) & 0xFFFFFFFF:08X} '
+                   f'md5 {hashlib.md5(data).hexdigest()} sha1 {hashlib.sha1(data).hexdigest()} serial "{serial}" )\n)\n')
+    folder = paths.nointro_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.dat").write_text("".join(out), encoding="utf-8")
+
+
 class DolphinCase(base.DcServerCase):
     def setUp(self) -> None:
         super().setUp()
@@ -64,7 +75,7 @@ class DolphinCase(base.DcServerCase):
 
         self.wii = self.base / "wii"
         self.wii.mkdir()
-        write_dat(WII_DAT, [("Super Mario Galaxy (USA)", b"galaxy")])
+        write_mirror_dat(WII_DAT, [("Super Mario Galaxy (USA) (En,Fr,Es)", b"galaxy", "RVL-RMGE-USA")])
         data = bytearray(iso("RMGE01", "Super Mario Galaxy"))
         R.build_rvz(self.wii / "whatever.rvz", bytes(data), compression=R.NONE, disc_type=2)
 
@@ -108,11 +119,11 @@ class WiiTests(DolphinCase):
         self.call("/api/emulators/config", {"source": "dolphin", "folder": str(self.dolphin)})
         self.scan(WII, self.wii)
         games = self.games()
-        self.assertEqual(games["Super Mario Galaxy (USA)"]["have"], True)
-        self.assertEqual(games["Super Mario Galaxy (USA)"]["saves"]["total"], 1)
+        self.assertEqual(games["Super Mario Galaxy (USA) (En,Fr,Es)"]["have"], True)
+        self.assertEqual(games["Super Mario Galaxy (USA) (En,Fr,Es)"]["saves"]["total"], 1)
         # a Wii platform does not see the GameCube saves, nor the GameCube platform the Wii ones
         sets = self.call("/api/scan/results?kind=saves")["items"]
-        self.assertEqual({s["game"] for s in sets if s["match"] == "rom"}, {"Super Mario Galaxy (USA)"})
+        self.assertEqual({s["game"] for s in sets if s["match"] == "rom"}, {"Super Mario Galaxy (USA) (En,Fr,Es)"})
 
 
 class WiiUTests(base.DcServerCase):

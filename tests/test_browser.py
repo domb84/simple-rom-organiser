@@ -196,7 +196,7 @@ class DatabasesPanelTests(UiTestCase):
             self.assertIn(wanted, names)
         self.assertEqual(names["Nintendo - Game Boy Advance"]["installed"], "20250101-000000")     # the fixture's DAT version
         self.assertEqual(names["Sega - Dreamcast"]["installed"], "not installed")
-        self.assertEqual(names["Nintendo - Wii"]["url"], "http://redump.org/datfile/wii/")
+        self.assertEqual(names["Nintendo - Wii"]["url"], "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Nintendo%20-%20Wii.dat")
         self.assertTrue(names["Nintendo - Game Boy Advance"]["url"].endswith("Nintendo%20-%20Game%20Boy%20Advance.dat"))
         self.assertIn("Nintendo Wii U", names["Nintendo Wii U: the disc games, with region and languages"]["used"])
         self.assertEqual({r["source"] for r in rows} >= {"TOSEC", "No-Intro", "WHDLoad", "Redump", "titledb", "GameTDB", "PCSX2", "LaunchBox", "libretro"}, True)

@@ -41,6 +41,8 @@ class Rom:
     set_name: str = ""
     # Redump: the game's ``<category>`` ("Games", "Demos", "Coverdiscs", ...); "" for the other sources.
     category: str = ""
+    # The disc's serial where the DAT has one (libretro's mirror of Redump: ``RVL-SB4E-USA-B0``), else "".
+    serial: str = ""
 
     @property
     def tags(self) -> "Tags":
@@ -232,7 +234,15 @@ def parse_logiqx(path: Union[str, os.PathLike[str]]) -> DatFile:
 def parse_redump(path: Union[str, os.PathLike[str]]) -> DatFile:
     """Parse a Redump Logiqx DAT: one *game* is one disc, so every rom of a game (its ``.cue`` and one
     ``(Track N).bin`` per track) gets ``set_name = game name`` (have / missing count games, not tracks)."""
-    dat = parse_logiqx(path)
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(64).lstrip()
+    except OSError:
+        head = b""
+    if head[:11].lower() == b"clrmamepro ":            # libretro's mirror of Redump (GameCube, Wii): clrmamepro text, with the serials
+        dat = parse_clrmamepro(path, set_names=False)
+    else:
+        dat = parse_logiqx(path)
     dat.roms = [replace(r, set_name=r.game) for r in dat.roms]
     return dat
 
@@ -360,10 +370,13 @@ def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True)
     roms: list[Rom] = []
     for block in games:
         game_name = ""
+        game_serial = ""
         rom_blocks: list[list[tuple[str, object]]] = []
         for key, value in block:
             if key == "name" and isinstance(value, str):
                 game_name = value
+            elif key == "serial" and isinstance(value, str):
+                game_serial = value
             elif key == "rom" and isinstance(value, list):
                 rom_blocks.append(value)
         for rb in rom_blocks:
@@ -381,6 +394,7 @@ def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True)
                 game=game_name,
                 dat=dat_label,
                 set_name=strip_ext(rom_name) if set_names else "",
+                serial=fields.get("serial") or game_serial,
             ))
     return DatFile(name=name or dat_label, description=description, version=version, roms=roms,
                    format=FORMAT_CLRMAMEPRO, homepage=homepage)

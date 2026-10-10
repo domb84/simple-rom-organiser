@@ -1,11 +1,13 @@
-"""Tell a Wii disc image from its header when its checksum cannot be had, and find the Redump game it is.
+"""Tell a Wii or Wii U disc image from its header when its checksum cannot be had, and find its game in the DAT.
 
 Redump hashes the original ``.iso``. A Wii disc in RVZ / WIA / WBFS / CISO is not that image (its encrypted partitions are stored
 decrypted) and cannot be turned back into it without a rebuild of the whole disc, so these files are *identified*, not verified:
-the 6-character game ID in the header gives the title (GameTDB; the header's own title when GameTDB is not installed), its 4th
-character the region, its revision and disc number the edition. The Redump game with that title, a region that includes the
-region, the revision and the disc number is the match. A game several Redump entries fit (language variants) takes the first by
-name. A plain ``.iso`` is hashed as ever and uses this only when its hash matches nothing (a scrubbed or trimmed copy).
+
+* **Wii**: the 4-character game code in the header (``SB4E``) is part of the serial of every Redump disc (``RVL-SB4E-USA-B0``: libretro's
+  mirror of Redump carries the serials); the game with that code, then the revision and disc number the header gives, is the match.
+* **Wii U**: the product code in the first sector (``AFXE``) gives the disc in GameTDB's list, which is the catalogue (Redump has none).
+
+A plain ``.iso`` is hashed as ever and uses this only when its hash matches nothing (a scrubbed or trimmed copy).
 """
 
 from __future__ import annotations
@@ -61,23 +63,41 @@ def _tag_number(name: str, pattern: "re.Pattern[str]") -> Optional[int]:
     return None
 
 
+_SERIAL = re.compile(r"^RVL-([A-Z0-9]{4})")
+
+
 class DiscNameIndex:
-    """The games of a Redump DAT by normalised title."""
+    """The games of a DAT: by the disc's game code (from the serial, ``RVL-SB4E-USA-B0``: libretro's mirror of Redump has it) and by
+    normalised title (the Wii U catalogue and a DAT without serials)."""
 
     def __init__(self, roms: Iterable[Any]) -> None:
         self.by_title: Dict[str, List[Tuple[Any, Set[str], int, int]]] = {}
         self.by_game: Dict[str, Any] = {}
+        self.by_code: Dict[str, List[Tuple[Any, int, int]]] = {}
         seen: Set[str] = set()
         for rom in roms:
-            if rom.game in seen:
-                continue
-            seen.add(rom.game)
-            self.by_game[rom.game] = rom
             disc = _tag_number(rom.game, _DISC)
-            self.by_title.setdefault(norm_title(rom.game), []).append(
-                (rom, regions_of(rom.game), _tag_number(rom.game, _REV) or 0, (disc or 1) - 1))
+            entry = (rom, _tag_number(rom.game, _REV) or 0, (disc or 1) - 1)
+            m = _SERIAL.match(getattr(rom, "serial", "") or "")
+            if m and (rom.game, rom.sha1) not in seen:
+                self.by_code.setdefault(m.group(1), []).append(entry)
+            seen.add((rom.game, rom.sha1))
+            if rom.game in self.by_game:
+                continue
+            self.by_game[rom.game] = rom
+            self.by_title.setdefault(norm_title(rom.game), []).append((rom, regions_of(rom.game), entry[1], entry[2]))
         for items in self.by_title.values():
             items.sort(key=lambda t: t[0].game)
+        for items in self.by_code.values():
+            items.sort(key=lambda t: (t[0].game, t[0].sha1))
+
+    def find_code(self, code: str, revision: int, disc: int) -> Optional[Any]:
+        """The game with this 4-character code, of this revision and disc where the DAT says (else the first of them)."""
+        items = self.by_code.get(code.upper())
+        if not items:
+            return None
+        fit = [t for t in items if t[2] == disc] or items
+        return ([t for t in fit if t[1] == revision] or fit)[0][0]
 
     def find(self, titles: Iterable[str], region_char: str, revision: int, disc: int) -> Optional[Any]:
         want = _ID_REGION.get(region_char.upper(), set())
@@ -94,7 +114,8 @@ class DiscNameIndex:
 
 
 def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
-    """``match(path)``: the DAT rom list (one rom) of the Wii or Wii U disc image at ``path``, or None."""
+    """``match(path)``: the DAT rom list (one rom) of the Wii or Wii U disc image at ``path``, or None. A Wii disc is found by the
+    game code in its header (the DAT's serials); a Wii U disc by its product code (GameTDB's list is the catalogue)."""
     roms = list(roms)
     # a title can be on two consoles (Resident Evil 4: GameCube and Wii), and a Collection scan has every system's DATs: a disc is
     # only looked up among the games of its own console's DAT (all of them when that DAT is not among them: a test's own DAT)
@@ -106,19 +127,19 @@ def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
         info = nintendodisc.read_wiiu(path) if wiiu else nintendodisc.read_disc(path)
         if info is None or info.kind not in ("wii", "wiiu"):
             return None
-        kind = info.kind
-        index = indexes[kind]
+        index = indexes[info.kind]
+        if info.kind == "wii":
+            rom = index.find_code(info.code4, info.revision, info.disc)
+            return [rom] if rom is not None else None
         tdb = gametdb.GameTdb()
         try:
-            titles = [tdb.name(kind, info.game_id), info.name]
-            label = tdb.disc_label(info.game_id) if kind == "wiiu" else ""
+            label = tdb.disc_label(info.game_id)
+            title = tdb.name("wiiu", info.game_id)
         finally:
             tdb.close()
-        if label and label in index.by_game:                   # a Wii U disc: GameTDB's list is the catalogue, the name is the entry
+        if label and label in index.by_game:
             return [index.by_game[label]]
-        if not any(titles):
-            return None
-        rom = index.find(titles, info.game_id[3:4], info.revision, info.disc)
+        rom = index.find([title, info.name], info.game_id[3:4], info.revision, info.disc) if (title or info.name) else None
         return [rom] if rom is not None else None
 
     return match

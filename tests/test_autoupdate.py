@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from romorg import autoupdate, paths, platforms
-from romorg.nointro import NOINTRO_DATS, NoIntroError
+from romorg.nointro import NOINTRO_DATS, NoIntroError, all_dat_names
 from romorg.tosec import Cancelled, DatInfo, ReleaseInfo
 
 GBA = "Nintendo - Game Boy Advance"
@@ -67,14 +67,14 @@ class FakeTosec:
 
 class FakeNointro:
     def __init__(self, tosec_mod=None) -> None:
-        self.remote_etag = {n: "a" for n in NOINTRO_DATS}
+        self.remote_etag = {n: "a" for n in all_dat_names()}
         self.local: dict[str, str] = {}   # name -> etag
         self.offline = False
         self.downloads: list[str] = []
 
     def check_updates(self, names=None, opener=None, directory=None, timeout=10):
         rows = []
-        for n in (names if names is not None else NOINTRO_DATS):
+        for n in (names if names is not None else all_dat_names()):
             if self.offline:
                 rows.append({"name": n, "installed": None, "status": "error", "error": "no route"})
             elif n not in self.local:
@@ -210,7 +210,7 @@ class StartupTest(Base):
 
     def install_everything(self) -> None:
         self.tosec.installed = "2025-03-13"
-        self.nointro.local = {n: "a" for n in NOINTRO_DATS}
+        self.nointro.local = {n: "a" for n in all_dat_names()}
         self.whdload.local = {WHD: "w1"}
         self.redump.local = {n: self.redump.remote for n in autoupdate.REDUMP_DATS}
         for dat in autoupdate.MADE_DATS:
@@ -271,7 +271,7 @@ class BackgroundTest(Base):
         self.assertEqual(st["tosec"]["installed"], "2025-03-13")
         self.assertEqual(st["tosec"]["status"], "up_to_date")
         self.assertEqual(st["nointro"]["status"], "up_to_date")
-        self.assertEqual(sorted(self.nointro.downloads), sorted(NOINTRO_DATS))
+        self.assertEqual(sorted(self.nointro.downloads), sorted(all_dat_names()))
         self.assertEqual(st["last_checked"], "2023-11-14T22:13:20+00:00")
         self.assertFalse(st["scan_stale"])  # first install is not a replacement
         self.assertTrue(paths.updates_path().is_file())

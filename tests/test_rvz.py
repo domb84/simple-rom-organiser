@@ -362,8 +362,9 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual((p.source, p.layout, p.convertible, p.folder_hint, p.containers),
                          ("redump", "flat", False, "gc", ("rvz",)))
         self.assertEqual(p.extensions, (".rvz", ".iso", ".gcm"))
-        from romorg import redump
-        self.assertEqual(redump.dat_url(DAT), "http://redump.org/datfile/gc/")
+        from romorg import nointro
+        self.assertIn(DAT, nointro.MIRRORED_REDUMP)                                       # (libretro's mirror of Redump's list)
+        self.assertEqual(nointro.dat_url(DAT), "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Nintendo%20-%20GameCube.dat")
 
     def test_scan(self) -> None:
         res = self.scan()

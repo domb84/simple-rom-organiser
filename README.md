@@ -17,8 +17,8 @@ Supported systems:
 | Sega Dreamcast | *Sega - Dreamcast* (1516 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Sony PlayStation | *Sony - PlayStation* (10,914 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
 | Sony PlayStation 2 | *Sony - PlayStation 2* (11,774 discs, Redump) | [redump.org](http://redump.org/) (plain HTTP only) |
-| Nintendo GameCube | *Nintendo - GameCube* (2,019 discs, Redump); files are `.iso`, `.gcm` or Dolphin `.rvz` | [redump.org](http://redump.org/) (plain HTTP only) |
-| Nintendo Wii | *Nintendo - Wii* (Redump); a plain `.iso` is hashed, Dolphin's `.rvz` `.wia` `.wbfs` `.ciso` are identified by the game ID in their header | [redump.org](http://redump.org/) (plain HTTP only) |
+| Nintendo GameCube | *Nintendo - GameCube* (Redump's list, as libretro's mirror has it: no betas, prototypes or demos); files are `.iso`, `.gcm` or Dolphin `.rvz` | libretro-database, `metadat/redump` |
+| Nintendo Wii | *Nintendo - Wii* (Redump's list, as libretro's mirror has it, with each disc's serial); a plain `.iso` is hashed, Dolphin's `.rvz` `.wia` `.wbfs` `.ciso` are identified by the game code in their header | libretro-database, `metadat/redump` |
 | Nintendo Wii U | *Nintendo - Wii U*, made from GameTDB's list (Redump has none): a catalogue with no checksums; `.wux` / `.wud` are told by the product code | [gametdb.com](https://www.gametdb.com/) |
 
 Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The app matches
@@ -50,7 +50,7 @@ What it does:
 1. Downloads the databases itself - **once**. On the **first start** it fetches, in the background, every database that is missing:
    the newest TOSEC release (<https://www.tosecdev.org/downloads>, ~100 MB, Amiga), the No-Intro DATs of the
    [libretro-database](https://github.com/libretro/libretro-database/tree/master/metadat/no-intro) mirror on GitHub (a few MB each,
-   consoles), the Redump DATs (Dreamcast, PlayStation, PlayStation 2, GameCube, Wii) and the lists the Wii U and Switch catalogues are
+   consoles), the Redump DATs (Dreamcast, PlayStation, PlayStation 2 from redump.org; GameCube and Wii from libretro's mirror of them) and the lists the Wii U and Switch catalogues are
    made from (GameTDB; the title database `blawar/titledb`, about 100 MB). **Later starts ask the network for nothing**; press
    **Check for updates** (More menu) to look for newer ones and fetch them. A system whose DAT is missing fetches it when you scan it.
 2. **Systems & folders**: one row per system with its DAT status and folder (type it, or use the built-in folder
@@ -513,8 +513,8 @@ above for consoles.
 
 ## Nintendo GameCube: ISO and Dolphin RVZ
 
-A flat folder with one file per disc (`.iso`, `.gcm` or `.rvz`), matched against the Redump DAT *Nintendo - GameCube*
-(2,019 games). Redump hashes the ISO, so a `.rvz` (Dolphin's lossless compressed format) is **rebuilt in memory while it
+A flat folder with one file per disc (`.iso`, `.gcm` or `.rvz`), matched against *Nintendo - GameCube* (Redump's list as libretro's
+mirror has it, `metadat/redump`; about 2,000 games). Redump hashes the ISO, so a `.rvz` (Dolphin's lossless compressed format) is **rebuilt in memory while it
 is read** and hashed: the same CRC32 / SHA-1 as the ISO it was made from, which the app compares with Redump (checked on
 real Dolphin files: the rebuilt images equal the Redump entries). Nothing is written, and a matched `.rvz` keeps its
 extension when it is renamed to the Redump name (the Matched list shows an **rvz** chip). Decoding runs on all cores
@@ -945,10 +945,11 @@ with shader caches) are ignored.
 **Nintendo Wii** and **Nintendo Wii U** are systems like the others (disc systems, in the sidebar), with the same Overview, Library
 and Browse tabs.
 
-* **Wii:** *Nintendo - Wii* from Redump. A plain `.iso` is hashed. Dolphin's `.rvz` / `.wia` / `.wbfs` / `.ciso` are not the original
+* **Wii:** *Nintendo - Wii*, Redump's list as libretro's mirror has it (https, newer, with each disc's serial such as `RVL-SB4E-USA-B0`; it
+  leaves out the betas, prototypes and demos that the default rules exclude anyway, 143 of 3,780 discs). A plain `.iso` is hashed. Dolphin's `.rvz` / `.wia` / `.wbfs` / `.ciso` are not the original
   image (the encrypted partitions are stored decrypted), so Redump's checksum cannot be had without rebuilding the whole disc; such a
-  file is **identified, not verified**: the game ID in its header (`SB4E01`) gives the title (GameTDB, else the header's own title),
-  its 4th character the region, then revision and disc number pick the Redump game. A copy of an `.iso` that matches no checksum
+  file is **identified, not verified**: the 4-character game code in its header (`SB4E`) is in the serial of its Redump disc; the
+  revision and disc number in the header pick between the discs that share it. A copy of an `.iso` that matches no checksum
   (scrubbed, trimmed) is identified the same way.
 * **Wii U:** Redump has no Wii U DAT. The app makes one from GameTDB's `wiiutdb.xml` (the 457 disc games, no checksums; eShop and
   Virtual Console titles are left out), with No-Intro's names where it knows the title (they carry all the languages) when it fetches the list (on the first start, then when you press Check for updates). A `.wux` / `.wud` is told by the product code in its first sector (`WUP-P-AFXE-00-551USA-0`);
@@ -1106,7 +1107,7 @@ DATs are fetched from
   stored in its own folder and never touched by TOSEC / No-Intro updates. **That repository
   states no licence: this app downloads only the DAT (a list of names and hashes), never any
   game file.** The DAT is Windows-1252 encoded; it is read as such.
-- **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2, Nintendo GameCube)**: `http://redump.org/datfile/dc/`, `.../psx/`, `.../ps2/` and `.../gc/` over **plain HTTP** (HTTPS is refused by
+- **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2)**: `http://redump.org/datfile/dc/`, `.../psx/` and `.../ps2/` over **plain HTTP** (HTTPS is refused by
   the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
   (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the
   old DAT atomically; it is stored in its own `redump/` folder. Offline, the installed DAT keeps working.

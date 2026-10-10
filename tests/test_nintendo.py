@@ -133,19 +133,14 @@ class WiiPlatform(Base):
         env.start()
         self.addCleanup(env.stop)
         exact = iso("RSPE01", "Wii Sports")
-        games = [("Wii Sports (USA)", exact, ""), ("Mario Kart Wii (Europe) (En,Fr,De,Es,It)", None, ""),
-                 ("Super Mario Galaxy (USA)", None, ""), ("Super Mario Galaxy (USA) (Rev 1)", None, ""),
-                 ("Legend of Zelda, The - Twilight Princess (USA)", None, "")]
-        rows = []
-        for name, data, _x in games:
-            data = data or name.encode().ljust(64)
-            rows.append(f'<game name="{name}"><category>Games</category><description>{name}</description>'
-                        f'<rom name="{name}.iso" size="{len(data)}" crc="{zlib.crc32(data) & 0xFFFFFFFF:08x}" '
-                        f'md5="{hashlib.md5(data).hexdigest()}" sha1="{hashlib.sha1(data).hexdigest()}"/></game>')
-        folder = paths.redump_dir()
+        games = [("Wii Sports (USA)", exact, "RVL-RSPE-USA"), ("Mario Kart Wii (Europe) (En,Fr,De,Es,It)", b"mk", "RVL-RMCP-EUR"),
+                 ("Super Mario Galaxy (USA) (En,Fr,Es)", b"smg", "RVL-RMGE-USA"), ("Super Mario Galaxy (USA) (En,Fr,Es) (Rev 1)", b"smg1", "RVL-RMGE-USA"),
+                 ("Legend of Zelda, The - Twilight Princess (USA) (En,Fr,Es)", b"tp", "RVL-RZDE-USA")]
+        folder = paths.nointro_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "Nintendo - Wii.dat").write_text('<?xml version="1.0"?><datafile><header><name>Nintendo - Wii</name><version>2026-06-15 03-13-28</version>'
-                                                 "</header>" + "".join(rows) + "</datafile>", encoding="utf-8")
+        (folder / "Nintendo - Wii.dat").write_text('clrmamepro (\n\tname "Nintendo - Wii"\n\tversion "2026.10.07"\n)\n' + "".join(
+            f'game (\n\tname "{n}"\n\tserial "{s}"\n\trom ( name "{n}.iso" size {len(d)} crc {zlib.crc32(d) & 0xFFFFFFFF:08X} '
+            f'md5 {hashlib.md5(d).hexdigest()} sha1 {hashlib.sha1(d).hexdigest()} serial "{s}" )\n)\n' for n, d, s in games), encoding="utf-8")
         root = self.tmp / "wii"
         self.put("wii/Wii Sports.iso", exact)                                              # the original image: its checksum
         def wii_rvz(name: str, game_id: str, title: str, revision: int = 0) -> None:
@@ -169,10 +164,10 @@ class WiiPlatform(Base):
         got = {m.entry.path.name: (m.roms[0].game, m.matched_via, m.container) for m in res.matched}
         self.assertEqual(got["Wii Sports.iso"], ("Wii Sports (USA)", "raw", ""))
         self.assertEqual(got["mk.rvz"][0], "Mario Kart Wii (Europe) (En,Fr,De,Es,It)")
-        self.assertEqual(got["tp.rvz"][0], "Legend of Zelda, The - Twilight Princess (USA)")
-        self.assertEqual(got["smg.wbfs"], ("Super Mario Galaxy (USA)", "container", "id"))
-        self.assertEqual(got["smg1.rvz"][0], "Super Mario Galaxy (USA)")
-        self.assertEqual(got["smg rev.rvz"][0], "Super Mario Galaxy (USA) (Rev 1)")
+        self.assertEqual(got["tp.rvz"][0], "Legend of Zelda, The - Twilight Princess (USA) (En,Fr,Es)")
+        self.assertEqual(got["smg.wbfs"], ("Super Mario Galaxy (USA) (En,Fr,Es)", "container", "id"))
+        self.assertEqual(got["smg1.rvz"][0], "Super Mario Galaxy (USA) (En,Fr,Es)")
+        self.assertEqual(got["smg rev.rvz"][0], "Super Mario Galaxy (USA) (En,Fr,Es) (Rev 1)")
         self.assertEqual(got["trimmed.iso"], ("Wii Sports (USA)", "container", "id"))
         self.assertEqual(sorted(e.path.name for e in res.unmatched), ["notes.txt", "unknown.rvz"])
 
@@ -181,12 +176,24 @@ class DiscMatch(Base):
     def test_a_title_two_consoles_have_is_looked_up_in_the_disc_s_own_dat(self) -> None:
         from types import SimpleNamespace as Rom
         from romorg import discmatch
-        gc = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - GameCube")
-        wii = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - Wii")
+        gc = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - GameCube", serial="DL-DOL-GC6E-USA", sha1="a")
+        wii = Rom(game="Resident Evil 4 (USA)", dat="Nintendo - Wii", serial="RVL-RB4E-USA", sha1="b")
         match = discmatch.make_matcher([gc, wii])                     # (a Collection scan: every system's DATs)
         disc = self.put("re4.wbfs", wbfs("RB4E08", "Resident Evil 4"))
         self.assertIs(match(disc)[0], wii)
-        self.assertEqual(discmatch.norm_title("Legend of Zelda, The - Twilight Princess (USA)"), discmatch.norm_title("The Legend of Zelda: Twilight Princess"))
+        self.assertEqual(discmatch.norm_title("Legend of Zelda, The - Twilight Princess (USA) (En)"), discmatch.norm_title("The Legend of Zelda: Twilight Princess"))
+
+    def test_a_wii_disc_is_found_by_its_game_code_then_its_revision(self) -> None:
+        from types import SimpleNamespace as Rom
+        from romorg import discmatch
+        roms = [Rom(game="Metroid - Other M (Europe) (En,Fr,De,Es,It)", dat="Nintendo - Wii", serial="RVL-R3OP-EUR", sha1="1"),
+                Rom(game="Metroid - Other M (Europe) (En,Fr,De,Es,It) (Rev 1)", dat="Nintendo - Wii", serial="RVL-R3OP-EUR", sha1="2"),
+                Rom(game="Metroid - Other M (USA)", dat="Nintendo - Wii", serial="RVL-R3OE-USA-B0", sha1="3")]
+        index = discmatch.DiscNameIndex(roms)
+        self.assertEqual(index.find_code("R3OP", 0, 0).sha1, "1")
+        self.assertEqual(index.find_code("R3OP", 1, 0).sha1, "2")
+        self.assertEqual(index.find_code("r3oe", 0, 0).sha1, "3")
+        self.assertIsNone(index.find_code("XXXX", 0, 0))
 
 
 class WiiUNames(Base):
@@ -465,7 +472,7 @@ class Running(unittest.TestCase):
 class DatabasesList(unittest.TestCase):
     def test_every_dat_of_every_system_is_in_the_list_with_an_address(self) -> None:
         from romorg import autoupdate, databases, platforms
-        rows = databases.describe({"nointro": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in __import__("romorg.nointro", fromlist=["x"]).NOINTRO_DATS]},
+        rows = databases.describe({"nointro": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in __import__("romorg.nointro", fromlist=["x"]).all_dat_names()]},
                                    "redump": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.REDUMP_DATS]},
                                    "whdload": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.WHDLOAD_DATS]},
                                    "switchdb": {"status": "up_to_date"}, "gametdb": {"status": "up_to_date"}})
@@ -477,7 +484,8 @@ class DatabasesList(unittest.TestCase):
         covered = {s for r in rows if r["group"].startswith("Game lists made") for s in r["used_by"]}
         self.assertEqual({p.name for p in platforms.list_platforms() if set(p.dats) & made}, covered)
         self.assertTrue(all(r["url"].startswith("http") for r in rows))
-        self.assertEqual(next(r for r in rows if r["name"] == "Nintendo - Wii")["url"], "http://redump.org/datfile/wii/")
+        wii = next(r for r in rows if r["name"] == "Nintendo - Wii")
+        self.assertEqual((wii["source"], wii["url"]), ("Redump, via libretro", "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Nintendo%20-%20Wii.dat"))
         self.assertEqual(next(r for r in rows if r["source"] == "titledb")["used_by"], ["Nintendo Switch"])
 
 

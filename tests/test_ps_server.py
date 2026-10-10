@@ -58,7 +58,7 @@ class Ps2EndpointTests(PsServerCase):
         self.assertFalse(rows[PSX]["dats"][0]["present"])
         self.assertEqual(rows[PS2]["disc"]["iso_mode"], "createdvd")
         self.assertEqual({d["name"] for d in self.call("/api/status")["redump"]["dats"]},
-                         {"Sega - Dreamcast", PSX_DAT, PS2_DAT, "Nintendo - GameCube", "Nintendo - Wii"})
+                         {"Sega - Dreamcast", PSX_DAT, PS2_DAT})
 
     def test_folder_is_saved_per_system_immediately(self) -> None:
         self.call("/api/folders", {"platform": PS2, "path": str(self.roms)})

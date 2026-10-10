@@ -34,12 +34,10 @@ from .tosec import Cancelled, CancelToken, DatInfo
 DAT_NAME = "Sega - Dreamcast"            # header name == file stem == the platform's DAT name (the default DAT)
 PSX_DAT_NAME = "Sony - PlayStation"
 PS2_DAT_NAME = "Sony - PlayStation 2"
-GC_DAT_NAME = "Nintendo - GameCube"
-WII_DAT_NAME = "Nintendo - Wii"
-SYSTEMS = {DAT_NAME: "dc", PSX_DAT_NAME: "psx", PS2_DAT_NAME: "ps2", GC_DAT_NAME: "gc", WII_DAT_NAME: "wii"}   # DAT name -> redump.org system slug
+SYSTEMS = {DAT_NAME: "dc", PSX_DAT_NAME: "psx", PS2_DAT_NAME: "ps2"}   # DAT name -> redump.org system slug
 BASE_URL = "http://redump.org/datfile/"  # HTTP only: https://redump.org refuses the connection
 USER_AGENT = f"simple-rom-organiser/{__version__}"
-REDUMP_DATS = (DAT_NAME, PSX_DAT_NAME, PS2_DAT_NAME, GC_DAT_NAME, WII_DAT_NAME)
+REDUMP_DATS = (DAT_NAME, PSX_DAT_NAME, PS2_DAT_NAME)        # (the GameCube and the Wii come from libretro's mirror: see nointro)
 MANIFEST = "manifest.json"               # {name: {"version", "sha1", "size", "url", "filename", "downloaded_at"}}
 MAX_DAT_BYTES = 256 * 1024 * 1024        # sanity limit for the extracted DAT
 

@@ -22,7 +22,7 @@ from . import meter
 OPTIONAL = ("wiiu_nointro",)
 __all__ = ["URLS", "OPTIONAL", "nointro_names", "better_names", "WIIU_DAT", "build_dat", "GameTdb", "db_path", "db_info", "build", "check_update", "download_and_build", "MAX_AGE_DAYS"]
 
-URLS = {"wii": "https://www.gametdb.com/wiitdb.txt", "wiiu": "https://www.gametdb.com/wiiutdb.txt",
+URLS = {"wiiu": "https://www.gametdb.com/wiiutdb.txt",
         # No-Intro's names of the Wii U titles (its DAT lists the eShop files, not discs: only the names are used, they carry the
         # languages and the spelling the other DATs use). Optional: without it GameTDB's own names stay.
         "wiiu_nointro": "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/Nintendo%20-%20Wii%20U%20(Digital).dat",
