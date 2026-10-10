@@ -2396,9 +2396,10 @@ class LibraryServerTests(ServerTestCase):
         walk = Walk()
         walk.feed(server.read_static("index.html").decode())
         self.assertEqual((walk.problems, walk.stack), ([], []))
-        for ident, view in (("emu-list", "view-retroarch"), ("ra-shared-apply", "view-retroarch"), ("ra-bios-table", "view-retroarch"),
+        for ident, view in (("emu-list", "view-retroarch"), ("ra-shared-apply", "view-retroarch"), ("ra-follow-panel", "view-retroarch"),
                             ("chdman-box", "view-chd"), ("set-archive-own-box", "view-settings"), ("set-library-rules", "view-settings"),
-                            ("databases-body", "view-databases"), ("lib-plan-btn", "view-system")):
+                            ("databases-body", "view-databases"), ("lib-plan-btn", "view-system"), ("ra-bios-panel", "view-bios"),
+                            ("bios-sources", "view-bios"), ("bios-found", "view-bios")):
             self.assertEqual(walk.owner.get(ident), view, ident)
 
     def test_ui_has_no_manual_download_and_has_library_step(self) -> None:

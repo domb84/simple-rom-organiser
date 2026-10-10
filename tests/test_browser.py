@@ -240,6 +240,66 @@ class LibraryDefaultsTests(UiTestCase):
         self.no_js_errors()
 
 
+class BiosPageTests(UiTestCase):
+    def test_the_bios_page_has_its_own_content_and_the_emulators_page_no_longer_has_the_check(self) -> None:
+        self.open("#/bios")
+        self.page.wait("document.querySelectorAll('#bios-sources tr').length === 2", timeout=30)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('section.view:not(.hidden)')].map(e => e.id)"), ["view-bios"])
+        self.assertIn("Keep BIOS", self.page.eval("document.getElementById('view-bios').textContent"))
+        self.assertTrue(self.page.eval("document.getElementById('bios-link').getAttribute('aria-current') === 'true'"))
+        self.assertFalse(self.page.eval("document.getElementById('view-retroarch').contains(document.getElementById('ra-bios-panel'))"))
+        self.assertTrue(self.page.eval("document.getElementById('view-bios').contains(document.getElementById('ra-bios-panel'))"))
+        self.page.eval("location.hash = '#/retroarch'")
+        self.page.wait("document.getElementById('view-bios').classList.contains('hidden')")
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('section.view:not(.hidden)')].map(e => e.id)"), ["view-retroarch"])
+        self.no_js_errors()
+
+    def test_the_totals_are_on_the_overview_and_the_library_page_and_the_library_has_a_filter(self) -> None:
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("[...document.querySelectorAll('#summary-cards .card')].some(c => c.textContent.includes('BIOS / firmware files'))", timeout=30)
+        self.library_page()
+        self.assertTrue(self.page.eval("[...document.querySelectorAll('#lib-cards .card')].some(c => c.textContent.includes('BIOS / firmware files'))"))
+        self.no_js_errors()
+
+    def test_the_library_filter_shows_just_the_bios_files(self) -> None:
+        import hashlib
+        import zlib
+        data = b"a firmware image, as far as the checksums go" * 20
+        (self.fx.data / "dats" / "Atari Lynx - Firmware (TOSEC-v2012-09-08_CM).dat").write_text(
+            '<?xml version="1.0"?><datafile><header><name>Atari Lynx - Firmware</name><version>2012-09-08</version></header>'
+            f'<game name="Boot ROM"><description>x</description><rom name="boot.rom" size="{len(data)}" crc="{zlib.crc32(data):08x}" '
+            f'md5="{hashlib.md5(data).hexdigest()}" sha1="{hashlib.sha1(data).hexdigest()}"/></game></datafile>')
+        (self.fx.root / "somewhere.adf").write_bytes(data)
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
+        self.page.wait("[...document.querySelectorAll('#summary-cards .card')].some(c => /^1\\s*BIOS/.test(c.textContent.trim()))", timeout=30)
+        self.library_page()
+        self.page.wait("[...document.querySelectorAll('#lib-reason-filters .chip')].some(c => c.textContent.includes('BIOS / firmware'))", timeout=30)
+        self.page.eval("[...document.querySelectorAll('#lib-reason-filters .chip')].find(c => c.textContent.includes('BIOS / firmware')).click()")
+        self.page.wait("document.querySelectorAll('#lib-table tbody tr:not(.detail-row)').length === 1", timeout=30)
+        self.assertIn("somewhere.adf", self.page.eval("document.getElementById('lib-table').textContent"))
+        self.no_js_errors()
+
+    def library_page(self) -> None:
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.querySelectorAll('#lib-cards .card').length > 3", timeout=60)
+
+    def test_the_rule_is_an_option_with_an_override_box_like_the_others(self) -> None:
+        self.open()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("!!document.querySelector('#library-rules input[data-opt=\"keep_bios\"]')", timeout=30)
+        self.assertTrue(self.page.eval("document.querySelector('#library-rules input[data-opt=\"keep_bios\"]').checked"))
+        self.assertTrue(self.page.eval("!!document.querySelector('#library-rules input[data-override=\"keep_bios\"]')"))
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"keep_bios\"]')", timeout=30)
+        self.no_js_errors()
+
+
 class SidebarTests(UiTestCase):
     def test_the_progress_bar_of_a_running_scan_sits_under_the_name_and_the_figures(self) -> None:
         self.open()

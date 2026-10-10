@@ -71,7 +71,7 @@ What it does:
    `_duplicates/`, next to the games) - nothing is ever deleted.
 5. Optionally converts copier-headered SNES dumps and byte-swapped N64 dumps to the clean
    No-Intro format (originals kept).
-6. RetroArch: the RetroArch page checks the BIOS / firmware (Kickstarts included) every installed core expects and copies what you have.
+6. BIOS and firmware: that page checks the BIOS / firmware (Kickstarts included) every installed core expects and copies what you have.
 
 It is pure Python (standard library only, Python 3.11+) with a plain HTML/JS
 interface - no pip, no Node, no internet access needed except for updating the DATs (offline, the installed DATs keep working).
@@ -248,7 +248,7 @@ move between them):
   box (region, language, video, tag, library rules), paging, and the checksums (below).
   Bad dumps show the exact DAT flag (`Bad dump [b corrupt file]`).
 * Converting is the **Convert first** option of the Library tab (below), and the CHD settings are on the **Disc images (CHD)**
-  page in the list on the left. Kickstarts and other BIOS files are handled by the **RetroArch** page's BIOS & firmware check.
+  page in the list on the left. Kickstarts and other BIOS files are handled by the **BIOS and firmware** page.
 
 ### Library totals (Overview)
 
@@ -949,17 +949,46 @@ switched off) shows no saves anywhere: no card, no column, no choice in the Libr
 
 ## BIOS, firmware and key files
 
-A file in a system's folder that matches no game may be a console's BIOS or firmware. The app tells it by its **checksum** against the
-list libretro's cores use (`System.dat`: 514 files of 60 systems, bundled; names and checksums only, no file), whatever the file is
-called. It is then treated like a ROM: it stays with the ROMs, a Library build renames it to the name the emulators expect
-(`scph1001.bin`, `dc_boot.bin` ...), and it is never moved to `_unmatched` or the archive. The Browse tab marks it *BIOS / firmware* in
-the Unmatched list. `prod.keys`, `title.keys` and `keys.txt` (Switch and Wii U emulators) are told by name and left alone.
+The **BIOS and firmware** page (sidebar, `#/bios`) is about what a console or an emulator needs besides the games.
 
-The **BIOS, firmware and key files** check on the Emulators page also looks for the key files the emulators need: `prod.keys` and
-`title.keys` for Eden / yuzu (`<user folder>/keys`) and Ryujinx (`system`), `keys.txt` for Cemu (its data folder). For each emulator that
-is set up it shows whether the file is there and usable (a `prod.keys` needs the header key, a `keys.txt` a 32-digit key), and when it is
-missing it looks in the other Switch emulator's folder, the ROM folders and the downloads. **Place found files** *copies* a found key file
-into place - never moves it, never over a file that is there.
+**Kept with the ROMs.** A scan of any system also looks, among the files no game matched, for BIOS and firmware files and for the
+emulators' key files. A BIOS is told by its **checksum**, whatever the file is called, against two lists:
+- the **TOSEC "- Firmware" DATs** (about 140 systems: the Sega 32X, the Mega Drive, the NES and SNES, the Game Boy, the 3DO, the Saturn,
+  PlayStation, MSX ...), read from the TOSEC pack that is downloaded with the other databases;
+- libretro's (`System.dat`: 514 files of 60 systems, bundled; names and checksums only, no file), which says the name the emulators expect
+  (`scph1001.bin`, `dc_boot.bin` ...).
+
+A Library build names a BIOS file as the **database** names it (the TOSEC entry's name, like a ROM gets its DAT's name), in the folder it is in;
+a file only libretro's list knows gets libretro's name. The name an emulator expects is for the copy in its folder: the check below finds the
+file by its checksum under any name and *Place found files* puts it into RetroArch's system folder as the core wants it (`scph5501.bin`).
+The same BIOS twice (any folders) is a ROM twice: one copy stays and the spare goes to `_duplicates`, with the copy it duplicates named.
+
+A **zip** is kept the same way when every file in it is on a list (told by the checksums in its directory: nothing is unpacked), so
+`[BIOS] Nintendo Game Boy Advance Boot ROM (World).zip` stays. `prod.keys`, `title.keys` and `keys.txt` (Switch and Wii U emulators)
+are told by name. The checksum alone decides, never the name: a file that only has a BIOS's name is an ordinary file. The scan counts
+them (a *BIOS / firmware files* card on the Overview and on the Library page) and the Browse tab marks them in the Unmatched list. On the Library
+page they are a reason of their own, **BIOS / firmware**: the chip above the table shows just those rows, and the *Kept* card counts only games.
+
+The Amiga's **Kickstarts** are games of its own TOSEC firmware DAT (`Commodore Amiga - Firmware`), so they are matched like any game; they are counted
+as BIOS / firmware all the same (the card, the Library chip), and follow the Amiga's rules for that DAT (every version is kept).
+
+A BIOS told by a TOSEC firmware list is judged **like a ROM of that list**: its entry's name (`... BIOS v3.0 (1997-01-06)(Sony)[b]`) goes through the
+same tag parsing and the same exclusion rules as any game's, so a bad dump, an over / under dump or a modified one is set aside to `_excluded`
+(and the archive) with the rules that are on, and stays when its rule is off. The dump types you switched off apply too. The rules that pick
+between games (languages, regions, versions) do not: a Japanese BIOS is still a BIOS.
+
+They stay in the system's folder instead of going to `_unmatched` or the archive while the library rule **Keep BIOS, firmware and key
+files** is on. It is on by default: set your default in **Settings > Library defaults**, and a system can override it on its Library tab
+like any other rule. Files that only a No-Intro `[BIOS]` set has (the SNES CD boot ROM, the NES `Pro Action Replay` ...) are on neither
+list, so they are unmatched like any other file.
+
+The page also shows where the lists come from and what the last scan of each system found. The check further down is the former
+*BIOS, firmware and key files* panel of the Emulators page: it reads the `.info` file of every installed core, compares what each needs with
+RetroArch's system folder (verified by checksum where the core gives one) and copies what you have into place. It also looks for the key
+files the emulators need: `prod.keys` and `title.keys` for Eden / yuzu (`<user folder>/keys`) and Ryujinx (`system`), `keys.txt` for Cemu
+(its data folder). For each emulator that is set up it shows whether the file is there and usable (a `prod.keys` needs the header key, a
+`keys.txt` a 32-digit key), and when it is missing it looks in the other Switch emulator's folder, the ROM folders and the downloads.
+**Place found files** *copies* a found key file into place - never moves it, never over a file that is there.
 
 ## Kickstarts for RetroArch (PUAE)
 

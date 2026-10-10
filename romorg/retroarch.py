@@ -1326,14 +1326,16 @@ def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seco
     Returns ``(found, complete)``: ``complete`` is False when the time budget ended the search early."""
     names: Dict[str, List[Path]] = {}
     maybe: List[Path] = []
-    for d in _outermost(search_dirs):
+    from . import bios as _bios
+    folders = _outermost(search_dirs)
+    for n, d in enumerate(folders, 1):
         if progress:
-            progress(f"reading {d}")
+            progress(f"Reading folder {n} of {len(folders)}: {d}")
         for f in _walk(d):
             names.setdefault(f.name.casefold(), []).append(f)
             low = f.name.casefold()
             ext = low.rsplit(".", 1)[-1] if "." in low else ""
-            if ext in _BIOS_EXT or any(w in low for w in _BIOS_WORDS):
+            if ext in _BIOS_EXT or any(w in low for w in _BIOS_WORDS) or _bios.is_database_name(low):
                 try:
                     if 0 < f.stat().st_size <= 4 * 1024 * 1024:
                         maybe.append(f)
@@ -1344,15 +1346,19 @@ def _find_candidates(search_dirs: Iterable[Path], wanted: List[dict], limit_seco
     end = time.time() + limit_seconds
     complete = True
 
+    base = ""
+
     def md5(f: Path) -> str:
         if f not in cache:
             cache[f] = md5_of(f)
+            if progress and len(cache) % 20 == 0:          # (the first file name that needs it reads them all: say so)
+                progress(f"Reading the checksums of {len(maybe)} files that could be a BIOS ({len(cache)} done), looking for {base}")
         return cache[f]
 
-    for fw in wanted:
+    for n, fw in enumerate(wanted, 1):
         base = fw["path"].split("/")[-1].casefold()
         if progress:
-            progress(f"looking for {base}")
+            progress(f"Looking for {base} ({n} of {len(wanted)}): {len(names)} file names read, {len(maybe)} possible BIOS files")
         for f in names.get(base, []):
             try:
                 if f.stat().st_size > MAX_BIOS_BYTES:

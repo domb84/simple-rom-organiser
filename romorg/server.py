@@ -287,11 +287,11 @@ TAG_FILTERS = ("region", "language", "video", "flag", "rule")
 CHECKSUM_KINDS = ("matched", "missing", "unmatched", "games")
 HASH_KEYS = ("crc32", "md5", "sha1")
 # Reason categories of the Build library plan (row filter ``reason``).
-LIBRARY_REASONS = ("kept", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
+LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions",
-                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games")
+                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -750,7 +750,7 @@ def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: fl
         "total": total, "have": have, "missing": missing,
         "pct": round(100.0 * have / total, 2) if total else 0.0,
         "matched_files": num("matched_files"), "unmatched_files": num("unmatched_files"),
-        "duplicates": num("duplicates"), "errors": num("errors"),
+        "duplicates": num("duplicates"), "errors": num("errors"), "bios": num("bios_files"),
         "dats": [str(n) for n in (dat_names or ())][:8],
     }
     if summary.get("chd_files") is not None:           # disc systems
@@ -1489,6 +1489,12 @@ class App:
                            id_matcher=self._switch_matcher())
         if cancellable and job.cancel.is_set():
             return None
+        try:                                             # BIOS / firmware files among what no game matched (the checksums are already there)
+            bios = _mod("bios")
+            result.bios_files = bios.find_in_files(result.junk) if layout == LAYOUT_GAME_FOLDER else bios.find_in_scan(result)
+
+        except Exception:  # noqa: BLE001 - then each file is looked at when the plan needs it
+            traceback.print_exc()
         if platform.name == "Nintendo Switch" and self._switch_cfg().get("verify_scan"):
             try:
                 self._switch_check_files(result, rep, job.cancel if cancellable else None)
@@ -1508,7 +1514,7 @@ class App:
 
     def _scan_options(self) -> tuple:
         """The settings that change what a scan finds (a saved scan made with others is not used)."""
-        return (bool(self._config().get("chd_verify_scan")), bool(self._switch_cfg().get("verify_scan")))
+        return (bool(self._config().get("chd_verify_scan")), bool(self._switch_cfg().get("verify_scan")), _mod("bios").signature())
 
     def _keep_scan_on_disk(self, state: ScanState) -> None:
         """Save the finished scan of a system, so it is there after a restart (``scancache``; never raises)."""
@@ -1628,6 +1634,8 @@ class App:
                 summary["checks"] = {"ok": values.count("ok"), "damaged": values.count("damaged"),
                                      "not_checked": len(values) - values.count("ok") - values.count("damaged")}
             summary["missing_dats"] = list(state.missing_dats)
+            bios = _mod("bios")        # (the files no game matched that are BIOS files, and the games of a "- Firmware" DAT: the Amiga's Kickstarts)
+            summary["bios_files"] = len(getattr(state.result, "bios_files", None) or {}) + bios.count_firmware_matches(state.result)
             state.summary = summary
         return dict(state.summary)
 
@@ -1928,6 +1936,8 @@ class App:
         """Reason category of a Build library row (the ``reason`` filter)."""
         if item.get("item") == "playlist" or item.get("status") == "delete":
             return "playlist"
+        if item.get("bios"):
+            return "bios"
         if item.get("code"):
             return str(item["code"])
         return "unmatched" if item.get("dest") in RESERVED_DIRS else "kept"
@@ -1937,7 +1947,10 @@ class App:
         if ikey not in state.items:
             plan = self._library_plan(state, *key)
             items = [self._rename_item(op, state.root) for op in plan.ops]
+            keep_bios = getattr(getattr(plan, "profile", None), "keep_bios", True)
             for item, op in zip(items, plan.ops):
+                if not keep_bios and not getattr(op, "bios", False):
+                    item["bios"] = False              # (rule off: a Kickstart is a game of its DAT, like any other)
                 item["category"] = self._library_category(item)
                 info = self._saves_effect(plan, op)           # (None without a RetroArch config: the row has no such field)
                 if info is not None:
@@ -2091,6 +2104,9 @@ class App:
             "missing": list(getattr(op, "missing", ()) or ()),
             "flags_text": getattr(op, "flags_text", "") or "",
             "reasons": list(getattr(op, "reasons", ()) or ()),
+            "bios": bool(getattr(op, "bios", False)) or bool(
+                not getattr(op, "code", "") and not getattr(op, "unmatched", False) and op.status not in ("conflict", "skip", "delete")
+                and _mod("bios").is_firmware_dat(getattr(op, "dat", ""))),
             "item": "file",
         }
         if hasattr(op, "moves"):           # Sega Dreamcast: a game folder / CHD with its sidecars
@@ -2284,6 +2300,20 @@ class App:
         """``GET /api/databases``: every database the app uses with its address, the systems that use it and its state."""
         return {"databases": _mod("databases").describe(self.updates_status())}
 
+    def bios_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/bios``: the lists BIOS / firmware files are told by, the library rule, and what the last scans found."""
+        bios, library = _mod("bios"), self._library_mod()
+        cfg = self._config()
+        found, over = [], []
+        for p in _mod("platforms").list_platforms():
+            record = self._last_scan(cfg, p.name)
+            if record and record.get("bios"):
+                found.append({"platform": p.name, "slug": _slug(p.name), "files": int(record["bios"]), "at": record.get("at", "")})
+            if "keep_bios" in library.overridden_fields(cfg, p):
+                over.append(p.name)
+        return {"sources": bios.sources(), "found": found, "overridden": over, "keep_default": library.global_profile(cfg).keep_bios,
+                "keys": sorted(bios.KEY_NAMES)}
+
     def updates_check(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """The "Check for updates" button: check now and download whatever is newer, in the background."""
         started = bool(self.updates.check(force=_bool_arg((body or {}).get("force"))))
@@ -2372,7 +2402,7 @@ class App:
                                                     for r in body["region_priority"]]}
             changes["region_priority"] = tuple(names("region_priority", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language"):
+                    "borrow_other_editions", "keep_other_language", "keep_bios"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -2678,11 +2708,12 @@ class App:
                      for e in sources]
             bios = _mod("bios")
             for e, item in zip(sources, items):            # a BIOS / firmware file (told by its checksum) or an emulator's key file
-                found = bios.lookup(e.size, e.crc or "", getattr(e, "sha1", "") or "") if getattr(e, "member", None) is None else None
+                found = bios.lookup(e.size, e.crc or "", getattr(e, "sha1", "") or "")     # (a member of a zip: by its size and CRC-32)
                 if found is not None:
                     item["bios"] = f"{found.system} ({found.name})"
                 elif getattr(e, "member", None) is None and bios.is_key_file(e.path):
                     item["bios"] = "key file of an emulator"
+
         elif kind == "missing":
             sources = list(result.missing)
             items = [self._missing_item(r, tags_mod) for r in sources]
@@ -2870,7 +2901,13 @@ class App:
                 return out
             local = self._local_file(state, obj)
             local["equal"] = {k: None for k in HASH_KEYS}
-            return {"kind": "unmatched", "source": label, "dat": [], "local": [local]}
+            out = {"kind": "unmatched", "source": label, "dat": [], "local": [local]}
+            bios = _mod("bios")                      # (no game, but perhaps a BIOS: or a dump TOSEC lists as a bad BIOS)
+            found = bios.lookup(obj.size, obj.crc or "", getattr(obj, "sha1", "") or "")
+            if found is not None:
+                out["bios"] = f"{found.system} ({found.name})"
+
+            return out
         if kind == "missing" and obj is not None:
             game = getattr(getattr(state.result, "index", None), "games", {}).get(getattr(obj, "game", "")) \
                 if getattr(state.result, "index", None) is not None else None
@@ -4406,6 +4443,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/platforms"): App.platforms_list,
     ("GET", "/api/updates"): App.updates_get,
     ("GET", "/api/databases"): App.databases_get,
+    ("GET", "/api/bios"): App.bios_get,
     ("POST", "/api/updates/check"): App.updates_check,
     ("POST", "/api/updates/cancel"): App.updates_cancel,
     ("GET", "/api/ratings"): App.ratings_get,

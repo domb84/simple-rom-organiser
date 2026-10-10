@@ -49,7 +49,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
-from . import cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
+from . import bios, cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from . import meter, winproc
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, UNMATCHED_DIR
@@ -1330,6 +1330,9 @@ class _Plan:
         self.root = root
         self.sources: set[str] = set()
         self.claimed: dict[str, DcOp] = {}
+        self.keep_bios = True               # the library rule: a console's BIOS / firmware stays with the discs
+        self.profile: Any = None            # the library profile (None: tidy only)
+        self.bios_seen: dict[tuple[str, str], DcOp] = {}     # the BIOS files planned so far, by what they are: a second one is a spare copy
 
     def free(self, dst: Path) -> bool:
         key = _fold(dst)
@@ -1389,6 +1392,9 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     from . import library
     root = Path(result.root)
     plan = _Plan(root)
+    bios.refresh()                            # (the TOSEC lists may have changed since the last plan)
+    plan.keep_bios = getattr(profile, "keep_bios", True)
+    plan.profile = profile
     index = result.index
     chd_units = [u for u in result.units if u.kind == "chd" and u.game is not None]
     for u in result.units:
@@ -1512,29 +1518,49 @@ def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast") -> DcOp
     parts = _parts(f, root)
     name = f.name
     base = dict(src=f, dst=f, rom_name=name, unit_kind="file", n_files=1, kind="rename", unmatched=True)
-    if folders.reserved_of(parts) is not None:
-        return DcOp(status="ok", reason="already in a reserved folder", folder=folders.reserved_of(parts) or "", **base)
+    reserved = folders.reserved_of(parts)
     low = name.lower()
-    if (low in organiser.KEEP_NAMES or f.suffix.lower() in organiser.KEEP_SUFFIXES or low.endswith(".m3u")
-            or (len(parts) > 1 and parts[0].casefold() in organiser.KEEP_DIRS) or f.is_symlink()):
+    if reserved is None and (low in organiser.KEEP_NAMES or f.suffix.lower() in organiser.KEEP_SUFFIXES or low.endswith(".m3u")
+                             or (len(parts) > 1 and parts[0].casefold() in organiser.KEEP_DIRS) or f.is_symlink()):
         return DcOp(status="skip", reason="left in place (frontend / user file)", **base)
-    kept = organiser.bios_op(f)                    # a console's BIOS, told by its checksum: it stays with the discs, under its name
+    kept = organiser.bios_op(f) if plan.keep_bios else None       # a console's BIOS, told by its checksum: it stays with the discs, under its name
+    if kept is not None and reserved is not None:                 # ... also one that an earlier build set aside: it comes back, as a ROM does
+        kept = organiser.bios_out_of(kept, root)
+    if kept is None and reserved is not None:
+        return DcOp(status="ok", reason="already in a reserved folder", folder=reserved or "", **base)
+
+    def aside(folder: str, reason: str, **extra: Any) -> DcOp:
+        """The op that sets the file aside into a reserved folder (``ok`` when it is already in it)."""
+        dst = organiser.reason_destination(f, root, folder)
+        if dst == f:
+            return DcOp(status="ok", reason=f"{reason}, already in {folder}", folder=folder, **extra, **base)
+        n = 1
+        while not plan.free(dst):
+            n += 1
+            dst = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
+        op = DcOp(src=f, dst=dst, status="move", reason=reason, rom_name=name, kind="move", unmatched=True, folder=folder,
+                  moves=[(f, dst)], unit_kind="file", n_files=1, **extra)
+        plan.claimed[_fold(dst)] = op
+        return op
+
+    hit = organiser.bios_exclusion(kept, plan.profile) if kept is not None else None
+    if hit is not None:                              # ... unless the rules that judge a ROM of that list would set it aside
+        return aside(organiser.EXCLUDED_DIR, hit[0], code="excluded", flags_text=hit[1], reasons=hit[2])
+    twin = plan.bios_seen.get((kept.rom_name.casefold(), kept.bios_game)) if kept is not None else None
+    if twin is not None:                             # the same BIOS twice: the spare goes where a ROM's spare copy goes
+        keeper = _rel(twin.dst, root)
+        return aside(DUPLICATES_DIR, f"duplicate of {keeper}", code="duplicate", keeper=keeper)
     if kept is not None:
         if kept.status != "move" or not plan.free(kept.dst):
-            return DcOp(status="skip" if kept.status == "move" else kept.status, reason=kept.reason, **{**base, "unmatched": False})
-        op = DcOp(src=f, dst=kept.dst, status="move", reason=kept.reason, rom_name=kept.dst.name, kind="rename", unmatched=False,
-                  moves=[(f, kept.dst)], unit_kind="file", n_files=1)
+            stay = DcOp(status="skip" if kept.status == "move" else kept.status, reason=kept.reason, bios=True, **{**base, "unmatched": False})
+            plan.bios_seen.setdefault((kept.rom_name.casefold(), kept.bios_game), stay)
+            return stay
+        op = DcOp(src=f, dst=kept.dst, status="move", reason=kept.reason, rom_name=kept.dst.name, kind=kept.kind, unmatched=False,
+                  moves=[(f, kept.dst)], unit_kind="file", n_files=1, bios=True)
         plan.claimed[_fold(kept.dst)] = op
+        plan.bios_seen[(kept.rom_name.casefold(), kept.bios_game)] = op
         return op
-    dst = organiser.reason_destination(f, root, UNMATCHED_DIR)
-    n = 1
-    while not plan.free(dst):
-        n += 1
-        dst = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
-    op = DcOp(src=f, dst=dst, status="move", reason=f"not part of a {label} game", rom_name=name,
-              kind="move", unmatched=True, folder=UNMATCHED_DIR, moves=[(f, dst)], unit_kind="file", n_files=1)
-    plan.claimed[_fold(dst)] = op
-    return op
+    return aside(UNMATCHED_DIR, f"not part of a {label} game")
 
 
 def _resolve(ops: list[DcOp], plan: _Plan) -> None:

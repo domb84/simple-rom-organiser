@@ -93,7 +93,7 @@ try {
     Assert-Match $status '"os": "windows"' "status does not say the app runs on Windows"
 
     # the pages of the UI: home, a system, and the three v0.2 added; and the files the page loads
-    foreach ($view in "view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases") {
+    foreach ($view in "view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases", "view-bios") {
         Assert-Match $index ('id="' + $view + '"') "the page lacks $view"
     }
     foreach ($file in [regex]::Matches($index, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value }) {

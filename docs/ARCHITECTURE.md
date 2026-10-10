@@ -2565,3 +2565,39 @@ option), the app version and a shape hash of the dataclasses a result is made of
 (`App._scan_from_disk`); otherwise nothing is selected and the file is left for the next scan to replace, or deleted when it cannot be
 read. The file is the app's own; it is never read from anywhere else. Measured on real folders: SNES 1.9 MB, Amiga 21 MB (load 1 s),
 Dreamcast 3.9 MB (the scan itself takes 43 s).
+
+# Amendment 35 - BIOS files found by the scan, from two lists; a library rule; a page of their own (v0.2)
+
+`bios.py`: the lists are libretro's `System.dat` (`biosdata`, with the names emulators expect) and the TOSEC "- Firmware" DATs of the
+installed pack (`refresh()` reads them again when the pack changes; `Bios.source == "tosec"`: a Library build names the file as the list does, like a ROM, in its own folder). A file both lists know
+is the TOSEC one (`bios._both`: the database's name, with libretro's `names` kept): the emulators' name is given by the BIOS tool when it
+copies the file into RetroArch's system folder (`retroarch.check_bios_cores` finds it by checksum under any name).
+`bios.EXTRA` (the hand-added 32X entries) is gone. `find_in_scan(result)` looks at the files no game matched with the checksums the
+scan already has (a zip when every member is one) and the server stores it as `result.bios_files` (`summary["bios_files"]`, the card,
+`scan_record["bios"]`); the saved scan is valid only for the same `bios.signature()`. The library rule `keep_bios` (`LibraryProfile`,
+catalog option, default on, overridable like any rule) gates `bios_op` in `organiser._Planner` and `discsys`: off, such a file is an
+ordinary unmatched one. `GET /api/bios` feeds the new page (`#/bios`, `view-bios`), which also holds the former BIOS panel of the
+Emulators page (ids unchanged).
+
+**Counted and filtered.** `RenameOp.bios` marks the ops of such files (`organiser.bios_op`, `discsys._junk_op`); `reason_counts` counts them as
+`bios` (not as `kept`), `_library_category` gives their rows the category `bios` (the `reason` filter, `LIBRARY_REASONS`), and the Library
+cards and chips show it. A disc system's loose files are looked at when the scan ends (`bios.find_in_files`) so its Overview has the
+total as well.
+
+**A BIOS is judged like a ROM of its list.** A file told by a TOSEC firmware list carries the entry's name (`Bios.game`, `RenameOp.bios_game`);
+`organiser.bios_exclusion` runs it through `library.eligibility(..., STYLE_TOSEC, profile, languages=False)` - the same tag parsing and
+rules a game's name goes through (bad dump, over / under dump, modified, the switched-off dump types) - and `_plan_core` / `discsys._junk_op`
+send it to `_excluded` (code `excluded`, the rule codes as reasons) when one applies; the rules that choose between games do not. There is no
+separate bad-dump list.
+
+**The same BIOS twice** is a ROM twice: `organiser.bios_duplicates` (and `discsys._junk_op`, through `_Plan.bios_seen`) groups the BIOS ops by
+what they are (`rom_name`, `bios_game`); the copy that already has its name stays, the spares are sent to `_duplicates` (`code = duplicate`,
+`keeper` = the name the kept one ends up with).
+
+**Audit of the BIOS handling against the ROM handling** (what a ROM gets, a BIOS gets): the copy that stays of a BIOS twice is chosen by
+the ROMs' rule (`bios_duplicates` mirrors `scanner.group_duplicate_units`: in place, outside the reserved folders, loose before a zip,
+fewest folders); a spare beside a copy that already has its name is a duplicate too (not a `skip`); a BIOS or key file an earlier build set
+aside (`_unmatched`, `_excluded`, `_duplicates`) is judged again and comes back when the rules keep it (`organiser.bios_out_of`, also for the
+disc systems: `discsys._junk_op` now has one `aside()` for excluded / duplicate / unmatched); a library built in another folder takes the
+kept copy under its database name only; the BIOS tool finds a file by the name a build gave it (`bios.is_database_name`) whatever its
+extension. The Overview card says *found*, the Library card *kept*.

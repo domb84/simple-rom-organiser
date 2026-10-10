@@ -379,7 +379,7 @@ APP_MODULES = (
 )
 STATIC_FILES = ("index.html", "app.js", "style.css")
 # the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added
-UI_VIEWS = ("view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases")
+UI_VIEWS = ("view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases", "view-bios")
 
 
 def check_app() -> Tuple[bool, str]:

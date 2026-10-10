@@ -49,7 +49,9 @@ A file that matches no game may be something an emulator needs. It is told by it
 is treated like a ROM: it stays with the ROMs, a Library build gives it the name the emulators expect (`scph1001.bin`), and it never goes
 to `_unmatched` or the archive. The key files of the Switch and Wii U emulators (`prod.keys`,
 `title.keys`, `keys.txt`) have no common checksum; they are told by name and left as they are. A file that only *has* a BIOS's name is
-an ordinary unmatched file.
+an ordinary unmatched file. A zip of nothing but such files is kept too (its directory's CRC-32s). The TOSEC "- Firmware" DATs of the installed pack are a second list (a Library build names the file as the list does), and
+a scan finds them (`bios.find_in_scan`, from the checksums it has). The library rule `keep_bios` (on by default, overridable per
+system) switches it all off.
 
 ## Gaps in parity (what is not the same, and why)
 

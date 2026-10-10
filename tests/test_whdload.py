@@ -306,12 +306,12 @@ class TagsTest(unittest.TestCase):
                 self.assertEqual(tags.token_rule(tok, tags.STYLE_WHDLOAD), rule, tok)
         cat = [e for e in library.rule_catalog("whdload") if e.get("group") != "ratings"]
         ids = [e["id"] for e in cat]
-        self.assertEqual(ids, ["pre_release", "demo", "unreleased", "latest_only", "best_variant", "languages"])
+        self.assertEqual(ids, ["pre_release", "demo", "unreleased", "latest_only", "best_variant", "keep_bios", "languages"])
         for e in cat:
             self.assertIn("whdload", e["applies_to"])
         # the existing styles do not gain / lose entries because of it
         self.assertNotIn("whdload", [e for e in library.rule_catalog("tosec") if e["id"] == "cr"][0]["applies_to"])
-        self.assertEqual(len([e for e in library.rule_catalog("tosec") if e.get("group") != "ratings"]), 9 + 6 + 6)
+        self.assertEqual(len([e for e in library.rule_catalog("tosec") if e.get("group") != "ratings"]), 9 + 6 + 7)
 
     def test_rom_tags_dispatch(self) -> None:
         rom = datfile.Rom("G_v1.0_AGA.lha", 1, "0", "", "", "G (AGA)", DAT, "G_v1.0_AGA")

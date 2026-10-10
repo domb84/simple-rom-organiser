@@ -775,8 +775,8 @@ class LibraryIntegrationTest(unittest.TestCase):
                                                                   if o.status != "ok"])
         self.assertEqual({p.status for p in plan2.playlists}, {"ok"})
         rc2 = organiser.reason_counts(plan2)
-        self.assertEqual({k: v for k, v in rc2.items() if k not in ("kept", "playlists_ok")},
-                         {k: 0 for k in rc2 if k not in ("kept", "playlists_ok")})
+        self.assertEqual({k: v for k, v in rc2.items() if k not in ("kept", "bios", "playlists_ok")},
+                         {k: 0 for k in rc2 if k not in ("kept", "bios", "playlists_ok")})
         self.assertEqual(res2.summary()["duplicates"], 0)
         out2 = organiser.apply_renames(plan2.ops, self.root, playlists=plan2.playlists)
         self.assertEqual((out2["moved"], out2["playlists_written"], out2["undo_log"]), (0, 0, None))

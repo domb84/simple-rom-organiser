@@ -75,7 +75,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import IO, TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence
+from typing import IO, TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 if TYPE_CHECKING:
     from . import library, m3u
@@ -140,6 +140,8 @@ class RenameOp:
     flags_text: str = ""     # excluded: the exact flags that caused it, e.g. "[b corrupt file]"
     folder: str = ""         # the reserved top-level folder the target is in ("_unmatched", "_excluded" ... or "")
     reasons: tuple[str, ...] = ()  # excluded: every reason code (rules, "flag_<x>", "language"), first = primary
+    bios: bool = False       # a BIOS / firmware file or an emulator's key file, kept with the ROMs (the library rule)
+    bios_game: str = ""      # a BIOS told by a TOSEC firmware list: its entry's name there, flags and all (the library rules read it like a ROM's)
 
 
 # --------------------------------------------------------------------------- names
@@ -348,22 +350,97 @@ def _is_keep_file(path: Path) -> bool:
     return name in KEEP_NAMES or os.path.splitext(name)[1] in KEEP_SUFFIXES
 
 
-def bios_op(src: Path) -> Optional[RenameOp]:
+def bios_op(src: Path, known: Optional[Mapping[Path, Any]] = None) -> Optional[RenameOp]:
     """The op of a file no game matches when it is a BIOS / firmware file (told by its checksum: it stays where it is, under the name
-    the emulators expect) or an emulator's key file (told by its name: left as it is); None for any other file."""
+    the emulators expect when the list says one) or an emulator's key file (told by its name: left as it is); None for any other file.
+    ``known`` is what the scan found (``bios.find_in_scan``); without it the file is looked at."""
     from . import bios
     if bios.is_key_file(src):
-        return RenameOp(src, src, "skip", "key file of an emulator - left in place", "", "move", "", False)
-    found = bios.identify(src)
+        return RenameOp(src, src, "skip", "key file of an emulator - left in place", "", "move", "", False, bios=True)
+    if known is not None:
+        hit = known.get(src)
+        found, in_zip = (hit.bios, hit.in_zip) if hit is not None else (None, False)
+    else:
+        found = bios.identify_archive(src)
+        in_zip = found is not None
+        found = found or bios.identify(src)
     if found is None:
         return None
+    if in_zip:                                                   # a zip of nothing but BIOS files: kept as it is
+        return RenameOp(src, src, "ok", f"BIOS / firmware ({found.system}) in a zip, told by its checksum - kept with the ROMs",
+                        found.name, "rename", "", False, bios=True, bios_game=found.game)
     why = f"BIOS / firmware ({found.system}), told by its checksum - kept with the ROMs"
-    if src.name.casefold() in found.names:                      # (already one of the names the emulators look for)
-        return RenameOp(src, src, "ok", why, found.name, "rename", "", False)
-    dst = src.with_name(found.name)
+    # the name it gets, as a ROM gets its DAT's: what the emulators look for (libretro's list) or else the list's own name for it (TOSEC's)
+    target = found.name if found.source == "libretro" else safe_filename(found.name)
+    if src.name.casefold() in (found.names if found.source == "libretro" else {target.casefold()}):
+        return RenameOp(src, src, "ok", why, target, "rename", "", False, bios=True, bios_game=found.game)
+    dst = src.with_name(target)
     if os.path.lexists(dst):
-        return RenameOp(src, src, "skip", f"{why}; {found.name} is already here, so this copy keeps its name", found.name, "rename", "", False)
-    return RenameOp(src, dst, "move", why, found.name, "rename", "", False)
+        return RenameOp(src, src, "skip", f"{why}; {target} is already here, so this copy keeps its name", target, "rename", "", False,
+                        bios=True, bios_game=found.game)
+    return RenameOp(src, dst, "move", why, target, "rename", "", False, bios=True, bios_game=found.game)
+
+
+def bios_exclusion(op: RenameOp, profile: Optional["library.LibraryProfile"]) -> Optional[tuple[str, str, tuple[str, ...]]]:
+    """A BIOS file named by a TOSEC firmware list is judged like a ROM of that list: its entry's name goes through the same parsing and
+    the same rules (bad dump, over / under dump, modified ... and the dump types that are switched off). ``(why, exact flags, codes)``
+    when one applies (the file is then set aside as a ROM would be), else None. The language, region and version rules pick between
+    games: they do not apply."""
+    if profile is None or not op.bios or not op.bios_game:
+        return None
+    from . import library
+    why = library.eligibility(op.bios_game, library.STYLE_TOSEC, profile, languages=False)
+    if not why:
+        return None
+    return (", ".join(library.tags.RULE_LABELS.get(c, c) for c, _t in why) + f": {op.bios_game}",
+            " ".join(t for _c, t in why if t), tuple(c for c, _t in why))
+
+
+def bios_out_of(kept: RenameOp, root: Path) -> Optional[RenameOp]:
+    """A BIOS file lying in a reserved folder (``_unmatched`` ... a build set it aside): the op that brings it back to where it belongs,
+    as a ROM that qualifies again comes back. None when its name is taken (it stays)."""
+    if kept.status == "skip" and not kept.reason.startswith("key file"):
+        return None
+    core = folders.core_parts(_parts_of(kept.src, root))
+    return dataclasses.replace(kept, dst=root.joinpath(*core[:-1], kept.dst.name), status="move", kind="move",
+                               reason=kept.reason + "; back out of its reserved folder")
+
+
+def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
+    """The same BIOS twice (any folder) is a ROM twice: one copy stays, the spares go to ``_duplicates`` as the spare copies of a ROM
+    do, and the copy that stays is chosen as for a ROM (``scanner.group_duplicate_units``): the one already in place and named right, then
+    one outside the reserved folders, loose before a zip, then the fewest folders, the shortest path."""
+    from . import scanner
+
+    def rank(o: RenameOp) -> tuple:
+        parts = _parts_of(o.src, root)
+        return (o.status != "ok", scanner.is_set_aside_duplicate(o.src, root), folders.reserved_of(parts) is not None,
+                o.src.suffix.lower() == ".zip", len(parts), len(str(o.src)), str(o.src).casefold())
+
+    by_name: dict[tuple[str, str], list[RenameOp]] = {}
+    for op in ops:
+        if op.bios and op.rom_name and op.status in ("ok", "move", "skip"):
+            by_name.setdefault((op.rom_name.casefold(), op.bios_game), []).append(op)
+    for group in by_name.values():
+        if len(group) < 2:
+            continue
+        keeper = min(group, key=rank)
+        rel = _rel_to(keeper.dst, root)
+        text = rel.as_posix() if rel is not None else str(keeper.dst)
+        for op in group:
+            if op is not keeper:
+                op.bios = False
+                _send_to_reason(op, root, "duplicate", f"duplicate of {text}", keeper=text)
+
+
+def bios_exclude(op: RenameOp, root: Path, profile: Optional["library.LibraryProfile"]) -> bool:
+    """:func:`bios_exclusion`, carried out on ``op`` (to ``_excluded``). True when it was."""
+    hit = bios_exclusion(op, profile)
+    if hit is None:
+        return False
+    op.bios = False
+    _send_to_reason(op, root, "excluded", hit[0], flags_text=hit[1], reasons=hit[2])
+    return True
 
 
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
@@ -389,9 +466,13 @@ class _Planner:
     """Per-plan settings for files that matched nothing."""
 
     def __init__(self, root: Path, missing_dats: Iterable[str],
-                 layout: str = LAYOUT_PER_DAT) -> None:
+                 layout: str = LAYOUT_PER_DAT, keep_bios: bool = True, bios_found: Optional[Mapping[Path, Any]] = None) -> None:
         self.root = root
         self.layout = layout
+        self.keep_bios = keep_bios                  # the library rule: BIOS / firmware / key files stay with the ROMs
+        from . import bios
+        bios.refresh()                              # (the TOSEC lists may have changed since the last plan)
+        self.bios_found = bios_found                # what the scan found (None: look at each file)
         # The "folder of a DAT that is not loaded" rule only makes sense with DAT folders.
         self.missing_folders = ({dat_folder_name(n).casefold(): n for n in missing_dats if n}
                                 if layout != LAYOUT_FLAT else {})
@@ -409,6 +490,10 @@ class _Planner:
                               "", "move", "", True)
                 op.code = code
                 return op
+            kept = bios_op(src, self.bios_found) if self.keep_bios else None
+            back = bios_out_of(kept, root) if kept is not None else None         # (a BIOS an earlier build set aside comes back, as a ROM does)
+            if back is not None:
+                return back
             return RenameOp(src, src, "ok", f"{why}, already in {name}", "", "move", "", True)
         rel = _rel_to(src, root)
         if rel is None:
@@ -421,7 +506,7 @@ class _Planner:
             return RenameOp(src, src, "skip", "frontend media folder - left in place", "", "move", "", True)
         if _is_keep_file(src):
             return RenameOp(src, src, "skip", "frontend / emulator file - left in place", "", "move", "", True)
-        kept = bios_op(src)
+        kept = bios_op(src, self.bios_found) if self.keep_bios else None
         if kept is not None:
             return kept
         return _finish_op(src, root / UNMATCHED_DIR / rel, [why], "", "", True)
@@ -664,7 +749,8 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
     root = result.root
     if layout is None:
         layout = getattr(result, "layout", LAYOUT_PER_DAT) or LAYOUT_PER_DAT
-    planner = _Planner(root, missing_dats, layout)
+    planner = _Planner(root, missing_dats, layout, keep_bios=profile.keep_bios if profile is not None else True,
+                       bios_found=getattr(result, "bios_files", None))
     units, others = _scan_units(result, layout, planner)
     ops: list[RenameOp] = [u.op for u in units] + others
     links = {id(u.op) for u in units if u.link}        # the units already know (one lstat per file, done once)
@@ -723,6 +809,10 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
             _send_to_reason(op, root, code, d.reason or code, missing=d.missing, flags_text=d.detail,
                             superseded_by=d.superseded_by, reasons=tuple(d.codes))
 
+    if profile is not None:
+        for op in ops:
+            bios_exclude(op, root, profile)
+    bios_duplicates(ops, root)
     ops.sort(key=lambda o: (o.unmatched, o.dat, str(o.src).casefold()))
     _resolve_conflicts(ops, root)
     for op in ops:   # legacy layout: say why the file leaves _unmatched/<reason>/ ; record the target folder
@@ -1036,9 +1126,9 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
     ``_remove`` / ``_conflict``). ``excluded_<code>`` splits ``excluded`` by each file's PRIMARY reason
     (``bad_dump`` ... ``modified``, ``flag_cr`` ... ``flag_tr``, ``language``; always present, sums to
     ``excluded``)."""
-    from . import library
+    from . import bios, library
 
-    out = dict.fromkeys(("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates",
+    out = dict.fromkeys(("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates", "bios",
                          "unmatched", "conflict", "skip", "playlists_write", "playlists_ok",
                          "playlists_remove", "playlists_conflict"), 0)
     out.update(dict.fromkeys((f"excluded_{c}" for c in library.ALL_CODES), 0))
@@ -1048,6 +1138,8 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
     for op in plan.ops:
         if op.status == DELETE_STATUS:
             out["playlists_remove"] += 1
+        elif getattr(op, "bios", False):
+            out["bios"] += 1                             # (BIOS / firmware / key files: counted apart from the games that are kept)
         elif op.status in ("conflict", "skip"):
             out[op.status] += 1
         elif op.code:
@@ -1060,6 +1152,9 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
             if op.status in MOVE_STATUSES and op.folder in ("", UNMATCHED_DIR):
                 out["unmatched"] += 1
         elif op.status in MOVE_STATUSES or op.status in ("ok", "duplicate"):
+            if bios.is_firmware_dat(op.dat) and getattr(getattr(plan, "profile", None), "keep_bios", True):
+                out["bios"] += 1                         # (a game of a "- Firmware" DAT: the Amiga's Kickstarts)
+                continue
             out["kept"] += 1
             if op.status in MOVE_STATUSES:
                 out["renamed" if op.kind == "rename" else "moved"] += 1

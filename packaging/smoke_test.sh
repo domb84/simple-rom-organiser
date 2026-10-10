@@ -58,7 +58,7 @@ grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
 # the pages of v0.2 (also checked by packaging/smoke_test.ps1 on Windows)
-for view in view-home view-system view-retroarch view-chd view-settings view-databases; do
+for view in view-home view-system view-retroarch view-chd view-settings view-databases view-bios; do
   grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
 done
 

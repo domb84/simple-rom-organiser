@@ -750,6 +750,28 @@
   const DB_STATUS = { up_to_date: ["ok", "up to date"], update_available: ["move", "update available"], updating: ["move", "updating"],
     absent: ["missing", "not installed"], missing: ["missing", "not installed"], unknown: ["skip", "not checked this session"], error: ["conflict", "check failed"],
     bundled: ["ok", "ships with the app"] };
+  /** The BIOS, firmware and key files page: the rule, the lists the checksums come from, what the scans found. The check of the
+   *  emulators' own files (``RetroArch``) lives on this page too. */
+  const Bios = {
+    async show() {
+      try {
+        const d = await get("/api/bios");
+        $("bios-rule").replaceChildren(el("span", { text: `Your default: ${d.keep_default ? "keep them" : "treat them like any other file"}. ` }),
+          d.overridden.length ? el("span", { text: `Overridden for: ${d.overridden.join(", ")}.` }) : el("span", { class: "muted", text: "No system overrides it." }));
+        $("bios-sources").replaceChildren(...d.sources.map((x) => el("tr", {},
+          el("td", { text: x.name }), el("td", { class: "num", text: x.version || "-" }),
+          el("td", { class: "num", text: x.installed ? fmt(x.entries) : "not installed" }), el("td", { class: "wrap small", text: x.note }))));
+        $("bios-found").replaceChildren(d.found.length
+          ? el("div", { class: "table-wrap" }, el("table", {},
+            el("thead", {}, el("tr", {}, ["System", "Files", "Last scan"].map((h) => el("th", { text: h })))),
+            el("tbody", {}, d.found.map((f) => el("tr", {},
+              el("td", {}, el("a", { href: Route.build(f.slug, "browse", { view: "unmatched" }), text: f.platform })),
+              el("td", { class: "num", text: fmt(f.files) }), el("td", { class: "num muted", text: f.at.replace("T", " ") }))))))
+          : el("div", { class: "muted", text: "None yet: scan a system, and its BIOS files are listed here." }));
+      } catch (err) { toast(err.message, "error"); }
+    },
+  };
+
   const Databases = {
     rows: [],
     open: false,
@@ -802,6 +824,7 @@
       if (parts[0] === "chd") return { view: "chd", slug: "", tab: "", params: {} };
       if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
       if (parts[0] === "databases") return { view: "databases", slug: "", tab: "", params: {} };
+      if (parts[0] === "bios") return { view: "bios", slug: "", tab: "", params: {} };
       if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "overview", params: {} };
       if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "overview", params: {} };
       if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "overview", params: {} };
@@ -913,6 +936,7 @@
     $("chd-link").setAttribute("aria-current", state.route && state.route.view === "chd" ? "true" : "false");
     $("settings-link").setAttribute("aria-current", state.route && state.route.view === "settings" ? "true" : "false");
     $("databases-link").setAttribute("aria-current", state.route && state.route.view === "databases" ? "true" : "false");
+    $("bios-link").setAttribute("aria-current", state.route && state.route.view === "bios" ? "true" : "false");
     Jobs.setRunning(Jobs.running);
     if (Jobs.last) renderCardJob(Jobs.last);
   }
@@ -1158,6 +1182,7 @@
     $("view-chd").classList.toggle("hidden", r.view !== "chd");
     $("view-settings").classList.toggle("hidden", r.view !== "settings");      // (every page is shown or hidden before any of them returns)
     $("view-databases").classList.toggle("hidden", r.view !== "databases");
+    $("view-bios").classList.toggle("hidden", r.view !== "bios");
     Databases.open = r.view === "databases";
     if (r.view === "databases") {
       $("view-home").classList.add("hidden");
@@ -1165,6 +1190,17 @@
       document.title = "Databases - Simple ROM Organiser";
       state.viewWas = "databases";
       Databases.show();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (r.view === "bios") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "BIOS and firmware - Simple ROM Organiser";
+      state.viewWas = "bios";
+      Bios.show();
+      RetroArch.show();
       renderHome();
       window.scrollTo(0, 0);
       return;
@@ -1468,6 +1504,7 @@
         card(fmt(s.raw), "Raw sets (convertible to CHD)", s.raw ? "warn" : "", L("matched"))]
         : s.convertible ? [card(fmt(s.convertible), "Convertible to No-Intro format", "info", L("matched"))] : []),
       ...(s.unsupported ? [card(fmt(s.unsupported), "Unsupported archives", "warn", L("unsupported"))] : []),
+      card(fmt(s.bios_files || 0), "BIOS / firmware files found", s.bios_files ? "info" : "", L("unmatched")),
       ...(s.errors ? [card(fmt(s.errors), "Read errors", "bad", L("errors"))] : []),
       el("div", { class: "complete-bar" }, progressBar(pct)),
     );
@@ -1852,7 +1889,7 @@
   /** The expanded checksum area of one Browse row. */
   function checksumPanel(payload) {
     const src = SOURCE_NAME[payload.source] || "DAT";
-    const labels = { dat: `DAT (${src})`, local: payload.kind === "unmatched" || payload.kind === "disc_unmatched" ? "Your file – no match" : "Your file" };
+    const labels = { dat: `DAT (${src})`, local: payload.kind === "unmatched" || payload.kind === "disc_unmatched" ? "Your file – no game match" : "Your file" };
     const box = el("div", { class: "cs" });
     const notes = [];
     if (payload.kind === "disc" || payload.kind === "disc_unmatched") {
@@ -1867,6 +1904,7 @@
       if (!rows.length) rows.push(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "No checksums available for this row." })));
       box.append(csTable(rows));
       if (payload.kind === "missing") notes.push("You do not have this one - only the DAT checksums are shown.");
+      if (payload.bios) notes.push(`These checksums are those of a BIOS / firmware file: ${payload.bios}.`);
       if (payload.also_named) notes.push(`${payload.also_named} more DAT entr${payload.also_named === 1 ? "y has" : "ies have"} identical content.`);
       if (payload.more_files) notes.push(`${payload.more_files} more matching file(s) not listed.`);
       for (const l of payload.local || []) {
@@ -2010,7 +2048,7 @@
           fetch: fetchKind, placeholder: "Search unmatched files...", emptyText: "Every file matched a DAT.",
           columns: [
             { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => (i.bios
-              ? el("div", {}, fileCell(i.file), el("div", { class: "sub" }, badge("info", "BIOS / firmware"), ` ${i.bios}: kept with the ROMs, never archived`))
+              ? el("div", {}, fileCell(i.file), el("div", { class: "sub" }, badge("info", "BIOS / firmware"), ` ${i.bios}`))
               : fileCell(i.file)) },
             ...(isGameFolder(currentPlatform()) ? [{ label: "Why", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason || "" }) }] : []),
             { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
@@ -2367,10 +2405,10 @@
     ...(convertible ? [[CONVERTED, "originals kept by Convert"]] : []),
     ...protectedDirs.map((d) => [d, "your files - left alone by every step"]),
   ].map(([name, text]) => `  ${(name + "/").padEnd(23)}${text}`);
-  const REASON_LABEL = { kept: "Kept", excluded: "Excluded", superseded: "Superseded", incomplete: "Incomplete",
+  const REASON_LABEL = { kept: "Kept", bios: "BIOS / firmware", excluded: "Excluded", superseded: "Superseded", incomplete: "Incomplete",
     duplicate: "Duplicates", unmatched: "Unmatched", playlist: "Playlists" };
-  const REASON_ORDER = ["kept", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist"];
-  const REASON_BADGE = { kept: "ok", excluded: "bad", superseded: "info", incomplete: "warn", duplicate: "warn",
+  const REASON_ORDER = ["kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist"];
+  const REASON_BADGE = { kept: "ok", bios: "info", excluded: "bad", superseded: "info", incomplete: "warn", duplicate: "warn",
     unmatched: "skip", playlist: "move" };
   let libTable = null;
   let vanishTable = null;
@@ -2607,7 +2645,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves" };
+    saved_games: "Saves", keep_bios: "BIOS and firmware" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
   /** Move item i of a list by dir (-1 up, +1 down); returns a new array. */
@@ -3487,6 +3525,7 @@
         ...(ex.counts.conflict ? [card(fmt(ex.counts.conflict), "Conflicts (left alone)", "bad")] : []),
         ...(ex.enough_space ? [] : [card(fmtBytes(ex.free || 0), "Free space is not enough", "bad")])] : []),
       card(fmt(r.kept), "Kept", "ok"),
+      card(fmt(r.bios || 0), "BIOS / firmware files kept", r.bios ? "info" : ""),
       ...(asd ? [card(fmt(asd.coming + asd.existing), "To move out to the archive folder", "info")] : []),
       ...(plan.convert ? [card(fmt(plan.convert.count), plan.convert.kind === "chd" ? "Raw discs to convert to CHD first" : "Dumps to clean up first", plan.convert.count ? "info" : "ok")] : []),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
@@ -4137,6 +4176,7 @@
       $("ra-follow-panel").classList.toggle("hidden", !info.settings);
       $("ra-shared-panel").classList.toggle("hidden", !info.settings);
       $("ra-bios-panel").classList.toggle("hidden", !info.settings);
+      $("bios-no-ra").classList.toggle("hidden", !!info.settings);
       $("ra-current-panel").classList.toggle("hidden", !info.settings);
       if (!info.settings) return;
       const s = info.settings;
@@ -4286,7 +4326,7 @@
         card(fmt(c.missing), "Missing", c.missing ? "warn" : ""),
         card(fmt(r.required_missing), "Required, not in place", r.required_missing ? "bad" : "ok"),
         ...(keys.length ? [card(fmt(keys.filter((k) => k.required && k.status !== "ok").length), "Key files not in place", keys.some((k) => k.required && k.status !== "ok") ? "bad" : "ok")] : []));
-      $("ra-bios-where").textContent = `Cores of ${r.scope}. System folder: ${r.system_dir}. Searched: ${r.searched.length ? r.searched.join(", ") : "nothing"}.${r.complete ? "" : " The search stopped early (time limit): files found by checksum under another name may be missing from the list."}`;
+      $("ra-bios-where").textContent = `Cores of ${r.scope}. System folder: ${r.system_dir}. Searched ${r.searched.length} folder${r.searched.length === 1 ? "" : "s"}${r.searched.length ? `: ${r.searched.join(" \u00B7 ")}` : ""}.${r.complete ? "" : " The search stopped early (time limit): files found by checksum under another name may be missing from the list."}`;
       const LABEL = { ok: "verified", present: "there (no checksum to compare)", wrong: "there, wrong checksum", found: "found - not in place", missing: "missing" };
       const firmware = r.cores.flatMap((core) => core.firmware.map((f) => el("tr", {},
         el("td", { text: core.core, title: (core.serves || []).join(", ") }), el("td", { class: "mono small", text: f.path }), el("td", { text: f.optional ? "optional" : "required" }),

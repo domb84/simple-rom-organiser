@@ -223,7 +223,7 @@ class DcEndpointTests(DcServerCase):
         info = self.call(f"/api/library/profile?platform={urllib.parse.quote(PLAT)}")
         self.assertEqual(info["style"], "redump")
         ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
-        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "languages",
+        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "keep_bios", "languages",
                                "other_language", "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
         self.assertFalse(info["available"]["keep_flags"])

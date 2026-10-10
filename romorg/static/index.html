@@ -46,6 +46,7 @@
       <input type="search" id="side-q" class="input side-q" placeholder="Find a system" aria-label="Find a system" autocomplete="off">
       <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
       <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">Emulators <span class="muted small">saves and config</span></span></a>
+      <a class="nav-item nav-collection" href="#/bios" id="bios-link"><span class="nav-name">BIOS and firmware <span class="muted small">checksums and keys</span></span></a>
       <a class="nav-item nav-collection" href="#/databases" id="databases-link"><span class="nav-name">Databases <span class="muted small">where the lists come from</span></span></a>
       <a class="nav-item nav-collection" href="#/settings" id="settings-link"><span class="nav-name">Settings <span class="muted small">for every system</span></span></a>
       <nav id="home-groups" aria-label="Systems by group"><div class="empty">Loading systems...</div></nav>
@@ -73,6 +74,59 @@
         <button class="btn" id="databases-check" data-needs-idle>Check for updates</button>
       </div>
       <div id="databases-body"><div class="empty">Loading...</div></div>
+    </section>
+
+    <section class="view hidden" id="view-bios" aria-labelledby="bios-title">
+      <div class="sys-head">
+        <h1 id="bios-title">BIOS, firmware and key files</h1>
+        <span class="muted small grow">What a console or an emulator needs besides the games.</span>
+      </div>
+      <div class="panel">
+        <h2>Kept with the ROMs</h2>
+        <p class="muted small">A scan of any system also looks for BIOS and firmware files among the files no game matched, and the emulators' key files
+          (<code>prod.keys</code>, <code>title.keys</code>, <code>keys.txt</code>). A BIOS is told by its checksum, whatever it is called, also
+          inside a zip; a key file by its name. They stay in the system's folder instead of going to <code>_unmatched</code> or the archive. This is the
+          library rule <b>Keep BIOS, firmware and key files</b> (on by default): <a href="#/settings">your default is in Settings</a>, and a system can
+          override it on its Library tab.</p>
+        <div id="bios-rule" class="small"></div>
+      </div>
+      <div class="panel">
+        <h2>Where the checksums come from</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>List</th><th>Version</th><th class="num">Files</th><th>What it is</th></tr></thead>
+          <tbody id="bios-sources"></tbody>
+        </table></div>
+        <p class="muted small">The TOSEC lists come with the TOSEC pack, which is downloaded and kept up to date with the other databases (see <a href="#/databases">Databases</a>).</p>
+      </div>
+      <div class="panel">
+        <h2>Found in your ROM folders</h2>
+        <p class="muted small">From the last scan of each system.</p>
+        <div id="bios-found"></div>
+      </div>
+      <div id="bios-no-ra" class="notice hidden">No RetroArch was found, so the cores' BIOS list cannot be checked; pick one on the <a href="#/retroarch">Emulators</a> page.</div>
+      <div class="panel" id="ra-bios-panel">
+        <h2>Check the emulators' BIOS and key files</h2>
+        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the and any folder you add). Choose one system to limit it. The key files the Switch and Wii U emulators need (<code>prod.keys</code>, <code>title.keys</code> for Eden and Ryujinx, <code>keys.txt</code> for Cemu) are checked and looked for the same way; a key file found is always copied into place, never moved.</p>
+        <div class="row">
+          <select id="ra-bios-platform" class="input" aria-label="System"></select>
+          <input type="text" id="ra-bios-search" class="input grow mono" placeholder="Also look in this folder (optional)" spellcheck="false" autocomplete="off" aria-label="Another folder to search">
+          <button class="btn" id="ra-bios-browse">Folders...</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="ra-bios-check" data-needs-idle>Check</button>
+          <select id="ra-bios-mode" class="input" aria-label="Move or copy"><option value="move">Move found files into place</option><option value="copy">Copy found files into place</option></select>
+          <button class="btn btn-primary" id="ra-bios-apply" data-needs-idle>Place found files</button>
+          <div class="grow"></div>
+        </div>
+        <div id="ra-bios-out" class="hidden">
+          <div class="cards" id="ra-bios-cards"></div>
+          <div class="muted small" id="ra-bios-where"></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Core</th><th>File</th><th>Needed</th><th>State</th><th>Found at</th></tr></thead>
+            <tbody id="ra-bios-table"></tbody>
+          </table></div>
+        </div>
+      </div>
     </section>
 
     <section class="view hidden" id="view-settings" aria-labelledby="settings-title">
@@ -248,30 +302,6 @@
         <h2>Saves follow the games</h2>
         <label class="check"><input type="checkbox" id="ra-follow" checked> When a library build renames a game, give its saves and states the new name too</label>
         <p class="muted small">RetroArch finds a save by the game's file name. A build in place renames the saves; a build into another folder copies them to the new names. Each core's folder stays separate, and nothing is overwritten. Undoing the build gives the old names back. It waits if RetroArch is running.</p>
-      </div>
-
-      <div class="panel" id="ra-bios-panel">
-        <h2>BIOS, firmware and key files</h2>
-        <p class="muted small">Checks the BIOS and firmware files that your installed cores list against RetroArch's system folder, verified by checksum where the core gives one. Missing ones are looked for in the ROM folders of the systems you have set up (and the and any folder you add). Choose one system to limit it. The key files the Switch and Wii U emulators need (<code>prod.keys</code>, <code>title.keys</code> for Eden and Ryujinx, <code>keys.txt</code> for Cemu) are checked and looked for the same way; a key file found is always copied into place, never moved.</p>
-        <div class="row">
-          <select id="ra-bios-platform" class="input" aria-label="System"></select>
-          <input type="text" id="ra-bios-search" class="input grow mono" placeholder="Also look in this folder (optional)" spellcheck="false" autocomplete="off" aria-label="Another folder to search">
-          <button class="btn" id="ra-bios-browse">Folders...</button>
-        </div>
-        <div class="row">
-          <button class="btn" id="ra-bios-check" data-needs-idle>Check</button>
-          <select id="ra-bios-mode" class="input" aria-label="Move or copy"><option value="move">Move found files into place</option><option value="copy">Copy found files into place</option></select>
-          <button class="btn btn-primary" id="ra-bios-apply" data-needs-idle>Place found files</button>
-          <div class="grow"></div>
-        </div>
-        <div id="ra-bios-out" class="hidden">
-          <div class="cards" id="ra-bios-cards"></div>
-          <div class="muted small" id="ra-bios-where"></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Core</th><th>File</th><th>Needed</th><th>State</th><th>Found at</th></tr></thead>
-            <tbody id="ra-bios-table"></tbody>
-          </table></div>
-        </div>
       </div>
     </section>
 
