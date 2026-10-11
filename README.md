@@ -513,6 +513,9 @@ scan, and four that need a calculation of their own (`GET /api/library/insights`
 Average rating, Regions, and Convert (disc systems). A tile with nothing to say for a system (no saves, nothing unmatched, no ratings)
 is left out of that page. The choice is `page_tiles` in `config.json`.
 
+**Copy a name or a checksum.** In the upgrades list and in every checksum panel (Browse, the Library list's details) a file name,
+CRC32, MD5 or SHA-1 is a button: press it and it is on the clipboard, ready to search for. The app itself never downloads games.
+
 **Lists behind the hints.** The Overview's three hint lines each have a **Show** button: the games you own that are not the preferred
 version (with its checksums), the games your rules leave out (and why), and the multi-disk games with disks missing
 (`GET /api/library/upgrades?kind=upgrades|excluded|incomplete`). Above the totals, **Library rules:** says whether the system follows

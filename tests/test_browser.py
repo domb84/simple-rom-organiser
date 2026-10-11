@@ -1215,6 +1215,10 @@ class RobustnessTests(UiTestCase):
         self.page.wait(shown)
         self.click("#result-table .cs-toggle")
         self.page.wait("document.querySelector('#result-table .detail-row:not(.hidden) .cs-sums table')")
+        # a name and a checksum can be copied with one press (to search for the file)
+        self.assertTrue(self.page.eval("!!document.querySelector('#result-table .detail-row:not(.hidden) .copy-chip.name')"))
+        self.page.eval("document.querySelector('#result-table .detail-row:not(.hidden) .copy-chip.name').click()")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Copied'))")
         self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/library")
         self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         # the new file name is made safe for the file system; the row and its details still carry the DAT's name

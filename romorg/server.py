@@ -3203,6 +3203,8 @@ class App:
         platform = self._resolve_platform(query.get("platform"))
         manager = self._totals()
         kind = query.get("kind", "upgrades")
+        if not self._totals_want(platform):
+            return {"platform": platform.name, "kind": kind, "ready": False, "items": []}
         if kind in ("excluded", "incomplete"):
             totals = _mod("totals")
             rows = manager.problems(platform.name, totals.EXCLUDED_OWNED if kind == "excluded" else totals.INCOMPLETE_OWNED)
@@ -4276,6 +4278,22 @@ class App:
         _mod("paths").update_config(lambda cfg: cfg.__setitem__("page_tiles", chosen))
         return self._tiles_info()
 
+    def _totals_want(self, platform: Any) -> bool:
+        """Tell the totals worker what this system's rules, databases and scan are NOW, so that what is read from it next (the lists
+        behind the hints, the tiles) is of these and never of the rules before a change. False when there is nothing to calculate
+        from (no database, or a rating filter whose data is not installed)."""
+        profile = self._profile(platform, self._config())
+        if not self._locate_dats(platform) or self._ratings_pending(platform, profile):
+            return False
+        with self._lock:
+            scan = self._scan
+        if scan is not None and scan.platform.name != platform.name:
+            scan = None
+        # (asked without the saved counts: those answer the totals at once, but the lists and the tiles need the target itself)
+        dats_sig = _mod("totals").signature_text(tuple(self._dats_signature(platform)) + (self._ratings_sig(),))
+        self._totals().request(platform, profile, dats_sig, scan, None)
+        return True
+
     def library_insights(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/insights?platform=&want=a,b``: the numbers of the tiles that need a calculation of their own
         (``tiles.CALC``) from the totals worker's cached target and your scan; ``ready`` is false while those are being calculated."""
@@ -4285,17 +4303,8 @@ class App:
         out: dict[str, Any] = {"platform": platform.name, "ready": False}
         manager = self._totals()
         lookup = self._rating_lookup(platform)
-        cfg = self._config()
-        profile = self._profile(platform, cfg)
-        if not self._locate_dats(platform) or self._ratings_pending(platform, profile):
+        if not self._totals_want(platform):
             return {**out, "ready": True, "unavailable": True}       # (nothing to calculate from: the tiles are left out, not left waiting)
-        with self._lock:
-            scan = self._scan
-        if scan is not None and scan.platform.name != platform.name:
-            scan = None
-        # (asked without the saved counts: those answer the totals at once, but the tiles need the target itself)
-        dats_sig = _mod("totals").signature_text(tuple(self._dats_signature(platform)) + (self._ratings_sig(),))
-        manager.request(platform, profile, dats_sig, scan, None)
         found = manager.insights(platform, [t for t in want if t != "convert"], lookup)
         if found is not None:
             out.update(found)

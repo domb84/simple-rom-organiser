@@ -466,6 +466,18 @@ class TotalsEndpointTests(unittest.TestCase):
             self.assertEqual(len(lst["items"]), out[field])                          # each count has its list
             self.assertTrue(all(r["have"] and r["title"] for r in lst["items"]))
         self.assertTrue(self.call("GET", "/api/library/upgrades?platform=Commodore%20Amiga&kind=excluded")["items"][0]["why"])   # and says why
+        # other rules: the list is of the new rules, never of the ones before (it says "not ready" until they are calculated)
+        self.call("POST", "/api/library/profile", {"platform": "Commodore Amiga", "latest_only": False, "best_variant": False})
+        lst = {"ready": False}
+        for _ in range(200):
+            lst = self.call("GET", "/api/library/upgrades?platform=Commodore%20Amiga")
+            if lst["ready"]:
+                break
+            time.sleep(0.05)
+        self.assertTrue(lst["ready"])
+        self.assertEqual(len(lst["items"]), self.totals()["not_preferred"])
+        self.call("POST", "/api/library/profile", {"platform": "Commodore Amiga", "reset": True})
+        out = self.totals()
         ins = {}
         for _ in range(100):
             ins = self.call("GET", "/api/library/insights?platform=Commodore%20Amiga&want=space,best_missing,avg_rating,regions")

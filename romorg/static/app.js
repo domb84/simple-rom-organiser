@@ -1802,6 +1802,14 @@
   }
 
   /** One hash: monospace, click to copy; a check mark when it equals the other side, a cross when it differs. */
+  /** A name or a checksum you can copy with one press (to search for the file): ``label`` in front, the text, the copy mark. */
+  function copyChip(text, label = "", cls = "") {
+    return el("button", { class: `hash-btn copy-chip ${cls}`, type: "button", title: `${label || "Name"} - click to copy`, "aria-label": `Copy ${label || "name"} ${text}`,
+      on: { click: (ev) => { ev.stopPropagation(); copyText(text); } } },
+    label ? el("span", { class: "muted", text: `${label} ` }) : null, cls === "name" ? el("span", { text }) : el("code", { text }),
+    el("span", { class: "hash-copy", text: "⧉", "aria-hidden": "true" }));
+  }
+
   function hashCell(key, value, eq, whyUnknown, state_ = "") {
     if (!value) {
       return el("td", { class: "cs-hash" }, el("span", { class: "hash-none", text: "-", title: whyUnknown || "not known", "aria-label": `${HASH_LABEL[key]} not known` }));
@@ -1834,7 +1842,7 @@
   function nameBlock(name, size, extra, dirOverride) {
     const [dir0, base] = dirOverride !== undefined ? [dirOverride, String(name || "")] : splitPath(String(name || ""));
     return el("div", {},
-      el("div", { class: "cs-file", text: base || "(unnamed)", title: name }),
+      base ? el("div", { class: "cs-file" }, copyChip(base, "", "name")) : el("div", { class: "cs-file", text: "(unnamed)" }),
       dir0 ? el("div", { class: "sub mono-path", text: dir0 }) : null,
       el("div", { class: "sub", text: size || size === 0 ? `${fmt(size)} bytes` : "size not known" }), extra || null);
   }
@@ -2318,7 +2326,7 @@
     Totals.data[name] = data;
     renderTotals();
     renderRatingsStatus();
-    if (!data.calculating && !data.ratings_pending) loadInsights();
+    if (!data.calculating && !data.ratings_pending) { loadInsights(); loadList(name); }
     if (data.ratings_pending) Updates.load();          // the server asked for the data: show its progress
     if (data.calculating || data.ratings_pending) Totals.timer = setTimeout(loadTotals, data.ratings_pending ? 1500 : 900);
   }
@@ -2330,15 +2338,25 @@
   async function toggleList(name, kind) {
     const open = Totals.upgradesOpen[name] === kind;
     Totals.upgradesOpen[name] = open ? "" : kind;
-    if (!open) {
-      Totals.upgrades[name] = null;
-      renderTotals();
-      try {
-        Totals.upgrades[name] = await get(`/api/library/upgrades?${qs({ platform: name, kind })}`);
-      } catch (err) {
-        Totals.upgrades[name] = { ready: true, items: [], error: err.message };
-      }
+    if (!open) Totals.upgrades[name] = null;
+    renderTotals();
+    if (!open) loadList(name);
+  }
+
+  /** Read the open list again: when it is opened, and whenever the totals it belongs to were calculated again (other rules, a scan). */
+  async function loadList(name) {
+    const kind = Totals.upgradesOpen[name];
+    if (!kind) return;
+    clearTimeout(Totals.listTimer);
+    let doc;
+    try {
+      doc = await get(`/api/library/upgrades?${qs({ platform: name, kind })}`);
+    } catch (err) {
+      doc = { ready: true, items: [], error: err.message };
     }
+    if (Totals.upgradesOpen[name] !== kind) return;           // closed, or another list opened, meanwhile
+    if (!doc.ready) { Totals.listTimer = setTimeout(() => loadList(name), 900); if (Totals.upgrades[name]) return; }
+    Totals.upgrades[name] = doc;
     renderTotals();
   }
 
@@ -2354,15 +2372,15 @@
         el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "You have" }),
           el("th", { text: kind === "excluded" ? "Left out because" : "What is missing" }))), el("tbody", {}, ...rows)));
     }
-    const hash = (label, v) => v ? el("div", { class: "small mono" }, `${label} ${v}`) : null;
-    const version = (b) => el("div", {}, el("div", { class: "small", text: b.name }),
+    const hash = (label, v) => v ? el("div", {}, copyChip(v, label)) : null;
+    const version = (b) => el("div", {}, el("div", {}, copyChip(b.name, "", "name")),
       ...b.files.flatMap((f) => (f.crc || f.md5 || f.sha1)
-        ? [b.files.length > 1 ? el("div", { class: "small muted", text: `${f.name} (${fmtBytes(f.size)})` }) : null,
+        ? [b.files.length > 1 ? el("div", {}, copyChip(f.name, "", "name"), el("span", { class: "small muted", text: ` ${fmtBytes(f.size)}` })) : null,
           hash("CRC32", f.crc), hash("MD5", f.md5), hash("SHA-1", f.sha1)]
         : [el("div", { class: "small muted", text: "No checksum: this catalogue identifies the game by its ID." })]));
     const rows = doc.items.map((it) => el("tr", {}, el("td", { text: it.title }), have(it), el("td", {}, ...it.better.map(version))));
     return el("div", { class: "upgrades table-wrap", "data-upgrades": "list" },
-      el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "You have" }), el("th", { text: "Preferred version (name and checksums)" }))),
+      el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "You have" }), el("th", { text: "Preferred version (press a name or a checksum to copy it)" }))),
         el("tbody", {}, ...rows)));
   }
 
@@ -2540,7 +2558,11 @@
 
   /** The list behind a "Needs a look" link, under the tiles. */
   function renderTileList(p) {
-    const kind = Totals.upgradesOpen[p.name];
+    let kind = Totals.upgradesOpen[p.name];
+    const d = Totals.data[p.name];
+    if (kind && d && !d.calculating && { upgrades: d.not_preferred, excluded: d.owned_but_excluded, incomplete: d.owned_incomplete }[kind] === 0) {
+      kind = Totals.upgradesOpen[p.name] = "";              // the rules changed and nothing is left to list
+    }
     $("tile-lists").replaceChildren(...(kind ? [upgradesTable(Totals.upgrades[p.name], kind)] : []));
   }
 
@@ -2574,6 +2596,7 @@
     unmatched: "skip", playlist: "move" };
   let libTable = null;
   let vanishTable = null;
+  let vanishPlanId = "";         // the plan the vanish list on screen belongs to
   let libPlan = null;
 
   const libOptions = () => ({
@@ -2770,6 +2793,7 @@
   function defaultsChanged() {
     for (const k of Object.keys(state.library)) delete state.library[k];
     Previews.staleAll("Your library defaults changed since this preview", ["lib"]);
+    browseDirty = true;
     state.libStats = null;
     scheduleTotals();
     loadPlatforms().then(() => { if (inSystem()) loadLibraryProfile(); });
@@ -3699,6 +3723,7 @@
     // The previews stay on screen but are marked out of date (Recalculate is the highlighted action, Build / Apply
     // are disabled until it ran); the library totals on the Overview follow after a short pause.
     Previews.staleAll("Rules changed since this preview", ["lib"]);
+    browseDirty = true;              // its rule chips and filters are of the old rules
     scheduleTotals();
     updateActionState();
   }
@@ -3907,6 +3932,8 @@
       (key) => { state.vanishReason = key; renderVanishBox(plan); if (vanishTable) { vanishTable.offset = 0; vanishTable.load(); } },
       (k) => (k === "language" ? "No version in selected languages" : vanishText(k)), "All reasons");
     if (box.open && !vanishTable) showVanishTable();
+    else if (vanishTable && vanishPlanId !== plan.plan_id) { vanishTable.offset = 0; vanishTable.load(); }      // the list was calculated again: so is this one
+    vanishPlanId = plan.plan_id;
   }
 
   function renderVanishHints(data) {

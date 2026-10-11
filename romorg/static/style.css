@@ -706,3 +706,6 @@ select.saves-choice { min-width: 0; width: 100%; max-width: 230px; padding: 3px 
 .row-tie { min-width: 32px; }
 .row-tie[aria-pressed="true"] { border-color: var(--accent); background: rgba(79, 156, 255, 0.18); }
 .sortable-row.tied .region-n { opacity: 0.55; }
+.copy-chip { text-align: left; max-width: 100%; }
+.copy-chip.name span:first-child { overflow-wrap: anywhere; font-size: 13px; }
+.upgrades .hash-btn { min-height: 30px; }
