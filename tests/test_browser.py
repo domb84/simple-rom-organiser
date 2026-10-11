@@ -153,8 +153,7 @@ class UiTestCase(unittest.TestCase):
         self.open()
         self.scan()
         self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         self.page.wait("document.querySelectorAll('#lib-table tbody tr').length > 3")
 
     def names(self, table: str = "lib-table") -> list[str]:
@@ -221,6 +220,81 @@ class LibraryDefaultsTests(UiTestCase):
         self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["inherit"]["overridden"], [])
         self.no_js_errors()
 
+    def test_settings_has_the_region_order_and_two_regions_can_be_equally_best(self) -> None:
+        self.open("#/settings")
+        self.page.wait("document.querySelectorAll('#set-library-rules .rules-region .sortable-row').length > 3", timeout=30)
+        first_two = self.page.eval("[...document.querySelectorAll('#set-library-rules .rules-region .sortable-row')].slice(0, 2).map(r => r.dataset.name)")
+        self.assertTrue(self.page.eval("document.querySelector('#set-library-rules .rules-region .sortable-row .row-tie').disabled"))   # (the first has nothing above)
+        self.page.eval("document.querySelectorAll('#set-library-rules .rules-region .row-tie')[1].click()")
+        self.page.wait("document.querySelectorAll('#set-library-rules .rules-region .sortable-row.tied').length === 1")
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#set-library-rules .rules-region .region-n')].slice(0, 3).map(e => e.textContent)"), ["1", "1", "2"])
+        deadline = time.time() + 15
+        while time.time() < deadline and self.api("GET", "/api/library/defaults")["profile"]["region_ties"] != [first_two[1]]:
+            time.sleep(0.3)
+        self.assertEqual(self.api("GET", "/api/library/defaults")["profile"]["region_ties"], [first_two[1]])
+        self.no_js_errors()
+
+    def test_the_library_page_says_whether_the_system_has_rules_of_its_own(self) -> None:
+        self.open("#/system/commodore-amiga/library")
+        self.page.wait("document.getElementById('totals-rules-line').textContent.includes('Your default rules')", timeout=30)
+        self.api("POST", "/api/library/profile", {"platform": "Commodore Amiga", "latest_only": False})
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("document.getElementById('totals-rules-line').textContent.includes('Custom')", timeout=30)
+        self.assertIn("latest", self.page.eval("document.getElementById('totals-rules-line').textContent").lower())
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")          # (the old address opens the library)
+        self.page.wait("document.getElementById('tabbtn-library').getAttribute('aria-selected') === 'true'", timeout=30)
+        self.assertFalse(self.page.eval("!!document.getElementById('tabbtn-overview')"))
+        self.no_js_errors()
+
+    def test_the_tiles_follow_the_settings_and_the_rules_button_opens_the_rules(self) -> None:
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("document.querySelectorAll('#sys-tiles .tile').length >= 2", timeout=30)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#sys-tiles .tile')].slice(0, 2).map(t => t.dataset.tile)"), ["have_all", "have_rules"])
+        self.api("POST", "/api/settings/tiles", {"shown": ["last_scan", "have_all", "space"]})
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("document.querySelectorAll('#sys-tiles .tile').length === 3 && !document.querySelector('#sys-tiles .totals-wait')", timeout=60)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#sys-tiles .tile')].map(t => t.dataset.tile)"), ["last_scan", "have_all", "space"])
+        self.assertIn("GB", self.page.eval("document.querySelector('#sys-tiles [data-tile=space]').textContent") + "GB")      # (a size, whatever the unit)
+        self.assertFalse(self.page.eval("document.getElementById('library-rules-box').open"))
+        self.click("#rules-toggle")
+        self.page.wait("document.getElementById('library-rules-box').open")
+        self.no_js_errors()
+
+    def test_the_list_follows_a_rule_change_by_itself(self) -> None:
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
+        self.page.wait("document.querySelectorAll('#lib-table tbody tr').length > 3")
+        before = self.page.eval("document.getElementById('lib-live').textContent")
+        self.click("#rules-toggle")
+        self.page.wait("!!document.querySelector('#library-rules input[data-opt=\"latest_only\"]')", timeout=30)
+        want = not self.page.eval("document.querySelector('#library-rules input[data-opt=\"latest_only\"]').checked")
+        self.click("#library-rules input[data-opt=\"latest_only\"]")
+        self.page.wait("/Updating|Calculating/.test(document.getElementById('lib-live').textContent)", timeout=10)      # no button was pressed
+        self.assertEqual(self.page.eval("document.getElementById('lib-apply-btn').dataset.stale"), "1")                # building waits for the new list
+        self.page.wait("document.getElementById('lib-live').textContent.includes('up to date') && document.getElementById('lib-apply-btn').dataset.stale === '0'", timeout=60)
+        plan = self.api("POST", "/api/library/plan", {"limit": 1})
+        self.assertEqual(plan["profile"]["latest_only"], want)
+        self.assertTrue(before)
+        self.no_js_errors()
+
+    def test_settings_lists_every_tile_to_tick_and_order(self) -> None:
+        self.open("#/settings")
+        self.page.wait("document.querySelectorAll('#set-tiles-list .sortable-row').length === 16", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelectorAll('#set-tiles-list .row-check:checked').length"), 9)
+        self.page.eval("document.querySelector('#set-tiles-list .sortable-row[data-name=space] .row-check').click()")
+        self.page.wait("document.getElementById('set-tiles-note').textContent.startsWith('10 of 10')")
+        self.page.eval("document.querySelector('#set-tiles-list .sortable-row[data-name=regions] .row-check').click()")            # an eleventh: refused
+        self.assertFalse(self.page.eval("document.querySelector('#set-tiles-list .sortable-row[data-name=regions] .row-check').checked"))
+        deadline = time.time() + 15
+        while time.time() < deadline and "space" not in self.api("GET", "/api/settings/tiles")["shown"]:
+            time.sleep(0.3)
+        self.assertEqual(self.api("GET", "/api/settings/tiles")["shown"][-1], "space")
+        self.no_js_errors()
+
     def test_a_default_set_in_settings_reaches_the_systems_that_do_not_override_it(self) -> None:
         self.open("#/settings")
         self.page.wait("document.querySelectorAll('#set-library-rules input[data-opt]').length > 0 && document.querySelectorAll('.nav-item[data-platform]').length > 3")
@@ -254,13 +328,14 @@ class BiosPageTests(UiTestCase):
         self.assertEqual(self.page.eval("[...document.querySelectorAll('section.view:not(.hidden)')].map(e => e.id)"), ["view-retroarch"])
         self.no_js_errors()
 
-    def test_the_totals_are_on_the_overview_and_the_library_page_and_the_library_has_a_filter(self) -> None:
+    def test_the_totals_and_the_scan_results_are_on_the_library_page_and_the_library_has_a_filter(self) -> None:
         self.open()
         self.scan()
         self.page.goto(self.fx.url + "#/system/commodore-amiga/overview")
         self.page.wait("[...document.querySelectorAll('#summary-cards .card')].some(c => c.textContent.includes('BIOS / firmware files'))", timeout=30)
         self.library_page()
         self.assertTrue(self.page.eval("[...document.querySelectorAll('#lib-cards .card')].some(c => c.textContent.includes('BIOS / firmware files'))"))
+        self.assertTrue(self.page.eval("['have_all', 'have_rules'].every(t => !!document.querySelector('#sys-tiles [data-tile=' + t + ']'))"))
         self.no_js_errors()
 
     def test_the_library_filter_shows_just_the_bios_files(self) -> None:
@@ -285,8 +360,7 @@ class BiosPageTests(UiTestCase):
 
     def library_page(self) -> None:
         self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         self.page.wait("document.querySelectorAll('#lib-cards .card').length > 3", timeout=60)
 
     def test_the_rule_is_an_option_with_an_override_box_like_the_others(self) -> None:
@@ -297,6 +371,7 @@ class BiosPageTests(UiTestCase):
         self.assertTrue(self.page.eval("!!document.querySelector('#library-rules input[data-override=\"keep_bios\"]')"))
         self.page.goto(self.fx.url + "#/settings")
         self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"keep_bios\"]')", timeout=30)
+        self.assertTrue(self.page.eval(r"""['min_rating', 'top_n', 'min_votes'].every(f => !!document.querySelector('#set-library-rules input[data-field="' + f + '"]'))"""))   # the ratings filter
         self.no_js_errors()
 
 
@@ -415,8 +490,6 @@ class LibraryListTests(UiTestCase):
             .find(r => r.textContent.includes({target!r})); r.querySelector('.sel-col input').click(); }})()""")
         self.page.wait("!!document.querySelector('#lib-table .sel-bar:not(.hidden)')")
         self.click("#lib-table .sel-bar button", "Always exclude")
-        self.page.wait("document.querySelector('#lib-plan-btn').classList.contains('btn-primary')")
-        self.click("#lib-plan-btn")
         self.page.wait(f"""[...document.querySelectorAll('#lib-table tbody tr')].some(r =>
             r.textContent.includes({target!r}) && r.textContent.includes('_excluded'))""")
         self.assertIn("always excluded by you", self.page.eval(
@@ -444,7 +517,6 @@ class BuildElsewhereTests(UiTestCase):
         self.page.eval(f"""(() => {{ const i = document.getElementById('lib-export-dest'); i.value = {str(dest)!r};
             i.dispatchEvent(new Event('change')); }})()""")
         self.assertEqual(self.page.eval("document.getElementById('lib-apply-btn').textContent"), "Build library in destination")
-        self.click("#lib-plan-btn")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('To copy')")
         self.click("#lib-apply-btn")
         self.assertIn("its files stay where they are", self.confirm_dialog())
@@ -595,10 +667,9 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
 
     def library_open(self) -> None:
         self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
 
     def preview(self) -> None:
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
         self.page.wait("document.querySelectorAll('#lib-table tbody tr').length > 3", timeout=30)
 
     # ---- no RetroArch config: nothing at all
@@ -682,10 +753,9 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         # the choice for this one game: archive its saves with it
         self.assertEqual(self.page.eval("document.querySelector('#lib-table select.saves-choice').value"), "")
         self.select_in_table("archive")
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('press Recalculate'))")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('the list is updating'))")
         self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["saved_overrides"],
                          [["Commodore Amiga - Games - [ADF]", "Alpha Quest v1.0 (1990)(Acme).adf", "archive"]])
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
         self.page.wait("document.querySelector('#lib-table .saves-cell .badge')?.textContent.includes('archived with the ROM')", timeout=30)
         self.assertEqual(self.page.eval("document.querySelector('#lib-table select.saves-choice').value"), "archive")
         self.page.eval("location.reload()")                                              # it is stored: the choice survives
@@ -771,9 +841,8 @@ class TidyFolderTests(UiTestCase):
         self.page.eval(f"""(() => {{ const i = document.getElementById('lib-aside-dir'); i.value = {str(aside)!r};
             i.dispatchEvent(new Event('change')); }})()""")
         self.page.wait("!!document.getElementById('lib-aside-reset')", timeout=30)                       # now this system's own folder
-        self.click("#lib-plan-btn")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('To move out to the archive folder')", timeout=30)
-        self.page.wait("document.getElementById('lib-plan-btn').dataset.busy === '0'", timeout=30)
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         self.click("#lib-apply-btn")
         self.assertIn("is then moved out of this folder", self.confirm_dialog())
         self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('moved out to'))", timeout=60)
@@ -793,8 +862,7 @@ class RememberedViewTests(UiTestCase):
             .find(l => l.textContent.trim() === 'Size').querySelector('input').click()""")
         self.page.wait("![...document.querySelectorAll('#lib-table thead th')].some(t => t.textContent.trim() === 'Size')")
         self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
-        self.page.eval("document.getElementById('lib-plan-btn').click()")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         self.page.wait("document.querySelectorAll('#lib-table tbody tr').length > 3")
         self.assertTrue(self.page.eval("!!document.querySelector('#lib-table th[aria-sort=ascending]')"))
         self.assertFalse(self.page.eval("[...document.querySelectorAll('#lib-table thead th')].some(t => t.textContent.trim() === 'Size')"))
@@ -956,7 +1024,6 @@ class ConvertDropdownTests(UiTestCase):
         self.assertFalse(self.page.eval("document.getElementById('lib-convert').checked"))
         self.page.eval("document.getElementById('lib-convert').click()")
         self.page.wait("[...document.querySelectorAll('#lib-convert-row')].length === 1")
-        self.click("#lib-plan-btn")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('Raw discs to convert to CHD first')", timeout=60)
         self.click("#lib-apply-btn")
         self.assertIn("converted to CHD first", self.confirm_dialog())
@@ -1149,8 +1216,7 @@ class RobustnessTests(UiTestCase):
         self.click("#result-table .cs-toggle")
         self.page.wait("document.querySelector('#result-table .detail-row:not(.hidden) .cs-sums table')")
         self.page.goto(self.fx.url + "#/system/nintendo-game-boy-advance/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
-        self.click("#lib-plan-btn")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         # the new file name is made safe for the file system; the row and its details still carry the DAT's name
         self.page.wait("document.querySelector('#lib-table').innerText.includes('dump.gba')")
         self.click("#lib-table .cs-toggle")
@@ -1219,7 +1285,7 @@ class SettingsTests(UiTestCase):
         self.open()
         self.scan()
         self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
-        self.page.wait("!!document.querySelector('#lib-plan-btn')?.offsetParent")
+        self.page.wait("document.getElementById('lib-live')?.textContent.includes('up to date')", timeout=60)
         self.assertNotIn("next to the games", self.page.eval("document.getElementById('tab-library').textContent"))
         self.assertFalse(self.page.eval("!!document.getElementById('library-intro')"))
         self.no_js_errors()

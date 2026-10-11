@@ -203,7 +203,7 @@ class AutoUpdateTest(DataDirCase):
 
         w = W()
         os.environ.pop("ROMORG_OFFLINE", None)
-        mgr = autoupdate.UpdateManager(tosec=Nothing(), nointro=Nothing(), whdload=w, redump=None, enabled=True)
+        mgr = autoupdate.UpdateManager(tosec=Nothing(), nointro=Nothing(), whdload=w, redump=None, ratings=None, enabled=True)
         mgr.ensure(platforms.get_platform(PLAT))
         self.assertEqual(w.calls, [[DAT]])
         st = mgr.status()

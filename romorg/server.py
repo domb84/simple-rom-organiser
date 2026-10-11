@@ -290,7 +290,7 @@ HASH_KEYS = ("crc32", "md5", "sha1")
 LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
-                "rescue_only_dump", "region_priority", "one_per_game", "borrow_other_editions",
+                "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
@@ -823,6 +823,8 @@ class App:
         self._cutoffs: dict[str, tuple[tuple, Any]] = {}       # platform -> (key, rank key of the N-th best game) (Amendment 18)
         if hasattr(self.updates, "ratings_wanted"):
             self.updates.ratings_wanted = self._ratings_wanted
+        if hasattr(self.updates, "igdb_creds"):
+            self.updates.igdb_creds = self._igdb_creds
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
         self._adopt_old_folders()
@@ -954,6 +956,10 @@ class App:
 
     # ---------------------------------------------------------------- ratings (Amendment 18)
 
+    def _igdb_creds(self) -> tuple[str, str] | None:
+        """The user's own IGDB key (a Twitch Client ID and secret), or None."""
+        return _mod("igdb").credentials(self._config())
+
     def _ratings_wanted(self) -> bool:
         """True when a rating filter is enabled in any platform's saved profile (the updater then keeps the data fresh)."""
         library = _optional_mod("library")
@@ -974,6 +980,9 @@ class App:
         """``title -> (rating, votes) | None`` of the installed index, or None when it is not installed."""
         store = self._ratings_store()
         if not store.available():
+            return None
+        covers = getattr(store, "covers", None)
+        if covers is not None and not covers(platform):      # an index of an older build, without this system: not installed for it
             return None
         return lambda title: store.lookup(platform, title)
 
@@ -2177,6 +2186,7 @@ class App:
                                  "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync")),
                                  "aside": exp.get("aside", True) is not False}      # (archiving is on unless it was switched off)
         out["archive"] = self._archive_settings(cfg)
+        out["tiles"] = _mod("tiles").shown(cfg)
         try:
             out["dats_count"] = len(_mod("tosec").list_dats())
         except Exception:
@@ -2327,7 +2337,43 @@ class App:
         block.setdefault("credit_url", ratings.CREDIT_URL)
         block["supported"] = [p.name for p in _mod("platforms").list_platforms() if ratings.supported(p)]
         block["refresh_days"] = ratings.REFRESH_DAYS
+        igdb = _mod("igdb")
+        entry = self._config().get("igdb") if isinstance(self._config().get("igdb"), dict) else {}
+        block["igdb"] = {**(block.get("igdb") or {}), "client_id": str(entry.get("client_id") or ""),
+                         "has_secret": bool(entry.get("client_secret")), "credit": igdb.CREDIT, "credit_url": igdb.CREDIT_URL,
+                         "platforms": sorted(igdb.PLATFORM_IDS)}
         return block
+
+    def ratings_igdb_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/ratings/igdb {client_id, client_secret}``: keep the user's own IGDB key (both empty: take it away). A key
+        starts the build of the IGDB ratings in the background. The secret stays in ``config.json`` and is never sent back."""
+        igdb = _mod("igdb")
+        cid, secret = _str_arg(body.get("client_id")), _str_arg(body.get("client_secret"))
+        old = self._config().get("igdb") if isinstance(self._config().get("igdb"), dict) else {}
+        if cid and not secret and cid == str(old.get("client_id") or ""):
+            secret = str(old.get("client_secret") or "")                      # (only the id was shown: the secret stays)
+        if bool(cid) != bool(secret):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Give both the Client ID and the Client secret (or neither, to remove the key)", "bad_igdb_key")
+        if not cid:
+            self._config_update(strict=True, igdb={})
+            igdb.forget()
+            return {"started": False, "ratings": self.ratings_get({}, None)}
+        self._config_update(strict=True, igdb={"client_id": cid, "client_secret": secret})
+        started = bool(self.updates.request_ratings())
+        return {"started": started, "ratings": self.ratings_get({}, None)}
+
+    def ratings_igdb_test(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/ratings/igdb/test {client_id?, client_secret?}``: does the key work (the saved one when none is given)?"""
+        igdb = _mod("igdb")
+        entry = self._config().get("igdb") if isinstance(self._config().get("igdb"), dict) else {}
+        cid = _str_arg(body.get("client_id")) or str(entry.get("client_id") or "")
+        secret = _str_arg(body.get("client_secret")) or (str(entry.get("client_secret") or "") if cid == str(entry.get("client_id") or "") else "")
+        if not cid or not secret:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Give the Client ID and the Client secret", "bad_igdb_key")
+        try:
+            return {"ok": True, "message": igdb.check_credentials(cid, secret)}
+        except igdb.IgdbError as exc:
+            return {"ok": False, "message": str(exc)}
 
     def ratings_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """The "Download ratings" button: fetch + index the LaunchBox data now (background; progress in /api/updates)."""
@@ -2355,6 +2401,9 @@ class App:
         info["profile"] = self._profile_json(profile, "")
         info["defaults"] = self._profile_json(library.app_defaults(), "")
         info["available"] = {**info["available"], "ratings": True}
+        seen = {e["id"] for e in info["catalog"]}       # (a TOSEC catalog has no region priority: the defaults carry every system's rules)
+        info["catalog"] = info["catalog"] + [e for e in library.rule_catalog(library.STYLE_NOINTRO) if e["id"] not in seen]
+        info["inherit"] = {**info["inherit"], "applicable": list(library.RULE_FIELDS)}      # (every rule: it is the defaults of every system)
         info["available_languages"] = [{"code": c, "name": n, "count": None, "games": None} for c, n in tags.LANGUAGES.items()]
         info["defaults_page"] = True
         info["changed"] = [f for f in library.RULE_FIELDS if profile.to_dict()[f] != library.app_defaults().to_dict()[f]]
@@ -2401,6 +2450,10 @@ class App:
                 body = {**body, "region_priority": [tags.canon_region(r) if isinstance(r, str) else r
                                                     for r in body["region_priority"]]}
             changes["region_priority"] = tuple(names("region_priority", getattr(tags, "REGIONS", None), "regions"))
+        if "region_ties" in body:
+            if isinstance(body.get("region_ties"), list):
+                body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
+            changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
                     "borrow_other_editions", "keep_other_language", "keep_bios"):
             if key in body:
@@ -3143,6 +3196,21 @@ class App:
         out["ratings_pending"] = False
         out["rank_scope"] = profile.rank_scope if profile.top_n is not None else None
         return out
+
+    def library_upgrades(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/library/upgrades?platform=``: the owned games that are not the preferred version (the ``not_preferred`` of
+        the totals), with the name, size and checksums of the version the rules prefer."""
+        platform = self._resolve_platform(query.get("platform"))
+        manager = self._totals()
+        kind = query.get("kind", "upgrades")
+        if kind in ("excluded", "incomplete"):
+            totals = _mod("totals")
+            rows = manager.problems(platform.name, totals.EXCLUDED_OWNED if kind == "excluded" else totals.INCOMPLETE_OWNED)
+            return {"platform": platform.name, "kind": kind, "ready": rows is not None, "items": rows or []}
+        rows = manager.upgrades(platform.name)
+        if rows is None:
+            return {"platform": platform.name, "ready": False, "items": []}
+        return {"platform": platform.name, "ready": True, "items": manager.describe_upgrades(platform, rows)}
 
     def library_vanished(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Paged, searchable list of the titles that have no kept version (``library.vanish_report``)."""
@@ -4180,6 +4248,68 @@ class App:
             self._config_update(archive_dir=raw, strict=True)
         return self._archive_settings(self._config())
 
+    def _tiles_info(self) -> dict[str, Any]:
+        tiles = _mod("tiles")
+        cfg = self._config()
+        return {"catalog": [dict(t) for t in tiles.CATALOG], "shown": tiles.shown(cfg), "order": tiles.full_order(cfg),
+                "max": tiles.MAX_TILES, "default": list(tiles.DEFAULT)}
+
+    def tiles_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/settings/tiles``: every tile there is, which ones the system pages show and in what order."""
+        return self._tiles_info()
+
+    def tiles_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/settings/tiles {shown: [ids]}`` (or ``{reset: true}``): the tiles of every system page, in order (at most ten)."""
+        tiles = _mod("tiles")
+        if _bool_arg(body.get("reset")):
+            _mod("paths").update_config(lambda cfg: cfg.pop("page_tiles", None))
+            return self._tiles_info()
+        raw = body.get("shown")
+        if not isinstance(raw, list) or not all(isinstance(t, str) for t in raw):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "shown must be a list of tile names")
+        unknown = sorted({t for t in raw if not tiles.known(t)})
+        if unknown:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown tile: {', '.join(unknown)}")
+        if len(set(raw)) > tiles.MAX_TILES:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"At most {tiles.MAX_TILES} tiles")
+        chosen = tiles.normalise(raw)
+        _mod("paths").update_config(lambda cfg: cfg.__setitem__("page_tiles", chosen))
+        return self._tiles_info()
+
+    def library_insights(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/library/insights?platform=&want=a,b``: the numbers of the tiles that need a calculation of their own
+        (``tiles.CALC``) from the totals worker's cached target and your scan; ``ready`` is false while those are being calculated."""
+        platform = self._resolve_platform(query.get("platform"))
+        tiles = _mod("tiles")
+        want = [t for t in _str_arg(query.get("want")).split(",") if t in tiles.CALC] or sorted(tiles.CALC)
+        out: dict[str, Any] = {"platform": platform.name, "ready": False}
+        manager = self._totals()
+        lookup = self._rating_lookup(platform)
+        cfg = self._config()
+        profile = self._profile(platform, cfg)
+        if not self._locate_dats(platform) or self._ratings_pending(platform, profile):
+            return {**out, "ready": True, "unavailable": True}       # (nothing to calculate from: the tiles are left out, not left waiting)
+        with self._lock:
+            scan = self._scan
+        if scan is not None and scan.platform.name != platform.name:
+            scan = None
+        # (asked without the saved counts: those answer the totals at once, but the tiles need the target itself)
+        dats_sig = _mod("totals").signature_text(tuple(self._dats_signature(platform)) + (self._ratings_sig(),))
+        manager.request(platform, profile, dats_sig, scan, None)
+        found = manager.insights(platform, [t for t in want if t != "convert"], lookup)
+        if found is not None:
+            out.update(found)
+            out["ready"] = True
+        if "convert" in want:
+            with self._lock:
+                state = self._scan
+            if state is not None and state.platform.name == platform.name and getattr(platform, "convertible", False):
+                try:
+                    out["convert"] = {"games": len(self._convert_plan(state))}
+                except Exception:  # noqa: BLE001 - a tile, never an error
+                    traceback.print_exc()
+        return out
+
     def library_export_runs(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``GET /api/library/export/runs?dest=``: the builds recorded in a destination folder."""
         dest = _str_arg(query.get("dest"))
@@ -4448,10 +4578,13 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/updates/cancel"): App.updates_cancel,
     ("GET", "/api/ratings"): App.ratings_get,
     ("POST", "/api/ratings/download"): App.ratings_download,
+    ("POST", "/api/ratings/igdb"): App.ratings_igdb_save,
+    ("POST", "/api/ratings/igdb/test"): App.ratings_igdb_test,
     ("GET", "/api/library/profile"): App.library_profile,
     ("GET", "/api/library/defaults"): App.library_defaults_get,
     ("POST", "/api/library/defaults"): App.library_defaults_save,
     ("GET", "/api/library/totals"): App.library_totals,
+    ("GET", "/api/library/upgrades"): App.library_upgrades,
     ("POST", "/api/library/profile"): App.library_profile_save,
     ("POST", "/api/library/override"): App.library_override,
     ("POST", "/api/library/saved"): App.library_saved,
@@ -4477,6 +4610,9 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/switch"): App.switch_get,
     ("POST", "/api/switch/config"): App.switch_config,
     ("POST", "/api/settings/archive"): App.archive_save,
+    ("GET", "/api/settings/tiles"): App.tiles_get,
+    ("POST", "/api/settings/tiles"): App.tiles_save,
+    ("GET", "/api/library/insights"): App.library_insights,
     ("POST", "/api/library/export/settings"): App.library_export_settings,
     ("POST", "/api/library/export/undo"): App.library_export_undo,
     ("POST", "/api/folders"): App.folders_save,

@@ -201,6 +201,7 @@ class Base(unittest.TestCase):
         self.mgr = self.make()
 
     def make(self, **kw) -> autoupdate.UpdateManager:
+        kw.setdefault("ratings", None)              # (the ratings are fetched at every start now: never from a test)
         return autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, whdload=self.whdload,
                                         redump=self.redump, clock=self.clock, **kw)
 

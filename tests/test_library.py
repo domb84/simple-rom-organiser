@@ -772,11 +772,21 @@ class OnePerGame(unittest.TestCase):
         self.assertEqual(self.kept(names), ["Game (Europe) (En,Fr,De)"])
         prof = replace(library.default_profile(GBA), region_priority=("USA", "Europe"))
         self.assertEqual(self.kept(names, prof), ["Game (USA) (Rev 1)"])       # newest within the region
+        prof = replace(library.default_profile(GBA), region_priority=("Europe", "USA"), region_ties=("USA",))
+        self.assertEqual(self.kept(names, prof), ["Game (USA) (Rev 1)"])       # Europe and USA tied: the newest of either
         prof = replace(library.default_profile(GBA), languages=("Ja", "En"), region_priority=("Japan",))
         self.assertEqual(self.kept(names, prof), ["Game (Japan)"])
         # language order is the first key: with English preferred the English Europe release wins
         prof = replace(library.default_profile(GBA), languages=("En", "Ja"), region_priority=("Japan",))
         self.assertEqual(self.kept(names, prof), ["Game (Europe) (En,Fr,De)"])
+
+    def test_regions_tied_for_best_are_both_accepted(self) -> None:
+        self.assertEqual(tags.region_tiers(["Europe", "USA", "World"], ["USA"]), {"Europe": 0, "USA": 0, "World": 1})
+        self.assertEqual(tags.region_rank(["USA"], ["Europe", "USA"], ["USA"]), tags.region_rank(["Europe"], ["Europe", "USA"], ["USA"]))
+        self.assertGreater(tags.region_rank(["USA"], ["Europe", "USA"]), tags.region_rank(["Europe"], ["Europe", "USA"]))
+        prof = library.LibraryProfile.from_dict({"region_priority": ["Europe", "USA"], "region_ties": ["USA", "Atlantis"]})
+        self.assertEqual(prof.region_ties, ("USA",))
+        self.assertEqual(library.LibraryProfile.from_dict(prof.to_dict()).region_ties, ("USA",))
 
     def test_default_region_order(self) -> None:
         self.assertEqual(tags.region_order()[:4], ["Europe", "USA", "World", "Japan"])

@@ -72,9 +72,14 @@ LB_PLATFORMS: dict[str, str] = {
     "Sega Dreamcast": "Sega Dreamcast",
     "Sony PlayStation": "Sony Playstation",
     "Sony PlayStation 2": "Sony Playstation 2",
+    "Nintendo GameCube": "Nintendo GameCube",
+    "Nintendo Wii": "Nintendo Wii",
+    "Nintendo Wii U": "Nintendo Wii U",
+    "Nintendo Switch": "Nintendo Switch",
 }
 # DATs of a system whose GAMES are rated (the others - Workbench, Kickstart disks, firmware - are no games)
-_RATED_DATS_OVERRIDE = {"Commodore Amiga": ("Commodore Amiga - Games - [ADF]",)}
+_RATED_DATS_OVERRIDE = {"Commodore Amiga": ("Commodore Amiga - Games - [ADF]",),
+                        "Nintendo Switch": ("Nintendo - Switch",)}          # (its updates and add-ons are no games)
 
 ProgressFn = Callable[[int, int, str], None]
 Opener = Callable[[urllib.request.Request], Any]
@@ -284,6 +289,16 @@ def installed(directory: Any = None) -> Optional[dict[str, Any]]:
     return m
 
 
+def missing_platforms(man: Optional[dict[str, Any]]) -> list[str]:
+    """The LaunchBox platforms of the systems that are rated now but are not in the installed index (it was built when the app knew fewer
+    of them): such an index answers "no rating" for them, so it is out of date however young it is."""
+    if man is None:
+        return []
+    built = man.get("built_for")                 # (an index of an older build did not say: what it holds is what it was built for)
+    have = built if isinstance(built, list) else (man.get("platforms") if isinstance(man.get("platforms"), dict) else {})
+    return sorted(set(LB_PLATFORMS.values()) - set(have))
+
+
 def write_index(rows: list[tuple], dest: Path, meta: dict[str, Any]) -> None:
     """Create the sqlite index at ``dest`` (any existing file is replaced)."""
     _unlink(dest)
@@ -327,7 +342,7 @@ def build_index(zip_path: Any, directory: Any = None, progress: Optional[Progres
     stats = {p: sum(1 for r in rows if r[0] == p) for p in sorted(plats)}
     seconds = round(time.time() - t0, 1)
     manifest = {**(meta or {}), "schema": SCHEMA, "built_at": _now(), "games": len(games), "entries": len(rows),
-                "platforms": stats, "parse_seconds": seconds}
+                "platforms": stats, "built_for": sorted(set(LB_PLATFORMS.values())), "parse_seconds": seconds}
     try:
         write_index(rows, part, manifest)
         with (commit_lock if commit_lock is not None else contextlib.nullcontext()):
@@ -419,6 +434,11 @@ class Store:
         try:
             st = p.stat()
             sig = (st.st_mtime_ns, st.st_size, st.st_ino)   # os.replace gives a new inode even when size and a coarse mtime tick match
+            try:                                            # (the user's IGDB index, when there is one, is part of what is looked at)
+                ex = (p.parent / "igdb.sqlite").stat()
+                sig += (ex.st_mtime_ns, ex.st_size, ex.st_ino)
+            except OSError:
+                pass
         except OSError:
             sig = None
         if sig != self._sig:
@@ -432,6 +452,13 @@ class Store:
     def meta(self) -> Optional[dict[str, Any]]:
         return installed(self.directory)
 
+    def covers(self, platform: Any) -> bool:
+        """True when the installed index was built with this system in it. An index of an older build knows fewer systems: for the
+        others it would answer "no rating" for every title, which a rating filter must never take for an answer."""
+        lb = LB_PLATFORMS.get(getattr(platform, "name", platform))
+        man = self.meta()
+        return lb is not None and man is not None and lb not in missing_platforms(man)
+
     def _plat(self, lb: str) -> Optional[_Plat]:
         if lb in self._plats:
             return self._plats[lb]
@@ -440,9 +467,30 @@ class Store:
             rows = con.execute("SELECT plat,key,rating,votes,dbid,name,year,alt FROM entry WHERE plat=?", (lb,)).fetchall()
         finally:
             con.close()
+        rows = self._with_igdb(lb, rows)
         pd = _Plat(rows) if rows else None
         self._plats[lb] = pd           # type: ignore[assignment]
         return pd
+
+    def _with_igdb(self, lb: str, rows: list) -> list:
+        """The rows of the user's IGDB index added: of a title both know, the rating with more votes counts (LaunchBox's on a tie)."""
+        extra = index_path(self.directory).parent / "igdb.sqlite"
+        if not extra.is_file():
+            return rows
+        try:
+            con = sqlite3.connect(f"file:{extra}?mode=ro", uri=True)
+            try:
+                more = con.execute("SELECT plat,key,rating,votes,dbid,name,year,alt FROM entry WHERE plat=?", (lb,)).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return rows
+        best = {r[1]: r for r in rows}
+        for r in more:
+            cur = best.get(r[1])
+            if cur is None or r[3] > cur[3]:
+                best[r[1]] = r
+        return list(best.values())
 
     def detail(self, platform: Any, title: str) -> Optional[dict[str, Any]]:
         """``{rating (0-10, 1 decimal), votes, dbid, name, year, kind, score}`` or ``None`` (no / unsure match)."""
@@ -566,6 +614,9 @@ def check_update(opener: Optional[Opener] = None, directory: Any = None, timeout
     age = age_days(man, now)
     row: dict[str, Any] = {"status": "missing" if man is None else "up_to_date", "latest": None, "etag": None,
                            "installed": source_date(man) or None, "age_days": age}
+    if man is not None and missing_platforms(man):             # (no age gate, no question to the server: it lacks systems)
+        row.update(status="update_available", missing_platforms=missing_platforms(man))
+        return row
     if man is not None and gate and age is not None and age < REFRESH_DAYS:
         return row
     open_fn = opener or (lambda r: urllib.request.urlopen(r, timeout=timeout))

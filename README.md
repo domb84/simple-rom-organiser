@@ -206,8 +206,8 @@ Back / Forward buttons and a reload keep you where you were.
 **The system list** is on the left of every screen (v0.2): the systems grouped into
 *Computers*, *Cartridge consoles* and *Disc systems* (the groups come from the app, nothing is hard-coded in the page).
 Each system has a dot (green: scanned, amber: its DAT is missing, hollow: not scanned) and the % you own; hover for the
-folder, DAT and last scan. A small blue diamond after the name marks a system with library rules of its own (hover for which). A running scan shows its progress under the system. **Find a system** filters the list.
-Clicking a system opens it on the right with its **Overview / Library / Browse** tabs, and the tab you are on stays
+folder, DAT and last scan. A blue **Custom rules** tag (like the saves count) marks a system with library rules of its own (hover for which). A running scan shows its progress under the system. **Find a system** filters the list.
+Clicking a system opens it on the right with its **Library / Browse** tabs, and the tab you are on stays
 selected when you switch system. **Hide list** collapses the list (remembered); in a narrow window it becomes a **Systems**
 button above the page. **More** in the header holds Check for updates, Compact rows and Quit; **Databases** (in the list on the left, with Settings) lists every database the app uses: its address, the systems that use it, the installed and newest version. The last scan
 summary of every system is a tiny record in `config.json` (counts, time, folder - never file lists), so the list survives a
@@ -216,33 +216,25 @@ you open a system after a restart, with no scan: while the folder (files, sizes,
 are what they were. Change any of them and the saved scan is not used (a rescan reads only what changed, so it is quick).
 Opening `#/` goes to the system you used last.
 
-**A system page (`#/system/<slug>/<tab>`)** has a *< Systems* link and four tabs (arrow keys
-move between them):
+**A system page (`#/system/<slug>/library`)** has a *< Systems* link and two tabs, **Library** and **Browse** (the old Overview
+is part of Library; an `.../overview` address opens it). Library is one page, top to bottom:
 
-* **Overview** - the folder field with **Folders... / Clear** (a folder is **saved the
-  moment you choose it**, when you leave the field or press Enter / Scan; the chip says *Saved* or
-  *Not saved* with the reason), the DAT status (the per-DAT table is in a collapsible *DAT files*),
-  the **Scan folder** button, two **totals blocks** side by side - *All DAT entries* (every ROM /
-  game of the DAT) and *With your library rules* (see below) - and the summary cards (have / missing / % complete, matched,
-  unmatched, duplicates, header / byte-swapped, CHDs verified / identified ...; consoles are
-  counted in **games**; one card per DAT for the Amiga). **Click a summary card** to open Browse on
-  the matching list. First run: no folder -> the folder box is highlighted; no DAT -> a clear
-  note (it is downloaded automatically on the first scan).
-* **Library** - the **Library rules** panel collapsed to ONE line
-  (`4 of 4 exclusions · English · Europe > USA first · latest versions only`) with an **Edit**
-  control; open it for the catalog-driven rules, languages, keep-flags and region priority. Then
-  **Preview library**, **Build library**, **Undo last**, the preview cards, the incomplete-sets
-  and *Games that vanish* lists. (The separate "Organise only" and "Playlists only" steps of earlier versions are gone:
-  Build library does both.) Without a scan the tab says *Scan first* with a button.
-  **Every Preview button stays useful.** After the first press it reads **Recalculate preview**
-  (refresh icon), with *Calculated 14:32 · 1,234 files* and *Recalculates with your current rules and
-  folder contents* under it, and a spinner while it works (an error shows *Try again*). As soon as you
-  change a rule, language, region, keep-flag or option - or a scan / build / undo / convert changes the
-  folder - the preview on screen is marked **out of date**: a banner (*Rules changed since this
-  preview - Recalculate*), dimmed cards, **Recalculate** becomes the highlighted button and
-  **Build library / Apply / Convert ...** are disabled until you recalculated. Build library also sends the
-  identity of the plan you looked at and the app refuses (409) a plan that no longer matches the saved
-  rules.
+* the **folder** field with **Folders... / Clear** (a folder is **saved the moment you choose it**) and the **Scan folder**
+  button in the header;
+* the **tiles** (below): the totals you chose in Settings;
+* the **rules bar**: *Your default rules* or *Custom: ...* (and the rest follow your defaults), a one-line summary of what the rules do
+  (`4 of 4 exclusions · English · Europe > USA first · latest versions only`), a status that says whether the list below is up to
+  date, a **Rules** button that opens the rules (every exclusion, language, keep-flag, region priority and option, with an Override
+  box each) and **Build library**;
+* the **list**: what the build would do with every file, with the reason chips, *Games that vanish*, *Incomplete sets* and the
+  options where to build. **It updates by itself**: a scan, or any change of a rule, option or folder, recalculates it about half a second
+  later (the old list stays, dimmed, with *Updating the list...*, and **Build library** waits for the new one). There is no
+  Preview button; **Undo last** is next to the list. Without a scan the page says *Scan first*;
+* **Scan results, databases and checks** (collapsed): the summary cards (click one to open Browse on the matching list), the per-DAT
+  cards, the DAT files and the Switch checksum option.
+
+  The Library page also builds the library in the first place: Build library does the moves, renames, playlists and conversion in one
+  step, and sends the identity of the plan you looked at, so the app refuses (409) a plan that no longer matches the saved rules.
 * **Browse** - the heavy part, built only when you open it: tabs **Games** (consoles: green = have,
   red = missing), **Matched files**, **Missing**, **Unmatched**, search, a collapsible *Filters*
   box (region, language, video, tag, library rules), paging, and the checksums (below).
@@ -250,7 +242,7 @@ move between them):
 * Converting is the **Convert first** option of the Library tab (below), and the CHD settings are on the **Disc images (CHD)**
   page in the list on the left. Kickstarts and other BIOS files are handled by the **BIOS and firmware** page.
 
-### Library totals (Overview)
+### Library totals and the tiles
 
 *With your library rules: have N of M games.* **M** is what your rules would keep if you owned
 **every** ROM of the system's DAT (the same exclusions, keep-flags, languages, latest-only, best variant,
@@ -421,6 +413,10 @@ Japan, then every other region A-Z; a multi-region release ranks by its best reg
 products stay separate (`(Unl)`, `(Aftermarket)`, `(Pirate)`, `(Beta)`). Switch it off to keep
 the latest version of every region instead. These two settings are hidden for Amiga.
 
+**Equally good regions.** Press **=** on a region to rank it the same as the region above it. With Europe and USA tied
+for first (both shown as 1), a version from either is a best match, and the newest revision of the two is kept. It is saved
+as `region_ties` beside `region_priority`, in your defaults (Settings) or in a system's override.
+
 **Reordering the region list.** The list sits in a scroll box (about 360 px high) with a divider under
 the four *prioritised* regions. Drag a row by its **⋮⋮** handle with the mouse or a finger (the list
 scrolls by itself when you hold the row near its top or bottom edge; swiping anywhere else on a row
@@ -505,6 +501,34 @@ LaunchBox title of the same platform conservatively: normalised title (case, pun
 LaunchBox's alternate names, II..IX read as digits (only when unique), then a high-threshold *unique* fuzzy match (same numbers, no
 added words); when in doubt there is **no** rating rather than a wrong one. Several LaunchBox games with the same title: the one with
 the most votes. Ratings: LaunchBox Games Database community ratings (see `docs/THIRD_PARTY.md`).
+
+**Ratings are kept up to date at startup**, with or without a rating filter (a check is only a HEAD request; the download happens
+when the local copy is over 7 days old and LaunchBox's is newer, or when a system is missing from the installed index). LaunchBox
+covers the Nintendo systems too (NES to Switch, GameCube, Wii, Wii U); its Switch coverage is thin.
+
+**Tiles.** The row at the top of every system's Library page is the same for every system and is chosen in **Settings > Tiles on the
+system pages**: tick up to ten of sixteen and drag them into order. Have (all entries / with your rules), Rated (both), Needs a
+look (opens the upgrades, left-out and incomplete lists), Files to change, Unmatched files, BIOS and firmware, Saves, Database, Last
+scan, and four that need a calculation of their own (`GET /api/library/insights`): Space (database sizes), Best you are missing,
+Average rating, Regions, and Convert (disc systems). A tile with nothing to say for a system (no saves, nothing unmatched, no ratings)
+is left out of that page. The choice is `page_tiles` in `config.json`.
+
+**Lists behind the hints.** The Overview's three hint lines each have a **Show** button: the games you own that are not the preferred
+version (with its checksums), the games your rules leave out (and why), and the multi-disk games with disks missing
+(`GET /api/library/upgrades?kind=upgrades|excluded|incomplete`). Above the totals, **Library rules:** says whether the system follows
+your defaults or has rules of its own, and which.
+
+**Upgrades.** When the Overview says some of the games you own are not the preferred version, **Show the upgrades** lists them: the
+game, the file you have, and the name, CRC32, MD5 and SHA-1 of the version your rules prefer (`GET /api/library/upgrades`).
+
+**Rated tiles.** Overview and Library show two more tiles for the platform, under the totals: the share of titles with a rating,
+before the filters (all DAT entries) and after them (with your library rules), like the other counts.
+
+**Your own IGDB key (optional, Settings > Ratings).** [IGDB](https://www.igdb.com) rates many titles LaunchBox lacks (most of the
+Switch). Make a free application at dev.twitch.tv/console, paste its Client ID and Client secret, press **Test**, then **Save**. The
+ratings are read into `ratings/igdb.sqlite` (refreshed weekly) and, per title, the rating with more votes wins. The secret is stored
+**in plain text** in `config.json` and is never sent back to the browser. Nothing is shipped with the app; no key, no IGDB traffic.
+Not yet tried against the live service.
 
 **Undo.** One undo log covers the moves and the playlists: **Undo last** moves the files
 back, removes the playlists the build created (only if unchanged) and restores the outdated
@@ -768,7 +792,7 @@ On a system's **Library** tab each rule has an **Override** box. Until it is tic
 unchangeable; tick it to give *this system only* a different value (the rule then says **this system only**, with a link,
 **use the default again**). The line under the rules says how many rules are overridden, and **Reset all to defaults** puts every
 rule of the system back on your defaults (the choices you made for single games stay). A system with overrides has a small blue
-diamond in the system list. A change to your defaults reaches every system that has not overridden that rule. A rule a system
+**Custom rules** tag in the system list. A change to your defaults reaches every system that has not overridden that rule. A rule a system
 cannot use (a DAT without languages, a system with no save source ...) is not shown there.
 
 A system with a different mix of files than the rest (a hack set, a translation set) is best made a system of its own.

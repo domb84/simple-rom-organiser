@@ -62,7 +62,7 @@ class Fixture:
         # a No-Intro system too (the Games list, ratings columns): one DAT, most of it owned
         self.gba = self.tmp / "gba"
         self.gba.mkdir()
-        (self.data / "nointro").mkdir()
+        (self.data / "nointro").mkdir(exist_ok=True)      # (a server of the test before may still be starting its updates in this folder)
         out = [f'clrmamepro (\n\tname "{GBA_DAT}"\n\tdescription "{GBA_DAT}"\n\tversion "20250101-000000"\n)\n']
         for name in GBA_OWNED + GBA_MISSING:
             data = bytes(rng.getrandbits(8) for _ in range(2048 if "Beta" in name else 4096))

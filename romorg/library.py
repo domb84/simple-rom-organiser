@@ -140,6 +140,7 @@ class LibraryProfile:
     keep_flags: frozenset[str] = frozenset(tags.KEEP_FLAGS)
     rescue_only_dump: bool = False               # keep-every-version DATs: keep the sole [m]/[o]/[u] dump
     region_priority: tuple[str, ...] = tags.DEFAULT_REGION_PRIORITY   # No-Intro: best region first
+    region_ties: tuple[str, ...] = ()            # regions that rank the same as the region above them in the list (equally best)
     one_per_game: bool = True                    # No-Intro: exactly one variant per game
     # Amiga Games: a disk slot nobody has in the same edition may be filled by a disk of another edition
     # (country / language / edition flags / version / year) of the same title, publisher and disk count.
@@ -170,6 +171,7 @@ class LibraryProfile:
         object.__setattr__(self, "languages", _norm_languages(self.languages))
         object.__setattr__(self, "keep_flags", frozenset(f for f in self.keep_flags if f in tags.KEEP_FLAGS))
         object.__setattr__(self, "region_priority", _norm_regions(self.region_priority))
+        object.__setattr__(self, "region_ties", _norm_regions(self.region_ties))
         object.__setattr__(self, "min_rating", _norm_min_rating(self.min_rating))
         object.__setattr__(self, "top_n", _norm_top_n(self.top_n))
         object.__setattr__(self, "min_votes", _norm_votes(self.min_votes))
@@ -188,7 +190,7 @@ class LibraryProfile:
                 "best_variant": self.best_variant, "complete_only": self.complete_only,
                 "languages": list(self.languages), "keep_flags": sorted(self.keep_flags),
                 "rescue_only_dump": self.rescue_only_dump,
-                "region_priority": list(self.region_priority), "one_per_game": self.one_per_game,
+                "region_priority": list(self.region_priority), "region_ties": list(self.region_ties), "one_per_game": self.one_per_game,
                 "borrow_other_editions": self.borrow_other_editions,
                 "keep_other_language": self.keep_other_language,
                 "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
@@ -220,6 +222,9 @@ class LibraryProfile:
         regions = base.region_priority
         if isinstance(d.get("region_priority"), (list, tuple)):
             regions = _norm_regions(d["region_priority"])
+        ties = base.region_ties
+        if isinstance(d.get("region_ties"), (list, tuple)):
+            ties = _norm_regions(d["region_ties"])
         rating = {}
         if "min_rating" in d:
             rating["min_rating"] = d["min_rating"]
@@ -234,7 +239,7 @@ class LibraryProfile:
                    complete_only=flag("complete_only", base.complete_only),
                    languages=langs, keep_flags=keep,
                    rescue_only_dump=flag("rescue_only_dump", base.rescue_only_dump),
-                   region_priority=regions, one_per_game=flag("one_per_game", base.one_per_game),
+                   region_priority=regions, region_ties=ties, one_per_game=flag("one_per_game", base.one_per_game),
                    borrow_other_editions=flag("borrow_other_editions", base.borrow_other_editions),
                    keep_other_language=flag("keep_other_language", base.keep_other_language),
                    **{**{"min_rating": base.min_rating, "top_n": base.top_n, "min_votes": base.min_votes,
@@ -280,9 +285,10 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 # choices made for single games, which are always the system's own). The profile a system builds with is, from the bottom:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
-               "region_priority", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
+               "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
                "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios")
 GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
+REGION_FIELDS = ("region_priority", "region_ties")      # the region order and which of its regions are equally good: one rule
 
 
 def applicable_fields(platform: "Platform") -> frozenset:
@@ -295,7 +301,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
     for field, ok in (("latest_only", bool(_dats(platform, "latest_dats"))), ("best_variant", bool(_dats(platform, "best_variant_dats"))),
                       ("complete_only", bool(_dats(platform, "m3u_dats"))), ("languages", has_langs), ("keep_other_language", has_langs),
                       ("keep_flags", tosec), ("rescue_only_dump", bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC),
-                      ("region_priority", has_regions), ("one_per_game", has_regions), ("borrow_other_editions", _borrow_scope(platform))):
+                      ("region_priority", has_regions), ("region_ties", has_regions), ("one_per_game", has_regions), ("borrow_other_editions", _borrow_scope(platform))):
         if ok:
             out.add(field)
     if _ratings_supported(platform):
@@ -333,6 +339,8 @@ def effective_profile(platform: "Platform", defaults: Optional[Mapping[str, Any]
     mine = {k: v for k, v in (defaults or {}).items() if k in RULE_FIELDS and k in ok}
     prof = LibraryProfile.from_dict(mine, base)
     ov = {k: v for k, v in (overrides or {}).items() if k in GAME_FIELDS or (k in RULE_FIELDS and k in ok)}
+    if "region_priority" in ov and "region_ties" not in ov:      # (ties name the regions of an order: they do not carry over to another one)
+        ov["region_ties"] = []
     return LibraryProfile.from_dict({**prof.to_dict(), **ov}, base)
 
 
@@ -389,6 +397,9 @@ def store_profile(cfg: dict, platform: "Platform", profile: LibraryProfile) -> N
     for f in RULE_FIELDS:
         if f in ok and mine[f] != current[f]:
             ov[f] = mine[f]
+    if any(f in ov for f in REGION_FIELDS) and all(f in ok for f in REGION_FIELDS):
+        for f in REGION_FIELDS:                # the order and its ties are one rule: a system that has its own has both
+            ov[f] = mine[f]
     for f in GAME_FIELDS:
         if mine[f]:
             ov[f] = mine[f]
@@ -417,7 +428,10 @@ def set_override(cfg: dict, platform: "Platform", fields: Iterable[str], on: boo
     ov = overrides_of(cfg, platform)
     current = load_profile(cfg, platform).to_dict()
     ok = applicable_fields(platform)
-    for f in fields:
+    wanted = list(fields)
+    if any(f in REGION_FIELDS for f in wanted):
+        wanted += [f for f in REGION_FIELDS if f not in wanted]      # (one rule: overridden, or not, together)
+    for f in wanted:
         if f not in RULE_FIELDS or f not in ok:
             continue
         if on:
@@ -1432,7 +1446,7 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
     by_form: dict[str, list[Item]] = {}
     for it in dat_items:
         by_form.setdefault(it.form, []).append(it)
-    order = tags.region_order(profile.region_priority)
+    order = tags.region_tiers(tags.region_order(profile.region_priority), profile.region_ties)
     for form in sorted(by_form):
         members = by_form[form]
         if one_per_game:
@@ -1462,7 +1476,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
     (a playlist) when all of its discs (``Item.disc_total`` or the highest disc number) are present,
     else an :class:`IncompleteSet` that is only reported (the discs stay).
     """
-    order = tags.region_order(profile.region_priority)
+    order = tags.region_tiers(tags.region_order(profile.region_priority), profile.region_ties)
     games: dict[tuple, list[Item]] = {}
     for it in dat_items:
         games.setdefault(tags.game_key(_tags_of(it)), []).append(it)
@@ -1888,7 +1902,7 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         [STYLE_NOINTRO, STYLE_REDUMP])
     opt("region_priority", "region_priority", "Region priority", True,
         "Best region first. When one version per game is kept, the first region listed here wins "
-        "(unlisted regions follow in alphabetical order).", [STYLE_NOINTRO, STYLE_REDUMP],
+        "(unlisted regions follow in alphabetical order). Regions marked \"same as above\" are equally good: a version from any of them is a best match.", [STYLE_NOINTRO, STYLE_REDUMP],
         default_value=list(tags.DEFAULT_REGION_PRIORITY))
     # ---- Ratings group (Amendment 18). Numbers / a choice, rendered by the UI from these entries only.
     def rating(id_: str, label: str, kind: str, desc: str, **extra: Any) -> None:

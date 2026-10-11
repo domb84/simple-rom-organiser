@@ -71,6 +71,33 @@ class LayeringTests(unittest.TestCase):
         self.assertFalse(library.migrate_config(cfg))                                      # (and once only)
 
 
+class RegionTieLayeringTests(unittest.TestCase):
+    def test_ties_follow_the_defaults_unless_the_system_has_its_own_region_order(self) -> None:
+        plat = platforms.get_platform("Nintendo 64")
+        mine = {"region_priority": ["Europe", "USA"], "region_ties": ["USA"]}
+        self.assertEqual(library.effective_profile(plat, mine, {}).region_ties, ("USA",))
+        own = library.effective_profile(plat, mine, {"region_priority": ["USA", "Europe"]})
+        self.assertEqual((own.region_priority[:2], own.region_ties), (("USA", "Europe"), ()))      # (the ties named another order)
+        both = library.effective_profile(plat, mine, {"region_priority": ["USA", "Europe"], "region_ties": ["Europe"]})
+        self.assertEqual(both.region_ties, ("Europe",))
+
+
+    def test_a_system_with_its_own_region_order_has_its_own_ties_too(self) -> None:
+        plat = platforms.get_platform("Nintendo 64")
+        cfg: dict = {"library_defaults": {"region_priority": ["Europe", "USA", "Japan"], "region_ties": ["USA"]}}
+        prof = library.load_profile(cfg, plat)
+        self.assertEqual(prof.region_ties, ("USA",))
+        import dataclasses
+        library.store_profile(cfg, plat, dataclasses.replace(prof, region_priority=("Japan", "Europe", "USA")))   # only the order was moved
+        ov = cfg["library_overrides"]["Nintendo 64"]
+        self.assertEqual((ov["region_priority"][:3], ov["region_ties"]), (["Japan", "Europe", "USA"], ["USA"]))   # the ties shown stay
+        self.assertEqual(library.load_profile(cfg, plat).region_ties, ("USA",))
+        library.set_override(cfg, plat, ["region_priority"], False)                                              # back to the defaults: both
+        self.assertNotIn("library_overrides", cfg)
+        library.set_override(cfg, plat, ["region_ties"], True)
+        self.assertEqual(sorted(cfg["library_overrides"]["Nintendo 64"]), ["region_priority", "region_ties"])
+
+
 class DefaultsServerTests(ServerCase):
     def profile(self, name: str = SNES) -> dict:
         return self.call("GET", f"/api/library/profile?platform={q(name)}")
@@ -132,6 +159,31 @@ class DefaultsServerTests(ServerCase):
         finally:
             self.srv.app._drop_all_plans = real
         self.assertTrue(dropped)
+
+    def test_region_ties_round_trip_and_the_defaults_page_has_the_region_list(self) -> None:
+        res = self.call("POST", "/api/library/defaults", {"region_priority": ["Europe", "USA", "Japan"], "region_ties": ["USA"]})
+        self.assertEqual((res["profile"]["region_priority"], res["profile"]["region_ties"]), (["Europe", "USA", "Japan"], ["USA"]))
+        self.assertTrue(res["available"]["region_priority"])
+        self.assertIn("region_priority", [e["id"] for e in res["catalog"]])             # (Settings builds its panel from this)
+        self.assertEqual(self.call("GET", "/api/library/defaults")["regions"][:3], ["Europe", "USA", "Japan"])
+        code, _ = self.http("POST", "/api/library/defaults", {"region_ties": ["Atlantis"]})
+        self.assertEqual(code, 400)
+
+    def test_the_tiles_of_the_system_pages_are_one_list_for_every_system(self) -> None:
+        info = self.call("GET", "/api/settings/tiles")
+        self.assertEqual((info["shown"], info["max"]), (info["default"], 10))
+        self.assertEqual(self.call("GET", "/api/status")["tiles"], info["default"])
+        self.assertEqual(sorted(info["order"]), sorted(t["id"] for t in info["catalog"]))
+        self.assertEqual(len(info["catalog"]), 16)
+        out = self.call("POST", "/api/settings/tiles", {"shown": ["space", "have_all", "space", "regions"]})
+        self.assertEqual(out["shown"], ["space", "have_all", "regions"])                      # in the order given, once each
+        self.assertEqual(out["order"][:3], ["space", "have_all", "regions"])
+        self.assertEqual(self.call("GET", "/api/status")["tiles"], ["space", "have_all", "regions"])
+        self.assertEqual(self.call("POST", "/api/settings/tiles", {"shown": []})["shown"], [])   # an empty page is a choice too
+        for bad in ({"shown": ["nope"]}, {"shown": "have_all"}, {"shown": [t["id"] for t in info["catalog"]]}):
+            code, _ = self.http("POST", "/api/settings/tiles", bad)
+            self.assertEqual(code, 400, bad)
+        self.assertEqual(self.call("POST", "/api/settings/tiles", {"reset": True})["shown"], info["default"])
 
 
 class MigrationServerTests(ServerCase):

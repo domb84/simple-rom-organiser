@@ -218,6 +218,27 @@ class IndexTests(TmpDirCase):
 
 # --------------------------------------------------------------------------- matching
 
+class OutOfDateIndexTests(TmpDirCase):
+    """An index built when the app rated fewer systems answers "no rating" for the others: it is out of date at once."""
+
+    def test_an_index_built_by_this_version_knows_every_system(self) -> None:
+        man = self.build()
+        self.assertEqual(ratings.missing_platforms(man), [])
+        self.assertEqual(sorted(man["built_for"]), sorted(set(ratings.LB_PLATFORMS.values())))
+        self.assertEqual(ratings.check_update(directory=self.dir, now=time.time() + 3600)["status"], "up_to_date")   # (younger than the gate: no question asked)
+
+    def test_an_older_index_lacking_systems_is_an_update_with_no_age_gate_and_no_network(self) -> None:
+        man = self.build()
+        old = {k: v for k, v in man.items() if k != "built_for"}
+        old["platforms"] = {"Nintendo 64": 977, "Sony Playstation": 6755}
+        (self.dir / "manifest.json").write_text(json.dumps(old))
+        self.assertIn("Sega Genesis", ratings.missing_platforms(ratings.installed(self.dir)))
+        calls = []
+        row = ratings.check_update(opener=lambda r: calls.append(r), directory=self.dir, now=time.time())
+        self.assertEqual((row["status"], calls), ("update_available", []))
+        self.assertIn("Sega Genesis", row["missing_platforms"])
+
+
 class MatchTests(TmpDirCase):
     def setUp(self) -> None:
         super().setUp()
@@ -697,6 +718,17 @@ class TotalsRatingTests(unittest.TestCase):
         self.assertEqual(t.coverage["ge"][17], 1)               # >= 9.0
         self.assertIsNone(totals.compute_target(GBA, [dat_of(GBA_NAMES)], FILTER).coverage)
 
+    def test_rated_titles_before_and_after_the_rules(self) -> None:
+        names = GBA_NAMES + ["Zed (USA) (Demo)"]                            # (a demo: the rules leave it out, the DAT has it)
+        t = totals.compute_target(GBA, [dat_of(names)], FILTER, self.lookup)
+        self.assertEqual(t.rated_all, {"games": 8, "rated": 5})              # every title of the database
+        self.assertEqual(t.rated_target, {"games": 7, "rated": 5})           # what the rules keep
+        t2 = totals.compute_target(GBA, [dat_of(names)], replace(FILTER, min_rating=7.0), self.lookup)
+        self.assertEqual((t2.rated_all, t2.rated_target), ({"games": 8, "rated": 5}, {"games": 4, "rated": 4}))
+        out = totals.combine(t2, None)
+        self.assertEqual((out["rated_all"]["rated"], out["rated_target"]["games"]), (5, 4))
+        self.assertIsNone(totals.compute_target(GBA, [dat_of(names)], FILTER).rated_all)    # (no ratings installed: nothing to count)
+
     def test_filter_without_lookup_is_an_error(self) -> None:
         with self.assertRaises(library.RatingsUnavailable):
             totals.compute_target(GBA, [dat_of(GBA_NAMES)], replace(FILTER, min_rating=5.0))
@@ -821,11 +853,12 @@ class UpdaterTests(TmpDirCase):
         self.mgr._spawn()
         wait_idle(self.mgr)
 
-    def test_nothing_happens_without_a_rating_filter(self) -> None:
-        self.run_startup()
-        self.assertEqual((self.fake.checks, self.fake.downloads), ([], 0))
+    def test_a_startup_run_fetches_without_a_rating_filter_too(self) -> None:
+        self.run_startup()                                                     # (no filter is set anywhere: the pages count rated titles)
+        self.assertEqual((self.fake.checks, self.fake.downloads), ([True], 1))
         st = self.mgr.status()["ratings"]
-        self.assertEqual((st["wanted"], st["status"], st["installed"]), (False, "absent", None))
+        self.assertEqual((st["wanted"], st["status"]), (True, "up_to_date"))
+        self.assertIsNotNone(st["installed"])
 
     def test_a_startup_run_fetches_when_a_filter_is_enabled(self) -> None:
         self.wanted[0] = True
@@ -920,6 +953,7 @@ class UpdaterTests(TmpDirCase):
         marker = paths.ratings_dir() / "ratings.sqlite"
         before = marker.read_bytes()
         self.mgr.nointro.update_dats.return_value = {"dats": [], "failed": 0}
+        self.fake.remote = {"status": "up_to_date", "latest": "x", "etag": "e"}               # (nothing newer: the ratings updater leaves it)
         self.run_startup()
         self.assertEqual(marker.read_bytes(), before)
         self.assertNotEqual(paths.ratings_dir(), paths.dats_dir())
@@ -1076,6 +1110,7 @@ class ServerTests(TmpDirCase):
         base = self.totals()
         self.assertEqual(base["target_games"], 5)
         self.assertEqual((base["rating_coverage"]["games"], base["rating_coverage"]["rated"]), (5, 3))   # Delta: 3 votes
+        self.assertEqual((base["rated_all"]["games"], base["rated_all"]["rated"], base["rated_target"]["rated"]), (5, 3, 3))
         self.save(min_rating=7.0)
         out = self.totals()
         self.assertEqual((out["target_games"], out["have_games"]), (2, 2))                              # Alpha 9.0, Eps 7.0

@@ -143,6 +143,39 @@
           <span class="muted small" id="set-library-note"></span>
         </div>
       </div>
+      <div class="panel" id="set-tiles-panel">
+        <h2>Tiles on the system pages</h2>
+        <p class="muted small">The totals at the top of every system's page. Tick up to ten and drag them into the order you want. Every system shows the same tiles; one with nothing to say for a system (no saves, nothing unmatched) is left out of that page.</p>
+        <div id="set-tiles-list"></div>
+        <div class="row">
+          <span class="muted small" id="set-tiles-note"></span>
+          <div class="grow"></div>
+          <button class="btn btn-small" id="set-tiles-reset" type="button">Back to the default tiles</button>
+        </div>
+      </div>
+      <div class="panel" id="set-ratings-panel">
+        <h2>Ratings</h2>
+        <p class="muted small">Community ratings come from the <b>LaunchBox Games Database</b>:
+          downloaded at the first start and kept up to date at every start (at most once a week). They are used by the rating rules above and counted on each system's
+          Overview and Library page.</p>
+        <div id="set-ratings-lb" class="small" role="status"></div>
+        <h3>More ratings: your own IGDB key (optional)</h3>
+        <p class="muted small"><b>IGDB</b> rates many titles LaunchBox has no (or too few) votes for. It is free,
+          with your own key: make an application at <b>dev.twitch.tv/console</b>
+          (any name; OAuth redirect URL <code>localhost</code> (with http in front); category <i>Application Integration</i>), then paste its <b>Client ID</b> and a <b>Client secret</b> here.
+          Of a title both know, the rating with more votes counts. The key is kept in this app's <code>config.json</code> on this computer, as is, and is only sent to Twitch and IGDB.</p>
+        <div class="row">
+          <input type="text" id="igdb-id" class="input grow mono" placeholder="Client ID" spellcheck="false" autocomplete="off" aria-label="IGDB (Twitch) Client ID">
+          <input type="password" id="igdb-secret" class="input grow mono" placeholder="Client secret" spellcheck="false" autocomplete="new-password" aria-label="IGDB (Twitch) Client secret">
+        </div>
+        <div class="row">
+          <button class="btn btn-primary" id="igdb-save">Save and download</button>
+          <button class="btn" id="igdb-test">Test the key</button>
+          <button class="btn btn-ghost" id="igdb-remove">Remove the key</button>
+          <span class="muted small grow" id="igdb-status" role="status"></span>
+        </div>
+      </div>
+
       <div class="panel">
         <h2>Archive folder</h2>
         <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
@@ -317,13 +350,12 @@
       </div>
 
       <div class="tabs systabs" role="tablist" id="sys-tabs" aria-label="System sections">
-        <button class="tab" role="tab" id="tabbtn-overview" data-tab="overview" aria-controls="tab-overview">Overview</button>
         <button class="tab" role="tab" id="tabbtn-library" data-tab="library" aria-controls="tab-library">Library</button>
         <button class="tab" role="tab" id="tabbtn-browse" data-tab="browse" aria-controls="tab-browse">Browse</button>
       </div>
 
-      <!-- ---------- Overview ---------- -->
-      <div class="tabpanel" role="tabpanel" id="tab-overview" aria-labelledby="tabbtn-overview" tabindex="-1">
+      <!-- ---------- Library: scan, totals, rules and the live preview on one page ---------- -->
+      <div class="tabpanel" role="tabpanel" id="tab-library" aria-labelledby="tabbtn-library" tabindex="-1">
         <div id="ov-notices"></div>
         <div class="panel" id="folder-panel">
           <h2>Folder</h2>
@@ -341,62 +373,24 @@
           </div>
         </div>
 
-        <div class="totals-pair" id="totals-pair">
-          <section class="totals-block" id="totals-all" aria-labelledby="totals-all-title">
-            <h3 id="totals-all-title">All DAT entries</h3>
-            <div id="totals-all-body"></div>
-          </section>
-          <section class="totals-block totals-lib" id="totals-lib" aria-labelledby="totals-lib-title">
-            <h3 id="totals-lib-title">With your library rules</h3>
-            <div id="totals-lib-body" role="status" aria-live="polite"></div>
-          </section>
-        </div>
 
         <div class="panel hidden" id="sw-verify-row">
           <label class="check" title="Reads every game file in full and compares each part with its own name (a Switch file carries its own checksums). The first scan takes long; a file that has not changed since it was checked is not read again.">
             <input type="checkbox" id="sw-verify-scan"> Also check every file's checksums when scanning (reads all the files; remembered for files that do not change)</label>
         </div>
 
-        <div class="panel">
-          <h2>DAT</h2>
-          <div id="dat-status-line"></div>
-          <div id="dats-missing" class="notice hidden"></div>
-          <details class="dat-details" id="platform-details">
-            <summary id="platform-details-title">DAT files</summary>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>DAT</th><th>Version</th><th>Folder</th><th>Status</th></tr></thead>
-                <tbody id="platform-dats"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
-              </table>
-            </div>
-          </details>
-        </div>
-
         <div id="scan-empty" class="empty"></div>
-        <div id="scan-output" class="hidden">
-          <div id="scan-missing-dats" class="notice hidden"></div>
-          <div class="cards" id="summary-cards"></div>
-          <div class="panel hidden" id="ov-saves" aria-labelledby="ov-saves-title"></div>
-          <h3 id="dat-cards-title">Per DAT</h3>
-          <div class="dat-cards" id="dat-cards"></div>
-        </div>
-      </div>
-
-      <!-- ---------- Library ---------- -->
-      <div class="tabpanel hidden" role="tabpanel" id="tab-library" aria-labelledby="tabbtn-library" tabindex="-1">
-
-        <div class="totals-pair" id="lib-totals-pair">
-          <section class="totals-block" aria-labelledby="lib-totals-all-title">
-            <h3 id="lib-totals-all-title">All DAT entries</h3>
-            <div id="lib-totals-all-body"></div>
-          </section>
-          <section class="totals-block totals-lib" aria-labelledby="lib-totals-lib-title">
-            <h3 id="lib-totals-lib-title">With your library rules</h3>
-            <div id="lib-totals-lib-body" role="status" aria-live="polite"></div>
-          </section>
-        </div>
+        <div class="tile-grid" id="sys-tiles" aria-label="Totals"></div>
+        <div id="tile-lists"></div>
 
         <div class="notice ratings-banner hidden" id="lib-ratings-banner" role="status" aria-live="polite"></div>
+
+        <div class="rulesbar" id="rules-bar">
+          <div class="rules-sum" id="totals-rules-line"></div>
+          <span class="live" id="lib-live" role="status" aria-live="polite"></span>
+          <button class="btn btn-ghost" id="rules-toggle" type="button" aria-expanded="false" aria-controls="library-rules-box">Rules</button>
+          <button class="btn btn-primary" id="lib-apply-btn" disabled>Build library</button>
+        </div>
 
         <details class="rules-panel" id="library-rules-box">
           <summary>
@@ -453,7 +447,6 @@
           </fieldset>
           <div class="row">
             <button class="btn" id="lib-plan-btn" disabled>Preview library</button>
-            <button class="btn btn-primary" id="lib-apply-btn" disabled>Build library</button>
             <button class="btn" id="lib-undo-btn" disabled>Undo last</button>
             <div class="grow"></div>
           </div>
@@ -483,6 +476,32 @@
           </div>
 
         </div>
+
+        <details class="dat-details scan-details" id="scan-details">
+          <summary>Scan results, databases and checks</summary>
+        <div class="panel">
+          <h2>DAT</h2>
+          <div id="dat-status-line"></div>
+          <div id="dats-missing" class="notice hidden"></div>
+          <details class="dat-details" id="platform-details">
+            <summary id="platform-details-title">DAT files</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>DAT</th><th>Version</th><th>Folder</th><th>Status</th></tr></thead>
+                <tbody id="platform-dats"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <div id="scan-output" class="hidden">
+          <div id="scan-missing-dats" class="notice hidden"></div>
+          <div class="cards" id="summary-cards"></div>
+          <div class="panel hidden" id="ov-saves" aria-labelledby="ov-saves-title"></div>
+          <h3 id="dat-cards-title">Per DAT</h3>
+          <div class="dat-cards" id="dat-cards"></div>
+        </div>
+        </details>
       </div>
 
       <!-- ---------- Browse (rendered only when opened) ---------- -->

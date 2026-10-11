@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 from . import nointro as _nointro
 from . import paths, platforms
 from . import tosec as _tosec
+from . import igdb as _igdb
 from . import ratings as _ratings
 from . import redump as _redump
 from . import whdload as _whdload
@@ -117,17 +118,21 @@ class UpdateManager:
                  clock: Callable[[], float] = time.time,
                  state_path: Optional[Path] = None, whdload: Any = _whdload,
                  redump: Any = _redump, ratings: Any = _ratings,
-                 ratings_wanted: Optional[Callable[[], bool]] = None, switchdb: Any = None, gametdb: Any = None) -> None:
+                 ratings_wanted: Optional[Callable[[], bool]] = None, switchdb: Any = None, gametdb: Any = None,
+                 igdb: Any = _igdb, igdb_creds: Optional[Callable[[], Any]] = None) -> None:
         self.tosec = tosec
         self.switchdb = switchdb  # the Nintendo Switch title database (blawar/titledb); None = not managed
         self.gametdb = gametdb    # GameTDB's name lists for Wii, GameCube and Wii U discs; None = not managed
         self.nointro = nointro
         self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
         self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
-        # LaunchBox ratings (Amendment 18): fetched only when ``ratings_wanted()`` (a rating filter is set somewhere) or the
-        # user asks; None = not managed. The index lives in its own folder (paths.ratings_dir()).
+        # LaunchBox ratings (Amendment 18): kept current at every start (an index younger than a week is not even asked about);
+        # None = not managed. The index lives in its own folder (paths.ratings_dir()).
         self.ratings = ratings
         self.ratings_wanted = ratings_wanted
+        self.igdb = igdb                  # the user's own IGDB key adds a second source of ratings (``igdb_creds()``: their key, or None)
+        self.igdb_creds = igdb_creds
+        self._igdb_error: Optional[str] = None
         self.enabled = bool(enabled) and not paths.offline_forced()
         self.clock = clock
         self.state_path = Path(state_path) if state_path is not None else None
@@ -308,10 +313,13 @@ class UpdateManager:
                 "checked_at": self._redump_checked}
 
     def _wanted_ratings(self) -> bool:
-        try:
-            return bool(self.ratings_wanted()) if self.ratings_wanted is not None else False
-        except Exception:  # noqa: BLE001 - status must never fail
-            return False
+        """The ratings are kept current at every start (a rating filter or not): the Library pages count the rated titles of every system."""
+        return self.ratings is not None
+
+    def _ratings_lack(self, man: Optional[dict[str, Any]]) -> list[str]:
+        """The rated systems the installed index was built without (see ``ratings.missing_platforms``)."""
+        fn = getattr(self.ratings, "missing_platforms", None)
+        return list(fn(man)) if callable(fn) and man else []
 
     def _ratings_status(self) -> dict[str, Any]:
         """(lock held) the ``ratings`` block of :meth:`status`: the LaunchBox index, never part of the DAT statuses."""
@@ -328,7 +336,7 @@ class UpdateManager:
             status = "error"
         elif man is None:
             status = "absent"
-        elif self._ratings_row.get("status") == "update_available":
+        elif self._ratings_row.get("status") == "update_available" or self._ratings_lack(man):
             status = "update_available"
         else:
             status = "up_to_date"
@@ -341,12 +349,26 @@ class UpdateManager:
             "latest": self._ratings_row.get("latest"), "checked_at": self._ratings_checked,
             "offline": self._ratings_offline, "error": self._ratings_error,
             "credit": self.ratings.CREDIT, "credit_url": self.ratings.CREDIT_URL,
-            "age_days": self.ratings.age_days(man) if man else None}
+            "age_days": self.ratings.age_days(man) if man else None,
+            "missing_platforms": self._ratings_lack(man), "igdb": self._igdb_status()}
         if man:
             try:
                 out["size"] = self.ratings.index_path().stat().st_size
             except OSError:
                 pass
+        return out
+
+    def _igdb_status(self) -> dict[str, Any]:
+        """(lock held) the user's IGDB source: whether there is a key, and what it built."""
+        try:
+            creds = self.igdb_creds() if callable(self.igdb_creds) and self.igdb is not None else None
+            man = self.igdb.installed() if self.igdb is not None and creds else None
+        except Exception:  # noqa: BLE001 - status must never fail
+            creds, man = None, None
+        out: dict[str, Any] = {"configured": bool(creds), "installed": bool(man), "error": self._igdb_error,
+                               "updating": self._updating == "igdb"}
+        if man:
+            out.update(built_at=man.get("built_at"), games=man.get("games"), platforms=man.get("platforms"))
         return out
 
     def _installed_tosec(self) -> Optional[str]:
@@ -838,10 +860,41 @@ class UpdateManager:
             raise UpdateError("failed", "; ".join(errors))
 
     def _do_ratings(self, token: _Token, forward: Optional[Progress], explicit: bool) -> None:
+        """The LaunchBox ratings, then the user's own IGDB key (when there is one)."""
+        try:
+            self._do_launchbox(token, forward, explicit)
+        finally:
+            self._do_igdb(token, forward, explicit)
+
+    def _do_igdb(self, token: _Token, forward: Optional[Progress], explicit: bool) -> None:
+        """The IGDB index of the user's key: made when there is none, the key changed, a system is missing or it is a week old; always
+        when the user asked (``explicit``). Errors land in the ``igdb`` status block only."""
+        if self.igdb is None or not callable(self.igdb_creds) or self.ratings is None:
+            return
+        creds = self.igdb_creds()
+        if not creds or token.is_set():
+            return
+        man = self.igdb.installed()
+        if not explicit and not self.igdb.needs_refresh(man, creds):
+            return
+        with self._lock:
+            self._updating = "igdb"
+            self._igdb_error = None
+        try:
+            self.igdb.build_index(creds, progress=lambda d, t, m: self._set_progress(d, t, m, "ratings", forward), cancel=token)
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._igdb_error = str(exc) or exc.__class__.__name__
+        finally:
+            with self._lock:
+                self._updating = None
+
+    def _do_launchbox(self, token: _Token, forward: Optional[Progress], explicit: bool) -> None:
         """Check the LaunchBox data and, when needed and newer, download + index it (``explicit``: the user asked, no gate).
 
-        Without ``explicit`` nothing happens unless a rating filter is enabled somewhere (``ratings_wanted``); an index
-        younger than 7 days is not even asked about. Errors land in the ``ratings`` status block only; offline = the
+        An index younger than 7 days is not even asked about (unless it lacks a system the app rates now). Errors land in the ``ratings`` status block only; offline = the
         cached index stays in use."""
         if self.ratings is None or (not explicit and not self._wanted_ratings()):
             return

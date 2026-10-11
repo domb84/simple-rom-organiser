@@ -2601,3 +2601,33 @@ aside (`_unmatched`, `_excluded`, `_duplicates`) is judged again and comes back 
 disc systems: `discsys._junk_op` now has one `aside()` for excluded / duplicate / unmatched); a library built in another folder takes the
 kept copy under its database name only; the BIOS tool finds a file by the name a build gave it (`bios.is_database_name`) whatever its
 extension. The Overview card says *found*, the Library card *kept*.
+
+
+# AMENDMENT 19 - ratings at startup, rated-title counts, the user's own IGDB key (later wins)
+
+* Ratings refresh at startup without a rating filter (`autoupdate._wanted_ratings`); an index whose manifest `built_for` lacks a
+  `ratings.LB_PLATFORMS` value is out of date regardless of age (`ratings.missing_platforms`).
+* `LB_PLATFORMS` gained GameCube, Wii, Wii U, Switch (`_RATED_DATS_OVERRIDE` for Switch).
+* `totals.Target.rated_all/rated_target` (titles with a rating, before/after the filters); UI: two tiles (`renderRatedTile`, `totals-rated-all/lib`, a second row of the totals grid) on Overview and Library.
+* `romorg/igdb.py`: optional second source with the user's Twitch Client ID/secret (`config.json["igdb"]`, plain text, never returned
+  by the API). Client-credentials token; Apicalypse `games` queries per platform id (500 a page, by `id >`, 4 requests/s);
+  rating = total_rating/20, votes = total_rating_count; `igdb.sqlite` + `igdb.json` beside `ratings.sqlite`, merged in
+  `ratings.Store._with_igdb` (more votes wins, LaunchBox on a tie). Endpoints `POST /api/ratings/igdb`, `/api/ratings/igdb/test`.
+  Platform ids and field names are from IGDB's documentation, not yet verified live. IGDB's bulk-use terms were not checked.
+* `TotalsManager.upgrades/describe_upgrades` + `GET /api/library/upgrades?platform=`: the owned games whose kept names miss the target's
+  preferred names (the `not_preferred` count), with the preferred rom's size and checksums from the DAT; UI "Show the upgrades" in the totals block.
+* Region ties: `LibraryProfile.region_ties` (regions ranked the same as the one above them in `region_priority`); `tags.region_tiers/region_rank`;
+  UI "=" button per row of `sortableList`. The Settings (defaults) catalog is the TOSEC one plus the No-Intro entries it lacks (the region
+  priority had vanished from Settings because the defaults pseudo-system is TOSEC-styled).
+
+# AMENDMENT 20 - one Library page per system, tiles you choose, a list that updates by itself (later wins)
+
+* The Overview tab is gone; `#/system/<slug>/library` is the system page (an `overview` address resolves to it). The folder, tiles, rules bar,
+  live list and (collapsed) scan results are one page.
+* Tiles: `romorg/tiles.py` (catalogue of 16, default set, at most 10, `config.json["page_tiles"]`), `GET/POST /api/settings/tiles`, `tiles` in
+  `/api/status`; the page draws each tile from `TILES` (app.js) out of data it already has (scan, `/api/library/totals`, the plan) or, for
+  Space / Best you are missing / Average rating / Regions / Convert, `GET /api/library/insights` (`TotalsManager.insights`, cached per
+  target+scan key). The Settings list is `sortableList` with `checks`.
+* Live list: `Previews` items with `auto` recalculate 500 ms after the last change (`autoSchedule`); a change during a calculation marks
+  it stale again and one more runs when it ends, so the list always follows the last change; Build waits (`dataset.stale`). The Preview
+  button stays in the DOM, hidden, for the code.

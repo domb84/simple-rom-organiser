@@ -463,7 +463,8 @@
     organiseFilter: "",
     organiseDest: "",
     m3uFilter: "",
-    tab: "overview",   // the open tab of the system page
+    tab: "library",   // the open tab of the system page
+    tiles: [],         // the tiles of the system pages (Settings > Tiles), from /api/status
     scanFailed: {},    // platform -> error text of its last failed scan
     showChecksums: false,   // Browse: checksum rows expanded for every visible row
   };
@@ -629,6 +630,7 @@
       return;
     }
     const s = state.status;
+    if (Array.isArray(s.tiles) && s.tiles.join() !== state.tiles.join()) { state.tiles = s.tiles; Totals.shown[""] = ""; if (inSystem()) { renderTotals(); loadInsights(); } }
     $("app-version").textContent = `v${s.version}`;
     Updates.apply(s.updates);
     $("dats-dir").textContent = s.data_dir ? `Data folder: ${s.data_dir}` : "";
@@ -807,8 +809,8 @@
   // ------------------------------------------------------------- routing
   // Hash routes (no server support needed; back / forward / reload just work):
   //   #/                                  home: one card per system
-  //   #/system/<slug>/<tab>[?view=...]    <tab> = overview | library | browse
-  const TABS = ["overview", "library", "browse"];
+  //   #/system/<slug>/<tab>[?view=...]    <tab> = library | browse   (an old "overview" address opens the library)
+  const TABS = ["library", "browse"];
   const slugOf = (p) => p.slug || String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const Route = {
     /** "#/system/snes/browse?view=missing&have=0" -> {view: "system", slug, tab, params}; anything else -> home. */
@@ -817,7 +819,7 @@
       const [path, query = ""] = text.split("?");
       const parts = path.split("/").filter(Boolean);
       if (parts[0] === "system" && parts[1]) {
-        const tab = TABS.includes(parts[2]) ? parts[2] : "overview";
+        const tab = TABS.includes(parts[2]) ? parts[2] : "library";
         return { view: "system", slug: decodeURIComponent(parts[1]), tab, params: Object.fromEntries(new URLSearchParams(query)) };
       }
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
@@ -825,13 +827,13 @@
       if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
       if (parts[0] === "databases") return { view: "databases", slug: "", tab: "", params: {} };
       if (parts[0] === "bios") return { view: "bios", slug: "", tab: "", params: {} };
-      if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "overview", params: {} };
-      if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "overview", params: {} };
-      if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "overview", params: {} };
-      if (parts[0] === "wiiu") return { view: "system", slug: "nintendo-wii-u", tab: "overview", params: {} };
+      if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "library", params: {} };
+      if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "library", params: {} };
+      if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "library", params: {} };
+      if (parts[0] === "wiiu") return { view: "system", slug: "nintendo-wii-u", tab: "library", params: {} };
       return { view: "home", slug: "", tab: "", params: {} };
     },
-    build(slug, tab = "overview", params = {}) {
+    build(slug, tab = "library", params = {}) {
       const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
       return `#/system/${encodeURIComponent(slug)}/${tab}${q ? `?${q}` : ""}`;
     },
@@ -902,19 +904,19 @@
     const pct = rec ? (rec.pct !== undefined ? rec.pct : (total ? (100 * have) / total : 0)) : null;
     const kind = dat.kind === "missing" ? "warn" : rec && !stale ? "ok" : "off";
     const saves = rec && rec.saves && rec.saves.files ? rec.saves : null;
-    const mine = (p.rule_overrides || []).map(ruleName);
+    const mine = [...new Set((p.rule_overrides || []).map(ruleName))];
     const tip = [p.name, p.folder || "No folder set", dat.text,
       rec ? `${fmt(have)} of ${fmt(total)} (${pctText(pct)}), scanned ${scanTime(rec)}${stale ? " (folder changed since)" : ""}` : "Not scanned yet",
       saves ? `${nPlural(saves.files, "save or save state", "saves and save states")} in RetroArch` : "",
       mine.length ? `Its own library rules: ${mine.join(", ")}` : "",
       ].filter(Boolean).join("\n");
-    return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "overview" : "overview"),
+    return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "library" : "library"),
       "data-platform": p.name, "data-kind": kind, title: tip,
       "aria-current": inSystem() && state.platform === p.name ? "true" : null },
       el("span", { class: `dot ${kind}` }),
       el("span", { class: "nav-name", text: p.name }),
       el("span", { class: "nav-meta" },
-        mine.length ? el("span", { class: "nav-override", "data-overrides": String(mine.length), title: `Its own library rules: ${mine.join(", ")}`,
+        mine.length ? el("span", { class: "nav-override", "data-overrides": String(mine.length), text: "Custom rules", title: `Its own library rules: ${mine.join(", ")}`,
           "aria-label": `${nPlural(mine.length, "library rule", "library rules")} set for this system only` }) : null,
         saves ? el("span", { class: "nav-saves num", text: `${fmt(saves.files)} saves`, title: "Saves and save states found for this system" }) : null,
         el("span", { class: "nav-pct num", text: pct === null ? "" : `${Math.round(pct)}%` })),
@@ -1159,10 +1161,11 @@
     state.tab = tab;
     renderTabs();
 
-    if (tab === "overview" || tab === "library") loadTotals();
     if (tab === "library") {
+      loadTotals();
       renderLibraryGate();
       if (statsStale) refreshLibraryStats();
+      Previews.resume("lib");
     } else if (tab === "browse") {
       renderBrowse();
     }
@@ -1173,7 +1176,7 @@
     state.route = Route.parse(location.hash);
     const r = state.route;
     if (r.view === "home" && state.platforms.length && wideLayout()) {     // a wide window always shows a system
-      history.replaceState(null, "", Route.build(slugOf(currentPlatform() || state.platforms[0]), "overview"));
+      history.replaceState(null, "", Route.build(slugOf(currentPlatform() || state.platforms[0]), "library"));
       state.route = Route.parse(location.hash);
       return applyRoute();
     }
@@ -1402,6 +1405,7 @@
     renderLibraryConvert();
     updateActionState();
     loadTotals();
+    if (inSystem() && state.tab === "library") Previews.resume("lib");
   }
 
   /** A summary card; with ``link`` it opens the Browse tab on the matching list (deep link). */
@@ -1455,7 +1459,7 @@
     return { games, total, have, missing, pct: total ? (100 * have) / total : 0 };
   }
 
-  /** The Overview tab's results: summary cards (links into Browse) and the per-DAT cards. */
+  /** The scan results of the library page: summary cards (links into Browse) and the per-DAT cards. */
   function renderScanOverview() {
     const scan = state.scan;
     const p = currentPlatform();
@@ -1599,10 +1603,10 @@
     box.replaceChildren(
       el("p", {}, el("b", { text: "Scan first. " }),
         folder ? `${what} needs the scan results of ${p ? p.name : "this system"}.${stale ? " The results are not kept when the app restarts." : ""}`
-          : `Choose the folder of ${p ? p.name : "this system"} on the Overview tab, then scan it.`),
+          : `Choose the folder of ${p ? p.name : "this system"} above, then scan it.`),
       folder
         ? el("button", { class: "btn btn-primary", text: "Scan folder", "data-needs-idle": "", on: { click: () => startScan(false) } })
-        : el("button", { class: "btn btn-primary", text: "Go to Overview", on: { click: () => openTab("overview") } }));
+        : null);
     Jobs.setRunning(Jobs.running);
   }
 
@@ -2085,7 +2089,7 @@
     HINT: "Recalculates with your current rules and folder contents",
     // id -> button / apply button / output box / noun / how to count / how to drop it
     CONFIG: {
-      lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => libTable, reset: () => resetLibraryPreview() },
+      lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", live: "lib-live", auto: true, noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => libTable, reset: () => resetLibraryPreview() },
     },
 
     /** Wire the buttons once: icon + label, a status line with the hint (aria-live) and the out-of-date banner. */
@@ -2107,7 +2111,9 @@
           el("button", { class: "btn btn-primary btn-small", type: "button", text: "Recalculate", "data-needs-idle": "",
             on: { click: () => this.click(id) } }));
         out.prepend(banner);
-        this.items[id] = { id, cfg, btn, icon, label, first, status, hint, banner, bannerText, out, apply: $(cfg.apply),
+        if (cfg.auto) { btn.classList.add("hidden"); hint.classList.add("hidden"); }      // (it recalculates by itself: the button stays for the code only)
+        if (cfg.live) $(cfg.live).addEventListener("click", () => { if (this.items[id].state === "error") this.click(id); });
+        this.items[id] = { id, cfg, btn, icon, label, first, status, hint, banner, bannerText, out, apply: $(cfg.apply), live: cfg.live ? $(cfg.live) : null, timer: 0,
           state: "none", at: null, count: null, platform: null, scanId: null, startScan: null, force: false, dirty: "", why: "", err: "" };
         btn.addEventListener("click", () => this.click(id));
       }
@@ -2172,6 +2178,7 @@
       }
       it.err = "";
       this.paint(it);
+      if (it.state === "stale") this.autoSchedule(id);          // changed again while it was calculated
     },
 
     fail(id, err) {
@@ -2195,10 +2202,34 @@
       const it = this.items[id];
       if (!it) return;
       if (it.state === "busy") { it.dirty = why; return; }
+      if (it.state === "error" && it.cfg.auto) { this.autoSchedule(id); return; }       // what failed may work with the new rules: try again
       if (it.state !== "ready" && it.state !== "stale") return;
       it.state = "stale";
       it.why = why;
       this.paint(it);
+      this.autoSchedule(id);
+    },
+
+    /** An automatic preview recalculates by itself shortly after the last change (a quick run of changes makes one calculation). */
+    autoSchedule(id) {
+      const it = this.items[id];
+      if (!it || !it.cfg.auto) return;
+      clearTimeout(it.timer);
+      it.timer = setTimeout(() => this.autoRun(id), 500);
+    },
+
+    autoRun(id) {
+      const it = this.items[id];
+      if (!it || it.state === "busy" || it.state === "ready") return;
+      if (!inSystem() || state.tab !== "library" || !state.scan) return;
+      if (it.state === "stale" && it.platform !== state.platform) return;
+      this.click(id);
+    },
+
+    /** The library page was opened (or a scan arrived): a missing or out-of-date preview is calculated now. */
+    resume(id) {
+      const it = this.items[id];
+      if (it && state.scan && (it.state === "none" || it.state === "stale")) this.autoSchedule(id);
     },
 
     staleAll(why, ids = Object.keys(this.items)) { for (const id of ids) this.stale(id, why); },
@@ -2244,8 +2275,14 @@
       }
       it.status.textContent = text;
       it.status.className = `pv-status ${it.state}`;
-      it.hint.classList.toggle("hidden", !has || busy);
-      it.banner.classList.toggle("hidden", !stale);
+      it.hint.classList.toggle("hidden", !has || busy || it.cfg.auto);
+      it.banner.classList.toggle("hidden", !stale || it.cfg.auto);
+      if (it.live) {
+        const working = busy || stale;
+        it.live.textContent = working ? (it.at ? "Updating the list..." : "Calculating the list...")
+          : err ? `Could not update the list: ${it.err} - press here to try again` : has && it.at ? `The list is up to date (${clockText(it.at)}${it.count === null || it.count === undefined ? "" : `, ${fmt(it.count)} ${it.cfg.noun}`})` : "";
+        it.live.className = `live ${working ? "busy" : err ? "bad" : has ? "ok" : ""}`;
+      }
       it.bannerText.textContent = stale ? `${it.why || "Rules changed since this preview"} — recalculate to see the current result.` : "";
       // while an out-of-date preview is being recalculated (or that failed) it stays dimmed and Build / Apply stay disabled
       const lock = stale || ((busy || err) && it.at !== null);
@@ -2253,16 +2290,16 @@
       it.out.setAttribute("aria-busy", busy ? "true" : "false");
       if (it.apply) {
         it.apply.dataset.stale = lock ? "1" : "0";
-        it.apply.title = lock ? "This preview is out of date - recalculate it first" : "";
+        it.apply.title = lock ? "The list is being updated - building waits for it" : "";
       }
       Jobs.setRunning(Jobs.running);
     },
   };
 
-  // ------------------------------------------- Overview: library totals (Amendment 17)
+  // ------------------------------------------- Library page: totals and tiles (Amendment 17)
   // "With your library rules: have N of M games": M = games the rules keep for the WHOLE DAT, N = those the user has.
   // The server computes it in the background (GET /api/library/totals); this block polls while it calculates.
-  const Totals = { seq: 0, timer: null, data: {}, shown: {} };
+  const Totals = { seq: 0, timer: null, data: {}, shown: {}, upgrades: {}, upgradesOpen: {} };
   const scheduleTotals = debounce(() => loadTotals(), 600);
 
   async function loadTotals() {
@@ -2281,116 +2318,241 @@
     Totals.data[name] = data;
     renderTotals();
     renderRatingsStatus();
+    if (!data.calculating && !data.ratings_pending) loadInsights();
     if (data.ratings_pending) Updates.load();          // the server asked for the data: show its progress
     if (data.calculating || data.ratings_pending) Totals.timer = setTimeout(loadTotals, data.ratings_pending ? 1500 : 900);
   }
 
   function totalsLine(cls, text) { return el("div", { class: `totals-line ${cls}`, text }); }
 
-  /** Both blocks: all DAT entries (the scan) and the library rules' target. Re-rendered only when something changed. */
-  function renderTotals() {
-    renderTotalsInto("");          // Overview
-    renderTotalsInto("lib-");      // Library tab: the same two blocks, so the rules and the result sit together
+  /** The lists behind the hint lines of the totals: ``upgrades`` (owned, but not the preferred version: with the checksums of the preferred
+   *  one), ``excluded`` (owned, left out by your rules) and ``incomplete`` (multi-disk games with disks missing). One is open at a time. */
+  async function toggleList(name, kind) {
+    const open = Totals.upgradesOpen[name] === kind;
+    Totals.upgradesOpen[name] = open ? "" : kind;
+    if (!open) {
+      Totals.upgrades[name] = null;
+      renderTotals();
+      try {
+        Totals.upgrades[name] = await get(`/api/library/upgrades?${qs({ platform: name, kind })}`);
+      } catch (err) {
+        Totals.upgrades[name] = { ready: true, items: [], error: err.message };
+      }
+    }
+    renderTotals();
   }
 
-  function renderTotalsInto(prefix) {
+  function upgradesTable(doc, kind = "upgrades") {
+    if (!doc) return el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " looking for them...");
+    if (doc.error) return totalsLine("error-text", `Could not list them: ${doc.error}`);
+    if (!doc.ready) return totalsLine("muted", "The numbers are still being calculated - try again in a moment.");
+    if (!doc.items.length) return totalsLine("muted", "None.");
+    const have = (it) => el("td", {}, ...it.have.map((n) => el("div", { class: "small", text: n })));
+    if (kind !== "upgrades") {
+      const rows = doc.items.map((it) => el("tr", {}, el("td", { text: it.title }), have(it), el("td", { class: "small", text: it.why || "" })));
+      return el("div", { class: "upgrades table-wrap", "data-upgrades": "list" },
+        el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "You have" }),
+          el("th", { text: kind === "excluded" ? "Left out because" : "What is missing" }))), el("tbody", {}, ...rows)));
+    }
+    const hash = (label, v) => v ? el("div", { class: "small mono" }, `${label} ${v}`) : null;
+    const version = (b) => el("div", {}, el("div", { class: "small", text: b.name }),
+      ...b.files.flatMap((f) => (f.crc || f.md5 || f.sha1)
+        ? [b.files.length > 1 ? el("div", { class: "small muted", text: `${f.name} (${fmtBytes(f.size)})` }) : null,
+          hash("CRC32", f.crc), hash("MD5", f.md5), hash("SHA-1", f.sha1)]
+        : [el("div", { class: "small muted", text: "No checksum: this catalogue identifies the game by its ID." })]));
+    const rows = doc.items.map((it) => el("tr", {}, el("td", { text: it.title }), have(it), el("td", {}, ...it.better.map(version))));
+    return el("div", { class: "upgrades table-wrap", "data-upgrades": "list" },
+      el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "You have" }), el("th", { text: "Preferred version (name and checksums)" }))),
+        el("tbody", {}, ...rows)));
+  }
+
+  // ---- The tiles at the top of a system page (Settings > Tiles chooses and orders them; ``tiles.CATALOG`` lists them).
+  // Each renderer gets what the page already has and returns {tone, value, unit, bar, sub, links, wait} - or null to leave the tile out.
+  const Insights = { data: {}, key: {}, timer: null };
+
+  /** The numbers of the tiles that need a calculation of their own: asked for only when one of them is shown. */
+  async function loadInsights() {
     const p = currentPlatform();
-    const box = $(`${prefix}totals-pair`);
-    if (!p) { box.classList.add("hidden"); return; }
-    box.classList.remove("hidden");
-    const data = Totals.data[p.name] || null;
-    const scan = state.scan;
-    const key = JSON.stringify([p.name, scan && scan.id, scan && scan.summary && scan.summary.have, p.last_scan && p.last_scan.at, data]);
-    if (key === Totals.shown[prefix]) return;
-    Totals.shown[prefix] = key;
+    if (!p || !inSystem()) return;
+    const want = (state.tiles || []).filter((t) => CALC_TILES.has(t));
+    if (!want.length) return;
+    const name = p.name;
+    let doc;
+    try { doc = await get(`/api/library/insights?${qs({ platform: name, want: want.join(",") })}`); } catch (_) { doc = { ready: true }; }
+    Insights.data[name] = doc;
+    clearTimeout(Insights.timer);
+    if (!doc.ready) Insights.timer = setTimeout(loadInsights, 1500);
+    renderTotals();
+  }
+  const CALC_TILES = new Set(["space", "best_missing", "avg_rating", "regions", "convert"]);
 
-    // left: every DAT entry
-    const left = $(`${prefix}totals-all-body`);
-    if (scan) {
-      const { games, total, have, missing, pct } = summaryNumbers(scan.summary);
-      left.replaceChildren(
-        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(have) }),
-          el("span", { class: "muted", text: ` of ${fmt(total)} ${games ? "games" : "ROMs"} (${pctText(pct)})` })),
-        progressBar(pct),
-        totalsLine("", `Missing ${fmt(missing)}`),
-        totalsLine("muted", "Every entry of the DAT counts, whatever the rules say."));
-    } else {
-      const rec = p.last_scan;
-      left.replaceChildren(rec
-        ? el("div", {}, el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(rec.have) }),
-          el("span", { class: "muted", text: ` of ${fmt(rec.total)} (${pctText(rec.pct || 0)})` })),
-        totalsLine("muted", `Last scan ${scanTime(rec)}. Scan again to refresh the details.`))
-        : totalsLine("muted", "Not scanned yet. Scan the folder to see how much of the DAT you have."));
-    }
+  const tileWait = (text) => ({ tone: "plain", wait: text });
+  const pctOf = (a, b) => (b ? (100 * a) / b : 0);
 
-    // right: with the library rules
-    const right = $(`${prefix}totals-lib-body`);
-    right.classList.remove("totals-stale");
-    const link = prefix
-      ? el("button", { class: "btn btn-small btn-ghost totals-rules", type: "button", text: "Edit the rules",
-        on: { click: () => { const box = $("library-rules-box"); box.open = true; box.scrollIntoView({ block: "start", behavior: "smooth" }); } } })
-      : el("button", { class: "btn btn-small btn-ghost totals-rules", type: "button", text: "Change the rules",
-        on: { click: () => openTab("library") } });
-    if (!data) {
-      right.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " calculating..."));
-      return;
-    }
-    if (data.available === false) {
-      right.replaceChildren(totalsLine("muted", "The DAT of this system is not installed yet - check for updates first."));
-      return;
-    }
-    if (data.ratings_pending) {
-      right.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }),
-        " waiting for the ratings data (see Ratings in the rules)..."), link);
-      return;
-    }
-    if (data.error) {
-      right.replaceChildren(totalsLine("error-text", `Could not calculate: ${data.error}`));
-      return;
-    }
-    const wait = data.calculating
-      ? el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), data.stale ? " recalculating..." : " calculating...") : null;
-    if (data.target_games === null || data.target_games === undefined) {
-      right.replaceChildren(wait || totalsLine("muted", "-"));
-      return;
-    }
-    const m = data.target_games;
-    const n = data.have_games;
-    const lines = [];
-    if (n !== null && n !== undefined) {
-      const pct = data.percent !== null && data.percent !== undefined ? data.percent : (m ? (100 * n) / m : 0);
-      lines.push(
-        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(n) }),
-          el("span", { class: "muted", text: ` of ${fmt(m)} games (${pctText(pct)})` })),
-        progressBar(pct),
-        totalsLine("", `Missing ${fmt(m - n)}`));
-      if (data.not_preferred) {
-        lines.push(totalsLine("hint hint-up", `${fmt(data.not_preferred)} of your ${fmt(n)} ${data.not_preferred === 1 ? "is" : "are"} not the preferred version (an upgrade is available)`));
+  const TILES = {
+    have_all: { label: "Have, all entries", render: (c) => {
+      if (c.scan) {
+        const { games, total, have, missing, pct } = summaryNumbers(c.scan.summary);
+        return { tone: "ok", value: fmt(have), unit: `of ${fmt(total)} ${games ? "games" : "ROMs"}`, bar: pct, sub: `${pctText(pct)}, missing ${fmt(missing)}` };
       }
-      if (data.owned_but_excluded) {
-        lines.push(totalsLine("hint hint-ex", `${fmt(data.owned_but_excluded)} ${data.owned_but_excluded === 1 ? "game you own is" : "games you own are"} excluded by your rules`));
-      }
-      if (data.owned_incomplete) {
-        lines.push(totalsLine("hint hint-inc", `${fmt(data.owned_incomplete)} multi-disk ${data.owned_incomplete === 1 ? "game you own is" : "games you own are"} incomplete`));
-      }
+      const rec = c.p.last_scan;
+      if (rec) return { tone: "ok", value: fmt(rec.have), unit: `of ${fmt(rec.total)}`, bar: rec.pct || 0, sub: `${pctText(rec.pct || 0)}, last scan ${scanTime(rec)}` };
+      return { tone: "ok", value: "-", sub: "Not scanned yet" };
+    } },
+    have_rules: { label: "Have, with your rules", render: (c) => {
+      const d = c.data;
+      if (!d) return tileWait("calculating...");
+      if (d.available === false) return { tone: "after", value: "-", sub: "The database of this system is not installed yet" };
+      if (d.ratings_pending) return tileWait("waiting for the ratings data");
+      if (d.error) return { tone: "after", value: "-", sub: `Could not calculate: ${d.error}` };
+      if (d.target_games === null || d.target_games === undefined) return tileWait(d.calculating ? "calculating..." : "");
+      const m = d.target_games, n = d.have_games;
+      const stale = d.calculating ? (d.stale ? "recalculating..." : "calculating...") : "";
+      if (n === null || n === undefined) return { tone: "after", value: fmt(m), unit: "games in the library", sub: "Scan to see how many you have", stale };
+      const pct = d.percent !== null && d.percent !== undefined ? d.percent : pctOf(n, m);
+      return { tone: "after", value: fmt(n), unit: `of ${fmt(m)} games`, bar: pct, sub: `${pctText(pct)}, missing ${fmt(m - n)}`, stale };
+    } },
+    rated_all: { label: "Rated, all entries", render: (c) => {
+      const r = c.data && c.data.rated_all;
+      if (!r || !r.games) return null;
+      const pct = pctOf(r.rated, r.games);
+      return { tone: "ok", value: pctText(pct), unit: `${fmt(r.rated)} of ${fmt(r.games)} rated`, bar: pct, sub: "enough votes to count" };
+    } },
+    rated_rules: { label: "Rated, with your rules", render: (c) => {
+      const r = c.data && !c.data.ratings_pending && !c.data.error ? c.data.rated_target : null;
+      if (!r || !r.games) return null;
+      const pct = pctOf(r.rated, r.games);
+      return { tone: "after", value: pctText(pct), unit: `${fmt(r.rated)} of ${fmt(r.games)} rated`, bar: pct, sub: "of the games your rules keep" };
+    } },
+    needs_look: { label: "Needs a look", render: (c) => {
+      const d = c.data;
+      if (!d || d.have_games === null || d.have_games === undefined) return null;
+      const items = [["upgrades", d.not_preferred, "not the preferred version"], ["excluded", d.owned_but_excluded, "left out by your rules"],
+        ["incomplete", d.owned_incomplete, "incomplete"]].filter(([, n]) => n);
+      const total = items.reduce((a, [, n]) => a + n, 0);
+      if (!total) return { tone: "ok", value: "0", sub: "everything you own fits your rules" };
+      return { tone: "warn", value: fmt(total), unit: total === 1 ? "game" : "games",
+        links: items.map(([kind, n, text]) => ({ kind, text: `${fmt(n)} ${text}` })) };
+    } },
+    files_to_change: { label: "Files to change", render: (c) => {
+      const plan = c.plan;
+      if (!plan || !c.scan) return null;
+      const r = plan.reasons || {};
+      const n = (r.excluded || 0) + (r.superseded || 0) + (r.duplicates || 0) + (r.incomplete || 0);
+      const moves = (plan.counts && (plan.counts.move || 0) + (plan.counts.rename || 0) + (plan.counts.delete || 0)) || 0;
+      return { tone: "plain", value: fmt(moves), unit: moves === 1 ? "file" : "files",
+        sub: n ? `${fmt(r.excluded || 0)} excluded, ${fmt(r.superseded || 0)} superseded, ${fmt(r.duplicates || 0)} duplicates` : "nothing to set aside" };
+    } },
+    unmatched: { label: "Unmatched files", render: (c) => {
+      const n = c.scan && c.scan.summary.unmatched_files;
+      return n ? { tone: "warn", value: fmt(n), unit: n === 1 ? "file" : "files", sub: "match nothing in the database", href: Route.build(slugOf(c.p), "browse", { view: "unmatched" }) } : null;
+    } },
+    bios: { label: "BIOS and firmware", render: (c) => {
+      const n = c.scan && c.scan.summary.bios_files;
+      return n ? { tone: "info", value: fmt(n), unit: n === 1 ? "file" : "files", sub: "found among your files" } : null;
+    } },
+    saves: { label: "Saves", render: (c) => {
+      const s = c.scan && c.scan.saves;
+      return s && s.files ? { tone: "plain", value: fmt(s.files), unit: s.files === 1 ? "save or state" : "saves and states", sub: "found for this system" } : null;
+    } },
+    database: { label: "Database", render: (c) => {
+      const ds = datStatus(c.p);
+      const first = (c.p.dats || []).find((d) => d.version);
+      return { tone: ds.kind === "missing" ? "warn" : "plain", value: first ? first.version : "-", sub: ds.text };
+    } },
+    last_scan: { label: "Last scan", render: (c) => {
+      const rec = c.p.last_scan;
+      if (!rec) return { tone: "plain", value: "never", sub: "press Scan folder" };
+      const stale = rec.folder && c.p.folder && rec.folder !== c.p.folder;
+      return { tone: "plain", value: scanTime(rec), sub: stale ? "the folder has changed since" : `${fmt(rec.have)} of ${fmt(rec.total)} found` };
+    } },
+    space: { label: "Space", render: (c) => {
+      const i = c.insights && c.insights.space;
+      if (!i) return c.insights && c.insights.ready ? null : tileWait("calculating...");
+      if (i.have === null || i.have === undefined) return { tone: "plain", value: fmtBytes(i.target), sub: "the library your rules describe" };
+      return { tone: "plain", value: fmtBytes(i.have), unit: `of ${fmtBytes(i.target)}`, bar: pctOf(i.have, i.target), sub: "your games against the whole library (database sizes)" };
+    } },
+    best_missing: { label: "Best you are missing", render: (c) => {
+      if (!c.insights || !c.insights.ready) return tileWait("calculating...");
+      const b = c.insights.best_missing;
+      return b ? { tone: "info", value: b.title, small: true, sub: `rated ${b.rating.toFixed(1)} (${fmt(b.votes)} votes), not in your folder` } : null;
+    } },
+    avg_rating: { label: "Average rating", render: (c) => {
+      const a = c.insights && c.insights.avg_rating;
+      if (!a) return c.insights && c.insights.ready ? null : tileWait("calculating...");
+      if (a.owned === null && a.target === null) return null;
+      return { tone: "plain", value: a.owned !== null ? a.owned.toFixed(1) : "-", unit: "of 10", sub: a.target !== null ? `the whole library: ${a.target.toFixed(1)}` : "" };
+    } },
+    regions: { label: "Regions", render: (c) => {
+      const r = c.insights && c.insights.regions;
+      if (!r) return c.insights && c.insights.ready ? null : tileWait("calculating...");
+      if (!r.length) return null;
+      return { tone: "plain", value: r[0].region, unit: `${r[0].pct}%`, sub: r.slice(1, 4).map((x) => `${x.region} ${x.pct}%`).join(", ") };
+    } },
+    convert: { label: "Convert", render: (c) => {
+      const v = c.insights && c.insights.convert;
+      return v && v.games ? { tone: "plain", value: fmt(v.games), unit: v.games === 1 ? "game" : "games", sub: "could be converted to CHD" } : null;
+    } },
+  };
+
+  function tileNode(id, spec) {
+    const body = [];
+    if (spec.wait !== undefined && spec.value === undefined) {
+      body.push(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), ` ${spec.wait}`));
     } else {
-      lines.push(
-        el("div", { class: "totals-main" }, el("span", { class: "value", text: fmt(m) }),
-          el("span", { class: "muted", text: " games in the target library" })),
-        totalsLine("muted", "Scan to see how many you have"));
+      body.push(el("div", { class: `tile-value${spec.small ? " tile-small" : ""}` }, el("span", { class: "value", text: spec.value }),
+        spec.unit ? el("span", { class: "muted", text: ` ${spec.unit}` }) : null));
+      if (spec.bar !== undefined && spec.bar !== null) body.push(progressBar(spec.bar));
+      if (spec.sub) body.push(el("div", { class: "tile-sub muted", text: spec.sub }));
+      if (spec.stale) body.push(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), ` ${spec.stale}`));
+      for (const l of spec.links || []) {
+        body.push(el("button", { class: `linklike tile-link${Totals.upgradesOpen[currentPlatform().name] === l.kind ? " on" : ""}`, type: "button", "data-upgrades": l.kind,
+          text: l.text, title: "Show the games", on: { click: () => toggleList(currentPlatform().name, l.kind) } }));
+      }
     }
-    if (data.rating && data.rating.games) {
-      const rt = data.rating;
-      lines.push(totalsLine("muted small", `Rating filter: ${fmt(rt.excluded)} of ${fmt(rt.games)} games left out (${fmt(rt.unrated)} of them have no usable rating).`));
+    const tag = spec.href ? "a" : "section";
+    return el(tag, { class: `tile tile-${spec.tone || "plain"}`, "data-tile": id, ...(spec.href ? { href: spec.href } : {}) },
+      el("h3", { text: TILES[id].label }), ...body);
+  }
+
+  function renderTotals() {
+    const p = currentPlatform();
+    const box = $("sys-tiles");
+    if (!p) { box.replaceChildren(); return; }
+    renderRulesLine(p);
+    const name = p.name;
+    const ctx = { p, scan: state.scan, data: Totals.data[name] || null, plan: libPlan && state.scan ? libPlan : null, insights: Insights.data[name] || null };
+    const key = JSON.stringify([name, (state.tiles || []).join(), state.scan && state.scan.id, p.last_scan && p.last_scan.at, ctx.data, ctx.insights,
+      ctx.plan && [ctx.plan.reasons, ctx.plan.counts], Totals.upgradesOpen[name] || "", (p.dats || []).map((d) => d.version)]);
+    if (key === Totals.shown[""]) { renderTileList(p); return; }
+    Totals.shown[""] = key;
+    const nodes = [];
+    for (const id of state.tiles || []) {
+      if (!TILES[id]) continue;
+      const spec = TILES[id].render(ctx);
+      if (spec) nodes.push(tileNode(id, spec));
     }
-    if (data.rank_scope === "owned") {
-      lines.push(totalsLine("muted small", "Top N counts only the games you own; the target lists every game that passes the other rules."));
-    }
-    if (data.target_incomplete) {
-      lines.push(totalsLine("muted small", `${fmt(data.target_incomplete)} more game${data.target_incomplete === 1 ? " is" : "s are"} only partly in the DAT and cannot be completed.`));
-    }
-    right.replaceChildren(...lines, ...(wait ? [wait] : []), link);
-    right.classList.toggle("totals-stale", !!data.stale);
+    box.replaceChildren(...nodes);
+    box.classList.toggle("hidden", !nodes.length);
+    box.classList.toggle("tile-stale", !!(ctx.data && ctx.data.stale));
+    renderTileList(p);
+  }
+
+  /** The list behind a "Needs a look" link, under the tiles. */
+  function renderTileList(p) {
+    const kind = Totals.upgradesOpen[p.name];
+    $("tile-lists").replaceChildren(...(kind ? [upgradesTable(Totals.upgrades[p.name], kind)] : []));
+  }
+
+  /** "Library rules: your defaults" or "Custom: region priority" with what the rules do, in the bar above the list. */
+  function renderRulesLine(p) {
+    const mine = [...new Set((p.rule_overrides || []).map(ruleName))];
+    const sum = $("library-rules-summary").textContent;
+    $("totals-rules-line").replaceChildren(...[
+      mine.length ? el("span", { class: "nav-override", text: "Custom", title: "Rules this system overrides" }) : null,
+      mine.length ? el("b", { text: ` ${mine.join(", ")}` }) : el("b", { text: "Your default rules" }),
+      mine.length ? el("span", { class: "muted", text: " (the rest follow your defaults)" }) : null,
+      sum ? el("div", { class: "muted small", text: sum }) : null].filter(Boolean));
   }
 
   // ---------------------------------------------------- 3. Build library
@@ -2642,7 +2804,7 @@
   const rulesCtx = (key) => (key === "*" ? defaultsRules : platformRules);
 
   const RULE_NAMES = { exclude: "Exclusions", latest_only: "Latest version only", best_variant: "Best variant", complete_only: "Complete games only",
-    languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority",
+    languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
     saved_games: "Saves", keep_bios: "BIOS and firmware" };
@@ -2707,8 +2869,10 @@
   // (touch-action: none on the handle only, so the rest of the row still scrolls the list), keyboard pick-up
   // (Space/Enter, arrows, Space/Enter to drop, Escape to cancel), and Top / up / down buttons as a fallback.
   // ``items`` is the FULL order; a filter only hides rows. ``onCommit(order, before)`` runs once per completed move.
-  function sortableList({ items, label, noun = "item", prioCount = 0, prioLabel = "Prioritised", restLabel = "Everything else", onCommit }) {
+  function sortableList({ items, label, noun = "item", prioCount = 0, prioLabel = "Prioritised", restLabel = "Everything else", ties = null, checks = null, maxChecks = Infinity, labels = null, descs = null, onLimit = null, onCommit }) {
     let order = [...items];
+    let on = new Set(checks || []);       // (checks only when ``checks`` is given) the rows that are ticked: their order is the order that counts
+    let tied = new Set(ties || []);       // (ties only when ``ties`` is given) rows that rank the same as the row above them
     const rows = new Map();
     let filter = "";
     let grab = null;            // keyboard pick-up: { name, before }
@@ -2733,13 +2897,19 @@
     const visible = (name) => !rows.get(name).hidden;
     const visibleNames = () => order.filter(visible);
 
+    const labelOf = (n) => (labels && labels[n]) || n;
+
     function buildRow(name) {
       const act = (how) => () => commit(name, how);
       const btn = (cls, text, title, aria, how) => el("button", { type: "button", class: `btn btn-icon ${cls}`, text, title, "aria-label": aria,
         on: { click: act(how) } });
       const row = el("li", { class: "sortable-row", "data-name": name, tabindex: "-1" },
         el("span", { class: "drag-handle", "data-drag-handle": "", "aria-hidden": "true", title: `Drag to reorder ${name}`, text: "⋮⋮" }),
-        el("span", { class: "region-n" }), el("span", { class: "region-name", text: name }),
+        ...(checks ? [el("input", { type: "checkbox", class: "row-check", "aria-label": `Show ${labelOf(name)}`, checked: on.has(name), on: { change: (ev) => toggleCheck(name, ev.target) } })] : []),
+        el("span", { class: "region-n" }),
+        el("span", { class: "region-name", title: descs && descs[name] || null }, labelOf(name), descs && descs[name] ? el("span", { class: "row-desc muted small", text: descs[name] }) : null),
+        ...(ties ? [el("button", { type: "button", class: "btn btn-icon row-tie", text: "=", title: `${name} is as good as the region above it (both count as best)`,
+          "aria-label": `${name} is as good as the region above it`, "aria-pressed": "false", on: { click: () => toggleTie(name) } })] : []),
         btn("row-top", "Top", "Move to top", `Move ${name} to top`, "top"),
         btn("row-up", "▲", "Prefer more", `Move ${name} up`, "up"),
         btn("row-down", "▼", "Prefer less", `Move ${name} down`, "down"));
@@ -2750,9 +2920,18 @@
     function refresh() {
       const vis = visibleNames();
       if (!visible(current) && vis.length) current = vis[0];
+      let tier = 0;
       order.forEach((name, i) => {
         const row = rows.get(name);
-        row.querySelector(".region-n").textContent = String(i + 1);
+        if (i > 0 && !(ties && tied.has(name))) tier++;
+        row.querySelector(".region-n").textContent = checks ? (on.has(name) ? String([...order].filter((x) => on.has(x)).indexOf(name) + 1) : "") : String(ties ? tier + 1 : i + 1);
+        if (checks) row.classList.toggle("prio", on.has(name));
+        if (ties) {
+          const tie = row.querySelector(".row-tie");
+          tie.disabled = i === 0;
+          tie.setAttribute("aria-pressed", String(i > 0 && tied.has(name)));
+          row.classList.toggle("tied", i > 0 && tied.has(name));
+        }
         row.classList.toggle("prio", i < prioCount);
         row.setAttribute("aria-label", `${name}, position ${i + 1} of ${order.length}`);
         const vi = vis.indexOf(name);
@@ -2825,7 +3004,25 @@
       const pos = order.indexOf(name) + 1;
       announce(`${name} ${how} position ${pos} of ${order.length}.`);
       flash(name);
-      onCommit([...order], before);
+      onCommit([...order], before, checks ? [...on] : [...tied]);
+    }
+
+    /** A row's box ticked or cleared (at most ``maxChecks`` ticked). */
+    function toggleCheck(name, box) {
+      if (box.checked && on.size >= maxChecks) { box.checked = false; if (onLimit) onLimit(); return; }
+      if (box.checked) on.add(name); else on.delete(name);
+      refresh();
+      announce(`${labelOf(name)} ${on.has(name) ? "is shown" : "is not shown"}.`);
+      onCommit([...order], [...order], [...on]);
+    }
+
+    /** "Same as above" on or off for one row. */
+    function toggleTie(name) {
+      if (order.indexOf(name) < 1) return;
+      if (tied.has(name)) tied.delete(name); else tied.add(name);
+      refresh();
+      announce(tied.has(name) ? `${name} now ranks the same as the region above it.` : `${name} now ranks after the region above it.`);
+      onCommit([...order], [...order], [...tied]);
     }
 
     /** The up / down / top buttons. */
@@ -3007,7 +3204,7 @@
       filter = input.value.trim().toLowerCase();
       for (const name of order) {
         const row = rows.get(name);
-        const hit = !filter || name.toLowerCase().includes(filter);
+        const hit = !filter || labelOf(name).toLowerCase().includes(filter);
         row.hidden = !hit;
         row.classList.toggle("match", !!filter && hit);
       }
@@ -3030,9 +3227,15 @@
     return {
       root, list, input,
       /** Replace the whole list (also the rollback after a failed save). */
-      setItems(next) {
+      setItems(next, nextTies) {
         cancelGrab(false);
         if (drag) dragEnd(false);
+        if (ties && nextTies) { tied = new Set(nextTies); refresh(); }
+        if (checks && nextTies) {
+          on = new Set(nextTies);
+          for (const [n, row] of rows) row.querySelector(".row-check").checked = on.has(n);
+          refresh();
+        }
         if (sameOrder(next, order)) return;
         if (sameOrder([...next].sort(), [...order].sort())) applyOrder(next);
         else { order = [...next]; build(); applyFilter(); }
@@ -3048,15 +3251,15 @@
     if (regionSave.busy) return;
     const name = Object.keys(regionSave.pending)[0];
     if (!name) return;
-    const order = regionSave.pending[name];
+    const { order, ties } = regionSave.pending[name];
     delete regionSave.pending[name];
     regionSave.busy = true;
     try {
       const ctx = rulesCtx(name);
-      const resp = await ctx.post({ region_priority: order }, name);
-      regionSave.confirmed[name] = [...(resp.regions || order)];
+      const resp = await ctx.post({ region_priority: order, region_ties: ties }, name);
+      regionSave.confirmed[name] = { order: [...(resp.regions || order)], ties: [...((resp.profile || {}).region_ties || ties)] };
       const newer = regionSave.pending[name];
-      if (newer) resp.regions = [...newer];           // a later move is already shown: keep it on screen
+      if (newer) { resp.regions = [...newer.order]; resp.profile = { ...resp.profile, region_ties: [...newer.ties] }; }           // a later move is already shown: keep it on screen
       ctx.adopt(resp, name);
       if (name === state.platform && ctx.overrides) renderRulesSummary(resp);
     } catch (err) {
@@ -3065,8 +3268,9 @@
       const info = rulesCtx(name).info(name);
       const back = regionSave.confirmed[name];
       if (info && back) {
-        info.regions = [...back];
-        if ((name === "*" || name === state.platform) && regionSave.ui && regionSave.uiPlatform === name) regionSave.ui.setItems(back);
+        info.regions = [...back.order];
+        info.profile = { ...info.profile, region_ties: [...back.ties] };
+        if ((name === "*" || name === state.platform) && regionSave.ui && regionSave.uiPlatform === name) regionSave.ui.setItems(back.order, back.ties);
         if (name === state.platform) renderRulesSummary(info);
       }
     } finally {
@@ -3075,12 +3279,15 @@
     }
   }
 
-  function commitRegionOrder(name, order) {
+  const regionState = (info) => ({ order: [...(info.regions || [])], ties: [...((info.profile || {}).region_ties || [])] });
+
+  function commitRegionOrder(name, order, ties) {
     const info = rulesCtx(name).info(name);
     if (!info) return;
-    if (!regionSave.confirmed[name]) regionSave.confirmed[name] = [...(info.regions || [])];
+    if (!regionSave.confirmed[name]) regionSave.confirmed[name] = regionState(info);
     info.regions = [...order];                          // optimistic
-    regionSave.pending[name] = [...order];
+    info.profile = { ...info.profile, region_ties: [...ties] };
+    regionSave.pending[name] = { order: [...order], ties: [...ties] };
     if (name !== "*") renderRulesSummary(info);
     clearTimeout(regionSave.timer);
     regionSave.timer = setTimeout(flushRegionSave, 250);
@@ -3088,18 +3295,19 @@
 
   function regionSection(info) {
     const name = rctx.key();
-    if (!regionSave.pending[name] && !regionSave.busy) regionSave.confirmed[name] = [...(info.regions || [])];
+    if (!regionSave.pending[name] && !regionSave.busy) regionSave.confirmed[name] = regionState(info);
     const oldList = rctx.host().querySelector(".rules-region .sortable-list");
     const keepScroll = oldList ? oldList.scrollTop : 0;
     const ui = sortableList({
       items: info.regions || [], label: "Region priority, best region first", noun: "region",
-      onCommit: (order) => commitRegionOrder(name, order),
+      ties: (info.profile || {}).region_ties || [],
+      onCommit: (order, before, ties) => commitRegionOrder(name, order, ties),
     });
     regionSave.ui = ui;
     regionSave.uiPlatform = name;
     const section = el("div", { class: "rules-group rules-region", id: rctx.overrides ? "rules-regions" : null },
       el("div", { class: "rules-head", text: "Region priority" }),
-      el("div", { class: "sub note", text: `${(catalogOf(info).find((e) => e.id === "region_priority") || {}).description || "Best region first."} The whole list counts, in this order; regions you have not moved stay in alphabetical order after the ones you placed.` }),
+      el("div", { class: "sub note", text: `${(catalogOf(info).find((e) => e.id === "region_priority") || {}).description || "Best region first."} The whole list counts, in this order; regions you have not moved stay in alphabetical order after the ones you placed. Press = on a region to make it as good as the one above: with Europe and USA both first, a version from either is a best match.` }),
       ui.root);
     requestAnimationFrame(() => { ui.list.scrollTop = keepScroll; });
     return section;
@@ -3117,7 +3325,12 @@
     if (excl.length) bits.push(`${on} of ${excl.length} exclusions`);
     if (avail.languages) bits.push(prof.languages.length ? prof.languages.map((c) => langName(info, c)).join(", ") : "all languages");
     if (info.ranking_short) bits.push(info.ranking_short);
-    else if (avail.region_priority && (info.regions || []).length) bits.push(`${info.regions.slice(0, 2).join(" > ")} first`);
+    else if (avail.region_priority && (info.regions || []).length) {
+      const ties = new Set((prof.region_ties || []));
+      const top = [info.regions[0]];
+      for (const r of info.regions.slice(1)) { if (ties.has(r)) top.push(r); else break; }
+      bits.push(top.length > 1 ? `${top.join(" = ")} first` : `${info.regions.slice(0, 2).join(" > ")} first`);
+    }
     if (flags.length && avail.keep_flags !== false) {
       const off = flags.filter((f) => !prof.keep_flags.includes(f.id)).map((f) => plainLabel(f).toLowerCase());
       if (off.length) bits.push(`no ${off.join(", ")}`);
@@ -3132,6 +3345,8 @@
     if (rated && prof.rank_scope === "owned" && prof.top_n) bits.push("ranked among your games");
     if (prof.saved_games && prof.saved_games !== "keep") bits.push(prof.saved_games === "archive" ? "saves archived with their games" : "saves left alone");
     $("library-rules-summary").textContent = bits.join(" \u00B7 ");
+    const p = currentPlatform();
+    if (p && inSystem()) renderRulesLine(p);
   }
 
   // ---- What happens to the saves of a game a rule replaces or archives (Amendment 31): one group for the Library rules and
@@ -3211,7 +3426,7 @@
     if (!rctx.overrides) return content;
     const on = fields.some((f) => info.inherit.overridden.includes(f));
     if (on) unitStats.over += 1;
-    const name = label || fields.map(ruleName).join(", ");
+    const name = label || [...new Set(fields.map(ruleName))].join(", ");
     const set = (value) => rctx.post({ override: { fields, on: value } }).then((r) => { rctx.adopt(r); rctx.rerender(); })
       .catch((err) => { toast(`Could not change the override: ${err.message}`, "error"); rctx.rerender(); });
     const body = el("div", { class: "ov-body" }, content);
@@ -3283,7 +3498,7 @@
         info.ranking ? el("div", { class: "sub ranking", id: "rules-ranking", text: info.ranking }) : null));
     }
     if (avail.languages && cat.some((e) => e.id === "languages")) groups.push(unit(["languages"], languageSection(info)));
-    if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority"], regionSection(info)));
+    if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority", "region_ties"], regionSection(info)));
     if (ratingEntries(info).length) groups.push(ratingsSection(info));
     if (prof.saved_games !== undefined) groups.push(unit(["saved_games"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set"), "Saves"));
     const drawn = groups.filter(Boolean);
@@ -3351,10 +3566,10 @@
     })()));
     return el("div", { class: "rules-group", id: rctx.overrides ? "rules-ratings" : null },
       el("div", { class: "rules-head", text: "Ratings" }),
-      el("div", { class: "sub note", id: rctx.overrides ? "ratings-credit" : null }),
-      el("div", { class: "ratings-status", id: rctx.overrides ? "ratings-status" : null, role: "status", "aria-live": "polite" }),
+      rctx.overrides ? el("div", { class: "sub note", id: "ratings-credit" }) : null,
+      rctx.overrides ? el("div", { class: "ratings-status", id: "ratings-status", role: "status", "aria-live": "polite" }) : null,
       el("div", { class: "rating-rows" }, rows.filter(Boolean)),
-      el("div", { class: "sub", id: rctx.overrides ? "ratings-hint" : null }),
+      rctx.overrides ? el("div", { class: "sub", id: "ratings-hint" }) : null,
       el("div", { class: "notice notice-warn ratings-note", id: rctx.overrides ? "ratings-note" : null,
         text: "Games with no rating are excluded while a rating filter is set (tick Keep unrated games to keep them)." }));
   }
@@ -3490,7 +3705,7 @@
 
   /** No preview (yet, or it belongs to another system): the empty prompt. */
   function resetLibraryPreview() {
-    $("lib-empty").textContent = state.scan ? "Press \"Preview library\" to see what would happen." : "Run a scan first.";
+    $("lib-empty").textContent = state.scan ? "Calculating what the library would look like..." : "Scan the folder to see what the library would look like.";
     $("lib-empty").classList.remove("hidden");
     $("lib-output").classList.add("hidden");
     libTable = null;
@@ -3636,7 +3851,7 @@
     try {
       const info = await post("/api/library/saved", { platform: state.platform, choice: choice || "default", games: [{ dat: s.dat, game: s.game }] });
       adoptProfile(state.platform, info);          // the preview is marked out of date: Recalculate applies it
-      toast(`${s.game}: ${choice ? SAVED_OPTIONS.find((o) => o[0] === choice)[1].toLowerCase() : "back to the default"} - press Recalculate to see what it changes`, "ok", 6000);
+      toast(`${s.game}: ${choice ? SAVED_OPTIONS.find((o) => o[0] === choice)[1].toLowerCase() : "back to the default"} - the list is updating`, "ok", 6000);
     } catch (err) { toast(err.message, "error"); }
   }
 
@@ -3648,7 +3863,7 @@
     try {
       const info = await post("/api/library/override", { platform: state.platform, action, games: [...seen.values()] });
       adoptProfile(state.platform, info);        // the preview is marked out of date: Recalculate applies it
-      toast(action === "clear" ? `${fmt(seen.size)} game(s) back under the rules` : `${fmt(seen.size)} game(s) will always be ${action === "keep" ? "kept" : "excluded"} - press Recalculate to see it`, "ok", 6000);
+      toast(action === "clear" ? `${fmt(seen.size)} game(s) back under the rules` : `${fmt(seen.size)} game(s) will always be ${action === "keep" ? "kept" : "excluded"} - the list is updating`, "ok", 6000);
     } catch (err) { toast(err.message, "error"); }
   }
 
@@ -3767,6 +3982,7 @@
             sort: state.libSort, checksums: state.showChecksums ? true : undefined,
           });
           libPlan = data;
+          renderTotals();
           renderLibraryCards(data);
           renderSavesCard();
           const box = $("lib-warnings");
@@ -4433,7 +4649,99 @@
 
   // ------------------------------------------------------------------ settings for every system
   const Settings = {
+    ratingsTimer: 0,
+
+    /** The Ratings panel: what LaunchBox and the user's IGDB key have given; polled while a download runs. */
+    async loadRatings() {
+      let r;
+      try { r = await get("/api/ratings"); } catch (err) { return; }
+      const lb = $("set-ratings-lb"), ig = r.igdb || {};
+      const lbText = r.status === "absent" ? "LaunchBox ratings: not downloaded yet."
+        : r.status === "updating" ? "LaunchBox ratings: downloading..."
+          : `LaunchBox ratings: data of ${r.installed || "?"}${r.games ? `, ${fmt(r.games)} titles` : ""}${r.status === "update_available" ? " - an update is on its way" : ""}.`;
+      const note = (r.missing_platforms || []).length ? ` It lacks ${r.missing_platforms.join(", ")}: it is downloaded again.` : "";
+      lb.textContent = lbText + note + (r.error ? ` ${r.error}` : "");
+      const idBox = $("igdb-id");
+      if (document.activeElement !== idBox && !idBox.value) idBox.value = ig.client_id || "";
+      if (ig.has_secret && !$("igdb-secret").value) $("igdb-secret").placeholder = "Client secret (kept: type a new one to change it)";
+      const busy = ig.updating || r.status === "updating";
+      $("igdb-status").textContent = ig.error ? `IGDB: ${ig.error}`
+        : ig.updating ? "IGDB: downloading the ratings of every system..."
+          : ig.installed ? `IGDB ratings: ${fmt(ig.games)} titles, made ${String(ig.built_at || "").slice(0, 10)}.`
+            : ig.configured ? "IGDB: key saved; the ratings are not downloaded yet." : "No IGDB key.";
+      $("igdb-remove").disabled = !ig.configured;
+      clearTimeout(this.ratingsTimer);
+      if (busy && $("view-settings") && !$("view-settings").classList.contains("hidden")) {
+        this.ratingsTimer = setTimeout(() => this.loadRatings(), 2500);
+      }
+    },
+
+    async saveIgdb(remove = false) {
+      const body = remove ? { client_id: "", client_secret: "" } : { client_id: $("igdb-id").value.trim(), client_secret: $("igdb-secret").value.trim() };
+      try {
+        await post("/api/ratings/igdb", body);
+        if (remove) { $("igdb-id").value = ""; $("igdb-secret").value = ""; $("igdb-secret").placeholder = "Client secret"; }
+        else $("igdb-secret").value = "";
+        toast(remove ? "The IGDB key is removed" : "The IGDB key is saved; the ratings are being downloaded", "ok");
+        Updates.load();
+      } catch (err) { toast(err.message, "error"); }
+      this.loadRatings();
+    },
+
+    async testIgdb() {
+      $("igdb-status").textContent = "Testing the key...";
+      try {
+        const r = await post("/api/ratings/igdb/test", { client_id: $("igdb-id").value.trim(), client_secret: $("igdb-secret").value.trim() });
+        toast(r.message, r.ok ? "ok" : "error", 6000);
+        $("igdb-status").textContent = r.message;
+      } catch (err) { toast(err.message, "error"); this.loadRatings(); }
+    },
+
+    tiles: { timer: 0, ui: null, info: null },
+
+    /** The Tiles panel: one ticked, orderable list of every tile; each change is saved after a short pause. */
+    async loadTiles() {
+      let info;
+      try { info = await get("/api/settings/tiles"); } catch (err) { $("set-tiles-list").textContent = `The tiles are not available: ${err.message}`; return; }
+      this.tiles.info = info;
+      const labels = Object.fromEntries(info.catalog.map((t) => [t.id, t.label]));
+      const descs = Object.fromEntries(info.catalog.map((t) => [t.id, t.text]));
+      const ui = sortableList({ items: info.order, label: "Tiles of the system pages", noun: "tile", checks: info.shown, maxChecks: info.max, labels, descs,
+        onLimit: () => toast(`At most ${info.max} tiles: clear one first`, "info"),
+        onCommit: (order, _before, on) => this.saveTiles(order, on) });
+      ui.root.querySelector(".sortable-bar").classList.add("hidden");
+      ui.root.querySelector(".sortable-hint").textContent = "Tick a tile to show it. Drag the handle (or use the arrows) to put the ticked ones in order.";
+      this.tiles.ui = ui;
+      $("set-tiles-list").replaceChildren(ui.root);
+      this.tilesNote(info.shown.length, info.max);
+    },
+
+    tilesNote(n, max) { $("set-tiles-note").textContent = `${n} of ${max} tiles shown`; },
+
+    saveTiles(order, on) {
+      const shown = order.filter((id) => on.includes(id));
+      this.tilesNote(shown.length, this.tiles.info.max);
+      state.tiles = shown;                          // (the pages change at once; the save follows)
+      Totals.shown[""] = "";
+      renderTotals();
+      clearTimeout(this.tiles.timer);
+      this.tiles.timer = setTimeout(async () => {
+        try { const out = await post("/api/settings/tiles", { shown }); state.tiles = out.shown; loadInsights(); } catch (err) { toast(err.message, "error"); this.loadTiles(); }
+      }, 250);
+    },
+
+    async resetTiles() {
+      try {
+        const out = await post("/api/settings/tiles", { reset: true });
+        state.tiles = out.shown;
+        Totals.shown[""] = "";
+        await this.loadTiles();
+      } catch (err) { toast(err.message, "error"); }
+    },
+
     show() {
+      this.loadRatings();
+      this.loadTiles();
       this.render();
       get("/api/library/defaults").then((d) => { state.libDefaults = d; renderDefaultsRules(); })
         .catch((err) => $("set-library-rules").replaceChildren(el("div", { class: "muted", text: `Your defaults are not available: ${err.message}` })));
@@ -4463,6 +4771,9 @@
     },
 
     bind() {
+      $("igdb-save").addEventListener("click", () => this.saveIgdb());
+      $("igdb-test").addEventListener("click", () => this.testIgdb());
+      $("igdb-remove").addEventListener("click", () => this.saveIgdb(true));
       $("set-archive-dir").addEventListener("change", () => this.save($("set-archive-dir").value.trim()));
       $("set-archive-browse").addEventListener("click", () => FolderBrowser.open($("set-archive-dir"), "Choose the archive folder"));
     },
@@ -4521,6 +4832,9 @@
     $("lib-vanish-box").addEventListener("toggle", () => { if ($("lib-vanish-box").open && !vanishTable && libPlan) showVanishTable(); });
     RetroArch.bind();
     $("lib-apply-btn").addEventListener("click", applyLibrary);
+    $("set-tiles-reset").addEventListener("click", () => Settings.resetTiles());
+    $("rules-toggle").addEventListener("click", () => { const box = $("library-rules-box"); box.open = !box.open; });
+    $("library-rules-box").addEventListener("toggle", () => $("rules-toggle").setAttribute("aria-expanded", $("library-rules-box").open ? "true" : "false"));
     $("lib-undo-btn").addEventListener("click", undoLibrary);
     for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
     $("lib-export-dest").addEventListener("change", exportSettingsChanged);
@@ -4582,7 +4896,7 @@
     applyDensity();
   }
 
-  /** The single folder field of the Overview tab: edits are saved right away (no Save button to forget). */
+  /** The single folder field of the library page: edits are saved right away (no Save button to forget). */
   function bindFolderField() {
     const input = $("folder-input");
     input.addEventListener("input", syncFolder);

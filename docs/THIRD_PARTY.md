@@ -102,8 +102,8 @@ liblzma, ...); see the licence files inside `usr/python/lib/python3.*/` of the i
 
 ## Data used at run time (not shipped)
 
-* **LaunchBox Games Database - community ratings.** Only when a rating filter is enabled (or **Download ratings** is
-  pressed) the app downloads `https://gamesdb.launchbox-app.com/Metadata.zip` (the database's public daily export, about
+* **LaunchBox Games Database - community ratings.** At startup (when the local copy is over a week old and the site's is newer)
+  the app downloads `https://gamesdb.launchbox-app.com/Metadata.zip` (the database's public daily export, about
   108 MB), keeps the platform, title, alternate names, `CommunityRating`, `CommunityRatingCount`, `DatabaseID` and release
   year of the games of the systems this app supports in a small local index (`ratings/ratings.sqlite`) and deletes the
   zip. No images, descriptions or other fields are kept. The ratings are shown as **"Ratings: LaunchBox Games Database
@@ -111,3 +111,9 @@ liblzma, ...); see the licence files inside `usr/python/lib/python3.*/` of the i
   Games Database pages and the LaunchBox help / forum pages we could read state no licence or terms of use for this
   download; this document does not interpret that or give legal advice - read the site yourself before redistributing
   anything derived from it. The index is a local cache, never committed or redistributed by this project.
+* **IGDB (optional, the user's own key).** Nothing of IGDB ships with the app and no request is made without a key. A user who
+  pastes their own Twitch application's Client ID and secret (Settings > Ratings) has the app read, with that key, the name,
+  alternative names, `total_rating`, `total_rating_count` and first release date of the rated games of the supported systems into a
+  local index (`ratings/igdb.sqlite`); per title the rating with more votes (LaunchBox or IGDB) is used. The use of that data is
+  between the user and IGDB / Twitch under the terms the user accepted for their key; this project has not reviewed those terms for
+  bulk reading and gives no legal advice. The index is a local cache, never committed or redistributed by this project.

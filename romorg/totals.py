@@ -121,6 +121,8 @@ class Target:
     cutoff: Optional[tuple] = None              # rank key of the N-th best game (rating filter, rank_scope "dat")
     rating: Optional[dict] = None               # library.Selection.rating of the target (None = no rating filter)
     coverage: Optional[dict] = None             # library.rating_coverage of the games the other rules keep (None = no ratings installed)
+    rated_all: Optional[dict] = None            # {games, rated} of EVERY title of the DAT, whatever the rules say (None = no ratings / not rated)
+    rated_target: Optional[dict] = None         # {games, rated} of the titles that stay after ALL the rules, the rating filter too
 
     @property
     def count(self) -> int:
@@ -134,6 +136,7 @@ class UserPart:
     computed_at: float
     seconds: float = 0.0
     items: int = 0
+    problems: dict[tuple, tuple[str, list[str], str]] = field(default_factory=dict)   # game key -> (state, the names you own, why), of the games not kept
 
 
 def _kept(items: list[Item], sel: library.Selection) -> dict[tuple, set[str]]:
@@ -148,6 +151,13 @@ def _kept(items: list[Item], sel: library.Selection) -> dict[tuple, set[str]]:
             continue
         out.setdefault(library.game_key(it), set()).add(library._rom_name(it))
     return out
+
+
+def _rated(items: list[Item], sel: library.Selection, platform: Any, profile: library.LibraryProfile,
+           lookup: Callable[[str], Optional[tuple[float, int]]]) -> Optional[dict[str, int]]:
+    """``{games, rated}``: the titles ``sel`` keeps and how many of them have a usable rating (None: this system has no ratings)."""
+    cov = library.rating_coverage(items, sel, platform, profile, lookup)
+    return {"games": cov["games"], "rated": cov["rated"]} if cov["games"] else None
 
 
 def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryProfile,
@@ -174,6 +184,14 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
         sel = library.select(items, profile, platform)
         if lookup is not None:
             coverage = library.rating_coverage(items, sel, platform, profile, lookup)
+    rated_all = rated_target = None
+    if lookup is not None:
+        everything = dataclasses.replace(
+            library.LibraryProfile(exclude=frozenset(), latest_only=False, best_variant=False, complete_only=False, languages=(),
+                                   keep_flags=frozenset(tags.KEEP_FLAGS), one_per_game=False, borrow_other_editions=False,
+                                   keep_other_language=True), min_votes=profile.min_votes)
+        rated_all = _rated(items, library.select(items, everything, platform), platform, profile, lookup)
+        rated_target = _rated(items, sel, platform, profile, lookup)
     kept = _kept(items, sel)
     by_dat: dict[str, int] = {}
     for key in kept:
@@ -182,7 +200,7 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage)
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target)
 
 
 def compute_user(result: Any, platform: Any, profile: library.LibraryProfile,
@@ -196,6 +214,7 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     sel = library.select(items, profile, platform, ratings=ratings, lang_games=lang_games)
     kept = _kept(items, sel)
     games: dict[tuple, tuple[str, frozenset]] = {}
+    problems: dict[tuple, tuple[str, list[str], str]] = {}
     for it in items:
         key = library.game_key(it)
         if key in kept:
@@ -203,17 +222,26 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
         d = sel.decisions.get(it.key)
         state = INCOMPLETE_OWNED if d is not None and (d.action == INCOMPLETE or (d.action == KEEP and d.missing)) \
             else EXCLUDED_OWNED
+        why = ""
+        if d is not None:
+            why = d.reason or ", ".join(library._RULE_SHORT.get(c, c) for c in d.codes)
+        old = problems.get(key)
+        if old is None or (state == INCOMPLETE_OWNED and old[0] != INCOMPLETE_OWNED):
+            problems[key] = (state, [library._rom_name(it)], why)
+        elif old[0] == state:
+            problems[key] = (state, sorted({*old[1], library._rom_name(it)}), old[2] or why)
         if games.get(key, ("", frozenset()))[0] != INCOMPLETE_OWNED:
             games[key] = (state, frozenset())
     for key, names in kept.items():
         games[key] = (HAVE, frozenset(names))
-    return UserPart(games, time.time(), time.time() - t0, len(items))
+    return UserPart(games, time.time(), time.time() - t0, len(items), problems)
 
 
 def combine(target: Target, user: Optional[UserPart]) -> dict[str, Any]:
     """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part."""
     out: dict[str, Any] = {"target_games": target.count, "target_incomplete": target.incomplete, "by_dat": {d: {"target": n} for d, n in target.by_dat.items()},
-                           "rating": target.rating, "rating_coverage": target.coverage}
+                           "rating": target.rating, "rating_coverage": target.coverage,
+                           "rated_all": target.rated_all, "rated_target": target.rated_target}
     if user is None:
         return out
     have = outside = incomplete = excluded = not_preferred = 0
@@ -264,6 +292,7 @@ class TotalsManager:
         self._want: dict[str, _Want] = {}
         self._targets: dict[str, tuple[tuple, Any]] = {}      # platform -> (key, Target | Exception)
         self._users: dict[str, tuple[tuple, Any]] = {}
+        self._insights: dict[str, tuple[tuple, dict[str, Any]]] = {}      # platform -> (key, {tile: numbers})
         self._busy: Optional[tuple] = None
         self._thread: Optional[threading.Thread] = None
         self.discarded = 0           # results dropped because their key was superseded while they ran
@@ -293,6 +322,145 @@ class TotalsManager:
             self._cv.notify_all()
             return self._answer(platform, sig, want)
 
+    def upgrades(self, name: str) -> Optional[list[tuple[tuple, list[str], list[str]]]]:
+        """``(game key, the names you own, the names the rules prefer)`` of each owned game that is not the preferred version
+        (the ``not_preferred`` of the answer); None while the numbers it needs are not ready."""
+        with self._cv:
+            want, t, u = self._want.get(name), self._targets.get(name), self._users.get(name)
+            if want is None or want.ukey is None or t is None or u is None or t[0] != want.tkey or u[0] != want.ukey \
+                    or isinstance(t[1], Exception) or isinstance(u[1], Exception):
+                return None
+            target, user = t[1], u[1]
+            rows = []
+            for key, (state, names) in user.games.items():
+                if state == HAVE and key in target.games and not (names & target.games[key]):
+                    rows.append((key, sorted(names), sorted(target.games[key])))
+            return rows
+
+    def insights(self, platform: Any, wants: list[str], lookup: Optional[Callable[[str], Any]]) -> Optional[dict[str, Any]]:
+        """The numbers of the page tiles that need a calculation of their own (``space``, ``best_missing``, ``avg_rating``, ``regions``),
+        from the cached target and, once scanned, your games. None while those are not ready. Each is cached until the rules, the
+        databases, the ratings or the scan change."""
+        name = platform.name
+        with self._cv:
+            want, t, u = self._want.get(name), self._targets.get(name), self._users.get(name)
+            if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
+                return None
+            if want.ukey is not None and (u is None or u[0] != want.ukey or isinstance(u[1], Exception)):
+                return None
+            target, user = t[1], (u[1] if want.ukey is not None else None)
+            key = (want.tkey, want.ukey, lookup is not None)
+            cached = self._insights.get(name)
+            if cached is None or cached[0] != key:
+                cached = self._insights[name] = (key, {})
+            done = cached[1]
+        todo = [w for w in wants if w not in done]
+        if todo:
+            done.update(self._compute_insights(platform, todo, target, user, lookup))
+        return {w: done[w] for w in wants if w in done}
+
+    def _compute_insights(self, platform: Any, wants: list[str], target: Target, user: Optional[UserPart],
+                          lookup: Optional[Callable[[str], Any]]) -> dict[str, Any]:
+        roms: dict[tuple[str, str], Any] = {}
+        for it in target_items(platform, self._load_dats(platform)):
+            roms.setdefault((it.dat, library._rom_name(it)), it.rom)
+        owned: dict[tuple, frozenset] = {}
+        if user is not None:
+            owned = {k: names for k, (st, names) in user.games.items() if st == HAVE and k in target.games}
+
+        def rom_of(key: tuple, names: Any) -> Any:
+            for n in sorted(names):
+                r = roms.get((key[0], n))
+                if r is not None:
+                    return r
+            return None
+
+        def size(key: tuple, names: Any) -> int:
+            r = rom_of(key, names)
+            return int(r.size or 0) if r is not None else 0
+
+        def rating(key: tuple, names: Any) -> Optional[tuple[float, int, str]]:
+            r = rom_of(key, names)
+            if r is None or lookup is None:
+                return None
+            title = library.rom_title(r, key[0])
+            hit = lookup(title)
+            return (hit[0], hit[1], title) if hit else None
+
+        out: dict[str, Any] = {}
+        if "space" in wants:
+            out["space"] = {"target": sum(size(k, n) for k, n in target.games.items()),
+                            "have": sum(size(k, n) for k, n in owned.items()) if user is not None else None}
+        if "best_missing" in wants:
+            # the best EVIDENCED rating: a 10 from five voters does not beat a 9.2 from four hundred (the rating is pulled towards the
+            # library's average by a weight of 25 votes, the way film sites rank their lists)
+            best = None
+            if lookup is not None:
+                hits = [(k, h) for k, n in target.games.items() if (h := rating(k, n))]
+                mean = sum(h[0] for _, h in hits) / len(hits) if hits else 0.0
+                for k, h in hits:
+                    if k in owned:
+                        continue
+                    score = (h[0] * h[1] + mean * 25.0) / (h[1] + 25.0)
+                    if best is None or (score, h[1]) > best[0]:
+                        best = ((score, h[1]), h)
+            out["best_missing"] = {"title": best[1][2], "rating": best[1][0], "votes": best[1][1]} if best else None
+        if "avg_rating" in wants:
+            mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None      # noqa: E731
+            every = [h[0] for k, n in target.games.items() if (h := rating(k, n))] if lookup is not None else []
+            mine = [h[0] for k, n in owned.items() if (h := rating(k, n))] if lookup is not None and user is not None else []
+            out["avg_rating"] = {"target": mean(every), "owned": mean(mine), "rated_owned": len(mine)}
+        if "regions" in wants:
+            counts: dict[str, int] = {}
+            for k, names in owned.items():
+                r = rom_of(k, names)
+                regs = tags.of_rom(r).regions if r is not None else ()
+                first = regs[0] if regs else "Unknown"
+                counts[first] = counts.get(first, 0) + 1
+            total = sum(counts.values())
+            out["regions"] = [{"region": r, "games": n, "pct": round(100.0 * n / total, 1)}
+                              for r, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]] if total else []
+        return out
+
+    def problems(self, name: str, state: str) -> Optional[list[dict[str, Any]]]:
+        """The owned games that are not kept (``state``: EXCLUDED_OWNED or INCOMPLETE_OWNED): title, the names you own, and why."""
+        with self._cv:
+            want, u = self._want.get(name), self._users.get(name)
+            if want is None or want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
+                return None
+            rows = [{"title": names[0], "dat": key[0], "have": names, "why": why}
+                    for key, (st, names, why) in u[1].problems.items() if st == state]
+        rows.sort(key=lambda r: (r["title"].lower(), r["dat"]))
+        return rows
+
+    def describe_upgrades(self, platform: Any, rows: list[tuple[tuple, list[str], list[str]]]) -> list[dict[str, Any]]:
+        """The rows of :meth:`upgrades` with the DAT's name and, for every preferred version, its files with size and checksums
+        (a disc: one file per track; a catalogue without checksums, like Switch and Wii U: none)."""
+        from . import discsys
+
+        wanted = {n for _, _, better in rows for n in better}
+        files: dict[tuple[str, str], list[Any]] = {}
+        reps: dict[tuple[str, str], Any] = {}
+        dats = list(self._load_dats(platform))
+        for it in target_items(platform, dats):
+            n = library._rom_name(it)
+            if n in wanted:
+                reps.setdefault((it.dat, n), it.rom)
+        for dat in dats:
+            if getattr(dat, "name", "") in tags.REDUMP_DAT_NAMES:
+                for g in discsys.get_index(dat).games.values():
+                    if g.name in wanted:
+                        files[(dat.name, g.name)] = list(g.tracks)
+        out = []
+        for key, have, better in rows:
+            found = [(n, files.get((key[0], n)) or [reps[(key[0], n)]]) for n in better if (key[0], n) in reps]
+            title = library.rom_title(reps[(key[0], found[0][0])], key[0]) if found else have[0]
+            out.append({"title": title, "dat": key[0], "have": have,
+                        "better": [{"name": n, "files": [{"name": r.name, "size": r.size, "crc": r.crc, "md5": r.md5, "sha1": r.sha1}
+                                                         for r in roms]} for n, roms in found]})
+        out.sort(key=lambda r: (r["title"].lower(), r["dat"]))
+        return out
+
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until nothing is queued or running (tests)."""
         end = time.time() + timeout
@@ -306,7 +474,7 @@ class TotalsManager:
 
     def forget(self, name: str = "") -> None:
         with self._cv:
-            for table in (self._want, self._targets, self._users):
+            for table in (self._want, self._targets, self._users, self._insights):
                 if name:
                     table.pop(name, None)
                 else:
@@ -324,6 +492,7 @@ class TotalsManager:
                        target_incomplete=int(persisted.get("target_incomplete", 0)), computed_at=persisted.get("computed_at"),
                        by_dat={d: {"target": n} for d, n in (persisted.get("by_dat") or {}).items()},
                        rating=None, rating_coverage=persisted.get("rating_coverage"),
+                       rated_all=persisted.get("rated_all"), rated_target=persisted.get("rated_target"),
                        have_games=None, missing_games=None, percent=None, not_preferred=None,
                        owned_but_excluded=None, owned_incomplete=None, owned_games=None)
             return out
@@ -428,6 +597,9 @@ class TotalsManager:
                                   "computed_at": value.computed_at}
                         if value.coverage is not None:
                             record["rating_coverage"] = value.coverage
+                        for field in ("rated_all", "rated_target"):
+                            if getattr(value, field) is not None:
+                                record[field] = getattr(value, field)
                 else:
                     self.discarded += 1
                 self._busy = None

@@ -1195,11 +1195,26 @@ def region_order(priority: Iterable[str] = DEFAULT_REGION_PRIORITY, present: Opt
     return first + sorted(r for r in pool if r not in first)
 
 
-def region_rank(regions: Iterable[str], order: list[str]) -> int:
-    """Best (lowest) position of any of ``regions`` in ``order``; unknown regions rank after all."""
-    pos = {r: i for i, r in enumerate(order)}
-    ranks = [pos.get(r, len(order)) for r in regions]
-    return min(ranks) if ranks else len(order)
+def region_tiers(order: list[str], ties: Iterable[str] = ()) -> dict[str, int]:
+    """``{region: tier}`` of an ordered region list: each region is one tier after the one above it, unless it is in ``ties``
+    ("as good as the region above"), which gives it the same tier (so Europe and USA tied are both tier 0)."""
+    tied = {canon_region(t) for t in ties}
+    out: dict[str, int] = {}
+    tier = -1
+    for i, r in enumerate(order):
+        if i == 0 or r not in tied:
+            tier += 1
+        out[r] = tier
+    return out
+
+
+def region_rank(regions: Iterable[str], order: Any, ties: Iterable[str] = ()) -> int:
+    """Best (lowest) tier of any of ``regions``; unknown regions rank after all. ``order`` is an ordered list (with ``ties``,
+    see :func:`region_tiers`) or the ``{region: tier}`` that :func:`region_tiers` returns."""
+    pos = order if isinstance(order, dict) else region_tiers(order, ties)
+    worst = max(pos.values(), default=-1) + 1
+    ranks = [pos.get(r, worst) for r in regions]
+    return min(ranks) if ranks else worst
 
 
 # --------------------------------------------------------------------------- rule tokens (UI catalog)

@@ -457,6 +457,30 @@ class TotalsEndpointTests(unittest.TestCase):
         self.assertEqual((out["scanned"], out["target_games"], out["have_games"], out["missing_games"]), (True, 5, 2, 3))
         self.assertEqual((out["not_preferred"], out["owned_but_excluded"], out["owned_incomplete"]), (1, 1, 1))
         self.assertEqual(out["percent"], 40.0)
+        up = self.call("GET", "/api/library/upgrades?platform=Commodore%20Amiga")
+        self.assertTrue(up["ready"])
+        self.assertEqual(len(up["items"]), out["not_preferred"])                     # the list is the count
+        for kind, field in (("excluded", "owned_but_excluded"), ("incomplete", "owned_incomplete")):
+            lst = self.call("GET", f"/api/library/upgrades?platform=Commodore%20Amiga&kind={kind}")
+            self.assertTrue(lst["ready"])
+            self.assertEqual(len(lst["items"]), out[field])                          # each count has its list
+            self.assertTrue(all(r["have"] and r["title"] for r in lst["items"]))
+        self.assertTrue(self.call("GET", "/api/library/upgrades?platform=Commodore%20Amiga&kind=excluded")["items"][0]["why"])   # and says why
+        ins = {}
+        for _ in range(100):
+            ins = self.call("GET", "/api/library/insights?platform=Commodore%20Amiga&want=space,best_missing,avg_rating,regions")
+            if ins["ready"]:
+                break
+            time.sleep(0.05)
+        self.assertTrue(ins["ready"])
+        self.assertTrue(0 < ins["space"]["have"] <= ins["space"]["target"])                  # what you own against the library the rules describe
+        self.assertIsNone(ins["best_missing"])                                               # (no ratings installed)
+        self.assertEqual(ins["avg_rating"], {"target": None, "owned": None, "rated_owned": 0})
+        self.assertEqual(sum(r["games"] for r in ins["regions"]), out["have_games"])
+        row = up["items"][0]
+        self.assertTrue(row["title"] and row["have"] and row["better"])
+        self.assertTrue(set(row["have"]).isdisjoint(b["name"] for b in row["better"]))
+        self.assertTrue(all(f["crc"] and f["size"] for b in row["better"] for f in b["files"]))          # the checksums of the preferred version
         self.assertEqual(out["profile_signature"], sig)
         # a rule change is picked up (new signature, new numbers) without restarting anything
         self.call("POST", "/api/library/profile", {"platform": "Commodore Amiga", "exclude": [
@@ -513,20 +537,20 @@ class UiContractTests(unittest.TestCase):
         self.js = server.read_static("app.js").decode()
         self.css = server.read_static("style.css").decode()
 
-    def test_overview_has_both_totals_blocks(self) -> None:
-        for needle in ('id="totals-pair"', 'id="totals-all-body"', 'id="totals-lib-body"', "All DAT entries",
-                       "With your library rules", 'aria-live="polite"'):
+    def test_the_library_page_has_the_tiles_the_rules_bar_and_the_live_list(self) -> None:
+        for needle in ('id="sys-tiles"', 'id="tile-lists"', 'id="rules-bar"', 'id="rules-toggle"', 'id="lib-live"', 'id="lib-apply-btn"',
+                       'id="set-tiles-panel"', 'aria-live="polite"'):
             self.assertIn(needle, self.html)
-        for needle in ("/api/library/totals", "function renderTotals", "function loadTotals", "scheduleTotals",
-                       "not the preferred version (an upgrade is available)", "excluded by your rules",
-                       "Scan to see how many you have", "calculating...", "recalculating..."):
-            self.assertIn(needle, self.js)
-        self.assertIn(".totals-pair", self.css)
-        self.assertRegex(self.css, r"@media \(max-width: 760px\) \{ \.totals-pair")
+        self.assertNotIn('id="tab-overview"', self.html)                      # the Overview page is gone
+        for needle in ("/api/library/totals", "/api/library/insights", "/api/settings/tiles", "function renderTotals", "function loadTotals",
+                       "scheduleTotals", "const TILES", "have_rules", "Scan to see how many you have", "calculating...", "recalculating...",
+                       "autoSchedule", "Updating the list..."):
+            self.assertIn(needle, self.js, needle)
+        self.assertIn(".tile-grid", self.css)
 
     def test_previews_recalculate_and_block_apply_while_stale(self) -> None:
         for needle in ("const Previews", "Recalculate preview", "Recalculates with your current rules and folder contents",
-                       "Rules changed since this preview", "Out of date - calculated", "Could not calculate", '"Try again"',
+                       "Rules changed since this preview", "Could not calculate", '"Try again"',
                        "Calculating...", "clockText(it.at)", "staleAll", "Previews.onScan()", "plan_id: plan.plan_id",
                        'b.dataset.stale === "1"', 'b.dataset.busy === "1"', 'role: "status"', '"aria-live": "polite"'):
             self.assertIn(needle, self.js, needle)
