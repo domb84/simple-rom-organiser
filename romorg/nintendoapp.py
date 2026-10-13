@@ -1,6 +1,6 @@
 """Where Dolphin, Cemu and PCSX2 keep their data: the folder the user chose, or the one found on this machine.
 
-One entry per emulator (stored as ``wii`` = Dolphin, ``wiiu`` = Cemu, ``ps2`` = PCSX2 in config.json, as before): ``data`` is its
+One entry per emulator (stored under ``emulators`` in config.json - it was ``nintendo`` before PCSX2 joined Dolphin and Cemu, and an old config is moved over at start - as ``wii`` = Dolphin, ``wiiu`` = Cemu, ``ps2`` = PCSX2, as before): ``data`` is its
 folder - Dolphin's user folder, Cemu's data folder (the one with ``mlc01``), PCSX2's folder (the one with ``inis``) -, empty meaning
 "the one that was found", and ``off`` switches the emulator off (its saves are then not looked at). ``games`` is a leftover of the
 pages that this replaced (the platforms have their own folders now). ``emulators`` is the page for them.

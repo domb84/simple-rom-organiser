@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
-__all__ = ["Index", "build", "final_files", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
+__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
 
 SAME, RENAMED, MOVED, NEW, IGNORED = "same", "renamed", "moved", "new", "ignored"
 EXISTING, INCOMING, COPY, SAVES = "existing", "incoming", "copy", "saves"
+MISSING = "missing"            # (a game the folder lacks: no file, listed where it would be)
+LIBRARY, ARCHIVE = "library", "archive"
 _MOVE = ("move", "rename")
 
 
@@ -34,28 +36,32 @@ class Index:
 
     @staticmethod
     def _node() -> Dict[str, Any]:
-        return {"dirs": set(), "files": [], "n": 0, "bytes": 0, "changed": 0}
+        return {"dirs": set(), "files": [], "n": 0, "bytes": 0, "changed": 0, "missing": 0}
 
-    def add(self, parts: Iterable[str], size: int = 0, state: str = SAME, origin: str = "") -> None:
+    def add(self, parts: Iterable[str], size: int = 0, state: str = SAME, origin: str = "", ref: Any = None) -> None:
         parts = tuple(parts)
         if not parts:
             return
         folder: Tuple[str, ...] = ()
-        changed = state not in (SAME, EXISTING, IGNORED)
+        changed = state not in (SAME, EXISTING, IGNORED, MISSING)
+        real = state != MISSING                                   # (a missing game is listed, but it is no file)
+
+        def count(node: Dict[str, Any]) -> None:
+            node["n"] += real
+            node["missing"] += not real
+            node["bytes"] += size
+            node["changed"] += changed
+
         for i, name in enumerate(parts[:-1]):
             node = self.dirs[folder]
             node["dirs"].add(name)
-            node["n"] += 1
-            node["bytes"] += size
-            node["changed"] += changed
+            count(node)
             folder = parts[:i + 1]
             if folder not in self.dirs:
                 self.dirs[folder] = self._node()
         node = self.dirs[folder]
-        node["n"] += 1
-        node["bytes"] += size
-        node["changed"] += changed
-        node["files"].append((parts[-1], size, state, origin))
+        count(node)
+        node["files"].append((parts[-1], size, state, origin, ref))
 
     def children(self, path: str = "", offset: int = 0, limit: int = 300) -> Optional[Dict[str, Any]]:
         """The folders and files directly in ``path`` (``/`` separated, "" = the top), or None when there is no such folder.
@@ -67,16 +73,16 @@ class Index:
         dirs = []
         for name in sorted(node["dirs"], key=str.casefold):
             sub = self.dirs[key + (name,)]
-            dirs.append({"name": name, "files": sub["n"], "bytes": sub["bytes"], "changed": sub["changed"]})
+            dirs.append({"name": name, "files": sub["n"], "bytes": sub["bytes"], "changed": sub["changed"], "missing": sub["missing"]})
         files = sorted(node["files"], key=lambda f: f[0].casefold())
         page = files[max(0, offset):max(0, offset) + max(1, limit)]
         return {"path": "/".join(key), "dirs": dirs, "total_files": len(files), "offset": max(0, offset),
-                "files": [{"name": n, "size": s, "state": st, "from": o} for n, s, st, o in page],
+                "files": [{"name": n, "size": s, "state": st, "from": o, "ref": r} for n, s, st, o, r in page],
                 "files_below": node["n"], "bytes": node["bytes"], "changed": node["changed"]}
 
     def totals(self) -> Dict[str, int]:
         top = self.dirs[()]
-        return {"files": top["n"], "bytes": top["bytes"], "changed": top["changed"]}
+        return {"files": top["n"], "bytes": top["bytes"], "changed": top["changed"], "missing": top["missing"]}
 
 
 def _size(path: Any) -> int:
@@ -96,11 +102,11 @@ def _files_under(path: Path) -> List[Path]:
     return out
 
 
-def final_files(plan: Any) -> List[Tuple[Path, Optional[Path]]]:
-    """``(file, where the build leaves it)`` for every file of the plan (None: the build removes it - a stale playlist of the
-    app's own). A disc game's op stands for a folder: each of its files is listed."""
-    out: List[Tuple[Path, Optional[Path]]] = []
-    for op in plan.ops:
+def final_files(plan: Any) -> List[Tuple[Path, Optional[Path], int]]:
+    """``(file, where the build leaves it, the index of its op in the plan)`` for every file of the plan (where = None: the build
+    removes it - a stale playlist of the app's own). A disc game's op stands for a folder: each of its files is listed."""
+    out: List[Tuple[Path, Optional[Path], int]] = []
+    for n, op in enumerate(plan.ops):
         status = getattr(op, "status", "")
         if hasattr(op, "moves"):                                   # a disc game (or a loose file of a disc system)
             moves = dict(op.moves) if status in _MOVE else {}
@@ -109,14 +115,14 @@ def final_files(plan: Any) -> List[Tuple[Path, Optional[Path]]]:
             seen = set()
             for f in files:
                 seen.add(f)
-                out.append((Path(f), Path(moves.get(f, f))))
+                out.append((Path(f), Path(moves.get(f, f)), n))
             for s, d in moves.items():                             # (a move of a file the unit does not list)
                 if s not in seen:
-                    out.append((Path(s), Path(d)))
+                    out.append((Path(s), Path(d), n))
         elif status == "delete":
-            out.append((Path(op.src), None))
+            out.append((Path(op.src), None, n))
         else:
-            out.append((Path(op.src), Path(op.dst) if status in _MOVE else Path(op.src)))
+            out.append((Path(op.src), Path(op.dst) if status in _MOVE else Path(op.src), n))
     return out
 
 
@@ -127,15 +133,25 @@ def _rel(path: Path, base: Path) -> Optional[Tuple[str, ...]]:
         return None
 
 
-def build(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
-          playlists: Iterable[Any] = ()) -> Tuple[Index, Index]:
-    """``(the ROM folder after the build, the system's archive folder after it)``.
+class Entry(NamedTuple):
+    """One file of the trees."""
+    side: str                   # LIBRARY | ARCHIVE
+    parts: Tuple[str, ...]      # its path below the side's folder
+    size: int
+    state: str
+    origin: str                 # where it comes from ("" when it does not move)
+    op: int                     # the index of its op in the plan (-1: no op: an archived file, a hidden file, a copy)
+
+
+def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
+            playlists: Iterable[Any] = ()) -> List[Entry]:
+    """Every file of the system's ROM folder and of its part of the archive as a build would leave them.
 
     ``archive_base``: ``<archive>/<system folder name>`` (None: no archive folder is used, so what is set aside stays in the ROM
     folder's ``_excluded`` ...). ``to_archive``: the moves the build makes to the archive (``sortroot.SMove``: the files set aside, the
     copies of saves that belong to several games, what earlier builds left in the reserved folders, an emulator's saves)."""
     root = Path(root)
-    lib, arch = Index(str(root)), Index(str(archive_base) if archive_base is not None else "")
+    out: List[Entry] = []
     leaving: Dict[str, Any] = {}
     extra: List[Any] = []
     for m in to_archive:
@@ -143,8 +159,9 @@ def build(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive
             extra.append(m)                                         # a copy, or something from outside the ROM folder (an emulator's saves)
         else:
             leaving[os.fspath(m.src)] = m
+    moving = set(leaving)
     known = set()
-    for src, final in final_files(plan):
+    for src, final, n in final_files(plan):
         known.add(os.fspath(src))
         if final is None:
             continue
@@ -153,25 +170,25 @@ def build(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive
         if m is not None and archive_base is not None:
             parts = _rel(m.dst, archive_base)
             if parts is not None:
-                arch.add(parts, size, INCOMING, "/".join(_rel(src, root) or (src.name,)))
+                out.append(Entry(ARCHIVE, tuple(parts), size, INCOMING, "/".join(_rel(src, root) or (src.name,)), n))
                 continue
         parts = _rel(final, root)
         if parts is None:
             continue
         was = _rel(src, root) or (src.name,)
         state = SAME if tuple(was) == tuple(parts) else RENAMED if was[:-1] == parts[:-1] else MOVED
-        lib.add(parts, size, state, "/".join(was) if state != SAME else "")
+        out.append(Entry(LIBRARY, tuple(parts), size, state, "/".join(was) if state != SAME else "", n))
     if root.is_dir():                                               # what the scan does not look at (hidden files, the app's own notes
         for f in _files_under(root):                                # aside): it is in the folder all the same, and stays
-            if os.fspath(f) not in known and os.fspath(f) not in leaving:
+            if os.fspath(f) not in known and os.fspath(f) not in moving:
                 parts = _rel(f, root)
                 if parts:
-                    lib.add(parts, _size(f), IGNORED, "")
+                    out.append(Entry(LIBRARY, tuple(parts), _size(f), IGNORED, "", -1))
     for p in playlists:                                             # the playlists the build writes
         if getattr(p, "status", "") == "write":
             parts = _rel(Path(p.path), root)
             if parts is not None:
-                lib.add(parts, 0, NEW, "")
+                out.append(Entry(LIBRARY, tuple(parts), 0, NEW, "", -1))
     if archive_base is not None:
         for m in list(leaving.values()) + extra:                    # what the plan does not list: earlier builds' leftovers, copies, saves
             parts = _rel(m.dst, archive_base)
@@ -182,10 +199,28 @@ def build(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive
                 origin_parts = _rel(f, root)
                 state = COPY if getattr(m, "copy", False) else INCOMING if origin_parts is not None else SAVES
                 size = getattr(m, "size", 0) if getattr(m, "copy", False) else _size(f)
-                arch.add(tuple(parts) + tuple(sub), size, state, "/".join(origin_parts) if origin_parts is not None else os.fspath(f))
+                out.append(Entry(ARCHIVE, tuple(parts) + tuple(sub), size, state,
+                                 "/".join(origin_parts) if origin_parts is not None else os.fspath(f), -1))
         if archive_base.is_dir():
             for f in _files_under(archive_base):                    # what is in the archive already
                 parts = _rel(f, archive_base)
                 if parts:
-                    arch.add(parts, _size(f), EXISTING, "")
-    return lib, arch
+                    out.append(Entry(ARCHIVE, tuple(parts), _size(f), EXISTING, "", -1))
+    return out
+
+
+def index(entries: Iterable[Any], root: str = "", ref: Any = None) -> Index:
+    """An :class:`Index` of ``entries`` (each with ``parts``, ``size``, ``state``, ``origin``); ``ref(entry)`` is kept with each file
+    (what the caller wants back with it: the row it belongs to)."""
+    out = Index(root)
+    for e in entries:
+        out.add(e.parts, e.size, e.state, e.origin, ref(e) if ref is not None else None)
+    return out
+
+
+def build(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
+          playlists: Iterable[Any] = ()) -> Tuple[Index, Index]:
+    """``(the ROM folder after the build, the system's archive folder after it)`` (see :func:`collect`)."""
+    entries = collect(root, plan, archive_base, to_archive, playlists)
+    return (index((e for e in entries if e.side == LIBRARY), str(root)),
+            index((e for e in entries if e.side == ARCHIVE), str(archive_base) if archive_base is not None else ""))

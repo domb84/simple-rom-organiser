@@ -463,7 +463,7 @@
     organiseFilter: "",
     organiseDest: "",
     m3uFilter: "",
-    tab: "library",   // the open tab of the system page
+    tab: "files",     // the open tab of the system page
     tiles: [],         // the tiles of the system pages (Settings > Tiles), from /api/status
     scanFailed: {},    // platform -> error text of its last failed scan
     showChecksums: false,   // Browse: checksum rows expanded for every visible row
@@ -767,7 +767,7 @@
           ? el("div", { class: "table-wrap" }, el("table", {},
             el("thead", {}, el("tr", {}, ["System", "Files", "Last scan"].map((h) => el("th", { text: h })))),
             el("tbody", {}, d.found.map((f) => el("tr", {},
-              el("td", {}, el("a", { href: Route.build(f.slug, "browse", { view: "unmatched" }), text: f.platform })),
+              el("td", {}, el("a", { href: Route.build(f.slug, "files", { show: "unmatched" }), text: f.platform })),
               el("td", { class: "num", text: fmt(f.files) }), el("td", { class: "num muted", text: f.at.replace("T", " ") }))))))
           : el("div", { class: "muted", text: "None yet: scan a system, and its BIOS files are listed here." }));
       } catch (err) { toast(err.message, "error"); }
@@ -809,8 +809,10 @@
   // ------------------------------------------------------------- routing
   // Hash routes (no server support needed; back / forward / reload just work):
   //   #/                                  home: one card per system
-  //   #/system/<slug>/<tab>[?view=...]    <tab> = library | browse | tree   (an old "overview" address opens the library)
-  const TABS = ["library", "browse", "tree"];
+  //   #/system/<slug>/<tab>[?show=...]    <tab> = files | settings   (the addresses of the old tabs open the files)
+  const TABS = ["files", "settings"];
+  // what the lists of the old Browse tab were called -> the "Show" filter of the files
+  const OLD_VIEWS = { games: "", matched: "have", missing: "missing", unmatched: "unmatched", saves: "saves" };
   const slugOf = (p) => p.slug || String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const Route = {
     /** "#/system/snes/browse?view=missing&have=0" -> {view: "system", slug, tab, params}; anything else -> home. */
@@ -819,7 +821,7 @@
       const [path, query = ""] = text.split("?");
       const parts = path.split("/").filter(Boolean);
       if (parts[0] === "system" && parts[1]) {
-        const tab = TABS.includes(parts[2]) ? parts[2] : "library";
+        const tab = TABS.includes(parts[2]) ? parts[2] : "files";
         return { view: "system", slug: decodeURIComponent(parts[1]), tab, params: Object.fromEntries(new URLSearchParams(query)) };
       }
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
@@ -827,13 +829,13 @@
       if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
       if (parts[0] === "databases") return { view: "databases", slug: "", tab: "", params: {} };
       if (parts[0] === "bios") return { view: "bios", slug: "", tab: "", params: {} };
-      if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "library", params: {} };
-      if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "library", params: {} };
-      if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "library", params: {} };
-      if (parts[0] === "wiiu") return { view: "system", slug: "nintendo-wii-u", tab: "library", params: {} };
+      if (parts[0] === "switch") return { view: "system", slug: "nintendo-switch", tab: "files", params: {} };
+      if (parts[0] === "ps2") return { view: "system", slug: "sony-playstation-2", tab: "files", params: {} };
+      if (parts[0] === "wii") return { view: "system", slug: "nintendo-wii", tab: "files", params: {} };
+      if (parts[0] === "wiiu") return { view: "system", slug: "nintendo-wii-u", tab: "files", params: {} };
       return { view: "home", slug: "", tab: "", params: {} };
     },
-    build(slug, tab = "library", params = {}) {
+    build(slug, tab = "files", params = {}) {
       const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
       return `#/system/${encodeURIComponent(slug)}/${tab}${q ? `?${q}` : ""}`;
     },
@@ -841,14 +843,6 @@
   const inSystem = () => !!state.route && state.route.view === "system";
   const platformBySlug = (slug) => state.platforms.find((p) => slugOf(p) === slug) || null;
   const goto = (hash) => { if (location.hash === hash) applyRoute(); else location.hash = hash; };
-  /** Keep the address in step with the Browse view (no new history entry, so Back still leaves the page). */
-  function syncBrowseHash() {
-    const p = currentPlatform();
-    if (!p || !inSystem() || state.tab !== "browse") return;
-    const params = { view: activeTab || "", have: state.gamesHave, dat: state.resultDat };
-    history.replaceState(null, "", Route.build(slugOf(p), "browse", params));
-    state.route = Route.parse(location.hash);
-  }
 
   async function loadPlatforms() {
     try {
@@ -910,7 +904,7 @@
       saves ? `${nPlural(saves.files, "save or save state", "saves and save states")} in RetroArch` : "",
       mine.length ? `Its own library rules: ${mine.join(", ")}` : "",
       ].filter(Boolean).join("\n");
-    return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "library" : "library"),
+    return el("a", { class: "nav-item", href: Route.build(slugOf(p), state.route && state.route.view === "system" ? state.tab || "files" : "files"),
       "data-platform": p.name, "data-kind": kind, title: tip,
       "aria-current": inSystem() && state.platform === p.name ? "true" : null },
       el("span", { class: `dot ${kind}` }),
@@ -1161,15 +1155,13 @@
     state.tab = tab;
     renderTabs();
 
-    if (tab === "library") {
+    if (tab === "files") {
       loadTotals();
       renderLibraryGate();
-      if (statsStale) refreshLibraryStats();
       Previews.resume("lib");
-    } else if (tab === "browse") {
-      renderBrowse();
-    } else if (tab === "tree") {
-      Tree.show();
+      Files.show();
+    } else if (statsStale) {
+      refreshLibraryStats();              // (the numbers next to the rules)
     }
   }
 
@@ -1178,7 +1170,7 @@
     state.route = Route.parse(location.hash);
     const r = state.route;
     if (r.view === "home" && state.platforms.length && wideLayout()) {     // a wide window always shows a system
-      history.replaceState(null, "", Route.build(slugOf(currentPlatform() || state.platforms[0]), "library"));
+      history.replaceState(null, "", Route.build(slugOf(currentPlatform() || state.platforms[0]), "files"));
       state.route = Route.parse(location.hash);
       return applyRoute();
     }
@@ -1251,7 +1243,7 @@
     document.title = `${p.name} - Simple ROM Organiser`;
     if (p.name !== state.platform) selectPlatform(p.name);
     else if (state.rendered !== p.name || state.viewWas !== "system") { renderPlatform(); applyScan(); }
-    if (r.tab === "browse") applyBrowseParams(r.params);
+    Files.applyParams(r.params);
     state.viewWas = "system";
     renderSystemHead();
     showTab(r.tab);
@@ -1269,20 +1261,15 @@
   function selectPlatform(name) {
     if (!name || name === state.platform) return;
     state.platform = name;
-    state.resultDat = "";
-    state.tagFilter = { region: "", language: "", video: "", flag: "", rule: "" };
-    state.gamesHave = "";
-    state.libReason = "";
-    state.libStatus = "";
-    state.gamesSort = state.libSort = state.vanishSort = "";
+    state.vanishSort = "";
     state.kindSort = {};
+    Files.reset();
     Prefs.restore(name);
     // plan filters belong to the previous system (its destinations / statuses)
     state.organiseFilter = "";
     state.organiseDest = "";
     state.convertFilter = "";
     state.m3uFilter = "";
-    activeTab = "";
     $("lib-labels").checked = !isGameFolder(currentPlatform());   // |Disc N labels are PUAE syntax: off for disc-system playlists
     $("folder-input").value = folderOf(currentPlatform());
     $("scan-error").classList.toggle("hidden", !state.scanFailed[name]);
@@ -1396,28 +1383,25 @@
     state.lastScan = s.scan || null;
     state.scan = state.lastScan && state.lastScan.platform === state.platform ? state.lastScan : null;
     renderScanButtons();
-    if (state.scan && state.resultDat && !state.scan.dat_names.includes(state.resultDat)) state.resultDat = "";
-    browseDirty = true;
     Previews.onScan();                // a preview of the same system stays (marked out of date), others are dropped
     renderScanOverview();
-    if (inSystem() && state.tab === "browse") renderBrowse();
     renderLibraryIntro();
     renderLibraryGate();
     refreshUndo();
     renderLibraryConvert();
     updateActionState();
     loadTotals();
-    if (inSystem() && state.tab === "library") Previews.resume("lib");
-    if (inSystem() && state.tab === "tree") Tree.show();
+    if (inSystem() && state.tab === "files") { Previews.resume("lib"); Files.show(); }
+    renderSavesBox();
   }
 
-  /** A summary card; with ``link`` it opens the Browse tab on the matching list (deep link). */
+  /** A summary card; with ``link`` it opens the files with the matching filter (deep link). */
   function card(value, label, cls = "", link = null) {
     const body = [el("div", { class: "value", text: value }), el("div", { class: "label", text: label })];
     const p = currentPlatform();
     if (link && p) {
-      return el("a", { class: `card card-link ${cls}`, href: Route.build(slugOf(p), "browse", link),
-        title: "Show these in the Browse tab" }, ...body);
+      return el("a", { class: `card card-link ${cls}`, href: Route.build(slugOf(p), "files", { show: OLD_VIEWS[link.view] || "" }),
+        title: "Show these files" }, ...body);
     }
     return el("div", { class: `card ${cls}` }, ...body);
   }
@@ -1446,11 +1430,6 @@
     });
   }
 
-  let activeTab = "";          // the open list of the Browse tab: games | matched | missing | unmatched | ...
-  let browseDirty = true;      // the Browse tab must be (re)built before it is shown
-  const DAT_FILTER_TABS = new Set(["matched", "missing", "games"]);
-  const TAG_TABS = DAT_FILTER_TABS;
-  const CHECKSUM_TABS = new Set(["matched", "missing", "unmatched", "games"]);
   const byGame = (s) => s && s.count_by === "game";
 
   /** have / missing / total / percent of a scan summary (games for No-Intro and Redump, ROMs otherwise). */
@@ -1529,7 +1508,7 @@
       const dpct = dTotal ? (100 * (dHave || 0)) / dTotal : 0;
       return el("a", {
         class: "dat-card", title: `Browse only ${name}`,
-        href: Route.build(slugOf(p), "browse", { view: dGames ? "games" : "matched", dat: name }),
+        href: Route.build(slugOf(p), "files", { show: "have" }),
       },
       el("div", { class: "dat-card-name", text: shortDat(name) }),
       el("div", { class: "dat-card-main" },
@@ -1578,6 +1557,8 @@
     const will = [];
     if (plan) {
       if (plan.follow && plan.rename && plan.rename.files) will.push(`${plan.elsewhere ? "copy" : "rename"} ${nPlural(plan.rename.files, "file", "files")} with their ROMs`);
+      if (plan.ps2 && plan.ps2.saves) will.push(`convert ${nPlural(plan.ps2.saves, "disc-console save", "disc-console saves")} to the better version`);
+      if (plan.carry && plan.carry.files) will.push(`copy ${nPlural(plan.carry.files, "save", "saves")} to the better version`);
       if (plan.kept) will.push(`keep ${nPlural(plan.kept, "game", "games")} the rules would archive`);
       if (plan.archive && plan.archive.files) will.push(`archive ${nPlural(plan.archive.files, "file", "files")} with their ROMs`);
       if (plan.leave && plan.leave.files) will.push(`leave ${nPlural(plan.leave.files, "file", "files")} of archived games where they are`);
@@ -1589,7 +1570,7 @@
       t.sets ? el("div", { class: "sub", text: `${savesText(t)}${t.screenshots ? ` \u00b7 ${nPlural(t.screenshots, "state screenshot", "state screenshots")} (not counted)` : ""} \u00b7 ${fmtBytes(t.bytes)}` }) : null,
       plan ? el("div", { class: "sub", id: "ov-saves-plan", text: will.length ? `A build with the current rules would ${will.join(", ")}.` : "A build with the current rules changes none of them." })
         : el("div", { class: "sub", text: "The list on this page shows what a build would do with them." }),
-      t.sets && p ? el("div", {}, el("a", { href: Route.build(slugOf(p), "browse", { view: "saves" }), text: "Which title does each belong to?" })) : null);
+      t.sets && p ? el("div", { class: "sub", text: "Which game each belongs to is listed at the foot of the Files page." }) : null);
   }
 
   /** The RetroArch choice changed (or a config appeared): the saves columns, the saves option and the Saves card follow. */
@@ -1607,10 +1588,10 @@
     box.replaceChildren(
       el("p", {}, el("b", { text: "Scan first. " }),
         folder ? `${what} needs the scan results of ${p ? p.name : "this system"}.${stale ? " The results are not kept when the app restarts." : ""}`
-          : `Choose the folder of ${p ? p.name : "this system"} above, then scan it.`),
+          : `Choose the folder of ${p ? p.name : "this system"} in its Settings, then scan it.`),
       folder
         ? el("button", { class: "btn btn-primary", text: "Scan folder", "data-needs-idle": "", on: { click: () => startScan(false) } })
-        : null);
+        : el("button", { class: "btn btn-primary", text: "Open Settings", on: { click: () => openTab("settings") } }));
     Jobs.setRunning(Jobs.running);
   }
 
@@ -1621,90 +1602,7 @@
     if (!has) scanGate($("lib-gate"), "Building the library");
   }
 
-  /** Apply the Browse parameters of the address (view / have / dat); a plain tab click keeps the old filters. */
-  function applyBrowseParams(params) {
-    if (!params || !params.view) return;
-    const have = params.have || "", dat = params.dat || "";
-    if (activeTab !== params.view || state.gamesHave !== have || state.resultDat !== dat) browseDirty = true;
-    activeTab = params.view;
-    state.gamesHave = have;
-    state.resultDat = dat;
-  }
 
-  /** The Browse tab: result lists with search, filters, paging and checksums. Built only when it is opened. */
-  function renderBrowse() {
-    const scan = state.scan;
-    $("browse-gate").classList.toggle("hidden", !!scan);
-    $("browse-body").classList.toggle("hidden", !scan);
-    if (!scan) { scanGate($("browse-gate"), "Browsing the results"); return; }
-    if (!browseDirty && $("result-tabs").childElementCount) return;
-    browseDirty = false;
-    const s = scan.summary;
-    const { games, total, have, missing } = summaryNumbers(s);
-    const multi = scan.dat_names.length > 1;
-    const tabs = [];
-    if (games) tabs.push(["games", "Games", total]);
-    tabs.push(["matched", "Matched files", s.matched_files], ["missing", games ? "Missing games" : "Missing", missing],
-      ["unmatched", "Unmatched", s.unmatched_files]);
-    if (scan.saves) tabs.push(["saves", "Saves", scan.saves.sets]);
-    if (s.unsupported) tabs.push(["unsupported", "Unsupported", s.unsupported]);
-    if (s.errors) tabs.push(["errors", "Errors", s.errors]);
-    if (!tabs.some((t) => t[0] === activeTab)) activeTab = tabs[0][0];
-    if (activeTab !== "games") { state.gamesHave = ""; state.gamesRated = ""; state.gamesSaves = ""; }
-    if (!DAT_FILTER_TABS.has(activeTab)) state.resultDat = "";
-    $("result-tabs").replaceChildren(...tabs.map(([key, label, count]) => el("button", {
-      class: `tab ${key === activeTab ? "active" : ""}`, role: "tab", "aria-selected": key === activeTab ? "true" : "false",
-      tabindex: key === activeTab ? "0" : "-1",
-      on: { click: () => { activeTab = key; if (key !== "games") { state.gamesHave = ""; state.gamesRated = ""; } browseDirty = true; renderBrowse(); } },
-    }, label, el("span", { class: "count", text: `(${fmt(count)})` }))));
-    syncBrowseHash();
-
-    const container = el("div");
-    const filters = [];
-    if (DAT_FILTER_TABS.has(activeTab) && multi) {
-      const select = el("select", {
-        class: "input select", "aria-label": "Filter by DAT",
-        on: { change: (e) => { state.resultDat = e.target.value; browseDirty = true; renderBrowse(); } },
-      },
-      el("option", { value: "", text: "All DATs", selected: !state.resultDat }),
-      ...scan.dat_names.map((n) => el("option", { value: n, text: shortDat(n), selected: n === state.resultDat })));
-      filters.push(el("div", { class: "row" }, el("span", { class: "label-inline", text: "DAT" }), select));
-    }
-    let table = null;
-    const reload = () => { if (table) { table.offset = 0; table.load(); } };
-    if (activeTab === "games") {
-      const counts = { 1: have, 0: missing };
-      const chipBox = el("div", { class: "chips" });
-      const drawHave = () => chipBox.replaceChildren(...[["", "All games", total], ["1", "Have", counts[1]], ["0", "Missing", counts[0]]].map(([key, label, n]) =>
-        el("button", {
-          class: `chip ${key === "1" ? "chip-have" : key === "0" ? "chip-missing" : ""} ${state.gamesHave === key ? "active" : ""}`,
-          text: `${label} (${fmt(n)})`, on: { click: () => { state.gamesHave = key; drawHave(); syncBrowseHash(); reload(); } },
-        })));
-      drawHave();
-      filters.push(chipBox);
-      if (scan.saves) {
-        const sbox = el("div", { class: "chips", id: "saves-chips" });
-        const drawSaves = () => sbox.replaceChildren(...[["", "With or without saves"], ["1", "Games with saves"]].map(([key, label]) =>
-          el("button", { class: `chip ${state.gamesSaves === key ? "active" : ""}`, "data-saves": key, text: label,
-            on: { click: () => { state.gamesSaves = key; drawSaves(); reload(); } } })));
-        drawSaves();
-        filters.push(sbox);
-      }
-      if (ratingsAvailable()) {
-        const rbox = el("div", { class: "chips", id: "rated-chips" });
-        const drawRated = () => rbox.replaceChildren(...[["", "Rated or not"], ["1", "Rated"], ["0", "Unrated"]].map(([key, label]) =>
-          el("button", { class: `chip ${state.gamesRated === key ? "active" : ""}`, "data-rated": key, text: label,
-            on: { click: () => { state.gamesRated = key; drawRated(); reload(); } } })));
-        drawRated();
-        filters.push(rbox);
-      }
-    }
-    const tagBar = TAG_TABS.has(activeTab)
-      ? el("details", { class: "tag-filters" }, el("summary", { text: "Filters" }), el("div", { class: "tag-filter-rows" })) : null;
-    $("result-table").replaceChildren(...[...filters, tagBar, container].filter(Boolean));
-    table = new PagedTable(container, resultTableOptions(activeTab, tagBar, reload));
-    table.load();
-  }
 
   /** The Browse > Games rating column / chips only exist for systems the ratings cover (the server marks them). */
   function ratingsAvailable() {
@@ -1740,49 +1638,6 @@
   }
 
   const first = (...vals) => vals.find((v) => v !== undefined && v !== null);
-  const TAG_FACETS = [["region", "regions", "Region"], ["language", "languages", "Language"],
-    ["video", "video", "Video"], ["flag", "flags", "Tag"], ["rule", "rules", "Library rules"]];
-  /** Chip text of a facet value ("bad" is the bad-dump flag, rules show their short name). */
-  const facetLabel = (key, value) => (key === "rule" ? ruleShort(value) : key === "flag" && value === "bad" ? "Bad dump" : value);
-  const TAG_SHOWN = 8;
-
-  /** Filter chips built from the server's facets (filters only change what is shown). */
-  function renderTagBar(box, facets, reload) {
-    if (!box) return;
-    const rows = [];
-    for (const [key, facetKey, label] of TAG_FACETS) {
-      let entries = Object.entries((facets || {})[facetKey] || {});
-      // "Bad dump" would show twice (tag row and rule row) when both filter the same rows
-      if (key === "rule" && state.tagFilter.rule !== "bad_dump"
-          && ((facets || {}).rules || {}).bad_dump !== undefined
-          && ((facets || {}).rules || {}).bad_dump === ((facets || {}).flags || {}).bad) {
-        entries = entries.filter(([v]) => v !== "bad_dump");
-      }
-      const current = state.tagFilter[key];
-      if (!entries.length && !current) continue;
-      const expanded = !!state.tagExpanded[key];
-      let shown = expanded ? entries : entries.slice(0, TAG_SHOWN);
-      if (current && !shown.some(([v]) => v === current)) shown = shown.concat([[current, (facets[facetKey] || {})[current] || 0]]);
-      const pick = (value) => { state.tagFilter[key] = state.tagFilter[key] === value ? "" : value; reload(); };
-      const chips = [el("button", { class: `chip chip-sm ${current ? "" : "active"}`, text: "Any", on: { click: () => pick("") } }),
-        ...shown.map(([value, n]) => el("button", {
-          class: `chip chip-sm ${current === value ? "active" : ""} ${key === "flag" && value === "bad" ? "chip-bad" : ""}`,
-          text: `${facetLabel(key, value)} (${fmt(n)})`, title: key === "rule" ? "Rows that a library rule would archive" : null,
-          on: { click: () => pick(value) },
-        }))];
-      if (entries.length > TAG_SHOWN) {
-        chips.push(el("button", {
-          class: "chip chip-sm chip-more", text: expanded ? "Fewer" : `More (${fmt(entries.length - TAG_SHOWN)})`,
-          on: { click: () => { state.tagExpanded[key] = !expanded; renderTagBar(box, facets, reload); } },
-        }));
-      }
-      rows.push(el("div", { class: "tag-filter-row" }, el("span", { class: "tag-filter-label", text: label }), el("div", { class: "chips" }, chips)));
-    }
-    box.querySelector(".tag-filter-rows").replaceChildren(...rows);
-    const active = TAG_FACETS.map(([key]) => [key, state.tagFilter[key]]).filter(([, v]) => v).map(([k, v]) => facetLabel(k, v));
-    box.querySelector("summary").textContent = active.length ? `Filters: ${active.join(", ")}` : "Filters: region, language, tags";
-    box.classList.toggle("hidden", !rows.length);
-  }
 
   // ------------------------------------------------ checksums (Browse tab)
   // The server sends what the scan already knows (DAT hashes, the hashes of the local file that matched,
@@ -1949,145 +1804,45 @@
     return el("div", {}, el("div", { text: name }), dir ? el("div", { class: "sub", text: dir }) : null);
   }
 
-  const SORTABLE_KINDS = new Set(["games", "matched", "unmatched", "missing", "saves"]);
-  const kindSort = (kind) => (kind === "games" ? state.gamesSort : (state.kindSort[kind] || ""));
 
-  function resultTableOptions(kind, tagBar, reload) {
-    const dat = DAT_FILTER_TABS.has(kind) ? state.resultDat : "";
-    const fetchKind = async ({ offset, limit, q, checksums }) => {
-      const have = kind === "games" ? state.gamesHave : "";
-      const rated = kind === "games" && ratingsAvailable() ? state.gamesRated : "";
-      const saves = kind === "games" ? state.gamesSaves : "";
-      const sort = kindSort(kind);
-      const tagParams = TAG_TABS.has(kind) ? state.tagFilter : {};
-      const data = await get(`/api/scan/results?${qs({ kind, offset, limit, q, dat, have, rated, saves, sort, checksums: checksums ? "1" : "", ...tagParams })}`);
-      if (tagBar) renderTagBar(tagBar, data.facets, reload);
-      return data;
-    };
-    const multi = state.scan && state.scan.dat_names.length > 1;
-    const detail = CHECKSUM_TABS.has(kind) ? { kind } : null;
-    const sortable = SORTABLE_KINDS.has(kind) ? { sort: {
-      get: () => kindSort(kind),
-      set: (v) => { if (kind === "games") state.gamesSort = v; else state.kindSort = { ...state.kindSort, [kind]: v }; },
-    } } : {};
-    return Object.assign({ detail, id: `browse-${kind}` }, sortable, resultColumns(kind, fetchKind, dat, multi));
+  /** The saves the emulator keeps for the system (they lie in its own folders, not in the ROM folder) and the game each belongs to. */
+  let savesTable = null;
+  function renderSavesBox() {
+    const box = $("saves-box"), t = state.scan && state.scan.saves;
+    box.classList.toggle("hidden", !(t && t.sets));
+    savesTable = null;
+    $("saves-table").replaceChildren();
+    if (!(t && t.sets)) return;
+    $("saves-box-title").textContent = `Saves in the emulator's folders (${nPlural(t.files, "file", "files")} for ${nPlural(t.sets, "game", "games")})`;
+    if (box.open) showSavesTable();
   }
 
-  function resultColumns(kind, fetchKind, dat, multi) {
-    switch (kind) {
-      case "games":
-        return {
-          fetch: fetchKind, placeholder: "Search games or file names...", emptyText: "No games in this category.",
-          rowClass: (i) => (i.have ? "row-have" : "row-missing"),
-          columns: [
-            { label: "", render: (i) => badge(i.have ? "ok" : "missing", i.have ? "have" : "missing") },
-            {
-              label: "Game", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
-                el("div", { class: "game-name", text: i.name }),
-                gameChips(i.tags, i.level),
-                multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
-            },
-            { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(), render: ratingCell },
-            { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "-") },
-            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
-            { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => fmtBytes(i.size) },
-            {
-              label: "Your file(s)", cls: "wrap", render: (i) => (i.files && i.files.length
-                ? el("div", {}, ...i.files.slice(0, 3).map((f) => el("div", { class: "mono-path small", text: f })),
-                  i.files.length > 3 ? el("div", { class: "sub", text: `+${i.files.length - 3} more` }) : null)
-                : el("span", { class: "muted", text: "-" })),
-            },
-          ],
-        };
-      case "matched":
-        return {
-          fetch: fetchKind, placeholder: "Search matched files or DAT names...", emptyText: "No files matched.",
-          columns: [
-            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => fileCell(i.file) },
-            {
-              label: "DAT entry", cls: "wrap", render: (i) => el("div", {},
-                el("div", { text: i.game || i.roms[0] || "" }),
-                i.level ? el("div", { class: "tags" }, levelChip(i.level), i.engine ? el("span", { class: "tag", text: i.engine === "files" ? "files" : `via ${i.engine}` }) : null) : null,
-                tagChips(i.tags, i.level ? "" : i.via, i.byte_order, i.header),
-                multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat) }) : null,
-                i.roms.length > 1 ? el("div", { class: "sub", text: `+${i.roms.length - 1} other name(s) with identical content` }) : null,
-                i.other_dats && i.other_dats.length ? el("div", { class: "sub", text: `also in: ${i.other_dats.map(shortDat).join(", ")}` }) : null),
-            },
-            {
-              label: "Place", render: (i) => {
-                if (i.placed_ok && i.named_ok) return badge("ok");
-                if (i.aside) return el("span", { class: "badge skip", text: "archived", title: "In one of the app's own folders (_excluded/, _superseded/ ...) on purpose" });
-                return el("span", { class: "badge move", text: i.placed_ok ? "rename" : "move" });
-              },
-            },
-            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
-            { label: "Checksums", when: (d) => d.items.some((i) => i.checks), render: (i) => (i.checks === "ok" ? badge("ok", "correct") : i.checks === "damaged" ? badge("bad", "damaged") : badge("skip", "not checked")) },
-            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
-          ],
-        };
-      case "missing":
-        return {
-          fetch: fetchKind, placeholder: "Search missing entries...", emptyText: "Nothing missing - complete set!",
-          rowClass: () => "row-missing",
-          columns: [
-            {
-              label: "DAT entry", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {}, el("div", { text: i.set_name || i.name }),
-                tagChips(i.tags),
-                multi && !dat ? el("div", { class: "sub", text: shortDat(i.dat || "") }) : null),
-            },
-            { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "num", when: (d) => !!d.saves_on, render: (i) => savesCell(i.saves) },
-            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
-            { label: "CRC32", cls: "mono", render: (i) => i.crc },
-          ],
-        };
-      case "saves":
-        return {
-          fetch: fetchKind, placeholder: "Search titles or save names...", emptyText: "No save files found for this system.",
-          columns: [
-            {
-              label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
-                el("div", { class: "game-name", text: i.title }),
-                i.game && i.game !== i.title ? el("div", { class: "sub", text: i.game }) : null,
-                i.name !== i.title ? el("div", { class: "sub mono-path", text: i.name }) : null,
-                i.guess ? el("div", { class: "sub" }, badge("info", "looks like"), ` ${i.guess}`) : null,
-                ...(i.cards || []).map((c) => el("div", { class: "sub card-games" }, el("span", { class: "muted", text: `${c.label}: ` }),
-                  c.games.join("; ")))),
-            },
-            {
-              label: "Matched to", cls: "wrap", render: (i) => (i.match === "rom" ? badge("ok", "ROM here")
-                : i.match === "dat" ? badge("info", "title, no ROM here") : i.guess ? badge("info", "title only") : badge("skip", "unmatched")),
-            },
-            { label: "Saves", sortKey: "files", sortFirst: "desc", cls: "num", render: (i) => el("div", {}, el("div", { class: "saves-total", text: fmt(i.files) }),
-              el("div", { class: "sub", text: savesText(i) + (i.screenshots ? ` \u00b7 ${nPlural(i.screenshots, "screenshot", "screenshots")}` : "") })) },
-            { label: "From", render: (i) => (i.source && i.source !== "retroarch" ? i.label : i.cores.length ? i.cores.join(", ") : "-") },
-          ],
-        };
-      case "unmatched":
-        return {
-          fetch: fetchKind, placeholder: "Search unmatched files...", emptyText: "Every file matched a DAT.",
-          columns: [
-            { label: "Local file", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => (i.bios
-              ? el("div", {}, fileCell(i.file), el("div", { class: "sub" }, badge("info", "BIOS / firmware"), ` ${i.bios}`))
-              : fileCell(i.file)) },
-            ...(isGameFolder(currentPlatform()) ? [{ label: "Why", cls: "wrap", render: (i) => el("span", { class: "muted", text: i.reason || "" }) }] : []),
-            { label: "Size", cls: "num", sortKey: "size", sortFirst: "desc", render: (i) => fmtBytes(i.size) },
-            ...(isGameFolder(currentPlatform()) ? [] : [{ label: "CRC32", cls: "mono", render: (i) => i.crc || "" }]),
-          ],
-        };
-      case "unsupported":
-        return {
-          fetch: fetchKind, emptyText: "None.",
-          columns: [{ label: "File (install 7-Zip to read .7z / .rar; Wii and WIA .rvz files are not read)", cls: "wrap", render: (i) => fileCell(i.file) }],
-        };
-      default:
-        return {
-          fetch: fetchKind, emptyText: "No errors.",
-          columns: [
-            { label: "File", cls: "wrap", render: (i) => fileCell(i.file) },
-            { label: "Error", cls: "wrap", render: (i) => i.error },
-          ],
-        };
-    }
+  function showSavesTable() {
+    if (savesTable || !state.scan) return;
+    savesTable = new PagedTable($("saves-table"), {
+      id: "browse-saves", placeholder: "Search titles or save names...", emptyText: "No save files found for this system.",
+      sort: { get: () => state.kindSort.saves || "", set: (v) => { state.kindSort = { ...state.kindSort, saves: v }; } },
+      fetch: ({ offset, limit, q }) => get(`/api/scan/results?${qs({ kind: "saves", offset, limit, q, sort: state.kindSort.saves || "" })}`),
+      columns: [
+        {
+          label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
+        el("div", { class: "game-name", text: i.title }),
+        i.game && i.game !== i.title ? el("div", { class: "sub", text: i.game }) : null,
+        i.name !== i.title ? el("div", { class: "sub mono-path", text: i.name }) : null,
+        i.guess ? el("div", { class: "sub" }, badge("info", "looks like"), ` ${i.guess}`) : null,
+        ...(i.cards || []).map((c) => el("div", { class: "sub card-games" }, el("span", { class: "muted", text: `${c.label}: ` }),
+          c.games.join("; ")))),
+        },
+        {
+          label: "Matched to", cls: "wrap", render: (i) => (i.match === "rom" ? badge("ok", "ROM here")
+        : i.match === "dat" ? badge("info", "title, no ROM here") : i.guess ? badge("info", "title only") : badge("skip", "unmatched")),
+        },
+        { label: "Saves", sortKey: "files", sortFirst: "desc", cls: "num", render: (i) => el("div", {}, el("div", { class: "saves-total", text: fmt(i.files) }),
+          el("div", { class: "sub", text: savesText(i) + (i.screenshots ? ` \u00b7 ${nPlural(i.screenshots, "screenshot", "screenshots")}` : "") })) },
+        { label: "From", render: (i) => (i.source && i.source !== "retroarch" ? i.label : i.cores.length ? i.cores.join(", ") : "-") },
+      ],
+    });
+    savesTable.load();
   }
 
   // ----------------------------------------------- previews: the Recalculate affordance
@@ -2104,7 +1859,7 @@
     HINT: "Recalculates with your current rules and folder contents",
     // id -> button / apply button / output box / noun / how to count / how to drop it
     CONFIG: {
-      lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", live: "lib-live", auto: true, noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => libTable, reset: () => resetLibraryPreview() },
+      lib: { btn: "lib-plan-btn", apply: "lib-apply-btn", output: "lib-output", live: "lib-live", auto: true, noun: "files", count: (d) => (d.files !== undefined ? d.files : sumCounts(d.counts)), run: () => showLibraryPlan(), table: () => null, reset: () => resetLibraryPreview() },
     },
 
     /** Wire the buttons once: icon + label, a status line with the hint (aria-live) and the out-of-date banner. */
@@ -2236,7 +1991,7 @@
     autoRun(id) {
       const it = this.items[id];
       if (!it || it.state === "busy" || it.state === "ready") return;
-      if (!inSystem() || state.tab !== "library" || !state.scan) return;
+      if (!inSystem() || state.tab !== "files" || !state.scan) return;
       if (it.state === "stale" && it.platform !== state.platform) return;
       this.click(id);
     },
@@ -2463,14 +2218,15 @@
       const plan = c.plan;
       if (!plan || !c.scan) return null;
       const r = plan.reasons || {};
-      const n = (r.excluded || 0) + (r.superseded || 0) + (r.duplicates || 0) + (r.incomplete || 0);
       const moves = (plan.counts && (plan.counts.move || 0) + (plan.counts.rename || 0) + (plan.counts.delete || 0)) || 0;
+      const parts = [[r.excluded, "excluded"], [r.superseded, "superseded"], [r.duplicates, "duplicates"], [r.incomplete, "incomplete"],
+        [r.saves, "saves"], [r.unmatched, "unmatched"], [(r.renamed || 0) + (r.moved || 0), "renamed or moved"]].filter(([n]) => n);
       return { tone: "plain", value: fmt(moves), unit: moves === 1 ? "file" : "files",
-        sub: n ? `${fmt(r.excluded || 0)} excluded, ${fmt(r.superseded || 0)} superseded, ${fmt(r.duplicates || 0)} duplicates` : "nothing to set aside" };
+        sub: parts.length ? parts.slice(0, 4).map(([n, t]) => `${fmt(n)} ${t}`).join(", ") : "nothing to do" };
     } },
     unmatched: { label: "Unmatched files", render: (c) => {
       const n = c.scan && c.scan.summary.unmatched_files;
-      return n ? { tone: "warn", value: fmt(n), unit: n === 1 ? "file" : "files", sub: "match nothing in the database", href: Route.build(slugOf(c.p), "browse", { view: "unmatched" }) } : null;
+      return n ? { tone: "warn", value: fmt(n), unit: n === 1 ? "file" : "files", sub: "match nothing in the database", href: Route.build(slugOf(c.p), "files", { show: "unmatched" }) } : null;
     } },
     bios: { label: "BIOS and firmware", render: (c) => {
       const n = c.scan && c.scan.summary.bios_files;
@@ -2581,6 +2337,7 @@
       mine.length ? el("span", { class: "nav-override", text: "Custom", title: "Rules this system overrides" }) : null,
       mine.length ? el("b", { text: ` ${mine.join(", ")}` }) : el("b", { text: "Your default rules" }),
       mine.length ? el("span", { class: "muted", text: " (the rest follow your defaults)" }) : null,
+      " ", el("a", { class: "small", href: Route.build(slugOf(p), "settings"), text: "Change" }),
       sum ? el("div", { class: "muted small", text: sum }) : null].filter(Boolean));
   }
 
@@ -2601,7 +2358,6 @@
   const REASON_ORDER = ["kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "saves", "unmatched", "playlist"];
   const REASON_BADGE = { kept: "ok", bios: "info", excluded: "bad", superseded: "info", incomplete: "warn", duplicate: "warn",
     saves: "info", unmatched: "skip", playlist: "move" };
-  let libTable = null;
   let vanishTable = null;
   let vanishPlanId = "";         // the plan the vanish list on screen belongs to
   let libPlan = null;
@@ -2738,8 +2494,7 @@
     }
     if (name !== state.platform) return;
     renderLibraryRules();
-    // The Browse list may have been drawn before the profile arrived: its rating column and chips depend on it.
-    if (!hadRatings && ratingsAvailable() && inSystem() && state.tab === "browse") { browseDirty = true; renderBrowse(); }
+    if (!hadRatings && ratingsAvailable() && inSystem() && state.tab === "files") Files.reload();      // (the rating filter and the ratings shown)
   }
 
   // Everything below is rendered from the server's rule catalog (library.rule_catalog / profile_info): no rule list lives here.
@@ -2800,7 +2555,6 @@
   function defaultsChanged() {
     for (const k of Object.keys(state.library)) delete state.library[k];
     Previews.staleAll("Your library defaults changed since this preview", ["lib"]);
-    browseDirty = true;
     state.libStats = null;
     scheduleTotals();
     loadPlatforms().then(() => { if (inSystem()) loadLibraryProfile(); });
@@ -3374,7 +3128,7 @@
       bits.push(e.summary.replace("{v}", String(v)));
     }
     if (rated && prof.rank_scope === "owned" && prof.top_n) bits.push("ranked among your games");
-    if (prof.saved_games && prof.saved_games !== "keep") bits.push(prof.saved_games === "archive" ? "saves archived with their games" : "saves left alone");
+    if (prof.saved_games && prof.saved_games !== "keep") bits.push(prof.saved_games === "archive" ? "saves archived with their games" : prof.saved_games === "carry" || prof.saved_games === "convert" ? "saves copied to the better version" : "saves left alone");
     $("library-rules-summary").textContent = bits.join(" \u00B7 ");
     const p = currentPlatform();
     if (p && inSystem()) renderRulesLine(p);
@@ -3389,6 +3143,10 @@
       text: "The ROM is replaced or archived as the rules say, and its saves and save states move to the archive with it (into a _saves folder). Undo brings them back. Not while RetroArch is running." },
     { value: "leave", label: "Leave the saves where they are",
       text: "The ROM is replaced or archived as the rules say; its saves are not touched." },
+    { value: "carry", label: "Copy the save to the better version",
+      text: "When a better version of a game you have saves for arrives, the old ROM is replaced and its save games (memory cards, battery saves; not save states) are copied to the new ROM's name, if the new ROM has no save yet. Where the save would not work in the new version (a PlayStation, GameCube or Dreamcast save of another region) both ROMs stay. The old save is left where it is. Undo removes the copy." },
+    { value: "convert", label: "Copy the save, converting its region (PlayStation, PlayStation 2)",
+      text: "As above, and a PlayStation save is rewritten for the other region's disc, so a USA save works in the European release and the other way round (the card's file name for the save and its checksum are changed; nothing else). Both discs must be readable (a .chd or .iso), and the save may still not work in a game that keeps region-specific data. Experimental: the old save is never touched, and Undo removes the converted copy. A PlayStation 2 save is moved to the other release's game code the same way: on a folder card (PCSX2) the save's folder is copied under the new name; in a card image (.ps2) the names are rewritten in place (a copy of the image is kept for Undo). Not while PCSX2 is running. Other systems copy as above." },
   ];
 
   /** The group of the rules panels: what happens to a game the rules would archive when RetroArch has saves for it, and the
@@ -3436,6 +3194,14 @@
       const verb = s.elsewhere ? (apply ? "copied" : "to copy") : (apply ? "renamed" : "to rename");
       out.push(card(fmt(s.rename.files), `Save files ${verb} with their ROMs (${fmt(s.rename.games)} game${s.rename.games === 1 ? "" : "s"})`, s.rename.files ? "info" : ""));
       if (s.rename.conflicts) out.push(card(fmt(s.rename.conflicts), "Save conflicts (left alone)", "bad"));
+    }
+    if (!s.elsewhere && s.carry && (s.carry.files || s.carry.conflicts)) {
+      out.push(card(fmt(s.carry.files), `Save files ${apply ? "copied" : "to copy"} to the better version (${fmt(s.carry.games)} game${s.carry.games === 1 ? "" : "s"}${s.carry.converted ? `, ${fmt(s.carry.converted)} converted to the other region` : ""})`, s.carry.files ? "info" : ""));
+      if (s.carry.conflicts) out.push(card(fmt(s.carry.conflicts), "Better versions that already have a save (left alone)", "warn"));
+    }
+    if (!s.elsewhere && s.ps2 && (s.ps2.saves || s.ps2.conflicts)) {
+      out.push(card(fmt(s.ps2.saves), `PlayStation 2 ${s.ps2.saves === 1 ? "save" : "saves"} ${apply ? "converted" : "to convert"} to the better version's region`, s.ps2.saves ? "info" : ""));
+      if (s.ps2.conflicts) out.push(card(fmt(s.ps2.conflicts), "Saves the card already has under the new game code (left alone)", "warn"));
     }
     if (!s.elsewhere && s.archive && s.archive.files)
       out.push(card(fmt(s.archive.files), `Save files ${apply ? "archived" : "to archive"} with their games (${fmt(s.archive.games)} game${s.archive.games === 1 ? "" : "s"})`, "warn"));
@@ -3709,7 +3475,7 @@
   let statsStale = true;       // the rule counts are fetched when the Library tab is open (not on every scan)
   const refreshLibraryStats = debounce(async () => {
     if (!state.scan) { state.libStats = null; updateRuleCounts(); return; }
-    if (!inSystem() || state.tab !== "library") { statsStale = true; return; }
+    if (!inSystem() || state.tab !== "settings") { statsStale = true; return; }
     statsStale = false;
     const seq = ++statsSeq;
     try {
@@ -3730,22 +3496,17 @@
     // The previews stay on screen but are marked out of date (Recalculate is the highlighted action, Build / Apply
     // are disabled until it ran); the library totals on the Overview follow after a short pause.
     Previews.staleAll("Rules changed since this preview", ["lib"]);
-    browseDirty = true;              // its rule chips and filters are of the old rules
     scheduleTotals();
     updateActionState();
   }
 
   /** No preview (yet, or it belongs to another system): the empty prompt. */
   function resetLibraryPreview() {
-    $("lib-empty").textContent = state.scan ? "Calculating what the library would look like..." : "Scan the folder to see what the library would look like.";
+    $("lib-empty").textContent = state.scan ? "Working out the files..." : "Scan the folder to see its files.";
     $("lib-empty").classList.remove("hidden");
     $("lib-output").classList.add("hidden");
-    libTable = null;
     vanishTable = null;
     libPlan = null;
-    state.libWhy = "";
-    state.libSaves = "";
-    $("lib-saves-filters").classList.add("hidden");
     if (state.scan) renderSavesCard();
   }
 
@@ -3792,16 +3553,6 @@
     );
     state.libStats = { reasons: r, vanish, exclusions: plan.exclusions || {} };
     updateRuleCounts();
-    // excluded files per reason (language, flag_*, rules): click one to list just those rows
-    const why = {};
-    for (const [k, n] of Object.entries(r)) if (k.startsWith("excluded_") && n) why[k.slice(9)] = n;
-    const whyBox = $("lib-why-filters");
-    whyBox.classList.toggle("hidden", !Object.keys(why).length);
-    const infoNow = state.library[state.platform];
-    const whyOrder = infoNow ? [...catalogOf(infoNow).filter((e) => e.kind === "exclude").map((e) => e.id),
-      ...catalogOf(infoNow).filter((e) => e.kind === "keep_flag").map((e) => `flag_${e.id}`), "language", ...(infoNow.rating_codes || []), ...(infoNow.override_codes || [])] : [];
-    filterChips(whyBox, why, state.libWhy, whyOrder, (key) => { state.libWhy = key; if (key) state.libReason = "excluded"; libTable.offset = 0; libTable.load(); },
-      reasonLabel, "All exclusions");
     renderVanishBox(plan);
     $("lib-uptodate").classList.toggle("hidden", !plan.empty);
     const sets = plan.incomplete_sets || [];
@@ -3818,6 +3569,27 @@
     ...(total > sets.length ? [el("li", { class: "muted", text: `... and ${fmt(total - sets.length)} more` })] : []));
   }
 
+  /** The version the rules prefer to this file's, when you own another one of the game: ``{title, better}`` of the upgrades list, or null.
+   *  The list is asked for once per set of numbers (rules, databases, scan) and kept. */
+  const Better = {
+    docs: {},
+    async of(i) {
+      const p = currentPlatform();
+      const d = Totals.data[p.name];
+      const key = d ? `${d.profile_signature}|${d.computed_at}|${(state.scan && state.scan.finished) || ""}` : "";
+      let hit = this.docs[p.name];
+      if (!hit || hit.key !== key) {
+        hit = this.docs[p.name] = { key, doc: null };
+        try { hit.doc = await get(`/api/library/upgrades?${qs({ platform: p.name })}`); } catch (_) { hit.doc = null; }
+        if (hit.doc && !hit.doc.ready) { hit.doc = null; this.docs[p.name] = null; return null; }
+      }
+      if (!hit.doc) return null;
+      const names = [i.rom_name, i.game_ref && i.game_ref.game, i.name].filter(Boolean);
+      const bare = (n) => n.replace(/\.[A-Za-z0-9]{1,4}$/, "");
+      return hit.doc.items.find((it) => it.have.some((h) => names.some((n) => n === h || bare(n) === h || n === bare(h)))) || null;
+    },
+  };
+
   /** Reason / note cell of one preview row. */
   /** The "why" paragraph of a Library row's details: the rule that decided, the version that won, the rating. */
   function libraryWhyPanel(i) {
@@ -3828,7 +3600,7 @@
     if ((i.reasons || []).includes("override_exclude")) lines.push("You chose to always exclude this game.");
     else if (cat === "kept") lines.push(i.reason && i.reason.includes("always keep") ? "You chose to always keep this game."
       : i.reason && i.reason.includes("you have saves") ? "Kept because RetroArch has saves or save states for it and the choice for its saves is \"Keep both ROMs\" (Library rules, or the choice for this game)."
-        : "Kept: no rule sets this file aside, and it is the best version you have.");
+        : "Kept.");
     else if (cat === "excluded") lines.push(`Excluded by: ${names.join("; ") || i.reason}.${i.flags_text ? ` Flags: ${i.flags_text}.` : ""}`);
     else if (cat === "superseded") lines.push(`A better version of the same game wins${i.superseded_by ? `: ${i.superseded_by}` : ""}. ${i.reason || ""}`);
     else if (cat === "incomplete") lines.push(`Part of an incomplete multi-disk set${i.missing && i.missing.length ? ` (missing disk ${i.missing.join(", ")})` : ""}.`);
@@ -3847,20 +3619,9 @@
       facts.length ? el("div", { class: "muted small", text: facts.join(" - ") }) : null);
   }
 
-  const SAVED_OPTIONS = [["", "Use the default"], ["keep", "Keep both ROMs"], ["archive", "Archive the saves with the ROM"], ["leave", "Leave the saves"]];
-  const SAVED_EFFECT = { rename: ["info", "renamed with the ROM"], keep: ["ok", "ROM kept for them"], archive: ["warn", "archived with the ROM"], leave: ["skip", "left where they are"] };
+  const SAVED_OPTIONS = [["", "Use the default"], ["keep", "Keep both ROMs"], ["archive", "Archive the saves with the ROM"], ["leave", "Leave the saves"], ["carry", "Copy the save to the better version"], ["convert", "Copy the save, converting its region (PlayStation, PlayStation 2)"]];
+  const SAVED_EFFECT = { rename: ["info", "renamed with the ROM"], keep: ["ok", "ROM kept for them"], archive: ["warn", "archived with the ROM"], leave: ["skip", "left where they are"], carry: ["info", "save copied to the better version"], convert: ["info", "save copied to the better version"] };
 
-  /** The Saves chips of the Library preview: all rows / the games with saves / the saves this build changes. */
-  function renderLibrarySavesFilters(plan, reload) {
-    const box = $("lib-saves-filters");
-    const s = plan.saves;
-    box.classList.toggle("hidden", !s);
-    if (!s) { state.libSaves = ""; return; }
-    const chips = [["", "Saves: all rows", null], ["with", "Games with saves", s.rows_with], ["affected", "Saves affected by this build", s.rows_affected]];
-    box.replaceChildren(...chips.map(([key, label, n]) => el("button", {
-      class: `chip ${state.libSaves === key ? "active" : ""}`, "data-saves": key, text: n === null ? label : `${label} (${fmt(n)})`,
-      on: { click: () => { state.libSaves = key; reload(); } } })));
-  }
 
   /** The Saves cell of a Library row: how many, what the build does with them, and the choice for this game. */
   function libSavesCell(i) {
@@ -3991,80 +3752,28 @@
     vanishTable.load();
   }
 
+  /** Ask for the plan of a build with the current rules (its numbers, its warnings, what it would do), then draw the files from it. */
   async function showLibraryPlan() {
     Previews.busy("lib");
     $("lib-empty").classList.add("hidden");
     $("lib-output").classList.remove("hidden");
-    if (!libTable) {
-      vanishTable = null;
-      libTable = new PagedTable($("lib-table"), {
-        id: "library",
-        placeholder: "Search file names, folders or playlists...",
-        emptyText: "Nothing in this category.",
-        detail: { kind: "library", ref: (i) => (i.cs_kind ? { kind: i.cs_kind, id: i.cs_id } : null), extra: libraryWhyPanel },
-        sort: { get: () => state.libSort, set: (v) => { state.libSort = v; } },
-        select: {
-          id: (i) => `${i.from}`, can: (i) => i.item === "file" && !!i.game_ref,
-          actions: [
-            { label: "Always keep", title: "Keep these games whatever the rules say", run: (items) => setOverrides(items, "keep") },
-            { label: "Always exclude", title: "Set these games aside whatever the rules say", run: (items) => setOverrides(items, "exclude") },
-            { label: "Back to the rules", title: "Remove your choice for these games", run: (items) => setOverrides(items, "clear") },
-          ],
-        },
-        fetch: Previews.wrap("lib", async ({ offset, limit, q, refresh }) => {
-          const data = await post("/api/library/plan", {
-            ...buildOptions(), reason: state.libReason, status: state.libStatus, why: state.libWhy, saves: state.libSaves || undefined, offset, limit, q, refresh,
-            sort: state.libSort, checksums: state.showChecksums ? true : undefined,
-          });
-          libPlan = data;
-          renderTotals();
-          renderLibraryCards(data);
-          renderSavesCard();
-          const box = $("lib-warnings");
-          const notes = [...(data.warnings || [])];
-          if (data.missing_dats && data.missing_dats.length) notes.push(`Not checked (DAT not installed): ${data.missing_dats.map(shortDat).join(", ")}.`);
-          box.classList.toggle("hidden", !notes.length);
-          box.replaceChildren(...notes.map((n) => el("div", { text: n })));
-          const reload = () => { libTable.offset = 0; libTable.load(); };
-          renderLibrarySavesFilters(data, reload);
-          const r = data.reasons || {}, pl = data.playlists || {};
-          // every row of a category, moving or already in place (an already built library has few moves but many rows)
-          const rc = data.categories || { kept: r.kept, excluded: r.excluded, superseded: r.superseded, incomplete: r.incomplete,
-            duplicate: r.duplicates, unmatched: r.unmatched, playlist: (pl.write || 0) + (pl.ok || 0) + (pl.remove || 0) + (pl.conflict || 0) };
-          filterChips($("lib-reason-filters"), Object.fromEntries(Object.entries(rc).filter(([, n]) => n)), state.libReason, REASON_ORDER,
-            (key) => { state.libReason = key; if (key !== "excluded") state.libWhy = ""; reload(); }, (k) => REASON_LABEL[k] || k, "All reasons");
-          filterChips($("lib-status-filters"), data.counts || {}, state.libStatus, ["move", "rename", "delete", "conflict", "skip", "ok"],
-            (key) => { state.libStatus = key; reload(); }, (k) => k, "All statuses");
-          $("lib-apply-btn").dataset.blocked = data.empty && !(data.aside && data.aside.existing) && !(data.convert && data.convert.count) ? "1" : "0";
-          Jobs.setRunning(Jobs.running);
-          return data;
-        }),
-        columns: [
-          { label: "Status", render: (i) => badge(i.status, i.status === "move" && i.kind === "rename" ? "rename" : i.status) },
-          { label: "Reason", render: (i) => badge(REASON_BADGE[i.category] || "skip", REASON_LABEL[i.category] || i.category) },
-          {
-            label: "Change (relative to the system folder)", cls: "wrap change-col", sortKey: "name", sortFirst: "asc", always: true, render: (i) => {
-              if (i.item === "playlist") {
-                return el("div", {}, el("div", { class: "rename-to mono-path", text: i.path }),
-                  i.lines && i.lines.length ? el("details", {}, el("summary", { text: `${i.disks} disk${i.disks === 1 ? "" : "s"}` }),
-                    el("pre", { class: "m3u-lines", text: i.lines.join("\n") })) : null);
-              }
-              const changed = i.from !== i.to;
-              return el("div", {},
-                el("div", { class: changed ? "rename-from mono-path" : "rename-to mono-path", text: i.from }),
-                changed ? el("div", {}, el("span", { class: "rename-arrow", text: "→ " }), el("span", { class: "rename-to mono-path", text: i.to })) : null);
-            },
-          },
-          { label: "Rating", sortKey: "rating", sortFirst: "desc", when: () => ratingsAvailable(),
-            render: (i) => (i.item === "playlist" ? el("span", { class: "muted", text: "" }) : ratingCell(i)) },
-          { label: "Saves", sortKey: "saves", sortFirst: "desc", cls: "wrap saves-col", when: (d) => !!d.saves, render: libSavesCell },
-          { label: "Year", sortKey: "year", sortFirst: "asc", cls: "num", when: (d) => !!d.has_year, render: (i) => (i.year ? String(i.year) : "") },
-          { label: "Size", sortKey: "size", sortFirst: "desc", cls: "num", render: (i) => (i.size ? fmtBytes(i.size) : "") },
-          { label: "Why", cls: "wrap why-col", render: libraryNote },
-        ],
-      });
-    }
-    await libTable.load();
+    const load = Previews.wrap("lib", async ({ refresh }) => {
+      const data = await post("/api/library/plan", { ...buildOptions(), limit: 1, refresh });
+      libPlan = data;
+      renderTotals();
+      renderLibraryCards(data);
+      renderSavesCard();
+      const box = $("lib-warnings");
+      const notes = [...(data.warnings || [])];
+      if (data.missing_dats && data.missing_dats.length) notes.push(`Not checked (DAT not installed): ${data.missing_dats.map(shortDat).join(", ")}.`);
+      box.classList.toggle("hidden", !notes.length);
+      box.replaceChildren(...notes.map((n) => el("div", { text: n })));
+      $("lib-apply-btn").dataset.blocked = data.empty && !(data.aside && data.aside.existing) && !(data.convert && data.convert.count) ? "1" : "0";
+      Jobs.setRunning(Jobs.running);
+      return data;
+    });
+    try { await load({}); } catch (_) { return; }            // (the status line says what went wrong)
+    Files.reload();
   }
 
   async function applyLibraryExport() {
@@ -4116,7 +3825,7 @@
       const r = await post("/api/library/export/undo", { dest, run: run.id, follow: state.exportFollow || undefined });
       state.exportFollow = "";
       toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length ? "error" : "ok", 8000);
-      if (libTable) { libTable.offset = 0; showLibraryPlan(); }
+      if (libPlan) showLibraryPlan();
     } catch (err) { toast(err.message, "error"); }
   }
 
@@ -4171,6 +3880,8 @@
     if (s.kept) out.push(el("li", { text: `${fmt(s.kept)} game(s) the rules would archive are kept because you have saves for them.` }));
     if (s.follow && s.rename && s.rename.files) out.push(el("li", { text: `${fmt(s.rename.files)} save file(s) are ${s.elsewhere ? "copied" : "renamed"} with their ROMs.` }));
     if (s.rename && s.rename.conflicts) out.push(el("li", { text: `${fmt(s.rename.conflicts)} save file(s) cannot be renamed: a file with the new name is there. They stay as they are.` }));
+    if (!s.elsewhere && s.ps2 && s.ps2.saves) out.push(el("li", { text: `${fmt(s.ps2.saves)} PlayStation 2 save(s) are converted to the better version's game code (a card image is rewritten; the old image is kept for Undo).` }));
+    if (!s.elsewhere && s.carry && s.carry.files) out.push(el("li", { text: `${fmt(s.carry.files)} save file(s) are copied to the better version of ${fmt(s.carry.games)} game(s)${s.carry.converted ? `, ${fmt(s.carry.converted)} of them converted to the other region` : ""}. The old saves stay.` }));
     if (!s.elsewhere && s.archive && s.archive.files)
       out.push(el("li", { text: `${fmt(s.archive.files)} save file(s) of ${fmt(s.archive.games)} archived game(s) move to ${s.archive.to}${s.running ? " - not now: RetroArch is running, so they stay" : ""}.` }));
     if (!s.elsewhere && s.leave && s.leave.files)
@@ -4210,12 +3921,14 @@
           ? `Built ${fmt(r.created || 0)} file(s) in ${r.dest} (${fmt(r.copied || 0)} copied, ${fmt(r.moved || 0)} moved), ${fmt(r.playlists || 0)} playlist(s)${r.removed ? `, removed ${fmt(r.removed)}` : ""}${r.cancelled ? " - cancelled" : ""}`
           : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
       const sv = r.saves || {};
-      const saveText = (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
+      const saveText = sv.carried ? `; ${fmt(sv.carried)} save file(s) copied to the better version` + ((sv.followed || 0) ? `, ${fmt(sv.followed)} renamed with their ROMs` : "") : (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
+      const p2 = r.ps2_saves;
       const sa = r.saves_archived;
       const archText = sa ? (sa.skipped_running ? `; ${(sa.running || ["RetroArch"]).join(", ")} ${(sa.running || [1]).length > 1 ? "are" : "is"} running: ${sa.moved ? "some" : "the"} saves of the archived games were not moved` : `; ${fmt(sa.moved)} save file(s) archived with their games`) : "";
       const asideText = r.aside ? `; ${fmt(r.aside.moved)} archived file(s) moved out to ${r.aside.path}` : (r.action === "undo" && r.aside_restored ? `; ${fmt(r.aside_restored)} archived file(s) brought back` : "");
       const convText = r.converted ? `; ${fmt(r.converted.count)} converted first${r.converted.failed.length ? ` (${fmt(r.converted.failed.length)} could not be converted)` : ""}` : (r.action === "undo" && r.converted_back ? "; the conversion was undone too" : "");
-      toast(text + saveText + archText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
+      const ps2Text = p2 ? (p2.skipped_running ? "; PCSX2 is running: its saves were not converted" : p2.saves ? `; ${fmt(p2.saves)} PlayStation 2 save(s) converted to the better version` : "") : "";
+      toast(text + saveText + ps2Text + archText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
       showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move / write:",
         failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
@@ -4226,11 +3939,11 @@
     }
     const wasOpen = !$("lib-output").classList.contains("hidden");
     if (job.result && job.result.action === "library_export") {      // the source did not change: no re-scan
-      if (wasOpen && state.scan && libTable) { libTable.offset = 0; await showLibraryPlan(); }
+      if (wasOpen && state.scan && libPlan) await showLibraryPlan();
       return;
     }
     await refreshScan();
-    if (wasOpen && state.scan) { vanishTable = null; if (libTable) libTable.offset = 0; await showLibraryPlan(); }
+    if (wasOpen && state.scan) { vanishTable = null; await showLibraryPlan(); }
   };
 
   function filterChips(container, counts, current, order, onPick, labelFor = (k) => k, allLabel = "All") {
@@ -4683,112 +4396,288 @@
     },
   };
 
-  // ------------------------------------------------------------------ the library tree: what a build would leave, as a preview
-  // Two trees side by side, the ROM folders and the archive, a system at the top level of each. A folder is asked for when it is
-  // opened (GET /api/tree: one level, with the totals below it), so a library of tens of thousands of files opens at once.
+  // ------------------------------------------------------------------ the files of a system: one tree, with filters
+  // What the system's ROM folder and its part of the archive hold after a build with the current rules (a preview: nothing is
+  // moved here). A folder is asked for when it is opened (GET /api/tree: one level, with the totals below it and the numbers of
+  // every filter's choices), so a library of tens of thousands of files opens at once. A file opens into what is known about it.
   const TREE_STATES = { same: ["", "unchanged"], renamed: ["move", "renamed"], moved: ["move", "moved"], new: ["ok", "new"],
-    existing: ["", "already there"], ignored: ["skip", "not looked at"], incoming: ["warn", "set aside"], copy: ["info", "copy"], saves: ["info", "saves"] };
-  const Tree = {
-    shown: "",          // "<platform>|<scan id>|<rules>" of the trees on screen: drawn again only when one of them changed
+    existing: ["", "already archived"], ignored: ["skip", "not looked at"], incoming: ["warn", "set aside"], copy: ["info", "copy"],
+    saves: ["info", "saves"], missing: ["missing", "missing"] };
+  const FILES_SHOW = [["", "Everything"], ["have", "Games you have"], ["missing", "Missing"], ["bios", "BIOS and firmware"], ["unmatched", "Unmatched"], ["saves", "Saves"]];
+  const FILES_STATES = ["renamed", "moved", "new", "incoming", "copy", "saves", "existing", "ignored"];
+  const FILES_MORE = 10;          // region / language choices shown before "More"
+  const Files = {
+    side: "library",
+    f: { show: "have", state: "", region: "", language: "", rated: "", q: "" },
+    open: { library: new Set(), archive: new Set() },      // the folders that are open: they open again when the tree is drawn again
+    more: {},
+    seq: 0,
+    upTimer: 0,
+    upTries: 0,
+    shown: "",
 
-    /** This system's two trees, their top level open. */
-    async show() {
+    reset() {
+      this.side = "library";
+      this.f = { show: "have", state: "", region: "", language: "", rated: "", q: "" };
+      this.open = { library: new Set(), archive: new Set() };
+      this.shown = "";
+      $("files-q").value = "";
+    },
+
+    /** The filters of an address (``?show=missing``): a link from a tile or a card. */
+    applyParams(params) {
+      if (!params) return;
+      const show = params.show !== undefined ? params.show : (params.view !== undefined ? (OLD_VIEWS[params.view] || "") : undefined);
+      if (show !== undefined && FILES_SHOW.some(([k]) => k === show) && show !== this.f.show) { this.f.show = show; this.shown = ""; }
+      if (params.side === "archive" || params.side === "library") { if (params.side !== this.side) this.shown = ""; this.side = params.side; }
+    },
+
+    /** Draw the tree when the page is opened, unless what is on screen is still right. */
+    show() {
       const p = currentPlatform();
-      if (!p) return;
-      $("tree-legend").replaceChildren(el("span", { class: "muted small", text: "Marks: " }),
-        ...["renamed", "moved", "new", "incoming", "copy", "saves"].map((k) => el("span", { class: "tree-key" }, badge(TREE_STATES[k][0] || "skip", TREE_STATES[k][1]))));
-      const has = !!state.scan;
-      $("tree-gate").classList.toggle("hidden", has);
-      $("tree-body").classList.toggle("hidden", !has);
-      if (!has) { scanGate($("tree-gate"), "The file tree"); this.shown = ""; return; }
-      const info = state.library[p.name];
-      const key = `${p.name}|${state.scan.id}|${JSON.stringify(info ? info.profile : null)}`;
-      if (key === this.shown) return;
-      this.shown = key;
-      $("tree-note").textContent = "";
-      for (const side of ["library", "archive"]) {
-        const box = $(`tree-${side}`), where = $(side === "library" ? "tree-lib-where" : "tree-arch-where"), totals = $(side === "library" ? "tree-lib-totals" : "tree-arch-totals");
-        box.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " working out the tree..."));
-        where.textContent = "";
-        totals.textContent = "";
-        this.fill(box, p.name, side, "", 0).then(() => {
-          if (this.shown !== key) return;
-          const d = box.dataset;
-          where.textContent = d.root || (side === "archive" ? "No archive folder is set (Settings): what the rules set aside stays in the ROM folder, in _excluded, _superseded ..." : "");
-          totals.textContent = d.root ? `${fmt(Number(d.files || 0))} files \u00b7 ${fmtBytes(Number(d.bytes || 0))}${Number(d.changed) ? ` \u00b7 ${fmt(Number(d.changed))} changed by the build` : " \u00b7 nothing changed by the build"}` : "";
-          this.applyFilter();
-        }).catch((err) => { box.replaceChildren(el("div", { class: "error-text small", text: `Could not work out the tree: ${err.message}` })); this.shown = ""; });
-      }
+      if (!p || !state.scan || !libPlan) return;
+      const key = `${p.name}|${libPlan.plan_id}|${this.side}|${JSON.stringify(this.f)}`;
+      if (key !== this.shown) this.reload();
     },
 
-    /** A folder row with its (lazily loaded) children. ``info``: {name, files, bytes, changed, sub}. */
-    folderNode(info, platform, side, path, top = false) {
-      const kids = el("div", { class: "tree-kids hidden", role: "group" });
-      const caret = el("span", { class: "tree-caret", "aria-hidden": "true", text: "\u25B8" });
-      const meta = el("span", { class: "tree-meta muted small" });
-      const setMeta = (d) => {
-        meta.textContent = d.files === undefined ? (info.sub || "")
-          : `${fmt(d.files)} ${d.files === 1 ? "file" : "files"} \u00b7 ${fmtBytes(d.bytes)}${d.changed ? ` \u00b7 ${fmt(d.changed)} changed` : ""}`;
-      };
-      setMeta(info);
-      const head = el("button", { class: `tree-row tree-dir${top ? " tree-top" : ""}`, type: "button", role: "treeitem", "aria-expanded": "false",
-        "data-tree-path": path, "data-tree-platform": platform, "data-tree-side": side },
-      caret, el("span", { class: "tree-name", text: info.name }), meta);
-      const node = el("div", { class: "tree-node", "data-changed": String(info.changed || 0) }, head, kids);
-      let loaded = false;
-      head.addEventListener("click", async () => {
-        const open = kids.classList.contains("hidden");
-        kids.classList.toggle("hidden", !open);
-        head.setAttribute("aria-expanded", open ? "true" : "false");
-        caret.textContent = open ? "\u25BE" : "\u25B8";
-        if (!open || loaded) return;
-        loaded = true;
-        kids.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), top ? " working out the tree..." : " loading..."));
-        try {
-          await this.fill(kids, platform, side, path, 0);
-          if (top) { const t = kids.dataset; setMeta({ files: Number(t.files || 0), bytes: Number(t.bytes || 0), changed: Number(t.changed || 0) }); node.dataset.changed = t.changed || "0"; }
-        } catch (err) {
-          loaded = false;
-          kids.replaceChildren(el("div", { class: "error-text small", text: `Could not load: ${err.message}` }));
+    params(path, offset) {
+      return qs({ platform: state.platform, side: this.side, path, offset: offset || undefined, ...this.f });
+    },
+
+    /** Ask for the top of the tree again (the filters, the side or the plan changed) and draw it, the open folders open again. */
+    async reload(again) {
+      const p = currentPlatform();
+      if (!p || !state.scan || !libPlan) return;
+      if (!again) this.upTries = 0;
+      const seq = ++this.seq;
+      const box = $("files-tree");
+      this.shown = `${p.name}|${libPlan.plan_id}|${this.side}|${JSON.stringify(this.f)}`;
+      box.classList.add("tree-busy");
+      let doc;
+      try {
+        doc = await get(`/api/tree?${this.params("", 0)}`);
+      } catch (err) {
+        if (seq !== this.seq) return;
+        box.classList.remove("tree-busy");
+        box.replaceChildren(el("div", { class: "error-text", text: `Could not work out the files: ${err.message}` }));
+        this.shown = "";
+        return;
+      }
+      if (seq !== this.seq) return;                      // a later change is already on its way
+      box.classList.remove("tree-busy");
+      if (!doc.ready) { box.replaceChildren(el("div", { class: "muted", text: doc.reason || "Not available." })); return; }
+      this.drawSides(doc);
+      this.drawChips(doc.facets || {});
+      const t = doc.totals || { files: 0, bytes: 0, changed: 0, missing: 0 };
+      $("files-where").textContent = doc.none ? "" : doc.root;
+      $("files-totals").textContent = doc.none
+        ? "No archive folder is set (Settings > Archive folder): what the rules set aside stays in the ROM folder, in _excluded, _superseded ..."
+        : `${fmt(t.files)} ${t.files === 1 ? "file" : "files"} · ${fmtBytes(t.bytes)}${t.missing ? ` · ${fmt(t.missing)} missing` : ""}`
+          + `${t.changed ? ` · ${fmt(t.changed)} changed by the build` : ""}${this.filtered() ? " (with these filters)" : ""}`;
+      box.replaceChildren(...this.rows(doc, ""));
+      if (!box.childElementCount) box.replaceChildren(el("div", { class: "muted", text: this.filtered() ? "Nothing matches these filters." : "Nothing here." }));
+      clearTimeout(this.upTimer);                        // the arrows need the totals: ask again until they are worked out
+      if (doc.upgrades_pending && ++this.upTries < 12) this.upTimer = setTimeout(() => { if (seq === this.seq) this.reload(true); }, 1500);
+      else if (!doc.upgrades_pending) this.upTries = 0;
+    },
+
+    filtered() { return Object.entries(this.f).some(([k, v]) => v && !(k === "show" && v === "have")); },
+
+    set(key, value) {
+      this.f[key] = this.f[key] === value ? "" : value;
+      this.reload();
+    },
+
+    /** ROM folder | Archive. */
+    drawSides(doc) {
+      const n = doc.sides || {};
+      $("files-sides").replaceChildren(...[["library", "ROM folder"], ["archive", "Archive"]].map(([side, label]) => el("button", {
+        class: `tab ${side === this.side ? "active" : ""}`, role: "tab", type: "button", "data-side": side,
+        "aria-selected": side === this.side ? "true" : "false", tabindex: side === this.side ? "0" : "-1",
+        on: { click: () => { if (this.side !== side) { this.side = side; this.reload(); } } } },
+      label, el("span", { class: "count", text: `(${fmt(n[side] || 0)})` }))));
+    },
+
+    /** The filters, each choice with the number of files it would leave. */
+    drawChips(facets) {
+      const row = (label, key, choices, any) => {
+        if (!choices.length) return null;
+        const chips = [];
+        if (any) chips.push(el("button", { class: `chip chip-sm ${this.f[key] ? "" : "active"}`, type: "button", text: any, on: { click: () => { if (this.f[key]) this.set(key, this.f[key]); } } }));
+        for (const [value, text, n] of choices) {
+          chips.push(el("button", { class: `chip chip-sm ${this.f[key] === value ? "active" : ""}`, type: "button", "data-filter": key, "data-value": value,
+            text: `${text} (${fmt(n)})`, on: { click: () => this.set(key, value) } }));
         }
-        this.applyFilter();
-      });
-      return node;
+        return el("div", { class: "tag-filter-row" }, el("span", { class: "tag-filter-label", text: label }), el("div", { class: "chips" }, chips));
+      };
+      const top = (key, counts) => {
+        let list = Object.entries(counts || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+        const all = list.length;
+        if (!this.more[key]) list = list.slice(0, FILES_MORE);
+        if (this.f[key] && !list.some(([v]) => v === this.f[key])) list.push([this.f[key], (counts || {})[this.f[key]] || 0]);
+        const out = list.map(([v, n]) => [v, v, n]);
+        const extra = all > FILES_MORE ? el("button", { class: "chip chip-sm chip-more", type: "button", text: this.more[key] ? "Fewer" : `More (${fmt(all - FILES_MORE)})`,
+          on: { click: () => { this.more[key] = !this.more[key]; this.drawChips(facets); } } }) : null;
+        return [out, extra];
+      };
+      const show = facets.show || {};
+      const showRow = el("div", { class: "tag-filter-row" }, el("span", { class: "tag-filter-label", text: "Show" }), el("div", { class: "chips" },
+        FILES_SHOW.filter(([k]) => !k || show[k] || this.f.show === k).map(([k, text]) => el("button", { class: `chip chip-sm ${this.f.show === k ? "active" : ""}`, type: "button",
+          "data-filter": "show", "data-value": k, text: `${text} (${fmt(show[k] || 0)})`, on: { click: () => { if (this.f.show !== k) { this.f.show = k; this.reload(); } } } }))));
+      const st = facets.state || {};
+      const states = FILES_STATES.filter((k) => st[k] || this.f.state === k).map((k) => [k, TREE_STATES[k][1], st[k] || 0]);
+      const [regions, moreR] = top("region", facets.region);
+      const [langs, moreL] = top("language", facets.language);
+      const rated = facets.rated || {};
+      const regionRow = row("Region", "region", regions, "Any");
+      const langRow = row("Language", "language", langs, "Any");
+      if (regionRow && moreR) regionRow.lastChild.append(moreR);
+      if (langRow && moreL) langRow.lastChild.append(moreL);
+      $("files-chips").replaceChildren(...[showRow, row("The build", "state", states, "Anything"), regionRow, langRow,
+        ratingsAvailable() && (rated["1"] || rated["0"]) ? row("Rating", "rated", [["1", "Rated", rated["1"] || 0], ["0", "Unrated", rated["0"] || 0]], "Rated or not") : null,
+      ].filter(Boolean));
+      $("files-clear").classList.toggle("hidden", !this.filtered());
     },
 
-    async fill(kids, platform, side, path, offset) {
-      const doc = await get(`/api/tree?${qs({ platform, side, path, offset: offset || undefined })}`);
-      if (!doc.ready) { kids.replaceChildren(el("div", { class: "muted small", text: doc.reason || "Not available." })); return; }
-      if (doc.none) { kids.replaceChildren(el("div", { class: "muted small", text: "No archive folder is used for this system." })); return; }
-      if (doc.totals && !path) { kids.dataset.files = doc.totals.files; kids.dataset.bytes = doc.totals.bytes; kids.dataset.changed = doc.totals.changed; kids.dataset.root = doc.root || ""; }
+    /** The rows of one folder: its sub-folders, then its files. */
+    rows(doc, path) {
       const rows = [];
-      if (!offset) for (const d of doc.dirs) rows.push(this.folderNode(d, platform, side, path ? `${path}/${d.name}` : d.name));
-      for (const f of doc.files) {
-        const [cls, label] = TREE_STATES[f.state] || ["", f.state];
-        rows.push(el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" },
-          el("span", { class: "tree-caret", "aria-hidden": "true" }), el("span", { class: "tree-name mono-path", text: f.name }),
-          f.state !== "same" && f.state !== "existing" ? badge(cls || "skip", label) : null,
-          el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })));
-      }
+      if (!doc.offset) for (const d of doc.dirs) rows.push(this.folderNode(d, path ? `${path}/${d.name}` : d.name));
+      for (const f of doc.files) rows.push(this.fileNode(f));
       const shown = doc.offset + doc.files.length;
       if (shown < doc.total_files) {
-        rows.push(el("button", { class: "btn btn-small btn-ghost tree-more", type: "button", text: `Show more (${fmt(doc.total_files - shown)} more files)`,
-          on: { click: async (ev) => { const btn = ev.currentTarget; btn.disabled = true; const more = el("div", {}); btn.replaceWith(more); await this.fill(more, platform, side, path, shown); more.replaceWith(...more.childNodes); this.applyFilter(); } } }));
+        rows.push(el("button", { class: "btn btn-small btn-ghost tree-more", type: "button", text: `Show more (${fmt(doc.total_files - shown)} more)`,
+          on: { click: async (ev) => {
+            const btn = ev.currentTarget;
+            btn.disabled = true;
+            try {
+              const more = await get(`/api/tree?${this.params(path, shown)}`);
+              btn.replaceWith(...this.rows(more, path));
+            } catch (err) { btn.disabled = false; toast(err.message, "error"); }
+          } } }));
       }
-      if (!offset && !rows.length) rows.push(el("div", { class: "muted small", text: "Empty." }));
-      kids.replaceChildren(...rows);
+      return rows;
     },
 
-    /** "Only folders with changes": hide the folders (not the systems) and files a build leaves as they are. */
-    applyFilter() {
-      const on = $("tree-changed-only").checked;
-      for (const pane of ["tree-library", "tree-archive"]) {
-        for (const n of $(pane).querySelectorAll(".tree-node")) n.classList.toggle("hidden", on && n.dataset.changed === "0");
-        for (const f of $(pane).querySelectorAll(".tree-file")) f.classList.toggle("hidden", on && ["same", "existing", "ignored"].includes(f.dataset.state));
+    /** A folder row with its (lazily loaded) children. */
+    folderNode(info, path) {
+      const kids = el("div", { class: "tree-kids hidden", role: "group" });
+      const caret = el("span", { class: "tree-caret", "aria-hidden": "true", text: "▸" });
+      const meta = `${info.files ? `${fmt(info.files)} ${info.files === 1 ? "file" : "files"} · ${fmtBytes(info.bytes)}` : ""}`
+        + `${info.missing ? `${info.files ? " · " : ""}${fmt(info.missing)} missing` : ""}${info.changed ? ` · ${fmt(info.changed)} changed` : ""}`;
+      const head = el("button", { class: "tree-row tree-dir", type: "button", role: "treeitem", "aria-expanded": "false", "data-tree-path": path },
+        caret, el("span", { class: "tree-name", text: info.name }),
+        info.upgrades ? el("span", { class: "tree-upgrade", title: `${fmt(info.upgrades)} ${info.upgrades === 1 ? "game" : "games"} below ${info.upgrades === 1 ? "has" : "have"} a better version`,
+          "aria-label": "Better versions exist below", text: `⬆ ${fmt(info.upgrades)}` }) : null,
+        el("span", { class: "tree-meta muted small", text: meta }));
+      const open = this.open[this.side];
+      let loaded = false;
+      const set = async (on) => {
+        kids.classList.toggle("hidden", !on);
+        head.setAttribute("aria-expanded", on ? "true" : "false");
+        caret.textContent = on ? "▾" : "▸";
+        if (on) open.add(path); else open.delete(path);
+        if (!on || loaded) return;
+        loaded = true;
+        kids.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " loading..."));
+        try {
+          const doc = await get(`/api/tree?${this.params(path, 0)}`);
+          kids.replaceChildren(...this.rows(doc, path));
+        } catch (err) {
+          loaded = false;
+          open.delete(path);
+          kids.replaceChildren(el("div", { class: "error-text small", text: `Could not load: ${err.message}` }));
+        }
+      };
+      head.addEventListener("click", () => set(kids.classList.contains("hidden")));
+      if (open.has(path)) set(true);
+      return el("div", { class: "tree-node" }, head, kids);
+    },
+
+    /** A file row; one that belongs to a row of the build list (a game's file, a missing game) opens into what is known about it. */
+    fileNode(f) {
+      const [cls, label] = TREE_STATES[f.state] || ["", f.state];
+      const i = f.row;
+      const plain = f.state === "same";
+      const tags = i && i.tags ? tagChips(i.tags) : null;
+      const caret = el("span", { class: "tree-caret", "aria-hidden": "true", text: i ? "▸" : "" });
+      const cells = [caret, el("span", { class: `tree-name ${f.state === "missing" ? "" : "mono-path"}`, text: f.name }), tags,
+        i && i.bios ? badge("info", "BIOS") : null,
+        f.upgrade ? el("span", { class: "tree-upgrade", title: "A better version of this game exists (open the file to see it)", "aria-label": "A better version exists", text: "⬆" }) : null,
+        plain ? null : badge(cls || "skip", label),
+        f.state === "missing" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
+      if (!i) {
+        return el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
+      }
+      const panel = el("div", { class: "tree-detail hidden" });
+      const head = el("button", { class: `tree-row tree-file state-${f.state}`, type: "button", role: "treeitem", "aria-expanded": "false", "data-state": f.state,
+        title: f.from ? `from ${f.from}` : "" }, ...cells);
+      head.addEventListener("click", () => {
+        const on = panel.classList.contains("hidden");
+        panel.classList.toggle("hidden", !on);
+        head.setAttribute("aria-expanded", on ? "true" : "false");
+        caret.textContent = on ? "▾" : "▸";
+        if (on && !panel.firstChild) this.detail(panel, f);
+      });
+      return el("div", { class: "tree-node" }, head, panel);
+    },
+
+    /** What is known about a file: its game, why the rules keep or drop it, what the build does, its saves, the checksums, your choice. */
+    async detail(panel, f) {
+      const i = f.row;
+      const line = (label, ...content) => (content.some(Boolean) ? [el("dt", { text: label }), el("dd", {}, ...content.filter(Boolean))] : []);
+      const game = i.item === "game" ? i.name : (i.rom_name || (i.game_ref && i.game_ref.game) || "");
+      const build = f.state === "missing" ? "Not in your folder."
+        : f.state === "same" ? "Leaves it where it is."
+          : f.state === "incoming" ? `Sets it aside: it goes to the archive${f.from ? ` from ${f.from}` : ""}.`
+            : `${TREE_STATES[f.state] ? TREE_STATES[f.state][1] : f.state}${f.from ? ` (from ${f.from})` : ""}.`;
+      const sums = el("div", { class: "cs-sums" });
+      const actions = i.game_ref && i.item === "file" ? el("div", { class: "row" },
+        el("button", { class: "btn btn-small", type: "button", text: "Always keep", title: "Keep this game whatever the rules say", on: { click: () => setOverrides([i], "keep") } }),
+        el("button", { class: "btn btn-small", type: "button", text: "Always exclude", title: "Set this game aside whatever the rules say", on: { click: () => setOverrides([i], "exclude") } }),
+        el("button", { class: "btn btn-small btn-ghost", type: "button", text: "Back to the rules", title: "Remove your choice for this game", on: { click: () => setOverrides([i], "clear") } })) : null;
+      panel.replaceChildren(el("dl", { class: "tree-facts" },
+        ...line("Game", game ? copyChip(game, "", "name") : null, i.title && i.title !== game ? el("span", { class: "muted small", text: ` ${i.title}` }) : null,
+          i.dat ? el("div", { class: "sub", text: shortDat(i.dat) }) : null),
+        ...line("Rating", ratingsAvailable() && i.rating !== undefined ? ratingCell(i) : null),
+        ...line("The rules", i.item === "file" ? libraryWhyPanel(i) : null),
+        ...line("The build", el("span", { text: build })),
+        ...line("Saves", i.item === "file" && i.saves ? libSavesCell(i) : null),
+        ...line("Year", i.year ? el("span", { text: String(i.year) }) : null)),
+      sums, actions);
+      if (i.category === "kept" && i.item === "file") {
+        const rules = panel.querySelector(".tree-facts");
+        Better.of(i).then((it) => {
+          if (!it || !it.better.length || !rules.isConnected) return;
+          rules.append(el("dt", { text: "A better match" }), el("dd", {},
+            el("div", { class: "small", text: "Your rules prefer another version of this game, which is not in your folder:" }),
+            ...it.better.map((b) => el("div", {}, copyChip(b.name, "", "name"),
+              ...b.files.flatMap((f) => [f.crc ? el("div", {}, copyChip(f.crc, "CRC32")) : null, f.md5 ? el("div", {}, copyChip(f.md5, "MD5")) : null,
+                f.sha1 ? el("div", {}, copyChip(f.sha1, "SHA-1")) : null])))));
+        });
+      }
+      if (i.cs_kind === null || i.cs_kind === undefined || i.cs_id === null || i.cs_id === undefined) return;
+      sums.replaceChildren(el("span", { class: "muted small", text: "Loading checksums..." }));
+      try {
+        const payload = i.checksums || await get(`/api/scan/checksums?${qs({ kind: i.cs_kind, id: i.cs_id })}`);
+        i.checksums = payload;
+        sums.replaceChildren(checksumPanel(payload));
+      } catch (err) {
+        sums.replaceChildren(el("span", { class: "error-text small", text: err.message }));
       }
     },
 
-    bind() { $("tree-changed-only").addEventListener("change", () => this.applyFilter()); },
+    bind() {
+      const search = debounce(() => { this.f.q = $("files-q").value.trim(); this.reload(); }, 350);
+      $("files-q").addEventListener("input", search);
+      $("files-clear").addEventListener("click", () => {
+        this.f = { show: "have", state: "", region: "", language: "", rated: "", q: "" };
+        $("files-q").value = "";
+        this.reload();
+      });
+      $("saves-box").addEventListener("toggle", () => { if ($("saves-box").open) showSavesTable(); });
+      tabKeys($("files-sides"));
+    },
   };
 
   // ------------------------------------------------------------------ settings for every system
@@ -4930,7 +4819,7 @@
     $("scan-btn").dataset.blocked = canScan ? "0" : "1";
     for (const id of ["lib-plan-btn"]) $(id).dataset.blocked = hasScan ? "0" : "1";
     if (!hasScan) for (const id of ["lib-undo-btn"]) $(id).dataset.blocked = "1";
-    if (!hasScan || libTable === null) $("lib-apply-btn").dataset.blocked = hasScan ? "0" : "1";
+    if (!hasScan || libPlan === null) $("lib-apply-btn").dataset.blocked = hasScan ? "0" : "1";
     // Apply buttons are enabled once a scan exists (until a preview shows there is
     // nothing to do); the confirmation step re-checks the counts anyway.
     Jobs.setRunning(Jobs.running);
@@ -4977,9 +4866,7 @@
     RetroArch.bind();
     $("lib-apply-btn").addEventListener("click", applyLibrary);
     $("set-tiles-reset").addEventListener("click", () => Settings.resetTiles());
-    Tree.bind();
-    $("rules-toggle").addEventListener("click", () => { const box = $("library-rules-box"); box.open = !box.open; });
-    $("library-rules-box").addEventListener("toggle", () => $("rules-toggle").setAttribute("aria-expanded", $("library-rules-box").open ? "true" : "false"));
+    Files.bind();
     $("lib-undo-btn").addEventListener("click", undoLibrary);
     for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
     $("lib-export-dest").addEventListener("change", exportSettingsChanged);
@@ -5018,7 +4905,6 @@
     bindFolderField();
     for (const tab of TABS) $(`tabbtn-${tab}`).addEventListener("click", () => openTab(tab));
     tabKeys($("sys-tabs"));
-    tabKeys($("result-tabs"));
     window.addEventListener("hashchange", applyRoute);
     $("chdman-save").addEventListener("click", () => saveChdman({ path: $("chdman-path").value.trim() }));
     $("chdman-refresh").addEventListener("click", () => loadChdman(true));

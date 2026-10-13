@@ -216,3 +216,69 @@ class DiscSavesTests(PsServerCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class ConvertPs2SavesTests(DiscSavesTests):
+    """``convert``: a USA save is moved to the European release's code (a folder card: copied; a card image: rewritten in place)."""
+
+    def convert(self) -> dict:
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        return plan, res["result"]
+
+    def test_a_folder_card_save_is_copied_under_the_other_releases_code_and_undo_removes_it(self) -> None:
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertEqual((plan["reasons"]["kept_saved"], plan["reasons"]["superseded"]), (0, 1))
+        self.assertEqual(plan["saves"]["ps2"], {"saves": 1, "conflicts": 0})
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        self.assertFalse((card / "BESLES-50012GAMMA").exists())                      # (the preview copied nothing)
+        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        self.assertEqual(res["result"]["ps2_saves"]["saves"], 1)
+        self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"save")
+        self.assertEqual((card / "BASLUS-20946GAMMA" / "data.bin").read_bytes(), b"save")        # the old save is not touched
+        self.assertEqual((card / "BESLES-50012OTHER" / "data.bin").read_bytes(), b"other")
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "_superseded/Gamma (USA)/Gamma (USA).chd"])        # (the USA disc is set aside)
+        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
+        back = self.job()
+        self.assertEqual(back["status"], "done", back)
+        self.assertFalse((card / "BESLES-50012GAMMA").exists())
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
+
+    def test_a_save_the_card_has_under_the_new_code_is_not_overwritten(self) -> None:
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        (card / "BESLES-50012GAMMA").mkdir()
+        (card / "BESLES-50012GAMMA" / "data.bin").write_bytes(b"mine")
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertEqual(plan["saves"]["ps2"], {"saves": 0, "conflicts": 1})
+        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"mine")
+
+    def test_a_card_image_is_rewritten_in_place_and_undo_puts_the_old_image_back(self) -> None:
+        import shutil
+        from test_nintendo import ps2_card_image
+        from romorg import pcsx2
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        shutil.rmtree(card)
+        image = ps2_card_image({"BASLUS-20946GAMMA": {"BASLUS-20946GAMMA": b"s" * 2000, "icon.sys": b"i" * 100}, "BESLES-50012OTHER": {"x": b"o" * 10}}, ecc=True)
+        card.write_bytes(image)
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertEqual(plan["saves"]["ps2"], {"saves": 1, "conflicts": 0})
+        self.assertEqual(card.read_bytes(), image)                                               # (the preview wrote nothing)
+        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        self.assertEqual(res["result"]["ps2_saves"]["replaced"], 1)
+        names = sorted(s.name for s in pcsx2.read_card_image(card))
+        self.assertEqual(names, ["BESLES-50012GAMMA", "BESLES-50012OTHER"])
+        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertEqual(card.read_bytes(), image)                                               # the card is exactly as it was

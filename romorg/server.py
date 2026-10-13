@@ -836,8 +836,22 @@ class App:
             self.updates.igdb_creds = self._igdb_creds
         self.closing = threading.Event()  # set when the app is told to exit
         self.shutdown_hook: Callable[[], None] | None = None  # set by make_server
+        self._rename_emulator_settings()
         self._adopt_old_folders()
         self._migrate_library()
+
+    def _rename_emulator_settings(self) -> None:
+        """The folders of Dolphin, Cemu and PCSX2 were saved under ``nintendo`` (the first two were the only ones); they are ``emulators``
+        now. An old config is moved over once (an ``emulators`` that already exists wins); never raises."""
+        try:
+            if "nintendo" in self._config():
+                def move(cfg: dict[str, Any]) -> None:
+                    old = cfg.pop("nintendo", None)
+                    if isinstance(old, dict) and not isinstance(cfg.get("emulators"), dict):
+                        cfg["emulators"] = old
+                _mod("paths").update_config(move)
+        except Exception:  # noqa: BLE001 - a convenience only
+            traceback.print_exc()
 
     def _migrate_library(self) -> None:
         """An older config: the rules of a Collection become your defaults, each system's saved profile its list of overrides (never raises)."""
@@ -854,7 +868,7 @@ class App:
         try:
             cfg = self._config()
             have = self._folders(cfg)
-            old = cfg.get("nintendo") if isinstance(cfg.get("nintendo"), dict) else {}
+            old = cfg.get("emulators") if isinstance(cfg.get("emulators"), dict) else {}
             sw = cfg.get("switch") if isinstance(cfg.get("switch"), dict) else {}
             for name, folder in (("Nintendo Switch", sw.get("games")),
                                  ("Nintendo Wii", (old.get("wii") or {}).get("games") if isinstance(old.get("wii"), dict) else None),
@@ -1750,6 +1764,8 @@ class App:
                     matched += 1
                 continue
             if item["dest"] == UNMATCHED_DIR:
+                if "it sat with" in (item.get("reason") or ""):      # (a file from a game's own folder: the folder is this system's)
+                    continue
                 to_unmatched += 1
                 top = item["from"].split("/", 1)[0].lower() if "/" in item["from"] else ""
                 if top in OTHER_SYSTEM_DIRS:
@@ -2572,7 +2588,7 @@ class App:
         return self._profile_info(platform)
 
     def library_saved(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/library/saved``: ``{platform, choice: keep | archive | leave | default, games: [{dat, game}]}`` - what
+        """``POST /api/library/saved``: ``{platform, choice: keep | archive | leave | carry | default, games: [{dat, game}]}`` - what
         a build does with the saves of single games the rules would replace or archive (stored in the platform's library
         profile; ``default`` = follow the profile's ``saved_games``). Only when a RetroArch config is known."""
         platform = self._resolve_platform(body.get("platform"))
@@ -2581,7 +2597,7 @@ class App:
         library = self._library_mod()
         choice = _str_arg(body.get("choice"))
         if choice not in library.SAVED_GAMES + ("default",):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "choice must be keep, archive, leave or default")
+            raise ApiError(HTTPStatus.BAD_REQUEST, "choice must be keep, archive, leave, carry, convert or default")
         games = body.get("games")
         if not isinstance(games, list) or not games or len(games) > 5000 or not all(
                 isinstance(g, dict) and _str_arg(g.get("dat")) and _str_arg(g.get("game")) for g in games):
@@ -3624,8 +3640,12 @@ class App:
             saves_moves, _saves_info = self._saves_moves(plan, st.root, aside)
             if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
                 res["saves_archived"] = self._apply_saves_moves(saves_moves, res.get("undo_log", ""))
+            ps2_done = self._ps2_follow(plan, {"library_log": res.get("undo_log", "")})
+            if ps2_done:
+                res["ps2_saves"] = ps2_done
             moved = self._moved_pairs(plan.ops)
-            if moved:
+            sp_now = self._saves_plan(plan)
+            if moved or (sp_now and sp_now.get("carry")):
                 follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")}, plan)
                 if follow:
                     res["saves"] = follow
@@ -3869,14 +3889,22 @@ class App:
         try:
             ra, installs, saved = self._ra_state()
             sel = self._ra_selected(installs, saved)
-            if sel is None or saved.get("follow", True) is False:
+            if sel is None:
                 return None
             pairs = [(a, b) for a, b in ra.pairs_from_moves(pairs_from) if ra.fold_name(a) not in sp["gone"]]
             pairs += self._playlist_pairs(plan, sp["report"], sp["gone"])      # the saves of a multi-disc game follow its playlist
-            if not pairs:
+            if saved.get("follow", True) is False:
+                pairs = []
+            carry = (sp.get("carry") or []) if mode == "move" else []      # (a build into another folder copies the games, not their saves between versions)
+            if not pairs and not carry:
                 return None
-            ops = ra.plan_follow(sel, pairs, mode, files=self._report_files(sp["report"]))
-            res = ra.apply_follow(ops, self._ra_dirs(saved)[0], extra, sel)
+            files = self._report_files(sp["report"])
+            ops = ra.plan_follow(sel, pairs, mode, files=files) if pairs else []
+            carry_ops = self._carry_ops(ra, sel, sp, files) if carry else []
+            res = ra.apply_follow(ops + carry_ops, self._ra_dirs(saved)[0], extra, sel)
+            res["carried"] = sum(1 for o in carry_ops if o.status == "copy") if not res.get("skipped_running") else 0
+            res["converted"] = sum(1 for o in carry_ops if o.status == "copy" and o.data is not None) if res["carried"] else 0
+            ops = ops + carry_ops
             res["conflicts"] = sum(1 for o in ops if o.status == "conflict")
             return res
         except Exception as exc:  # noqa: BLE001 - saves are a courtesy of the build: never fail it
@@ -3945,6 +3973,103 @@ class App:
                 out.append((name, target))
         return out
 
+    @staticmethod
+    def _disc_serial(op: Any) -> str:
+        """The product code of the disc of a plan row (read from the image where it is, or where the build puts it); "" when unreadable."""
+        pcsx2 = _mod("pcsx2")
+        unit = getattr(op, "unit", None)
+        for path in (getattr(unit, "path", None), getattr(op, "src", None), getattr(op, "dst", None)):
+            if path and os.path.isfile(path):
+                code = pcsx2.read_serial(Path(path), psx=True)
+                if code:
+                    return code
+        return ""
+
+    def _carry_ops(self, ra: Any, sel: Any, sp: dict[str, Any], files: list[tuple[Path, Path]]) -> list[Any]:
+        """The copies of the save games that go to the better version (never states). A save that has to be converted for the other region
+        is read, rewritten in memory (``Follow.data``) and left out when it holds no save of that game."""
+        savecarry = _mod("savecarry")
+        out: list[Any] = []
+        for pair in sp.get("carry") or []:
+            ops = [o for o in ra.plan_follow(sel, [pair], "copy", files=files) if o.kind == "save"]
+            codes = (sp.get("convert") or {}).get(pair[0])
+            if codes:
+                kept = []
+                for o in ops:
+                    if o.status != "copy":
+                        kept.append(o)
+                        continue
+                    try:
+                        done = savecarry.convert_ps1_card(Path(o.src).read_bytes(), codes[0], codes[1])
+                    except OSError:
+                        continue
+                    if done is not None:
+                        o.data, o.size = done[0], len(done[0])
+                        kept.append(o)
+                ops = kept
+            out += ops
+        return out
+
+    def _ps2_ops(self, sp: dict[str, Any]) -> tuple[list[Any], dict[str, int]]:
+        """What moving the PlayStation 2 saves to the better version's code takes: for a folder card the files of the save folder copied
+        under the new name; for a card image the whole image rewritten in place. ``({ops}, {saves, conflicts})``; a save the card already
+        has under the new code is a conflict and is left alone."""
+        pairs = sp.get("ps2") or []
+        info = {"saves": 0, "conflicts": 0}
+        if not pairs:
+            return [], info
+        ra, pcsx2, ps2save = _mod("retroarch"), _mod("pcsx2"), _mod("ps2save")
+        root = _mod("idsaves")._data("Sony PlayStation 2", self._nin_cfg())
+        det = pcsx2.detect_pcsx2(root=Path(root)) if root and os.path.isdir(root) else {}
+        cards = pcsx2.find_cards([Path(x) for x in det.get("cards", [])]) if det else []
+        ops: list[Any] = []
+        images: dict[Path, tuple[bytes, bytes]] = {}                     # image -> (as it was, as it will be)
+        for old, new in pairs:
+            for sv in cards:
+                if sv.serial != old:
+                    continue
+                if sv.path.is_dir():
+                    plan = ps2save.folder_plan(sv.path, old, new)
+                    if plan is None:
+                        continue
+                    name, files = plan
+                    dest = sv.path.parent / name
+                    if os.path.lexists(dest):
+                        info["conflicts"] += 1
+                        continue
+                    ops += [ra.Follow(f, dest / rel, "save", "copy", "", _file_size(f)) for f, rel in files]
+                    info["saves"] += 1
+                else:
+                    try:
+                        was, now = images.get(sv.path) or (sv.path.read_bytes(),) * 2
+                    except OSError:
+                        continue
+                    done = ps2save.convert_image(now, old, new)
+                    if done is None:
+                        info["conflicts"] += 1
+                        continue
+                    images[sv.path] = (was, done[0])
+                    info["saves"] += done[1]
+        ops += [ra.Follow(path, path, "save", "replace", "", len(now), data=now) for path, (was, now) in images.items() if now != was]
+        return ops, info
+
+    def _ps2_follow(self, plan: Any, extra: dict[str, Any]) -> dict[str, Any] | None:
+        """Do :meth:`_ps2_ops` (journalled, so Undo takes the copies away and puts a rewritten card image back). Not while PCSX2 runs."""
+        sp = self._saves_plan(plan)
+        if sp is None or not sp.get("ps2"):
+            return None
+        try:
+            ops, info = self._ps2_ops(sp)
+            if not ops:
+                return {**info, "followed": 0, "copied": 0, "failed": []} if info["conflicts"] else None
+            res = _mod("retroarch").apply_follow(ops, _mod("paths").data_dir() / "retroarch-undo", extra, None,
+                                                 running=_mod("emulators").source_running("pcsx2"))
+            res.update(info)
+            return res
+        except Exception as exc:  # noqa: BLE001 - saves are a courtesy of the build: never fail it
+            traceback.print_exc()
+            return {"error": str(exc), "followed": 0, "copied": 0, "failed": []}
+
     def _saves_plan(self, plan: Any) -> dict[str, Any] | None:
         """What the build does with the saves, from the plan alone (None: no RetroArch config is known, nothing to do):
 
@@ -3967,17 +4092,44 @@ class App:
                 gone[pk] = gone[fds[0]]
         archive: list[Any] = []
         leave: list[Any] = []
+        carry: list[tuple[str, str]] = []
+        convert: dict[str, tuple[str, str]] = {}
+        ps2: list[tuple[str, str]] = []
+        ps2_stems: set[str] = set()
+        ops_by_stem = {ra.fold_name(self._op_stem(op)): op for op in plan.ops if getattr(op, "kind", "") != "m3u"}
+        by_name: dict[str, Any] = {}
+        for op in plan.ops:                                              # (the DAT's name of a game, with or without the file's extension)
+            if getattr(op, "rom_name", "") and getattr(op, "status", "") != "delete":
+                by_name.setdefault(op.rom_name, op)
+                by_name.setdefault(os.path.splitext(op.rom_name)[0], op)
+        renamed = {ra.fold_name(a): b for a, b in self._planned_pairs(plan)}
         for stem in gone:
             st = report.sets.get(stem)
             if st is None or not st.files:
                 continue
             choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
+            if choice in ("carry", "convert"):                           # its save games go to the version that replaces it (never its states)
+                gone_op = ops_by_stem.get(stem)
+                win = by_name.get(getattr(gone_op, "superseded_by", "") or "") if gone_op is not None else None
+                if win is not None and choice == "convert" and st.source == "pcsx2" and st.saves \
+                        and getattr(gone_op, "dat", "") in _mod("savecarry").CONVERTIBLE_DATS:
+                    codes = (self._disc_serial(gone_op), self._disc_serial(win))      # (PCSX2 names a save by the game's code, not the ROM's)
+                    if all(codes) and codes[0] != codes[1]:
+                        ps2_stems.add(stem)
+                        if codes not in ps2:
+                            ps2.append(codes)
+                if win is not None and st.renames and st.saves:
+                    carry.append((st.name, renamed.get(ra.fold_name(self._op_stem(win))) or self._op_stem(win)))
+                    if choice == "convert" and getattr(gone_op, "dat", "") in _mod("savecarry").CONVERTIBLE_DATS:
+                        codes = (self._disc_serial(gone_op), self._disc_serial(win))          # (the product codes of the two discs)
+                        if all(codes) and codes[0] != codes[1]:
+                            convert[st.name] = codes
             (archive if choice == "archive" else leave).append(st)
         kept = {ra.fold_name(self._op_stem(op)) for op in plan.ops
                 if library.SAVED_KEEP_TEXT in (getattr(op, "reason", "") or "") and getattr(op, "status", "") != "delete"}
         pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in gone]
         pairs += self._playlist_pairs(plan, report, gone)
-        sp = {"gone": gone, "archive": archive, "leave": leave, "kept": kept, "pairs": pairs, "report": report}
+        sp = {"gone": gone, "archive": archive, "leave": leave, "kept": kept, "pairs": pairs, "report": report, "carry": carry, "convert": convert, "ps2": ps2, "ps2_stems": ps2_stems}
         plan._saves_plan = sp
         return sp
 
@@ -4045,6 +4197,15 @@ class App:
             hits = ra.saves_of(self._report_files(report), {a for a, _b in sp["pairs"]})
             info["rename"] = {"files": sum(1 for o in ops if o.status in ("move", "copy")), "games": len({h.stem for h in hits}),
                               "conflicts": sum(1 for o in ops if o.status == "conflict")}
+        info["carry"] = {"files": 0, "games": 0, "conflicts": 0, "converted": 0}
+        info["ps2"] = {"saves": 0, "conflicts": 0}
+        if not elsewhere and sp.get("ps2"):
+            info["ps2"] = self._ps2_ops(sp)[1]
+        if not elsewhere and sp.get("carry") and self._ra_active() is not None:
+            ops = self._carry_ops(ra, self._ra_active(), sp, self._report_files(report))
+            info["carry"] = {"files": sum(1 for o in ops if o.status == "copy"), "games": len(sp["carry"]),
+                             "conflicts": sum(1 for o in ops if o.status == "conflict"),
+                             "converted": sum(1 for o in ops if o.status == "copy" and o.data is not None)}
         if not elsewhere:
             _moves, arch = self._saves_moves(plan, folder, aside)
             if arch:
@@ -4071,7 +4232,7 @@ class App:
         if stem in sp["kept"]:
             effect = "keep"
         elif stem in sp["gone"]:
-            effect = "archive" if st in sp["archive"] else "leave"
+            effect = "archive" if st in sp["archive"] else "carry" if stem in sp.get("ps2_stems", ()) or any(a == st.name for a, _b in sp.get("carry", ())) else "leave"
         elif st.renames and any(ra.fold_name(a) == stem for a, _b in sp["pairs"]):
             effect = "rename"
         return {"saves": st.saves, "states": st.states, "total": st.files, "effect": effect,
@@ -4119,12 +4280,19 @@ class App:
         try:
             ra, _installs, saved = self._ra_state()
             journal_dir = self._ra_dirs(saved)[0]
-            for item in ra.list_undo(journal_dir):
+            merged: dict[str, Any] | None = None
+            for item in ra.list_undo(journal_dir):               # (a build can leave two: RetroArch's saves and PCSX2's)
                 if item["kind"] != "follow":
                     continue
                 data = json.loads(Path(item["journal"]).read_text(encoding="utf-8"))
                 if data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
-                    return ra.undo_relocation(Path(item["journal"]))
+                    res = ra.undo_relocation(Path(item["journal"]))
+                    if merged is None:
+                        merged = dict(res)
+                    else:
+                        for k, v in res.items():
+                            merged[k] = merged.get(k, 0) + v if isinstance(v, int) and not isinstance(v, bool) else (merged.get(k, []) + v if isinstance(v, list) else merged.get(k, v))
+            return merged
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return {"error": str(exc)}
@@ -4282,7 +4450,8 @@ class App:
 
     # ---------------------------------------------------------------- Nintendo Wii / Wii U: games and the saves of Dolphin and Cemu
     def _nin_cfg(self) -> dict[str, dict[str, str]]:
-        return _mod("nintendoapp").normalise(self._config().get("nintendo"))
+        cfg = self._config()
+        return _mod("nintendoapp").normalise(cfg.get("emulators") if "emulators" in cfg else cfg.get("nintendo"))
 
     def emulators_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/emulators``: the emulators whose saves are looked at: platforms, folder (found or chosen), on or off."""
@@ -4309,7 +4478,7 @@ class App:
         enabled = _bool_arg(body.get("enabled"), True) if "enabled" in body else None
         nin, switch = self._nin_cfg(), self._switch_cfg()
         emu.store(key, nin, switch, folder, enabled)
-        self._config_update(nintendo=nin, switch=switch, strict=True)
+        self._config_update(emulators=nin, switch=switch, strict=True)
         return self.emulators_get({}, None)
 
     @staticmethod
@@ -4408,15 +4577,21 @@ class App:
         aside = Path(os.path.abspath(os.path.expanduser(raw)))
         return None if _mod("sortroot").check_folders(root, aside) else aside
 
-    def _tree_of(self, state: ScanState) -> tuple[Any, Any, Path | None]:
-        """``(the ROM folder's tree after a build, the archive's, the archive base)`` for the system's current rules (kept with its plans)."""
+    def _tree_entries(self, state: ScanState) -> tuple[list[dict[str, Any]], Path | None, str]:
+        """Every file of the system's ROM folder and of its part of the archive as a build with the current rules would leave them,
+        each a dict (``side``, ``parts``, ``size``, ``state``, ``from``, and - when it is a file of the plan - ``row``: its row of the
+        build list, with its game's tags, rating, saves and the reason the rules kept or dropped it), plus one ``missing`` entry
+        per game of the DATs the folder lacks. ``(entries, the archive base, an identity that changes with the plan)``; kept with
+        the system's plans."""
         key = (False, _layout(state.platform) != LAYOUT_GAME_FOLDER)
         aside = self._archive_of(state.platform, state.root)
-        ident = (self._plan_id(state, key), str(aside))
+        ident = f"{self._plan_id(state, key)}|{aside}"
         cached = state.items.get(("library", "tree"))
         if cached is not None and cached[0] == ident:
-            return cached[1]
+            return cached[1], cached[2], ident
         plan = self._library_plan(state, *key)
+        rows = self._library_rows(state, key)
+        self._annotate_library(state, rows)
         sortroot, treeview = _mod("sortroot"), _mod("treeview")
         moves: list[Any] = []
         base = None
@@ -4428,10 +4603,102 @@ class App:
                 moves += self._saves_moves(plan, state.root, aside)[0]
             except Exception:  # noqa: BLE001 - the saves are a courtesy
                 traceback.print_exc()
-        lib, arch_tree = treeview.build(state.root, plan, base, moves, plan.playlists)
-        value = (lib, arch_tree, base)
-        state.items[("library", "tree")] = (ident, value)
-        return value
+        entries: list[dict[str, Any]] = []
+        for e in treeview.collect(state.root, plan, base, moves, plan.playlists):
+            row = rows[e.op][0] if 0 <= e.op < len(plan.ops) else None
+            entries.append({"side": e.side, "parts": e.parts, "size": e.size, "state": e.state, "from": e.origin, "row": row,
+                            "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
+        games = self._kind_rows(state, "games")
+        try:
+            self._annotate_ratings(state, games)
+        except ImportError:
+            pass
+        for item, _t in games:                                   # the games the folder lacks: listed where they would be, no file
+            if not item.get("have"):
+                entries.append({"side": treeview.LIBRARY, "parts": (item["name"],), "size": 0, "state": treeview.MISSING, "from": "",
+                                "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"]},
+                                        "cs_kind": "games", "cs_id": item.get("id")},
+                                "text": (item["name"] + " " + (item.get("title") or "")).casefold()})
+        state.items[("library", "tree")] = (ident, entries, base)
+        state.items.pop(("library", "treeidx"), None)
+        return entries, base, ident
+
+    TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves")
+
+    @staticmethod
+    def _tree_pass(entry: dict[str, Any], f: dict[str, str], skip: str = "") -> bool:
+        """True when ``entry`` passes the filters ``f`` (``show``, ``state``, ``region``, ``language``, ``rated``, ``q``); ``skip`` names one
+        that is not applied (how the counts next to a filter's choices are made)."""
+        row = entry["row"] or {}
+        cat = row.get("category", "")
+        show = "" if skip == "show" else f.get("show", "")
+        if show == "have" and cat != "kept" and entry["side"] == "library":          # (what is in the archive is not looked at by this one)
+            return False
+        if show == "bios" and cat != "bios":
+            return False
+        if show == "missing" and entry["state"] != "missing":
+            return False
+        if show == "unmatched" and cat != "unmatched" and entry["state"] != "ignored":
+            return False
+        if show == "saves" and cat != "saves" and entry["state"] != "saves" and not (row.get("saves") or {}).get("total"):
+            return False
+        if skip != "state" and f.get("state") and entry["state"] != f["state"]:
+            return False
+        tags = row.get("tags") or {}
+        if skip != "region" and f.get("region") and f["region"] not in (tags.get("regions") or ()):
+            return False
+        if skip != "language" and f.get("language") and f["language"] not in (tags.get("languages") or ()):
+            return False
+        if skip != "rated" and f.get("rated"):
+            if not row or (row.get("rating") is not None) != (f["rated"] == "1"):
+                return False
+        if f.get("q") and f["q"] not in entry["text"]:
+            return False
+        return True
+
+    def _tree_index(self, state: ScanState, side: str, f: dict[str, str]) -> tuple[Any, list[dict[str, Any]], Path | None]:
+        """The :class:`treeview.Index` of one side for these filters (the last few are kept), all the entries and the archive base."""
+        entries, base, ident = self._tree_entries(state)
+        treeview = _mod("treeview")
+        cache = state.items.setdefault(("library", "treeidx"), {})          # type: ignore[arg-type]
+        ckey = (ident, side, tuple(sorted(f.items())))
+        if ckey not in cache:
+            if len(cache) > 12:
+                cache.clear()
+            root = str(state.root) if side == treeview.LIBRARY else (str(base) if base is not None else "")
+            idx = treeview.Index(root)
+            for n, e in enumerate(entries):
+                if e["side"] == side and self._tree_pass(e, f):
+                    idx.add(e["parts"], e["size"], e["state"], e["from"], n)
+            cache[ckey] = idx
+        return cache[ckey], entries, base
+
+    def _tree_facets(self, entries: list[dict[str, Any]], side: str, f: dict[str, str]) -> dict[str, Any]:
+        """The numbers next to the choices of every filter: how many files each would leave, the other filters applied."""
+        mine = [e for e in entries if e["side"] == side]
+        show = {k: 0 for k in self.TREE_SHOW}
+        states: dict[str, int] = {}
+        regions: dict[str, int] = {}
+        languages: dict[str, int] = {}
+        rated = {"1": 0, "0": 0}
+        for e in mine:
+            row = e["row"] or {}
+            if self._tree_pass(e, f, "show"):
+                for k in self.TREE_SHOW:
+                    if self._tree_pass(e, {"show": k}):
+                        show[k] += 1
+            if self._tree_pass(e, f, "state"):
+                states[e["state"]] = states.get(e["state"], 0) + 1
+            tags = row.get("tags") or {}
+            if self._tree_pass(e, f, "region"):
+                for r in tags.get("regions") or ():
+                    regions[r] = regions.get(r, 0) + 1
+            if self._tree_pass(e, f, "language"):
+                for lang in tags.get("languages") or ():
+                    languages[lang] = languages.get(lang, 0) + 1
+            if row and self._tree_pass(e, f, "rated"):
+                rated["1" if row.get("rating") is not None else "0"] += 1
+        return {"show": show, "state": states, "region": regions, "language": languages, "rated": rated}
 
     def tree_systems(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/tree/systems``: the systems that have a folder, each with its folder, its part of the archive and whether a
@@ -4453,28 +4720,76 @@ class App:
         return {"systems": out, "archive_dir": self._archive_settings(cfg)["dir"]}
 
     def tree_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
-        """``GET /api/tree?platform=&side=library|archive&path=&offset=``: one folder of the tree a build of the system would
-        leave (its sub-folders with their totals, its files with what the build does to each). ``ready`` is false when the
-        system has no scan at hand."""
+        """``GET /api/tree?platform=&side=library|archive&path=&offset=`` + the filters ``show`` (have | missing | bios | unmatched | saves),
+        ``state`` (what the build does), ``region``, ``language``, ``rated`` (1 | 0), ``q``: one folder of the tree a build of the
+        system would leave (its sub-folders with their totals, its files with what the build does to each and the row of the build
+        list they belong to). The top folder also carries ``facets`` (the numbers of every filter's choices) and ``sides`` (the files
+        on each side). ``ready`` is false when the system has no scan at hand."""
         platform = self._resolve_platform(query.get("platform"))
         side = "archive" if query.get("side") == "archive" else "library"
         state = self._state_of(platform)
         if state is None:
             return {"platform": platform.name, "side": side, "ready": False,
-                    "reason": "Scan this system first: the trees are made from its scan."}
-        lib, arch, base = self._tree_of(state)
-        index = arch if side == "archive" else lib
-        if side == "archive" and base is None:
-            return {"platform": platform.name, "side": side, "ready": True, "root": "", "none": True, "dirs": [], "files": [], "total_files": 0,
-                    "totals": {"files": 0, "bytes": 0, "changed": 0}}
+                    "reason": "Scan this system first: the tree is made from its scan."}
+        f = {k: v for k in ("show", "state", "region", "language", "rated") if (v := _str_arg(query.get(k)))}
+        if f.get("show") and f["show"] not in self.TREE_SHOW:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown choice: {f['show']}")
+        q = _str_arg(query.get("q")).strip().casefold()
+        if q:
+            f["q"] = q
+        index, entries, base = self._tree_index(state, side, f)
         try:
             offset = max(0, int(query.get("offset") or 0))
         except ValueError:
             offset = 0
-        page = index.children(_str_arg(query.get("path")), offset)
+        path = _str_arg(query.get("path"))
+        page = index.children(path, offset)
         if page is None:
-            raise ApiError(HTTPStatus.NOT_FOUND, "No such folder in the tree")
-        return {"platform": platform.name, "side": side, "ready": True, "root": index.root, "totals": index.totals(), **page}
+            if path:
+                raise ApiError(HTTPStatus.NOT_FOUND, "No such folder in the tree")
+            page = {"path": "", "dirs": [], "files": [], "total_files": 0, "offset": 0, "files_below": 0, "bytes": 0, "changed": 0}
+        owned = self._upgrade_names(platform) if side == "library" and (page["files"] or page["dirs"]) else None
+        for item in page["files"]:                                        # the row each file belongs to (its game, its reason, its saves)
+            ref = item.pop("ref", None)
+            item["row"] = entries[ref]["row"] if isinstance(ref, int) else None
+            if owned and item["row"] and item["row"].get("category") == "kept" and self._has_upgrade(item["row"], owned):
+                item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
+        out = {"platform": platform.name, "side": side, "ready": True, "root": index.root, "none": side == "archive" and base is None,
+               "totals": index.totals(), **page}
+        if side == "library" and (page["files"] or page["dirs"]) and owned is None:
+            out["upgrades_pending"] = True
+        elif owned and page["dirs"]:                                      # the games with a better version below each folder
+            where = tuple(p for p in path.replace("\\", "/").split("/") if p)
+            below: dict[str, int] = {}
+            for e in entries:
+                parts = e["parts"]
+                if (e["side"] == "library" and len(parts) > len(where) + 1 and tuple(parts[:len(where)]) == where and e["row"]
+                        and e["row"].get("category") == "kept" and self._tree_pass(e, f) and self._has_upgrade(e["row"], owned)):
+                    below[parts[len(where)]] = below.get(parts[len(where)], 0) + 1
+            for d in page["dirs"]:
+                if below.get(d["name"]):
+                    d["upgrades"] = below[d["name"]]
+        if not path and not offset:
+            out["facets"] = self._tree_facets(entries, side, f)
+            out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] != "missing" and self._tree_pass(e, f))
+                            for s in ("library", "archive")}
+            out["archive_root"] = str(base) if base is not None else ""
+        return out
+
+    def _upgrade_names(self, platform: Any) -> set[str] | None:
+        """The names of the files you own whose game has a version the rules prefer that you lack (None while the numbers are not ready)."""
+        if not self._totals_want(platform):
+            return None
+        rows = self._totals().upgrades(platform.name)
+        return None if rows is None else {n for _, have, _ in rows for n in have}
+
+    @staticmethod
+    def _has_upgrade(row: dict[str, Any], owned: set[str]) -> bool:
+        game = row.get("game_ref") or {}
+        for n in (row.get("rom_name"), game.get("game") if isinstance(game, dict) else "", row.get("name")):
+            if n and (n in owned or os.path.splitext(n)[0] in owned):
+                return True
+        return False
 
     def library_insights(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/insights?platform=&want=a,b``: the numbers of the tiles that need a calculation of their own

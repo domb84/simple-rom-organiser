@@ -138,13 +138,23 @@ class Trees(ServerCase):
         self.assertFalse(self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library")["ready"])      # no folder, no scan yet
         self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
         self.wait()
-        before = tree(self.tmp)
+        before = (tree(root), tree(archive))
         systems = self.call("GET", "/api/tree/systems")
         mine = [s for s in systems["systems"] if s["platform"] == GBA][0]
         self.assertEqual((mine["folder"], mine["archive"], mine["scanned"]), (str(root), str(archive / "gba-roms"), True))
         lib = self.tree("library")
-        self.assertEqual({f["name"]: f["state"] for f in lib["files"]}, {"Run (USA).gba": "renamed"})
-        self.assertEqual((lib["files"][0]["from"], lib["dirs"], lib["totals"]["changed"]), ("run.gba", [], 1))
+        self.assertEqual({f["name"]: f["state"] for f in lib["files"]}, {"Bash (USA)": "missing", "Run (USA).gba": "renamed"})   # (the game the folder lacks, listed where it would be)
+        mine_row = [f for f in lib["files"] if f["name"] == "Run (USA).gba"][0]
+        self.assertEqual((mine_row["from"], lib["dirs"], lib["totals"]["changed"], lib["totals"]["files"], lib["totals"]["missing"]), ("run.gba", [], 1, 1, 1))
+        self.assertEqual((mine_row["row"]["category"], mine_row["row"]["game_ref"]["game"], mine_row["row"]["tags"]["regions"]), ("kept", "Run (USA)", ["USA"]))   # its row of the build
+        self.assertEqual(lib["sides"], {"library": 1, "archive": 3})
+        self.assertEqual(lib["facets"]["show"], {"": 2, "have": 1, "missing": 1, "bios": 0, "unmatched": 0, "saves": 0})
+        only = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library&show=missing")
+        self.assertEqual([f["name"] for f in only["files"]], ["Bash (USA)"])
+        found = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&q=RUN")
+        self.assertEqual((found["totals"]["files"], [d["name"] for d in found["dirs"]]), (1, ["_saves"]))        # the search narrows the tree and its totals
+        self.assertEqual(self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&state=existing")["totals"]["files"], 1)
+        self.assertEqual(self.http("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&show=nonsense")[0], 400)
         arch = self.tree("archive")
         self.assertEqual({d["name"]: (d["files"], d["changed"]) for d in arch["dirs"]}, {"_excluded": (1, 0), "_saves": (1, 1), "_unmatched": (1, 1)})
         saves = self.tree("archive", "_saves/Run")
@@ -152,7 +162,7 @@ class Trees(ServerCase):
         self.assertEqual(self.tree("archive", "_excluded")["files"][0]["state"], "existing")
         code, _ = self.http("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&path=nowhere")
         self.assertEqual(code, 404)
-        self.assertEqual(tree(self.tmp), before)                                                 # a preview: nothing moved
+        self.assertEqual((tree(root), tree(archive)), before)                                   # a preview: nothing moved
 
 
 class SeveralGames:
@@ -211,8 +221,8 @@ class TreesWithoutAnArchive(ServerCase):
         self.wait()
         lib = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library")
         self.assertEqual({d["name"]: d["changed"] for d in lib["dirs"]}, {"_saves": 1, "_unmatched": 2})
-        self.assertEqual([(f["name"], f["state"]) for f in lib["files"]], [(".nomedia", "ignored"), ("Run (USA).gba", "same")])   # every file of the folder
-        self.assertEqual(lib["totals"], {"files": 5, "bytes": 2048 + 3 + 4, "changed": 3})
+        self.assertEqual([(f["name"], f["state"]) for f in lib["files"]], [(".nomedia", "ignored"), ("Bash (USA)", "missing"), ("Run (USA).gba", "same")])   # every file of the folder
+        self.assertEqual(lib["totals"], {"files": 5, "bytes": 2048 + 3 + 4, "changed": 3, "missing": 1})
         gone = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library&path=_unmatched")
         self.assertEqual(sorted(f["name"] for f in gone["files"]), ["...GAMELIST.txt", "stray.bin"])
         arch = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive")

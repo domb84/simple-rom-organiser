@@ -608,8 +608,8 @@ a.tile:hover { background: var(--panel); }
 .live:empty { display: none; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .live.busy::before { animation: none; } }
-#library-rules-box > summary { display: none; }       /* the rules bar above opens and closes it */
-#library-rules-box:not([open]) { display: none; }
+#library-rules-box > summary { display: none; }       /* (always open: it is a panel of the system's Settings) */
+#library-rules-box { border: 0; padding: 0; background: none; }
 .pv-meta { display: none; }       /* (the live line in the rules bar says it) */
 .scan-details { margin-top: 14px; }
 .row-check { width: 20px; height: 20px; flex: none; }
@@ -731,3 +731,17 @@ button.tree-row:focus-visible { outline: 3px solid var(--accent); outline-offset
 .tree-key { margin-right: 6px; }
 .tree-more { margin: 4px 0 4px 20px; }
 @media (max-width: 600px) { .tree-row { flex-wrap: wrap; } .tree-meta { white-space: normal; } }
+
+/* ---------- Files: the system's one page ---------- */
+.files-filters { padding: 10px 12px; }
+.files-sides { margin: 10px 0 4px; }
+.tree-busy { opacity: 0.55; }
+.tree-detail { margin: 2px 0 8px 22px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; min-width: 0; }
+.tree-facts { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 14px; }
+.tree-facts dt { color: var(--muted); } .tree-facts dd { margin: 0; min-width: 0; }
+.tree-file .tags { flex: none; }
+.state-missing .tree-name { color: var(--muted); font-style: italic; }
+button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
+@media (max-width: 600px) { .tree-facts { grid-template-columns: 1fr; } .tree-detail { margin-left: 6px; } }
+
+.tree-upgrade { color: var(--accent, #3b82f6); font-weight: 700; line-height: 1; cursor: help; }

@@ -902,6 +902,18 @@ def undo_relocation(journal: Path) -> dict:
     restored, skipped, dirs = 0, [], set()
     for m in reversed(d.get("moves", [])):
         src, dst = Path(m["to"]), Path(m["from"])
+        if m.get("replace"):                                # a file rewritten in place: put the saved content back if it is still what the build wrote
+            try:
+                if os.path.lexists(src) and md5_sha1(src) == m.get("sha1") and os.path.isfile(m.get("backup", "")):
+                    tmp = src.with_name(src.name + ".romorg-tmp")
+                    shutil.copy2(m["backup"], tmp)
+                    os.replace(tmp, src)
+                    restored += 1
+                else:
+                    skipped.append({"path": str(src), "reason": "changed since it was rewritten - left as it is"})
+            except OSError as exc:
+                skipped.append({"path": str(src), "reason": str(exc)})
+            continue
         if m.get("copy"):                                   # a copy made by a build: remove it again if still the same
             try:
                 if os.path.lexists(src) and os.path.getsize(src) == m.get("size", -1):
@@ -1141,9 +1153,10 @@ class Follow:
     src: Path
     dst: Path
     kind: str
-    status: str = "move"      # move | copy | conflict
+    status: str = "move"      # move | copy | replace | conflict
     note: str = ""
     size: int = 0
+    data: Optional[bytes] = None          # a copy is written from these bytes (a save converted for another region) instead of copied
 
 
 def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", home: Optional[Path] = None,
@@ -1185,25 +1198,55 @@ def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", ho
     return out
 
 
-def apply_follow(ops: List[Follow], journal_dir: Path, extra: Optional[dict] = None, install: Optional[Install] = None) -> dict:
-    """Do the renames / copies. Skipped (not an error) while RetroArch runs: it writes its saves back on exit."""
-    todo = [o for o in ops if o.status in ("move", "copy")]
+def apply_follow(ops: List[Follow], journal_dir: Path, extra: Optional[dict] = None, install: Optional[Install] = None,
+                 running: Optional[bool] = None) -> dict:
+    """Do the renames / copies (and ``replace``: a file rewritten in place, its old content kept in the journal's folder for Undo). Skipped
+    (not an error) while RetroArch runs: it writes its saves back on exit; ``running`` says so for another program (None: RetroArch)."""
+    todo = [o for o in ops if o.status in ("move", "copy", "replace")]
     res: Dict[str, Any] = {"followed": 0, "copied": 0, "failed": [], "skipped_running": False, "journal": None}
     if not todo:
         return res
-    if is_running():
+    if is_running() if running is None else running:
         res["skipped_running"] = True
         return res
     done: List[dict] = []
     for o in todo:
         try:
+            if o.status == "replace":
+                backup = Path(journal_dir) / "replaced" / f"{time.strftime('%Y%m%d-%H%M%S')}-{o.src.name}"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                backup = Path(_fresh(backup))
+                shutil.copy2(o.src, backup)
+                tmp = o.src.with_name(o.src.name + ".romorg-tmp")
+                try:
+                    tmp.write_bytes(o.data or b"")
+                    shutil.copystat(o.src, tmp)
+                    os.replace(tmp, o.src)
+                except OSError:
+                    _discard(tmp)
+                    raise
+                res["replaced"] = res.get("replaced", 0) + 1
+                done.append({"from": str(o.src), "to": str(o.src), "copy": False, "replace": str(o.src), "backup": str(backup),
+                             "sha1": hashlib.sha1(o.data or b"").hexdigest(), "size": len(o.data or b"")})
+                continue
             if os.path.lexists(o.dst) and not _same_file_other_case(o.src, o.dst):
                 raise FileExistsError("a file appeared there")
             if o.status == "copy":
                 try:
-                    shutil.copy2(o.src, o.dst)
+                    o.dst.parent.mkdir(parents=True, exist_ok=True)
+                    if o.data is not None:
+                        tmp = o.dst.with_name(o.dst.name + ".romorg-tmp")
+                        tmp.write_bytes(o.data)
+                        try:
+                            shutil.copystat(o.src, tmp)
+                        except OSError:
+                            pass
+                        os.replace(tmp, o.dst)
+                    else:
+                        shutil.copy2(o.src, o.dst)
                 except OSError:
                     _discard(o.dst)                         # no half-written copy under the new name
+                    _discard(o.dst.with_name(o.dst.name + ".romorg-tmp"))
                     raise
                 res["copied"] += 1
             else:
@@ -1233,6 +1276,15 @@ def _fold(text: str) -> str:
 
 def read_info(path: Path) -> Dict[str, str]:
     return read_cfg(path)
+
+
+def md5_sha1(path: Path) -> str:
+    """The SHA-1 of a file (named for where it is used: Undo of a rewritten file)."""
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 def md5_of(path: Path) -> str:

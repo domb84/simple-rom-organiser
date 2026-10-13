@@ -420,7 +420,7 @@ class StaticAndSecurityTests(ServerTestCase):
         self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
         self.assertEqual(headers["Cache-Control"], "no-store")
-        for element_id in ("home-groups", "sys-tabs", "tab-browse", "dat-cards"):
+        for element_id in ("home-groups", "sys-tabs", "tab-files", "dat-cards"):
             self.assertIn(f'id="{element_id}"', html)
 
     def test_static_assets(self) -> None:
@@ -2415,7 +2415,7 @@ class LibraryServerTests(ServerTestCase):
         self.assertIn("/api/library/apply", js)
         self.assertIn("/api/updates/check", js)
         # AMENDMENT 8: panel rendered from the catalog, vanish list, no hard-coded rule lists
-        for present in ("lib-vanish-box", "lib-vanish-table", "lib-why-filters"):
+        for present in ("lib-vanish-box", "lib-vanish-table", "files-tree", "files-chips"):
             self.assertIn(f'id="{present}"', html)
         self.assertIn("/api/library/vanished", js)
         self.assertIn("TOSEC convention", js)
@@ -2677,21 +2677,22 @@ class UiStructureTests(unittest.TestCase):
     def test_html_has_home_tabs_and_global_header(self) -> None:
         html = server.read_static("index.html").decode()
         for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups", "side", "side-toggle", "more-btn",
-                           "view-system", "back-link", "sys-tabs", "tabbtn-library", "tabbtn-browse", "tabbtn-tree",
-                           "tab-library", "tab-browse", "tab-tree", "folder-input",
+                           "view-system", "back-link", "sys-tabs", "tabbtn-files", "tabbtn-settings",
+                           "tab-files", "tab-settings", "folder-input",
                            "scan-btn", "summary-cards", "sys-tiles", "library-rules-summary",
-                           "browse-gate", "lib-gate", "result-table"):
+                           "files-q", "files-sides", "files-tree", "saves-table", "lib-gate"):
             self.assertIn(f'id="{element_id}"', html)
-        for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"'):
+        for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"',
+                     'id="tab-library"', 'id="tab-browse"', 'id="tab-tree"', 'id="result-table"', 'id="lib-table"'):       # one page per system now
             self.assertNotIn(gone, html)
-        self.assertEqual(html.count('role="tab"'), 3)
+        self.assertEqual(html.count('role="tab"'), 2)
         self.assertNotIn("http://", html.replace("http://www.w3.org", ""))      # no external resources
         self.assertNotIn("https://", html)
 
-    def test_js_routes_and_lazy_browse(self) -> None:
+    def test_js_routes_and_the_files_tree(self) -> None:
         js = server.read_static("app.js").decode()
         for needle in ("#/system/", "const Route", "parse(hash)", 'addEventListener("hashchange"', "function applyRoute",
-                       "function renderBrowse", "browseDirty", "history.replaceState", "/api/scan/checksums", "checksums:",
+                       "const Files", "/api/tree?", "history.replaceState", "/api/scan/checksums", "checksums:",
                        "function checksumPanel", "Show checksums", "ArrowRight", "function sideItem", "p.last_scan"):
             self.assertIn(needle, js)
         for system in ("Dreamcast", "PlayStation", "Nintendo 64", "WHDLoad\"", "Game Boy"):   # systems come from /api/platforms

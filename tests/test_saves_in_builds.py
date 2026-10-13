@@ -7,6 +7,7 @@ its saves go with it) and ``leave`` (today's behaviour: the game is archived, th
 from __future__ import annotations
 
 import os
+import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -234,3 +235,260 @@ class RenamePreview(SavesCase):
         self.assertNotIn("saves", self.lib_apply(plan))
 
 
+
+
+class CarryMode(SavesCase):
+    """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
+
+    def test_the_save_is_copied_to_the_better_version_the_old_rom_goes_and_undo_removes_the_copy(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        old = self.save("bsnes", "Zed (USA)")
+        self.mode("carry")
+        plan = self.lib_plan(root)
+        self.assertEqual((plan["reasons"]["kept_saved"], plan["reasons"]["superseded"]), (0, 1))
+        self.assertEqual(plan["saves"]["carry"], {"files": 2, "games": 1, "conflicts": 0, "converted": 0})        # the .srm and the .A1.bin; not the state or its picture
+        row = [r for r in plan["items"] if r["from"].endswith("Zed (USA).sfc")][0]
+        self.assertEqual(row["saves"]["effect"], "carry")
+        self.assertEqual(self.saved_files(), old)                                                   # (the preview copied nothing)
+        res = self.lib_apply(plan)
+        self.assertEqual(res["saves"]["carried"], 2)
+        self.assertEqual(self.saved_files(), sorted(old + ["bsnes/Zed (Europe).srm", "bsnes/Zed (Europe).A1.bin"]))
+        self.assertEqual((self.saves / "bsnes" / "Zed (Europe).srm").read_bytes(), (self.saves / "bsnes" / "Zed (USA).srm").read_bytes())
+        self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")), sorted(["Zed (Europe).sfc", "_superseded/Zed (USA).sfc"]))
+        self.job("/api/library/undo", {"log": res["undo_log"]})
+        self.assertEqual(self.saved_files(), old)
+        self.assertTrue((root / "Zed (USA).sfc").is_file())
+
+    def test_a_better_version_that_has_a_save_of_its_own_is_never_overwritten(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (USA)", ("{n}.srm",))
+        self.save("bsnes", "Zed (Europe)", ("{n}.srm",))
+        self.mode("carry")
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"], {"files": 0, "games": 1, "conflicts": 1, "converted": 0})
+        self.lib_apply(plan)
+        self.assertEqual((self.saves / "bsnes" / "Zed (Europe).srm").read_bytes(), b"{n}.srm")
+
+    def test_a_game_with_nothing_to_carry_to_stays_as_with_keep(self) -> None:
+        root = self.rom_folder("Solo (USA)")
+        self.save("bsnes", "Solo (USA)")
+        self.mode("carry")
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"]["files"], 0)
+        self.assertEqual(plan["actionable"], 0)
+
+    def test_it_can_be_chosen_for_a_single_game(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (USA)", ("{n}.srm",))
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["reasons"]["kept_saved"], 1)                                           # (the default: keep both)
+        row = [r for r in plan["items"] if r["from"].endswith("Zed (USA).sfc")][0]
+        self.call("POST", "/api/library/saved", {"platform": SNES, "games": [{"dat": row["saves"]["dat"], "game": row["saves"]["game"]}], "choice": "carry"})
+        plan = self.lib_plan(root, refresh=True)
+        self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["carry"]["files"]), (0, 1))
+
+
+class WhichSavesWork(unittest.TestCase):
+    def test_cartridge_saves_work_everywhere_and_disc_saves_only_in_their_region(self) -> None:
+        from romorg import savecarry
+        self.assertTrue(savecarry.works("Nintendo 64", ["USA"], ["Europe"]))
+        self.assertTrue(savecarry.works("Super Nintendo Entertainment System", ["Japan"], ["USA"]))
+        self.assertFalse(savecarry.works("Sony PlayStation", ["USA"], ["Europe"]))
+        self.assertTrue(savecarry.works("Sony PlayStation", ["USA"], ["USA"]))
+        self.assertFalse(savecarry.works("Sony PlayStation", [], ["USA"]))
+        self.assertFalse(savecarry.works("Nintendo Switch", ["USA"], ["USA"]))
+        self.assertFalse(savecarry.works("Commodore Amiga", [], []))
+
+
+class ConvertMode(SavesCase):
+    """``convert``: a PlayStation save is rewritten for the other region's disc. The harness plays the SNES with PlayStation cards and
+    discs whose product codes are made up (the real card format and the real disc reading are tested apart)."""
+
+    CODES = {"Zed (USA)": "SLUS-00001", "Zed (Europe)": "SLES-00002"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        from romorg import pcsx2, savecarry
+        from tests.test_memcards import ps1_card
+        self.card = ps1_card([("BASLUS-00001ZED", "ZED", 1), ("BASLUS-00099OTHER", "OTHER", 1)])
+        for patch in (mock.patch.object(savecarry, "CONVERTIBLE", frozenset({"Super Nintendo Entertainment System"})),
+                      mock.patch.object(savecarry, "CONVERTIBLE_DATS", frozenset({"Nintendo - Super Nintendo Entertainment System"})),
+                      mock.patch.object(pcsx2, "read_serial", lambda path, psx=False: next((c for n, c in self.CODES.items() if n in str(path)), ""))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.mode("convert")
+
+    def put_card(self, name: str = "Zed (USA)") -> Path:
+        path = self.saves / "bsnes" / f"{name}.srm"
+        put(path, self.card)
+        return path
+
+    def test_the_save_is_rewritten_for_the_other_region_and_only_that_game_s_entry_changes(self) -> None:
+        from romorg import memcards, savecarry
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        old = self.put_card()
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"], {"files": 1, "games": 1, "conflicts": 0, "converted": 1})
+        res = self.lib_apply(plan)
+        self.assertEqual((res["saves"]["carried"], res["saves"]["converted"]), (1, 1))
+        new = self.saves / "bsnes" / "Zed (Europe).srm"
+        self.assertEqual(old.read_bytes(), self.card)                                              # the original is untouched
+        got = memcards.read(new)
+        self.assertEqual([e.name for e in got.entries], ["BESLES-00002ZED", "BASLUS-00099OTHER"])   # (the other game's save is not)
+        data = new.read_bytes()
+        check = 0
+        for b in data[128:128 + 127]:                                                                # the converted frame's checksum is right
+            check ^= b
+        self.assertEqual(check, data[128 + 127])
+        self.assertEqual(sum(1 for a, b in zip(self.card, data) if a != b), 4)                       # A->E, U->E, the last digit, the checksum: nothing else
+        self.job("/api/library/undo", {"log": res["undo_log"]})
+        self.assertFalse(new.exists())
+
+    def test_a_blank_card_or_a_card_without_the_game_is_not_copied(self) -> None:
+        from tests.test_memcards import ps1_card
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        put(self.saves / "bsnes" / "Zed (USA).srm", ps1_card([("BASLUS-00099OTHER", "OTHER", 1)]))
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"]["files"], 0)
+        self.lib_apply(plan)
+        self.assertFalse((self.saves / "bsnes" / "Zed (Europe).srm").exists())
+
+    def test_without_both_product_codes_both_roms_stay(self) -> None:
+        self.CODES = {"Zed (USA)": "SLUS-00001"}                                                    # (the European disc cannot be read)
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.put_card()
+        plan = self.lib_plan(root)
+        self.assertEqual((plan["reasons"]["kept_saved"], plan["reasons"]["superseded"]), (1, 0))
+
+    def test_the_same_product_code_is_a_plain_copy(self) -> None:
+        self.CODES = {"Zed (USA)": "SLUS-00001", "Zed (Europe)": "SLUS-00001"}
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.put_card()
+        plan = self.lib_plan(root)
+        self.assertEqual((plan["saves"]["carry"]["files"], plan["saves"]["carry"]["converted"]), (1, 0))
+        self.lib_apply(plan)
+        self.assertEqual((self.saves / "bsnes" / "Zed (Europe).srm").read_bytes(), self.card)
+
+
+class ConvertingACard(unittest.TestCase):
+    def test_the_name_and_the_checksum_of_the_game_s_entry_change_and_nothing_else(self) -> None:
+        from romorg import memcards, savecarry
+        from tests.test_memcards import ps1_card
+        card = ps1_card([("BASLUS-00520FIFA98", "FIFA", 2), ("BESCES-00967CRASH2", "CRASH", 1)])
+        data, n = savecarry.convert_ps1_card(card, "SLUS-00520", "SLES-00555")
+        self.assertEqual(n, 1)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.srm"
+            path.write_bytes(data)
+            self.assertEqual([e.name for e in memcards.read(path).entries], ["BESLES-00555FIFA98", "BESCES-00967CRASH2"])
+        for i in (1, 2):                                                                              # the directory frames check out
+            check = 0
+            for b in data[i * 128:i * 128 + 127]:
+                check ^= b
+            if i == 1:
+                self.assertEqual(check, data[i * 128 + 127])
+        self.assertEqual(data[2 * 128:3 * 128], card[2 * 128:3 * 128])                               # the other save's frame is the same bytes
+        self.assertEqual(data[8192:], card[8192:])                                                    # and so are the save blocks
+
+    def test_a_wrapped_card_keeps_its_header_and_a_wrong_input_gives_none(self) -> None:
+        from romorg import savecarry
+        from tests.test_memcards import ps1_card
+        card = ps1_card([("BASLUS-00520FIFA98", "FIFA", 1)], header=b"\x01" * 128)
+        data, n = savecarry.convert_ps1_card(card, "SLUS-00520", "SCPS-10001")
+        self.assertEqual((n, data[:128], data[128 + 128 + 10:128 + 128 + 14]), (1, b"\x01" * 128, b"BISC"))            # BI = Japan
+        self.assertIsNone(savecarry.convert_ps1_card(card, "SLUS-99999", "SLES-00555"))                 # no such game on the card
+        self.assertIsNone(savecarry.convert_ps1_card(card, "SLUS-00520", "XXXX-00555"))                 # a code that says no region
+        self.assertIsNone(savecarry.convert_ps1_card(b"not a card", "SLUS-00520", "SLES-00555"))
+        self.assertEqual(savecarry.region_letter("SCES-00967"), "E")
+        self.assertEqual(savecarry.region_letter("SLPM-86001"), "I")
+
+
+class PlayStationDiscCode(unittest.TestCase):
+    def test_the_product_code_of_a_playstation_disc_is_read_from_its_boot_line(self) -> None:
+        from romorg import pcsx2
+        self.assertEqual(pcsx2.serial_from_cnf("BOOT = cdrom:\\SLUS_005.20;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFF00\r\n", ("BOOT", "BOOT2")), "SLUS-00520")
+        self.assertEqual(pcsx2.serial_from_cnf("BOOT = cdrom:\\SLUS_005.20;1"), "")              # (not the PlayStation 2's: it plays these discs too)
+        self.assertEqual(pcsx2.serial_from_cnf("BOOT = cdrom:SCES_009.67;1", ("BOOT",)), "SCES-00967")
+        self.assertEqual(pcsx2.serial_from_cnf("BOOT2 = cdrom0:\\SLUS_209.46;1"), "SLUS-20946")            # (the PlayStation 2's line still reads)
+        self.assertEqual(pcsx2.serial_from_cnf("VMODE = NTSC"), "")
+
+
+class Ps2Names(unittest.TestCase):
+    def test_a_save_folder_is_planned_under_the_new_code_without_pcsx2s_own_files(self) -> None:
+        import tempfile
+        from romorg import ps2save
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "BASLUS-20946GTA50000"
+            (folder / "sub").mkdir(parents=True)
+            for rel in ("BASLUS-20946GTA50000", "icon.sys", "sub/BASLUS-20946x", "_pcsx2_index"):
+                (folder / rel).write_bytes(b"x")
+            name, files = ps2save.folder_plan(folder, "SLUS-20946", "SLES-52005")
+            self.assertEqual(name, "BESLES-52005GTA50000")
+            self.assertEqual(sorted(rel for _f, rel in files), ["BESLES-52005GTA50000", "icon.sys", "sub/BESLES-52005x"])
+            self.assertIsNone(ps2save.folder_plan(folder, "SLUS-99999", "SLES-52005"))           # not a save of that game
+            self.assertIsNone(ps2save.folder_plan(folder, "SLUS-20946", "XXXX-52005"))           # a code that says no region
+
+    def test_a_card_image_is_rewritten_with_its_ecc_and_reads_back(self) -> None:
+        import tempfile
+        from romorg import pcsx2, ps2save
+        from tests.test_nintendo import ps2_card_image
+        tree = {"BASLUS-20946GTA50000": {"BASLUS-20946GTA50000": b"a" * 3000, "sub": {"x": b"b" * 10}}, "BADATA-SYSTEM": {"icon.sys": b"i" * 500}}
+        for ecc in (False, True):
+            image = ps2_card_image(tree, ecc=ecc)
+            data, n = ps2save.convert_image(image, "SLUS-20946", "SLES-52005")
+            self.assertEqual((n, len(data)), (1, len(image)))
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "c.ps2"
+                path.write_bytes(data)
+                got = {s.name: (s.serial, s.files, s.bytes) for s in pcsx2.read_card_image(path)}
+            self.assertEqual(got, {"BESLES-52005GTA50000": ("SLES-52005", 2, 3010), "BADATA-SYSTEM": ("", 1, 500)}, ecc)
+            if ecc:                                                                                  # every changed page's spare bytes are its ECC
+                changed = [p for p in range(len(image) // 528) if image[p * 528:p * 528 + 528] != data[p * 528:p * 528 + 528]]
+                self.assertTrue(changed)
+                for p in changed:
+                    self.assertEqual(data[p * 528 + 512:p * 528 + 528], ps2save.page_spare(data[p * 528:p * 528 + 512]))
+            else:
+                self.assertEqual(len([1 for a, b in zip(image, data) if a != b]) > 0, True)
+        self.assertIsNone(ps2save.convert_image(image, "SLUS-20946", "SLUS-20946"))               # the same code
+        self.assertIsNone(ps2save.convert_image(image, "SLUS-11111", "SLES-52005"))               # no such save
+        self.assertIsNone(ps2save.convert_image(b"nothing" * 100, "SLUS-20946", "SLES-52005"))
+        both = ps2_card_image({"BASLUS-20946A": {"f": b"1"}, "BESLES-52005A": {"f": b"2"}})
+        self.assertIsNone(ps2save.convert_image(both, "SLUS-20946", "SLES-52005"))                 # the new name is taken
+        other = ps2_card_image({"BASLUS-20946A": {"f": b"1"}, "BESLES-52005B": {"f": b"2"}})
+        self.assertIsNotNone(ps2save.convert_image(other, "SLUS-20946", "SLES-52005"))             # another save of that game is no clash
+
+    def test_the_ecc_of_a_chunk_changes_with_any_bit(self) -> None:
+        from romorg import ps2save
+        self.assertEqual(ps2save.ecc(bytes(128)), bytes((0x77, 0x7F, 0x7F)))                       # (an all-zero chunk: what a real card shows)
+        chunk = bytearray(range(128))
+        base = ps2save.ecc(bytes(chunk))
+        for i in (0, 5, 77, 127):
+            for bit in (1, 0x80):
+                other = bytearray(chunk)
+                other[i] ^= bit
+                self.assertNotEqual(ps2save.ecc(bytes(other)), base)
+
+
+class EmulatorSettingsKey(SavesCase):
+    def test_an_old_config_with_the_nintendo_key_is_moved_to_emulators(self) -> None:
+        from romorg import paths
+        folder = self.tmp / "wii-games"
+        folder.mkdir()
+        paths.update_config(lambda c: c.__setitem__("nintendo", {"wii": {"games": str(folder), "data": ""}, "ps2": {"games": "", "data": str(self.tmp)}}))
+        self.srv.app._rename_emulator_settings()
+        cfg = paths.load_config() if hasattr(paths, "load_config") else __import__("json").loads(paths.config_path().read_text())
+        self.assertNotIn("nintendo", cfg)
+        self.assertEqual(cfg["emulators"]["wii"]["games"], str(folder))
+        self.assertEqual(cfg["emulators"]["ps2"]["data"], str(self.tmp))
+        # a config that has both keeps the new one, and the old key is gone
+        paths.update_config(lambda c: c.update({"nintendo": {"wii": {"games": "old", "data": ""}}}))
+        self.srv.app._rename_emulator_settings()
+        cfg = __import__("json").loads(paths.config_path().read_text())
+        self.assertNotIn("nintendo", cfg)
+        self.assertEqual(cfg["emulators"]["wii"]["games"], str(folder))
+        # saving through the page writes the new key
+        self.call("POST", "/api/emulators/config", {"source": "dolphin", "folder": str(self.tmp)})
+        cfg = __import__("json").loads(paths.config_path().read_text())
+        self.assertIn("emulators", cfg)
+        self.assertNotIn("nintendo", cfg)

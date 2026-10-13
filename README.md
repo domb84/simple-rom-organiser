@@ -209,7 +209,7 @@ Back / Forward buttons and a reload keep you where you were.
 *Computers*, *Cartridge consoles* and *Disc systems* (the groups come from the app, nothing is hard-coded in the page).
 Each system has a dot (green: scanned, amber: its DAT is missing, hollow: not scanned) and the % you own; hover for the
 folder, DAT and last scan. A blue **Custom rules** tag (like the saves count) marks a system with library rules of its own (hover for which). A running scan shows its progress under the system. **Find a system** filters the list.
-Clicking a system opens it on the right with its **Library / Browse** tabs, and the tab you are on stays
+Clicking a system opens its one page on the right, with its **Files / Settings** tabs, and the tab you are on stays
 selected when you switch system. **Hide list** collapses the list (remembered); in a narrow window it becomes a **Systems**
 button above the page. **More** in the header holds Check for updates, Compact rows and Quit; **Databases** (in the list on the left, with Settings) lists every database the app uses: its address, the systems that use it, the installed and newest version. The last scan
 summary of every system is a tiny record in `config.json` (counts, time, folder - never file lists), so the list survives a
@@ -218,31 +218,40 @@ you open a system after a restart, with no scan: while the folder (files, sizes,
 are what they were. Change any of them and the saved scan is not used (a rescan reads only what changed, so it is quick).
 Opening `#/` goes to the system you used last.
 
-**A system page (`#/system/<slug>/library`)** has a *< Systems* link and three tabs, **Library**, **Browse** and **File tree** (the old Overview
-is part of Library; an `.../overview` address opens it). Library is one page, top to bottom:
+**A system page (`#/system/<slug>/files`)** is one page with two tabs, **Files** and **Settings**. (There used to be Overview, Library,
+Browse and File tree; their addresses still open the page. Where the text further down says *Overview*, *Library tab* or *Browse*: what
+you look at is on **Files**, what you set is on **Settings**.)
 
-* the **folder** field with **Folders... / Clear** (a folder is **saved the moment you choose it**) and the **Scan folder**
-  button in the header;
-* the **tiles** (below): the totals you chose in Settings;
-* the **rules bar**: *Your default rules* or *Custom: ...* (and the rest follow your defaults), a one-line summary of what the rules do
-  (`4 of 4 exclusions · English · Europe > USA first · latest versions only`), a status that says whether the list below is up to
-  date, a **Rules** button that opens the rules (every exclusion, language, keep-flag, region priority and option, with an Override
-  box each) and **Build library**;
-* the **list**: what the build would do with every file, with the reason chips, *Games that vanish*, *Incomplete sets* and the
-  options where to build. **It updates by itself**: a scan, or any change of a rule, option or folder, recalculates it about half a second
-  later (the old list stays, dimmed, with *Updating the list...*, and **Build library** waits for the new one). There is no
-  Preview button; **Undo last** is next to the list. Without a scan the page says *Scan first*;
-* **Scan results, databases and checks** (collapsed): the summary cards (click one to open Browse on the matching list), the per-DAT
-  cards, the DAT files and the Switch checksum option.
+**Files** is the system as a build would leave it, top to bottom:
 
-  The Library page also builds the library in the first place: Build library does the moves, renames, playlists and conversion in one
-  step, and sends the identity of the plan you looked at, so the app refuses (409) a plan that no longer matches the saved rules.
-* **Browse** - the heavy part, built only when you open it: tabs **Games** (consoles: green = have,
-  red = missing), **Matched files**, **Missing**, **Unmatched**, search, a collapsible *Filters*
-  box (region, language, video, tag, library rules), paging, and the checksums (below).
-  Bad dumps show the exact DAT flag (`Bad dump [b corrupt file]`).
-* Converting is the **Convert first** option of the Library tab (below), and the CHD settings are on the **Disc images (CHD)**
-  page in the list on the left. Kickstarts and other BIOS files are handled by the **BIOS and firmware** page.
+* the **tiles** (below): the totals you chose in Settings, and the lists behind them (upgrades, excluded, incomplete);
+* the **rules bar**: *Your default rules* or *Custom: ...*, a one-line summary of what the rules do
+  (`4 of 4 exclusions · English · Europe > USA first · latest versions only`) with a **Change** link to the Settings tab, a status that
+  says whether the tree below is up to date, **Undo last** and **Build library**;
+* **the file tree**, with two tabs above it: **ROM folder** and **Archive** (each with its real path, file count and size). It is what
+  the folder and the system's part of the archive would hold after a build with the current rules, opened folder by folder; a folder says
+  how many files and bytes are below it, how many the build changes and how many games are missing. A file is marked *renamed*, *moved*,
+  *new* (a playlist), *set aside* (goes to the archive with this build), *copy*, *saves* or *not looked at* (a hidden file, an emulator's own
+  folder: it stays). A game you do not have is listed greyed where it would be;
+* **the filters** above the tree, the ones Browse had: a search box and chips for **Show** (everything, games you have, missing games,
+  BIOS and firmware, unmatched files, saves), **What the build does**, **Region**, **Language** and **Rated**. The folders keep their counts
+  for what passes the filters, and the address keeps the filters (`#/system/<slug>/files?show=missing&region=Europe`);
+* **press a file** and its details open under it: the ROM's name and checksums (CRC32, MD5, SHA-1, each with a copy button), its
+  rating, why the rules keep or leave it, its saves, and the per-game choices (always keep / always exclude / use this version);
+* **Saves** (collapsed, at the foot): the emulator's saves of this system, by game.
+
+The tree **updates by itself**: a scan, or any change of a rule, option or folder, recalculates it about half a second later (the old tree
+stays, dimmed, and **Build library** waits for the new one). Build library sends the identity of the plan you looked at, so the app refuses
+(409) a plan that no longer matches the saved rules. Without a scan the page says *Scan first* with a button to the Settings tab.
+
+**Settings** holds everything you can set for the system: the **folder** (**Folders... / Clear**, saved the moment you choose it) and
+**Scan folder**, the **library rules** (every exclusion, language, keep-flag, region priority and option, with an Override box each), the
+**build options** (layout, Convert first, labels, where to build, the system's own archive folder), the **DAT files**, and the scan's summary
+cards and checks.
+
+Gone with the old tabs: the sortable table and its **Columns** menu (the tree is by folder and name; the filters and the search do the finding).
+Converting is the **Convert first** option on the Settings tab, and the CHD settings are on the **Disc images (CHD)** page in the list on the
+left. Kickstarts and other BIOS files are handled by the **BIOS and firmware** page.
 
 ### Library totals and the tiles
 
@@ -533,13 +542,8 @@ region, version or disc, so every edition shares a folder). A file is pinned to 
 game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**;
 Undo puts the original back and removes the copies. A save no title claims goes to `_unmatched`. These rows are the **Saves** reason of the Library list.
 
-**File tree (a tab of every system, `#/system/<slug>/tree`).** Every file of the system, as two trees side by side: what its **ROM folder** and
-its part of the **archive** would hold after a build with the current rules (the ROMs that stay, and everything that is or would be archived:
-`_excluded`, `_superseded`, `_duplicates`, `_saves`, `_unmatched`). Each shows its real path and its totals, and opens folder by folder; a folder
-says how many files and bytes are below it and how many the build changes; a file is marked *renamed*, *moved*, *new* (a playlist), *set aside*
-(goes to the archive with this build), *copy* or *saves*, with where it comes from on hover; a file the scan does not look at (a hidden file,
-an emulator's own folder) is listed too, as *not looked at*: it stays where it is. **Only what the build changes** hides the rest. It is
-made from the system's scan (so a system has to be scanned) and follows the rules; it is a preview: nothing is moved by this tab.
+**The file tree** is the Files tab of every system (above): the ROM folder and the archive as a build would leave them, made from the
+system's scan and following the rules. It is a preview: looking at it moves nothing.
 
 **Saves are counted for the system they belong to.** A RetroArch core that plays several systems keeps their saves in one folder (Genesis Plus GX:
 Mega Drive, Master System, Game Gear). A save that matches nothing in the system you are looking at but is a game (or, read loosely, the one title)
@@ -922,7 +926,29 @@ the folders for the system you have open. The system folder then holds only what
     for every game, and on the Library tab for a single game: **Keep both ROMs** (the default: the ROM the rules would
     replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
     `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
-    used; Undo brings them back) or **Leave the saves where they are**. Nothing is copied to the edition that replaces the game.
+    used; Undo brings them back) **Leave the saves where they are**, or **Copy the save to the better version**. The last one is for the day you add a better match
+    (the version your rules prefer): the old ROM is replaced, and its **save games** (memory cards, battery saves, `.srm`; never
+    the save states, which belong to one exact ROM) are copied to the better ROM's name, in the same core folder. A better version that
+    already has a save of its own is never overwritten (the preview says so); the old save stays where it is; Undo removes the copy.
+    It is done only where the save works in the other release: cartridge systems (Game Boy, GBA, DS, NES, SNES, N64, Master System,
+    Game Gear, Mega Drive, 32X, Lynx) in every region; PlayStation, PlayStation 2, GameCube, Wii and Dreamcast only when both releases share a
+    region (their memory cards name the files after the disc's region code). Where it would not work, both ROMs stay, as with Keep.
+    The Files tab marks such a game with a *save copied to the better version* tag.
+  - **Converting a PlayStation save's region** (*Copy the save, converting its region (PlayStation, PlayStation 2)*, experimental): a PlayStation game finds
+    its saves on a card by a name made of the disc's region (`BA` USA, `BE` Europe, `BI` Japan) and product code (`SLUS-00520`), so a USA
+    save is invisible to the European disc, whose code differs. With this choice the copy is rewritten for the better version: the app reads
+    both discs' product codes (from the `.chd` or `.iso`; a game whose disc it cannot read keeps both ROMs), changes that one save's name on
+    the card copy and its checksum byte, and leaves everything else on the card (other games' saves, the save's data) byte for byte. A card
+    without a save of that game (an empty card) is not copied. The old card is never touched; Undo removes the converted copy. It is
+    written from the card format and checked against your own cards, but not against a real console: a game that keeps the region inside
+    its save data may still refuse the save.
+    **PlayStation 2** (PCSX2): a save there is a folder named after the disc's code (`BASLUS-20946GTA50000`), so the same rewrite is done on
+    that name and on the file inside that carries it. On a *folder card* the save's folder is copied under the new name (PCSX2's own
+    `_pcsx2_*` files are left out). In a *card image* (`.ps2`, with or without the spare bytes after each page) the names are rewritten in
+    place, so the save is **moved**, not copied; the changed pages' error-correcting codes are recomputed, and the old image is kept in the
+    app's data folder (`retroarch-undo/replaced`) so Undo puts the card back exactly as it was. A card that already has a save under the new
+    name is left alone (the preview says so), and nothing is done while PCSX2 is running.
+ 
     Nothing is moved while RetroArch is running (the ROMs are still archived); a build into another folder never archives
     anything from your folders.
   - *Multi-disc games:* RetroArch names the saves of a game started from a playlist after the `.m3u` (`Game.srm`), not after a

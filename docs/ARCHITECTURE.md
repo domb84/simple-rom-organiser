@@ -2678,3 +2678,73 @@ extension. The Overview card says *found*, the Library card *kept*.
   change drops it. `_state_of(platform)` gets a system's scan (memory or disk) without making it current. `GET /api/tree/systems`, `GET /api/tree`.
   UI: the **File tree** tab of a system (`Tree` in app.js, lazy folders, `#/system/<slug>/tree`): the system's own two trees, no page of its own
   (`GET /api/tree/systems` stays for a caller that wants every system).
+
+# AMENDMENT 26 - one page per system: Files and Settings (later wins)
+
+* A system has two tabs, `files` and `settings` (`TABS` in app.js; `OLD_VIEWS` sends `overview`, `library`, `browse`, `tree` and their queries
+  to the new ones). The Library list (`libTable`), Browse (`renderBrowse`, the result tables, the Columns menu, sorting) and the File tree tab
+  (`Tree`) are removed; `Files` in app.js replaces the three.
+* `server.App._tree_entries(state)`: one dict per file of both sides (`side, parts, size, state, from, row, text`), from `treeview.collect`
+  joined with the annotated library rows (the row of a file's op), plus a ghost per missing game (`state: "missing"`, `row.category:
+  "missing"`, with its `cs_kind` / `cs_id` for the checksum panel). Cached in `state.items[("library", "tree")]`, so a rule change drops it.
+* Filters: `TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves")`, `state`, `region`, `language`, `rated`, `q`; `_tree_pass`
+  tests one entry, `_tree_index` builds (and caches per filter set) the `treeview.Index` of what passes, `_tree_facets` counts each chip's
+  values with the other filters applied. `GET /api/tree?platform&side&path&offset&show&state&region&language&rated&q` answers one folder
+  (dirs with `files / bytes / changed / missing`, files with their `row`) and, at the top, `facets`, `sides`, `archive_root`, `totals`.
+  A file already in the archive has a name and a folder only (no region or language): it passes those filters only when none is set.
+* `treeview`: `collect()` returns `Entry` tuples, `index(entries, root, ref)` makes an `Index`; `MISSING` entries count in `missing`, not in
+  `n` or `changed`. `build()` stays (two indexes, used by the tests).
+* Previews run on the Files tab only (`state.tab === "files"`); the Settings tab refreshes the totals (`refreshLibraryStats`) so the rule
+  counts follow. The emulator's saves list is `renderSavesBox` at the foot of Files.
+
+# AMENDMENT 27 - copy the save to the better version (later wins)
+
+* `library.SAVED_GAMES` gains `carry` (default or per game). `romorg/savecarry.py`: `works(platform, old regions, new regions)`: cartridge systems
+  (`ANY_RELEASE`) always, disc systems (`SAME_REGION`: PS1, PS2, Dreamcast, GameCube, Wii) only when the regions intersect, anything else never.
+* `library.apply_saved(..., platform_name)`: a game with saves and choice `carry` stays superseded only when `_carries` finds its replacement
+  (`Decision.superseded_by`) kept and `savecarry.works`; otherwise it is kept for its saves like `keep`. (A set that holds only states is
+  counted as having saves, so it is carried like any other: its states stay where they are.)
+* `server.App._saves_plan` returns `carry`: `(old set name, new content name)` for each gone set with choice `carry` whose replacement op is
+  found (`rom_name` with or without the extension); the new name is the replacement's name after the plan's renames. `_ra_follow` plans them with
+  `retroarch.plan_follow(..., "copy")`, keeps `kind == "save"` only (never states or their pictures), applies them with the renames in one journal
+  (so Undo removes the copies) and answers `carried`. In-place builds only. `_saves_plan_info` answers `carry {files, games, conflicts}`; a row's
+  saves effect is `carry`. A target that exists is a conflict and is left alone.
+
+# AMENDMENT 28 - converting a PlayStation save for the other region (later wins)
+
+* `library.SAVED_GAMES` gains `convert` (= `carry` plus the conversion). `_carries(..., convert)` for a system in `savecarry.CONVERTIBLE`
+  (PlayStation) needs the product codes of both discs (`pcsx2.read_serial`; `serial_from_cnf` now reads the PlayStation's `BOOT =` line as well as
+  PS2's `BOOT2 =`); without both the game is kept like `keep`. The Redump PlayStation DAT carries no serials, so they come from the discs.
+* `savecarry.convert_ps1_card(data, old, new)`: in the card's directory (frames 1..15, state `0x51`, 20-byte name at +10 = `B` + region letter
+  + code + the game's tail) the saves whose code is `old` get `B` + `region_letter(new)` + `new` + the same tail, and the frame's last byte
+  (XOR of its first 127 bytes, checked on 336 real frames) is recomputed. A DexDrive / PSP header before the card is kept. None when the input is
+  no card, `new` says no region, or no save has `old`.
+* `server._saves_plan` returns `convert {old set name: (old code, new code)}` when both codes are read and differ (`CONVERTIBLE_DATS` names the
+  databases); `_carry_ops` plans the copies with `plan_follow(..., "copy")`, reads each file, converts it in memory into `Follow.data` and leaves out
+  a file with no save of that game. `retroarch.apply_follow` writes `Follow.data` through a temp file and `os.replace` (journalled like a copy,
+  its size the converted size, so Undo removes it). `info["carry"]["converted"]` and `result["saves"]["converted"]` count them.
+* Dreamcast is not done; the PlayStation 2 is Amendment 29.
+
+# AMENDMENT 29 - converting a PlayStation 2 save (later wins)
+
+* `romorg/ps2save.py`. Names: a save is a folder `B` + region letter + serial + tail, with a file inside that repeats the name (`head_for(serial)`
+  is the first 12 characters). `folder_plan(folder, old, new)` lists the files of a save folder with their new relative names (`_pcsx2_*` left
+  out). `convert_image(data, old, new)` rewrites the name fields (offset 0x40 of the 512-byte directory entries) of the save's folder entry
+  and of the entries inside that start with the old head, through `pcsx2._Card`'s cluster chain; None for no card, no such save, or when the
+  new name is already on the card. With a spare area (528-byte pages) the ECC of each changed, programmed page is recomputed:
+  `ecc(chunk128)` = column parity `0x77 ^ table[xor of the bytes]`, line parities `0x7f ^ xor(i ^ 0x7f)` and `0x7f ^ xor(i)` over the bytes of odd
+  parity; verified on 1231 written pages of a real 8 MB image (one page, which a tool had edited without fixing it, differs).
+* `retroarch.apply_follow` gains status `replace` (a file rewritten in place from `Follow.data`; the old file is copied to
+  `<journal dir>/replaced/` first; the journal entry carries `replace`, `backup`, `sha1`; `undo_relocation` puts the backup back only while the file
+  still has that hash) and `running` (None: RetroArch; PCSX2's builds pass `emulators.source_running("pcsx2")`). A copy makes its folder.
+* `server._saves_plan` returns `ps2` (old code, new code) pairs for `convert` sets of source `pcsx2` whose two discs' codes are read and differ
+  (`savecarry.CONVERTIBLE(_DATS)` now include the PlayStation 2); `_ps2_ops` turns them into copy ops (folder cards) and one replace op per
+  changed image, counting `saves` and `conflicts`; `_ps2_follow` applies them in the build with the journal linked to the build's log;
+  `_ra_undo_follow` undoes every follow journal of the build (RetroArch's and PCSX2's). `info["ps2"]` is the preview's count.
+
+# AMENDMENT 30 - the emulators' folders are saved under `emulators` (later wins)
+
+* config.json: `emulators` (was `nintendo`, from when only Dolphin and Cemu had folders) holds `{wii: {games, data}, wiiu: {...}, ps2: {...}}` as before.
+  `App._rename_emulator_settings` (at start) moves an old `nintendo` over, keeping an `emulators` that already exists; `_nin_cfg` still reads a
+  `nintendo` that is somehow there, and `POST /api/emulators/config` writes `emulators`. The inner keys are the console ids and are unchanged.
+

@@ -550,7 +550,7 @@ class UiContractTests(unittest.TestCase):
         self.css = server.read_static("style.css").decode()
 
     def test_the_library_page_has_the_tiles_the_rules_bar_and_the_live_list(self) -> None:
-        for needle in ('id="sys-tiles"', 'id="tile-lists"', 'id="rules-bar"', 'id="rules-toggle"', 'id="lib-live"', 'id="lib-apply-btn"',
+        for needle in ('id="sys-tiles"', 'id="tile-lists"', 'id="rules-bar"', 'id="lib-live"', 'id="lib-apply-btn"',
                        'id="set-tiles-panel"', 'aria-live="polite"'):
             self.assertIn(needle, self.html)
         self.assertNotIn('id="tab-overview"', self.html)                      # the Overview page is gone

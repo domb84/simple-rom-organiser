@@ -50,18 +50,19 @@ class Ps2Save:
 
 
 # --------------------------------------------------------------------------- the disc's serial
-def serial_from_cnf(text: str) -> str:
-    """``SLUS-20946`` from the text of SYSTEM.CNF (``BOOT2 = cdrom0:\\SLUS_209.46;1``); "" when it has none."""
+def serial_from_cnf(text: str, keys: tuple = ("BOOT2",)) -> str:
+    """``SLUS-20946`` from the text of SYSTEM.CNF (``BOOT2 = cdrom0:\\SLUS_209.46;1``); "" when it has none. A PlayStation disc says ``BOOT = cdrom:\\SLUS_006.23;1``: that is read only
+    when ``keys`` includes ``BOOT`` (a PlayStation 2 plays those discs too and must not take them for its own)."""
     for line in text.replace("\r", "\n").split("\n"):
         key, sep, value = line.partition("=")
-        if sep and key.strip().upper() == "BOOT2":
+        if sep and key.strip().upper() in keys:
             m = _SERIAL.search(value.strip().upper())
             if m:
                 return f"{m.group(1)}-{m.group(2)}{m.group(3)}"
     return ""
 
 
-def _iso_serial(sector) -> str:
+def _iso_serial(sector, keys: tuple = ("BOOT2",)) -> str:
     """The serial from a disc whose 2048-byte sectors ``sector(lba)`` gives (ISO 9660: PVD at 16, root directory, SYSTEM.CNF)."""
     pvd = sector(16)
     if pvd[1:6] != b"CD001":
@@ -79,13 +80,14 @@ def _iso_serial(sector) -> str:
         if name.startswith("SYSTEM.CNF"):
             lba, size = struct.unpack("<I", data[pos + 2:pos + 6])[0], struct.unpack("<I", data[pos + 10:pos + 14])[0]
             body = b"".join(sector(lba + i) for i in range((min(size, 4096) + SECTOR - 1) // SECTOR))[:min(size, 4096)]
-            return serial_from_cnf(body.decode("ascii", errors="replace"))
+            return serial_from_cnf(body.decode("ascii", errors="replace"), keys)
         pos += n
     return ""
 
 
-def read_serial(path: Path) -> str:
-    """The serial of a PS2 disc image (``.iso`` / ``.chd``); "" when it cannot be read."""
+def read_serial(path: Path, psx: bool = False) -> str:
+    """The serial of a PS2 disc image (``.iso`` / ``.chd``); "" when it cannot be read. ``psx``: a PlayStation disc's (its ``BOOT`` line) too."""
+    keys = ("BOOT2", "BOOT") if psx else ("BOOT2",)
     path = Path(path)
     try:
         if path.suffix.lower() == ".iso":
@@ -93,13 +95,13 @@ def read_serial(path: Path) -> str:
                 def sector(lba: int) -> bytes:
                     f.seek(lba * SECTOR)
                     return f.read(SECTOR).ljust(SECTOR, b"\0")
-                return _iso_serial(sector)
+                return _iso_serial(sector, keys)
         if path.suffix.lower() == ".chd":
             from . import chd as chdlib
             info = chdlib.Chd(path, load_map=False)
             try:
                 if info.is_dvd:
-                    return _iso_serial(lambda lba: info.read_bytes(lba * SECTOR, SECTOR))
+                    return _iso_serial(lambda lba: info.read_bytes(lba * SECTOR, SECTOR), keys)
                 track = next((t for t in info.tracks if not t.is_audio), None)
                 if track is None:
                     return ""
@@ -108,7 +110,7 @@ def read_serial(path: Path) -> str:
                 def csector(lba: int) -> bytes:
                     raw = info.read_track_range(track, lba, 1)
                     return raw[lead:lead + SECTOR].ljust(SECTOR, b"\0")
-                return _iso_serial(csector)
+                return _iso_serial(csector, keys)
             finally:
                 info.close()
     except Exception:  # noqa: BLE001 - an unreadable disc is a disc without a serial

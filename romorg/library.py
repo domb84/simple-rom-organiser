@@ -41,8 +41,11 @@ BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a
 # What the build does with a game the rules would replace or archive while RetroArch saves or save states exist for it
 # (Amendment 31; only when a RetroArch config is known): ``keep`` = both ROMs stay, the one the rules would archive too
 # (SAVED_KEEP), ``archive`` = it goes and its saves go with it, ``leave`` = it goes and the saves stay where they are.
+# ``carry`` = the game the rules replace goes and its save games (not its states) are copied to the version that replaces it, when
+# they work there (:mod:`savecarry`); where they would not, both ROMs stay, as with ``keep``. ``convert`` = the same, and a PlayStation save
+# is rewritten for the other region's disc when the two discs' product codes differ (both discs must be readable).
 # ``saved_games`` is the default for every game; ``saved_overrides`` says it per game.
-SAVED_GAMES = ("keep", "archive", "leave")
+SAVED_GAMES = ("keep", "archive", "leave", "carry", "convert")
 SAVED_KEEP = "saved_keep"       # Decision.codes of a game kept because you have saves or save states for it
 SAVED_KEEP_TEXT = "kept: you have saves or save states for it"
 
@@ -1000,7 +1003,7 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
     if saved:
-        apply_saved(sel, items, saved, profile)
+        apply_saved(sel, items, saved, profile, platform.name)
     apply_overrides(sel, items, profile)
     sel.vanished = _vanished(items, sel)
     return sel
@@ -1023,7 +1026,8 @@ def saved_choice(profile: LibraryProfile, dat: str, game: str) -> str:
     return profile.saved_games
 
 
-def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile: Optional[LibraryProfile] = None) -> None:
+def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile: Optional[LibraryProfile] = None,
+                platform_name: str = "") -> None:
     """Keep the games the rules set aside (excluded or superseded) when RetroArch has saves or states for them and their
     choice is ``keep`` (``profile.saved_games``, or the game's own in ``profile.saved_overrides``; without a profile: all).
     A user's own "always exclude" still wins (it is applied after this). Files that are part of a multi-disk set, symbolic
@@ -1034,10 +1038,30 @@ def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile
         d = sel.decisions.get(it.key)
         if d is None or d.action not in (EXCLUDED, SUPERSEDED) or d.set_id is not None or it.link:
             continue
-        if profile is not None and saved_choice(profile, *override_game(it.dat, it.rom)) != "keep":
+        choice = saved_choice(profile, *override_game(it.dat, it.rom)) if profile is not None else "keep"
+        if choice not in ("keep", "carry", "convert"):
             continue
-        if any(fold_name(n) in saved for n in content_names(it)):
-            sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)
+        if not any(fold_name(n) in saved for n in content_names(it)):
+            continue
+        if choice in ("carry", "convert") and d.action == SUPERSEDED and _carries(sel, items, it, d, platform_name, choice == "convert"):
+            continue                                                  # it goes: its saves are copied to the version that replaces it
+        sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)
+
+
+def _carries(sel: Selection, items: Sequence[Item], it: Item, d: Decision, platform_name: str, convert: bool = False) -> bool:
+    """True when the game that replaces ``it`` is kept and the saves of ``it`` work in it (``convert``: or can be made to, which needs the
+    product codes of both discs)."""
+    from . import pcsx2, savecarry
+
+    if not d.superseded_by:
+        return False
+    for other in items:
+        od = sel.decisions.get(other.key)
+        if od is not None and od.action == KEEP and _rom_name(other) == d.superseded_by:
+            if convert and platform_name in savecarry.CONVERTIBLE:
+                return bool(pcsx2.read_serial(it.path, psx=True) and pcsx2.read_serial(other.path, psx=True))
+            return savecarry.works(platform_name, _tags_of(it).regions, _tags_of(other).regions)
+    return False
 
 
 def override_game(dat: str, rom: Any) -> tuple[str, str]:
