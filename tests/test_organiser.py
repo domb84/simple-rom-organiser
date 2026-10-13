@@ -384,7 +384,11 @@ class OrganiseTests(unittest.TestCase):
         self.write("cfg/Game.srm", b"save")
         self.write("Game.state1", b"state")
         self.write("other/thing.bin", b"t")
+        self.write("...GAMELIST.txt", b"a pack's list")
+        self.write(".nomedia", b"")
         ops = self.plan()
+        self.assertEqual(ops["...GAMELIST.txt"].status, "move")          # several dots: an ordinary stray file, set aside
+        self.assertNotIn(".nomedia", ops)                                # one dot: hidden, never looked at
         for k in ("systeminfo.txt", "gamelist.xml"):
             self.assertEqual(ops[k].status, "skip", k)
         for k in ("cfg/game.uae", "cfg/Game.srm", "Game.state1", "other/thing.bin"):     # not a checksummed ROM: set aside, path kept

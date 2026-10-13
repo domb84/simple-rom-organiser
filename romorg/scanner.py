@@ -1094,8 +1094,14 @@ def hash_7z_member(path: Path, member: str, exe: Optional[str], size: int, strat
 # --------------------------------------------------------------------------- walking
 
 
+def is_hidden(name: str) -> bool:
+    """A hidden file or folder: its name starts with ONE dot (``.nomedia``, ``.DS_Store``, a sync tool's folder). A name that
+    starts with several (``...GAMELIST.txt``: a ROM pack's list, named to sort first) is an ordinary file."""
+    return name.startswith(".") and not name.startswith("..")
+
+
 def _skip_name(name: str) -> bool:
-    return (name.startswith(".") or Path(name).suffix.lower() in SKIP_SUFFIXES
+    return (is_hidden(name) or Path(name).suffix.lower() in SKIP_SUFFIXES
             or name.startswith(UNDO_LOG_PREFIX) or TEMP_MARKER in name or CONVERT_TEMP_MARKER in name)
 
 
@@ -1118,11 +1124,11 @@ def collect_files(root: Path, recursive: bool = True,
                 for de in it:
                     if _skip_name(de.name):
                         if (problems is not None and CONVERT_TEMP_MARKER in de.name
-                                and not de.name.startswith(".")):
+                                and not is_hidden(de.name)):
                             problems.append((Path(de.path), "partial output of an interrupted convert - the "
                                                             "original is kept (run Undo); safe to delete"))
                         elif (problems is not None and TEMP_MARKER in de.name
-                                and not de.name.startswith(".")):
+                                and not is_hidden(de.name)):
                             original = de.name.split(TEMP_MARKER, 1)[0]
                             problems.append((Path(de.path), "leftover of an interrupted move - rename it "
                                                             f"back to '{original}' (or run Undo)"))

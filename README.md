@@ -160,7 +160,8 @@ amiga/
 - Left in place even when unmatched: files in the folder of a DAT that is not installed
   (so a missing DAT never empties an organised folder), frontend / emulator files
   (`gamelist.xml`, `systeminfo.txt`, `metadata.txt`, `rom.key`, other `.key` files) and
-  symbolic links. **Anything else that is not a checksummed ROM is set aside** (saves, save states, emulator configs, notes), keeping its path under
+  symbolic links. A hidden file is one whose name starts with a single dot (`.nomedia`): it is never looked at. A name that starts with
+  several (`...GAMELIST.txt`, a ROM pack's list) is an ordinary file. **Anything else that is not a checksummed ROM is set aside** (saves, save states, emulator configs, notes), keeping its path under
   `_unmatched/` (or the archive folder); Undo brings it back.
 - The preview warns (and Apply asks twice) when most files match nothing or other systems'
   folders (`snes/`, `psx/` ...) would be moved - i.e. when the folder is too high up. The

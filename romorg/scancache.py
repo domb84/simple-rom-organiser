@@ -25,7 +25,7 @@ from . import __version__, paths
 
 __all__ = ["folder_stamp", "save", "load", "forget"]
 
-FORMAT = 1
+FORMAT = 2         # 2: a name that starts with several dots is scanned (a scan saved before did not look at such files)
 
 
 def folder_stamp(root: Path) -> tuple:
