@@ -2631,3 +2631,50 @@ extension. The Overview card says *found*, the Library card *kept*.
 * Live list: `Previews` items with `auto` recalculate 500 ms after the last change (`autoSchedule`); a change during a calculation marks
   it stale again and one more runs when it ends, so the list always follows the last change; Build waits (`dataset.stale`). The Preview
   button stays in the DOM, hidden, for the code.
+
+# AMENDMENT 21 - files next to a disc are not part of the game (later wins)
+
+* Rule `keep_extras` (`LibraryProfile`, `RULE_FIELDS`, catalogue entry, applicable to `layout == "game_folder"` systems only), default False.
+  `discsys.plan_units`: for a kept CHD unit the unit's other files (not frontend files: `_stays_with_game`) become `_junk_op(... with_game=True)`
+  ops (into `_unmatched` / the archive, path kept, reason "not a disc image: it sat with <game>"); `organiser.KEEP_SUFFIXES` is now only `.key`: saves, states, `.uae`
+  and `.nvram` are set aside everywhere like any unmatched file (path kept); only frontend lists / media and key files stay. Tidy (no profile) is unchanged. Not part of the totals signature.
+
+# AMENDMENT 22 - memory cards say which games they hold (later wins)
+
+* `romorg/memcards.py`: readers for PlayStation (128 KB, also `.gme` / `.vmp` wrapped), Dreamcast VMU, GameCube raw / `.gcp` (the directory with the
+  higher update counter whose checksums are right) and PS2 images (through `pcsx2.read_card_image`, the console's own `BADATA-SYSTEM` left out).
+  Written from the public format descriptions (Ross Ridge's PS2 file system document, the KallistiOS / Marcus Comstedt VMU notes, the PS1 card
+  layout); no code taken. `ps2mc` / `mymc+` (GPL, third party) and the Rust / .NET PS1 readers were not an option for a stdlib-only app.
+* `saveindex.build` reads each save-kind file of a plausible size (`memcards.sniff_size`) once (cached by path, size, mtime) into `SaveSet.cards`;
+  an unmatched set whose card names exactly one DAT title gets `guess`. `totals()` carries `cards` and `card_games`. UI: Browse > Saves.
+
+# AMENDMENT 23 - saves in a ROM folder are set aside under their game (later wins)
+
+* `romorg/savepin.py` (`Pinner`): a save file's titles by its name (the longest head that is a DAT game / ROM name, the rest a core's save suffix), or by the
+  card it is (`memcards`: GameCube codes via the DAT serials, a Dreamcast title only one game has). `organiser._Planner._pin` (flat / per-DAT systems,
+  also a save an earlier build left in `_unmatched`) and `discsys._junk_op` (loose files, and the extras of a game's own folder, pinned to that game) make
+  the op `<root>/_saves/<safe title>/<name>` with `RenameOp.copies` = the other titles; the Library list category is `saves`.
+* Build: `server.App._archive_pass` sends `_saves/...` to `<archive>/<system>/_saves/...` like the other reserved folders and adds a copy `SMove(copy=True)`
+  per extra title; without an archive folder `_pinned_copies` copies inside the folder after the build. `sortroot` journals a copy as ``kind: "copy"``; its
+  undo removes the copy.
+
+# AMENDMENT 24 - a save told by its title when its name is not a DAT name (later wins)
+
+* `saveindex.loose_titles / loose_pick / title_table / pick_title`: a name read without `- Copy`, `[...]`, GoodTools codes and (as a second reading
+  only, since a title can start with a number) a scene release number, looked up among the system's titles; accepted when exactly one title fits
+  (punctuation twins by exact spelling). `saveindex.build` puts it in `SaveSet.guess` for a set that matched nothing and whose card (if any) named
+  nothing; `match` stays `none`, so nothing that renames or keeps ROMs changes. `totals()["guessed_sets"]`.
+* `savepin.Pinner`: the same loose reading for a save in a ROM folder, and `_siblings`: a file of a save set that is not pinned on its own takes
+  the titles of another file of the set in its folder (same content name). Answers are remembered per path (not per name).
+
+# AMENDMENT 25 - saves counted for their own system; the Library tree page (later wins)
+
+* `SaveReport.mark_foreign(names, titles)`: an unmatched set that is a game (exact name) or the one title (loose reading) of another system sharing
+  a RetroArch core gets `SaveSet.other` and leaves `counted()`. `server.App._foreign_save_names` builds the two tables from the other systems' DATs
+  (read directly, not through the one-system DAT cache), once per system and DAT state.
+* `romorg/treeview.py`: `final_files(plan)` (every file of a plan and where the build leaves it; a disc op is expanded to its files), `build(root, plan,
+  archive_base, moves, playlists)` -> two `Index` es (ROM folder, archive) answering one folder at a time with totals below. `server.App._tree_of`
+  feeds it the plan, `_archive_pass`'s moves, `sortroot.plan_sweep` and the saves moves; kept in `state.items[("library", "tree")]` so a rule
+  change drops it. `_state_of(platform)` gets a system's scan (memory or disk) without making it current. `GET /api/tree/systems`, `GET /api/tree`.
+  UI: the **File tree** tab of a system (`Tree` in app.js, lazy folders, `#/system/<slug>/tree`): the system's own two trees, no page of its own
+  (`GET /api/tree/systems` stays for a caller that wants every system).

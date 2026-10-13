@@ -117,3 +117,7 @@ liblzma, ...); see the licence files inside `usr/python/lib/python3.*/` of the i
   local index (`ratings/igdb.sqlite`); per title the rating with more votes (LaunchBox or IGDB) is used. The use of that data is
   between the user and IGDB / Twitch under the terms the user accepted for their key; this project has not reviewed those terms for
   bulk reading and gives no legal advice. The index is a local cache, never committed or redistributed by this project.
+
+* **Memory card formats.** `romorg/memcards.py` reads PlayStation, Dreamcast VMU and GameCube memory cards from the public format descriptions
+  (the PS2 file system document by Ross Ridge, public domain; the KallistiOS VMU file system headers, BSD; Marcus Comstedt's flash memory notes).
+  No code of `mymc`, `ps2mc` or any other card library is used.

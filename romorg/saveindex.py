@@ -27,9 +27,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
+from . import memcards
 from .retroarch import fold_name, is_save_suffix
 
-__all__ = ["SaveSet", "SaveReport", "build", "kind_of", "content_name", "game_refs", "describe"]
+__all__ = ["SaveSet", "SaveReport", "build", "kind_of", "content_name", "game_refs", "describe", "loose_titles", "loose_pick", "title_table", "pick_title"]
 
 _BAD = " ()"            # a core's suffix never has spaces or brackets (the ones in a game's name)
 _STATE = re.compile(r"^\.state(\d*|\.auto)(\.png)?$", re.IGNORECASE)
@@ -85,6 +86,9 @@ class SaveSet:
     dat: str = ""
     game: str = ""                              # the DAT game (set) name
     title: str = ""
+    cards: List[Dict[str, Any]] = field(default_factory=list)   # the memory cards among the files and the games saved on each (memcards)
+    guess: str = ""                             # an unmatched set: the ONE title of the DAT its card names, or its name is when read loosely
+    other: str = ""                             # an unmatched set that is a game of ANOTHER system the same core plays: that system
 
     @property
     def shown(self) -> str:
@@ -105,7 +109,8 @@ class SaveSet:
     def public(self) -> Dict[str, Any]:
         return {"name": self.name, "match": self.match, "dat": self.dat, "game": self.game, "title": self.title or self.name,
                 "files": self.files, "saves": self.saves, "states": self.states, "screenshots": self.shots,
-                "bytes": self.bytes, "cores": list(self.cores), "source": self.source, "label": self.shown}
+                "bytes": self.bytes, "cores": list(self.cores), "source": self.source, "label": self.shown,
+                "cards": self.cards, "guess": self.guess}
 
 
 @dataclass
@@ -130,7 +135,7 @@ class SaveReport:
     def counted(self) -> List[SaveSet]:
         """The sets that are this system's business: every matched one, and an unmatched one only when it lies in the folder of
         a core that plays the system (or the save folders are not sorted per core, and nothing says otherwise)."""
-        return [s for s in self.sets.values() if s.files and (s.match != NONE or s.here or not self.per_core)]
+        return [s for s in self.sets.values() if s.files and not s.other and (s.match != NONE or s.here or not self.per_core)]
 
     def totals(self) -> Dict[str, Any]:
         sets = self.counted()
@@ -140,9 +145,11 @@ class SaveReport:
         return {"files": sum(s.files for s in sets), "saves": sum(s.saves for s in sets), "states": sum(s.states for s in sets),
                 "screenshots": sum(s.shots for s in sets), "bytes": sum(s.bytes for s in sets), "sets": len(sets),
                 "rom_sets": len(rom), "dat_sets": len(dat), "unmatched_sets": len(none),
+                "guessed_sets": sum(1 for s in none if s.guess),
                 "titles_rom": len({(s.title or s.game).casefold() for s in rom}),
                 "titles_dat": len({(s.title or s.game).casefold() for s in dat}
                                   - {(s.title or s.game).casefold() for s in rom}),
+                "cards": sum(len(s.cards) for s in sets), "card_games": sum(len(c["games"]) for s in sets for c in s.cards),
                 "per_core": self.per_core, "install": self.install,
                 "sources": sorted({name for st in sets for name in st.shown.split(" + ")}) or ([self.install] if self.install else []),
                 "renames": any(st.renames for st in sets) or bool(self.install)}
@@ -179,6 +186,29 @@ class SaveReport:
                     c["total"] += s.files
             self._t = cache
         return cache
+
+    def mark_foreign(self, foreign: Dict[str, str], titles: Optional[Dict[str, Tuple[Dict[str, set], str]]] = None) -> int:
+        """A core that plays several systems keeps their saves in one folder (Genesis Plus GX: Mega Drive, Master System, Game
+        Gear). A set that matched nothing here but is named after a game of another of those systems (``foreign``: folded game
+        name -> system) is that system's: it is no longer counted or listed here. So is one that is not told by its title here
+        either, but is ONE title of exactly one of the other systems when read loosely (``titles``: system -> (its
+        :func:`title_table`, a DAT name of it)). Returns how many were marked."""
+        n = 0
+        for s in self.sets.values():
+            if s.match != NONE or s.other:
+                continue
+            if s.key in foreign:
+                s.other, s.guess = foreign[s.key], ""
+                n += 1
+            elif not s.guess and titles:
+                hits = [system for system, (table, dat) in titles.items() if loose_pick(table, s.name, dat)]
+                if len(hits) == 1:
+                    s.other = hits[0]
+                    n += 1
+        if n:
+            for cache in ("_g", "_t"):
+                self.__dict__.pop(cache, None)
+        return n
 
     def keys(self) -> frozenset:
         """The content names (folded) there are saves for: what the selection looks games up in."""
@@ -277,7 +307,87 @@ def build(entries: Iterable[Tuple[Path, Path, bool]], by_file: Dict[str, Tuple[s
         if len(parts) > 1 and parts[0] not in s.cores:
             s.cores.append(parts[0])
         s.members.append((f, root, kind, size))
+        if kind == SAVE:
+            card = memcards.read(f)
+            if card is not None and card.entries:                 # (an empty card has nothing to say)
+                s.cards.append({"kind": card.kind, "label": card.label, "file": name, "games": card.games()})
+    table = title_table(t for _d, _g, t in by_dat.values())
+    style_dat = next((d for d, _g, _t in by_dat.values() if d), "")
+    for s in report.sets.values():
+        if s.match != NONE:
+            continue
+        # an unmatched set whose card names a title of the DAT: say which
+        found = {t for c in s.cards for g in c["games"] if (t := pick_title(table, g.split(" / ")[0].split(" (")[0]))}
+        if len(found) == 1:
+            s.guess = next(iter(found))
+        elif not found:                                  # ... or whose name, read loosely, is one title of the DAT
+            s.guess = loose_pick(table, s.name, style_dat) or ""
     return report
+
+
+def _norm(text: str) -> str:
+    """A title for comparing two wordings of it: letters and digits only, lower case."""
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def title_table(titles: Iterable[str]) -> Dict[str, set]:
+    """``{normalised title: the titles spelled that way}`` of a system's DAT titles (what :func:`pick_title` looks things up in)."""
+    table: Dict[str, set] = {}
+    for t in titles:
+        if t:
+            table.setdefault(_norm(t), set()).add(t)
+    return table
+
+
+def pick_title(table: Dict[str, set], text: str) -> Optional[str]:
+    """The ONE title of ``table`` that ``text`` is, or None: titles that differ only in punctuation (``Rat Attack`` /
+    ``Rat Attack!``) are told apart by the exact spelling; when that does not settle it, nothing is claimed."""
+    key = _norm(text)
+    if len(key) < 3:                                     # (too little to go by)
+        return None
+    found = table.get(key) or set()
+    if len(found) == 1:
+        return next(iter(found))
+    return text if text in found else None
+
+
+_SCENE_NO = re.compile(r"^\d{3,4}\s*-\s+")                      # "1631 - Super Mario Advance 4 ..." (a scene release number)
+_COPY = re.compile(r"\s*-\s*Copy(\s*\(\d+\))?$", re.IGNORECASE)  # Windows' "Game - Copy", "Game - Copy (2)"
+_GOOD_CODES = re.compile(r"\s*\((?:[A-Z]{1,3}|M\d+|[Vv]\d[\d.]*|Rev [0-9A-Z]+)\)")   # GoodTools "(E)", "(M5)", "(v1.1)" left in a title
+_SQUARE = re.compile(r"\[[^\]]*\]")
+
+
+def loose_titles(name: str, dat: str = "") -> List[str]:
+    """The titles a save's name may stand for when it is not a DAT name as it is, likeliest first: without a ``- Copy`` at the
+    end, square-bracket flags, and the region / language / version / revision tags of any naming scheme
+    (``Yoshi's Island (USA, Asia) (Rev 1)`` -> ``Yoshi's Island``); and then, as a second reading, without a scene release
+    number in front (``2375 - Sonic Advance (J) (M2) (v1.1)`` -> ``Sonic Advance``). The number is only dropped second, because
+    a title can begin with one (``007 - The World Is Not Enough``, ``1942``)."""
+    from . import library
+    from .datfile import Rom
+
+    def read(text: str) -> str:
+        try:
+            title = library.rom_title(Rom(text + ".x", 1, "", "", "", text, dat, text), dat)
+        except Exception:  # noqa: BLE001 - a name no parser likes is simply not recognised
+            title = text
+        return _GOOD_CODES.sub("", _SQUARE.sub("", title)).strip()
+
+    plain = _COPY.sub("", name).strip()
+    out = [read(plain)]
+    bare = _SCENE_NO.sub("", plain)
+    if bare != plain and read(bare) not in out:
+        out.append(read(bare))
+    return [t for t in out if t]
+
+
+def loose_pick(table: Dict[str, set], name: str, dat: str = "") -> Optional[str]:
+    """The one title of ``table`` that the save name ``name`` stands for when read loosely (:func:`loose_titles`), or None."""
+    for text in loose_titles(name, dat):
+        hit = pick_title(table, text)
+        if hit:
+            return hit
+    return None
 
 
 def describe(counts: Optional[Dict[str, int]]) -> str:

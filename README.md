@@ -159,8 +159,9 @@ amiga/
   to `_unmatched/`, the confirmation repeats the number, and *Undo last* puts them back.
 - Left in place even when unmatched: files in the folder of a DAT that is not installed
   (so a missing DAT never empties an organised folder), frontend / emulator files
-  (`gamelist.xml`, `systeminfo.txt`, `metadata.txt`, `rom.key`, `*.uae`, save files) and
-  symbolic links.
+  (`gamelist.xml`, `systeminfo.txt`, `metadata.txt`, `rom.key`, other `.key` files) and
+  symbolic links. **Anything else that is not a checksummed ROM is set aside** (saves, save states, emulator configs, notes), keeping its path under
+  `_unmatched/` (or the archive folder); Undo brings it back.
 - The preview warns (and Apply asks twice) when most files match nothing or other systems'
   folders (`snes/`, `psx/` ...) would be moved - i.e. when the folder is too high up. The
   home folder, `/` and the root of a drive / SD card cannot be scanned at all.
@@ -216,7 +217,7 @@ you open a system after a restart, with no scan: while the folder (files, sizes,
 are what they were. Change any of them and the saved scan is not used (a rescan reads only what changed, so it is quick).
 Opening `#/` goes to the system you used last.
 
-**A system page (`#/system/<slug>/library`)** has a *< Systems* link and two tabs, **Library** and **Browse** (the old Overview
+**A system page (`#/system/<slug>/library`)** has a *< Systems* link and three tabs, **Library**, **Browse** and **File tree** (the old Overview
 is part of Library; an `.../overview` address opens it). Library is one page, top to bottom:
 
 * the **folder** field with **Folders... / Clear** (a folder is **saved the moment you choose it**) and the **Scan folder**
@@ -513,8 +514,50 @@ scan, and four that need a calculation of their own (`GET /api/library/insights`
 Average rating, Regions, and Convert (disc systems). A tile with nothing to say for a system (no saves, nothing unmatched, no ratings)
 is left out of that page. The choice is `page_tiles` in `config.json`.
 
+**Files next to a disc (disc systems).** On Dreamcast, PlayStation and PlayStation 2 the files in a game's folder that are not its disc
+image (a save or save state, a `.zip`, a checksum file) are **not part of the game**: by default Build library sets them aside like any file that
+matches nothing, but a save, save state or memory card goes under its game: `<archive folder>/<system folder>/_saves/<Title>/<file>` (or `_saves/` in the
+ROM folder while no archive folder is set); the rest goes to `_unmatched`. Undo brings everything back. The rule **Keep other files that
+sit with a game** (Settings, overridable per system; off by default) keeps them with the game and renames them with it, as earlier versions
+always did. Playlists, `gamelist.xml` and media folders always stay. Saves in RetroArch's own save folders are a different thing: see
+*What happens to the saves*. Likewise loose saves and states in any system's folder are set aside when no game claims them.
+
 **Copy a name or a checksum.** In the upgrades list and in every checksum panel (Browse, the Library list's details) a file name,
 CRC32, MD5 or SHA-1 is a button: press it and it is on the clipboard, ready to search for. The app itself never downloads games.
+
+**Saves in a ROM folder go under their game.** A save file, save state or memory card lying in a system's ROM folder (not in RetroArch's own save
+folders) is not a ROM, so the build sets it aside - under the game it belongs to: `<archive>/<system>/_saves/<Title>/<file>` (the title without
+region, version or disc, so every edition shares a folder). A file is pinned to a title when its name is a game's (`Game (USA).srm`,
+`.state1`, Flycast's `.A1.bin`), when it sat in that game's own folder, or when it is a memory card that names its games (a GameCube card by its
+game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**;
+Undo puts the original back and removes the copies. A save no title claims goes to `_unmatched`. These rows are the **Saves** reason of the Library list.
+
+**File tree (a tab of every system, `#/system/<slug>/tree`).** Every file of the system, as two trees side by side: what its **ROM folder** and
+its part of the **archive** would hold after a build with the current rules (the ROMs that stay, and everything that is or would be archived:
+`_excluded`, `_superseded`, `_duplicates`, `_saves`, `_unmatched`). Each shows its real path and its totals, and opens folder by folder; a folder
+says how many files and bytes are below it and how many the build changes; a file is marked *renamed*, *moved*, *new* (a playlist), *set aside*
+(goes to the archive with this build), *copy* or *saves*, with where it comes from on hover; a file the scan does not look at (a hidden file,
+an emulator's own folder) is listed too, as *not looked at*: it stays where it is. **Only what the build changes** hides the rest. It is
+made from the system's scan (so a system has to be scanned) and follows the rules; it is a preview: nothing is moved by this tab.
+
+**Saves are counted for the system they belong to.** A RetroArch core that plays several systems keeps their saves in one folder (Genesis Plus GX:
+Mega Drive, Master System, Game Gear). A save that matches nothing in the system you are looking at but is a game (or, read loosely, the one title)
+of another system the core plays is that system's: it is not counted or listed as *unmatched* here.
+
+**Saves whose name is not quite a game's.** A save that matches no ROM and no database name is read again, loosely: without a `- Copy` at the
+end, square-bracket flags and the region / language / version / revision tags of any naming scheme, and then without a scene release number in front
+(`2375 - Sonic Advance (J) (M2) (v1.1)`, `Yoshi's Island (USA, Asia) (Rev 1)`, `Tony Hawk's Pro Skater 2 (USA) - Copy`). When what is left is **exactly
+one** title of the system's database, the save is **told by its title** (Browse > Saves says *title only*; in a ROM folder it goes to `_saves/<Title>/`).
+A title that begins with a number keeps it (`007 - The World Is Not Enough`), and two titles that differ only in punctuation are told apart by the
+exact spelling or not at all. Such a save is known by title, not by edition: it is never renamed with a ROM. The other files of a save set (the empty
+memory cards B, C, D of a game) follow the one that names the game.
+
+**Memory cards: the games inside a save.** A card file holds the saves of the games on it, whatever it is called, so the app reads the card's
+directory (`romorg/memcards.py`, stdlib only): **PlayStation** cards (RetroArch's `.srm`, `.mcr`, `.mcd`, DexDrive `.gme`, PSP `.vmp`: the
+product code `SLUS-01234` and the game's title), **Dreamcast VMUs** (Flycast's `.A1.bin`: what each file on the card is), **GameCube** cards
+(`.raw`, `.gcp`: the game codes) and **PlayStation 2** card images (the serials). Browse > Saves lists them under each save set, and a set that
+matches no ROM but whose card names a title of the database says **looks like** that title (on your Dreamcast, `MK-51000` is Sonic Adventure and
+`T36802N` is Soul Reaver). Cartridge saves and save states carry no game name, so only their file name tells. Nothing is written or moved.
 
 **Lists behind the hints.** The Overview's three hint lines each have a **Show** button: the games you own that are not the preferred
 version (with its checksums), the games your rules leave out (and why), and the multi-disk games with disks missing

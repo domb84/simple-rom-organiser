@@ -184,18 +184,21 @@ class DcEndpointTests(DcServerCase):
         self.scan()
         plan = self.call("/api/library/plan", {})
         row = [r for r in plan["items"] if r.get("game") == "Beta (Europe)"][0]
-        self.assertEqual((row["status"], row["to"], row["level"], row["files"]), ("move", "Beta (Europe)", "identified", 2))
+        self.assertEqual((row["status"], row["to"], row["level"], row["files"]), ("move", "Beta (Europe)", "identified", 1))      # (its save state is no part of the game: a row of its own)
+        self.assertTrue([r for r in plan["items"] if r["from"].endswith("y.state") and r["to"].startswith("_saves/Beta/")])
         self.call("/api/library/apply", {})
         j = self.job()
         self.assertEqual(j["status"], "done")
         self.assertEqual(j["result"]["failed"], [])
         self.assertEqual(j["result"]["summary"]["correctly_placed"], 1)
-        self.assertTrue((self.roms / "Beta (Europe)" / "Beta (Europe).state").is_file())
+        self.assertTrue((self.roms / "Beta (Europe)" / "Beta (Europe).chd").is_file())
+        self.assertTrue((self.roms / "_saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
         logs = self.call(f"/api/organise/undo-logs?path={self.roms}")["logs"]
         self.assertEqual(len(logs), 1)
         self.call("/api/organise/undo", {"log": logs[0]["log"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertTrue((self.roms / "x" / "y.chd").is_file())
+        self.assertTrue((self.roms / "x" / "y.state").is_file())                         # ... and Undo brings it back
         self.assertFalse((self.roms / "Beta (Europe)").exists())
 
     def test_stale_move_unmatched_false_is_ignored_unmatched_always_moves(self) -> None:
@@ -223,7 +226,7 @@ class DcEndpointTests(DcServerCase):
         info = self.call(f"/api/library/profile?platform={urllib.parse.quote(PLAT)}")
         self.assertEqual(info["style"], "redump")
         ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
-        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "keep_bios", "languages",
+        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "keep_bios", "keep_extras", "languages",
                                "other_language", "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
         self.assertFalse(info["available"]["keep_flags"])

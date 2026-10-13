@@ -84,6 +84,13 @@ def _mod(name: str) -> Any:
     return importlib.import_module(f"{PACKAGE}.{name}")
 
 
+def _file_size(path: Any) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
 class ApiError(Exception):
     """An error reported to the client as ``{"error": message}``."""
 
@@ -287,11 +294,12 @@ TAG_FILTERS = ("region", "language", "video", "flag", "rule")
 CHECKSUM_KINDS = ("matched", "missing", "unmatched", "games")
 HASH_KEYS = ("crc32", "md5", "sha1")
 # Reason categories of the Build library plan (row filter ``reason``).
-LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist")
+LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "saves", "unmatched", "playlist")
 # Profile fields the save endpoint accepts (besides ``reset``).
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
-                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios")
+                "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
+                "keep_extras")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -821,6 +829,7 @@ class App:
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
         self._totals_mgr: Any = None                           # totals.TotalsManager (library totals, Amendment 17)
         self._cutoffs: dict[str, tuple[tuple, Any]] = {}       # platform -> (key, rank key of the N-th best game) (Amendment 18)
+        self._foreign_cache: dict[str, tuple[tuple, Any]] = {}   # platform -> (key, game names of the systems that share its cores)
         if hasattr(self.updates, "ratings_wanted"):
             self.updates.ratings_wanted = self._ratings_wanted
         if hasattr(self.updates, "igdb_creds"):
@@ -1888,11 +1897,60 @@ class App:
                     m3us = _mod("m3u").find_m3us(state.root) if Path(state.root).is_dir() else ()
                 state.saves = saveindex.build(walk.for_platform(state.platform), by_file, by_dat, walk.per_core, sel.label,
                                               playlists=self._playlists_of(m3us))
+                if any(st.match == saveindex.NONE and st.files for st in state.saves.sets.values()):
+                    # a save that matched nothing here may be a game of another system the same core plays: then it is that system's
+                    state.saves.mark_foreign(*self._foreign_save_names(state.platform, walk))
             state.saves_for = key
         except Exception:  # noqa: BLE001 - the saves are a courtesy: a broken save folder never stops a scan
             traceback.print_exc()
             return None
         return state.saves
+
+    def _foreign_save_names(self, platform: Any, walk: Any) -> tuple[dict[str, str], dict[str, Any]]:
+        """``({folded game name: system}, {system: (its title table, a DAT name of it)})`` of the games of the OTHER systems that share
+        a RetroArch core with ``platform`` (their DAT names, ROM names and set names; their titles). Built once per system and state
+        of the DATs: the DATs are read without touching the one-system DAT cache."""
+        ra, platforms, saveindex, library = _mod("retroarch"), _mod("platforms"), _mod("saveindex"), self._library_mod()
+        try:
+            _known, mine = walk._cores_of(platform)
+        except Exception:  # noqa: BLE001 - the saves are a courtesy
+            return {}, {}
+        others = []
+        for other in platforms.list_platforms():
+            if other.name == platform.name or _mod("idsaves").applies(other.name):
+                continue
+            try:
+                if mine & walk._cores_of(other)[1]:
+                    others.append(other)
+            except Exception:  # noqa: BLE001
+                continue
+        key = (platform.name, tuple((o.name, self._dats_signature(o)) for o in others))
+        cached = self._foreign_cache.get(platform.name)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        table: dict[str, str] = {}
+        titles: dict[str, Any] = {}
+        for other in others:
+            try:
+                with self.dat_lock:
+                    loaded, _missing = platforms.load_platform_dats(other)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                continue
+            found: set = set()
+            for dat in loaded:
+                seen: set = set()
+                for rom in dat.roms:
+                    for n in (rom.game, rom.set_name, os.path.splitext(rom.name)[0]):
+                        if n:
+                            table.setdefault(ra.fold_name(n), other.name)
+                    if rom.game not in seen:
+                        seen.add(rom.game)
+                        found.add(library.rom_title(rom, dat.name))
+            if loaded:
+                titles[other.name] = (saveindex.title_table(found), loaded[0].name)
+        self._foreign_cache[platform.name] = (key, (table, titles))
+        return table, titles
 
     def _make_library_plan(self, state: ScanState, prof: Any, savedisk: bool, labels: bool) -> Any:
         """A fresh ``LibraryPlan`` of the scan for the given rules (not cached). With a RetroArch config the plan carries
@@ -1949,6 +2007,8 @@ class App:
             return "bios"
         if item.get("code"):
             return str(item["code"])
+        if item.get("dest") == SAVES_DIR:                    # a save of a game, set aside under its title
+            return "saves"
         return "unmatched" if item.get("dest") in RESERVED_DIRS else "kept"
 
     def _library_rows(self, state: ScanState, key: tuple[bool, bool]) -> list[tuple[dict[str, Any], str]]:
@@ -2401,8 +2461,10 @@ class App:
         info["profile"] = self._profile_json(profile, "")
         info["defaults"] = self._profile_json(library.app_defaults(), "")
         info["available"] = {**info["available"], "ratings": True}
-        seen = {e["id"] for e in info["catalog"]}       # (a TOSEC catalog has no region priority: the defaults carry every system's rules)
-        info["catalog"] = info["catalog"] + [e for e in library.rule_catalog(library.STYLE_NOINTRO) if e["id"] not in seen]
+        # (a TOSEC catalog has no region priority and no disc-system rule: the defaults carry every system's rules)
+        for style in (library.STYLE_NOINTRO, library.STYLE_REDUMP, library.STYLE_WHDLOAD):
+            seen = {e["id"] for e in info["catalog"]}
+            info["catalog"] = info["catalog"] + [e for e in library.rule_catalog(style) if e["id"] not in seen]
         info["inherit"] = {**info["inherit"], "applicable": list(library.RULE_FIELDS)}      # (every rule: it is the defaults of every system)
         info["available_languages"] = [{"code": c, "name": n, "count": None, "games": None} for c, n in tags.LANGUAGES.items()]
         info["defaults_page"] = True
@@ -2455,7 +2517,7 @@ class App:
                 body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language", "keep_bios"):
+                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -3459,10 +3521,29 @@ class App:
                     size = op.src.stat().st_size
                 except OSError:
                     pass
-                arch.append(sortroot.SMove(op.src, names.free(new), top, size=size))
+                final = names.free(new)
+                arch.append(sortroot.SMove(op.src, final, top, size=size))
+                for title in getattr(op, "copies", ()) or ():        # a save of several games: a copy of it under each of the others
+                    extra = names.free(aside / folder.name / SAVES_DIR / _mod("organiser").safe_filename(title) / op.src.name)
+                    arch.append(sortroot.SMove(final, extra, top, size=size, copy=True))
             else:
                 keep.append(op)
         return keep, arch
+
+    @staticmethod
+    def _pinned_copies(plan: Any, folder: Path) -> list[Any]:
+        """For a build with no archive folder: the copies of the saves that belong to several games, made in the folder's ``_saves``
+        from where the build put the save (under the first title)."""
+        sortroot, organiser, discsys = _mod("sortroot"), _mod("organiser"), _mod("discsys")
+        names = sortroot.Names()
+        out: list[Any] = []
+        for op in discsys.file_ops(plan.ops):
+            if getattr(op, "status", "") != "move" or not getattr(op, "copies", None) or not os.path.lexists(op.dst):
+                continue
+            for title in op.copies:
+                out.append(sortroot.SMove(op.dst, names.free(folder / SAVES_DIR / organiser.safe_filename(title) / op.dst.name), SAVES_DIR,
+                                          size=_file_size(op.dst), copy=True))
+        return out
 
     def _library_aside_dir(self, state: ScanState, body: dict[str, Any]) -> Path | None:
         """The folder a build in place moves what it sets aside to (``aside_to``): checked not to lie in this folder."""
@@ -3485,7 +3566,7 @@ class App:
         sent = _str_arg(body.get("plan_id"))
         if sent and sent != self._plan_id(state, key):
             raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
-                           "recalculate the preview and check it again", "stale_plan")
+                           "check the list and build again", "stale_plan")
         self._library_plan(state, *key)  # errors (e.g. module missing) before starting a job
         aside = self._library_aside_dir(state, body)
 
@@ -3527,6 +3608,11 @@ class App:
                 apply = _mod("discsys").apply_plan if self._is_dc(st) else _mod("organiser").apply_renames
                 res = dict(_call(apply, plan.ops, st.root, progress=job.report,
                                  cancel=job.cancel, playlists=list(plan.playlists)))
+                copies = self._pinned_copies(plan, st.root)
+                if copies:                                                  # (the saves of several games: a copy under each of the others)
+                    done = sortroot.apply_moves(copies, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=[st.root],
+                                                extra={"library_log": res.get("undo_log") or ""})
+                    res["saves_copied"] = done["moved"]
             res["action"] = "library"
             if conv_res is not None:
                 res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
@@ -3573,7 +3659,7 @@ class App:
         sent = _str_arg(body.get("plan_id"))
         if sent and sent != self._plan_id(state, key):
             raise ApiError(HTTPStatus.CONFLICT, "The rules or the folder changed since that preview - "
-                           "recalculate the preview and check it again", "stale_plan")
+                           "check the list and build again", "stale_plan")
         mode = _mod("libexport").normalize_mode(_str_arg(body.get("export_mode")))
         sidecars = _bool_arg(body.get("export_sidecars"))
         sync, allow_mass = _bool_arg(body.get("export_sync")), _bool_arg(body.get("allow_mass_removal"))
@@ -4294,6 +4380,102 @@ class App:
         self._totals().request(platform, profile, dats_sig, scan, None)
         return True
 
+    # ---- the trees a build would leave (the "Library tree" page)
+    def _state_of(self, platform: Any) -> ScanState | None:
+        """The scan of a system without making it the current one: the one in memory, else the one saved on disk (when the folder,
+        the DATs and the scan options are what they were). None when the system has to be scanned first."""
+        folder = self._folders().get(platform.name)
+        if not folder:
+            return None
+        with self._lock:
+            current = self._scan
+            state = current if current is not None and current.platform.name == platform.name else self._scans.get(platform.name)
+        if state is None and Path(folder).is_dir():
+            state = self._scan_from_disk(platform, folder)
+            if state is not None:
+                self._remember_scan(state, on_disk=False)
+        if state is None or os.path.normcase(str(state.root)) != os.path.normcase(os.path.abspath(os.path.expanduser(folder))):
+            return None
+        return state
+
+    def _archive_of(self, platform: Any, root: Path) -> Path | None:
+        """The archive folder a build of this system would use (its own, else the one for every system), or None: none is set,
+        or it lies in the system's folder."""
+        a = self._archive_settings(self._config())
+        raw = a["overrides"].get(platform.name) or a["dir"]
+        if not raw:
+            return None
+        aside = Path(os.path.abspath(os.path.expanduser(raw)))
+        return None if _mod("sortroot").check_folders(root, aside) else aside
+
+    def _tree_of(self, state: ScanState) -> tuple[Any, Any, Path | None]:
+        """``(the ROM folder's tree after a build, the archive's, the archive base)`` for the system's current rules (kept with its plans)."""
+        key = (False, _layout(state.platform) != LAYOUT_GAME_FOLDER)
+        aside = self._archive_of(state.platform, state.root)
+        ident = (self._plan_id(state, key), str(aside))
+        cached = state.items.get(("library", "tree"))
+        if cached is not None and cached[0] == ident:
+            return cached[1]
+        plan = self._library_plan(state, *key)
+        sortroot, treeview = _mod("sortroot"), _mod("treeview")
+        moves: list[Any] = []
+        base = None
+        if aside is not None:
+            base = aside / state.root.name
+            _keep, arch = self._archive_pass(state.root, plan, aside)
+            moves = list(arch) + list(sortroot.plan_sweep({state.platform.name: state.root}, aside))
+            try:
+                moves += self._saves_moves(plan, state.root, aside)[0]
+            except Exception:  # noqa: BLE001 - the saves are a courtesy
+                traceback.print_exc()
+        lib, arch_tree = treeview.build(state.root, plan, base, moves, plan.playlists)
+        value = (lib, arch_tree, base)
+        state.items[("library", "tree")] = (ident, value)
+        return value
+
+    def tree_systems(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/tree/systems``: the systems that have a folder, each with its folder, its part of the archive and whether a
+        scan of it is at hand (the trees are made from the scan: nothing is scanned for this page)."""
+        cfg = self._config()
+        folders = self._folders(cfg)
+        records = cfg.get("scan_records") if isinstance(cfg.get("scan_records"), dict) else {}
+        with self._lock:
+            held = set(self._scans) | ({self._scan.platform.name} if self._scan is not None else set())
+        out = []
+        for p in _mod("platforms").list_platforms():
+            folder = folders.get(p.name)
+            if not folder:
+                continue
+            root = Path(os.path.abspath(os.path.expanduser(folder)))
+            aside = self._archive_of(p, root)
+            out.append({"platform": p.name, "folder": str(root), "archive": str(aside / root.name) if aside is not None else "",
+                        "scanned": p.name in held or p.name in records})
+        return {"systems": out, "archive_dir": self._archive_settings(cfg)["dir"]}
+
+    def tree_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/tree?platform=&side=library|archive&path=&offset=``: one folder of the tree a build of the system would
+        leave (its sub-folders with their totals, its files with what the build does to each). ``ready`` is false when the
+        system has no scan at hand."""
+        platform = self._resolve_platform(query.get("platform"))
+        side = "archive" if query.get("side") == "archive" else "library"
+        state = self._state_of(platform)
+        if state is None:
+            return {"platform": platform.name, "side": side, "ready": False,
+                    "reason": "Scan this system first: the trees are made from its scan."}
+        lib, arch, base = self._tree_of(state)
+        index = arch if side == "archive" else lib
+        if side == "archive" and base is None:
+            return {"platform": platform.name, "side": side, "ready": True, "root": "", "none": True, "dirs": [], "files": [], "total_files": 0,
+                    "totals": {"files": 0, "bytes": 0, "changed": 0}}
+        try:
+            offset = max(0, int(query.get("offset") or 0))
+        except ValueError:
+            offset = 0
+        page = index.children(_str_arg(query.get("path")), offset)
+        if page is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "No such folder in the tree")
+        return {"platform": platform.name, "side": side, "ready": True, "root": index.root, "totals": index.totals(), **page}
+
     def library_insights(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/insights?platform=&want=a,b``: the numbers of the tiles that need a calculation of their own
         (``tiles.CALC``) from the totals worker's cached target and your scan; ``ready`` is false while those are being calculated."""
@@ -4622,6 +4804,8 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/settings/tiles"): App.tiles_get,
     ("POST", "/api/settings/tiles"): App.tiles_save,
     ("GET", "/api/library/insights"): App.library_insights,
+    ("GET", "/api/tree/systems"): App.tree_systems,
+    ("GET", "/api/tree"): App.tree_get,
     ("POST", "/api/library/export/settings"): App.library_export_settings,
     ("POST", "/api/library/export/undo"): App.library_export_undo,
     ("POST", "/api/folders"): App.folders_save,

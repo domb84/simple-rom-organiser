@@ -169,6 +169,18 @@ class DefaultsServerTests(ServerCase):
         code, _ = self.http("POST", "/api/library/defaults", {"region_ties": ["Atlantis"]})
         self.assertEqual(code, 400)
 
+    def test_settings_offers_every_rule_any_system_has(self) -> None:
+        info = self.call("GET", "/api/library/defaults")
+        ids = {e["id"] for e in info["catalog"]}
+        fields = {e["field"] for e in info["catalog"]}
+        for rule in ("region_priority", "other_language", "keep_extras", "keep_bios", "one_per_game", "latest_only", "best_variant"):
+            self.assertIn(rule, ids, rule)
+        missing = [f for f in library.RULE_FIELDS if f not in fields and f not in ("exclude", "keep_flags", "region_ties", "saved_games")]
+        self.assertEqual(missing, [])                                    # a rule of the profile that Settings could not show
+        out = self.call("POST", "/api/library/defaults", {"keep_extras": True})
+        self.assertTrue(out["profile"]["keep_extras"])
+        self.assertIn("keep_extras", out["changed"])
+
     def test_the_tiles_of_the_system_pages_are_one_list_for_every_system(self) -> None:
         info = self.call("GET", "/api/settings/tiles")
         self.assertEqual((info["shown"], info["max"]), (info["default"], 10))

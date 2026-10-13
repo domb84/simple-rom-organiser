@@ -527,7 +527,7 @@ class TotalsEndpointTests(unittest.TestCase):
         self.call("POST", "/api/library/profile", {"platform": "Commodore Amiga", "languages": ["De"]})
         refused = self.call("POST", "/api/library/apply", {"plan_id": plan["plan_id"]})
         self.assertEqual(refused["_status"], 409)
-        self.assertIn("recalculate", refused["error"])
+        self.assertIn("build again", refused["error"])
         self.assertFalse((self.root / GAMES).exists())             # nothing moved
         fresh = self.call("POST", "/api/library/plan", {"limit": 5})
         self.assertNotEqual(fresh["plan_id"], plan["plan_id"])

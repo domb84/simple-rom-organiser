@@ -41,6 +41,7 @@ class SMove:
     note: str = ""
     kind: str = "file"          # file | folder
     size: int = 0
+    copy: bool = False          # a copy: ``src`` stays, ``dst`` is a new file (an undo removes it)
 
 
 def overlap(root: Path, dest: Path) -> str:
@@ -430,9 +431,12 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
                 if not os.path.lexists(m.src):
                     raise FileNotFoundError("the file is no longer there")
                 journal.mkdirs(m.dst.parent)
-                rec = {"from": str(m.src), "to": str(m.dst), "kind": m.kind}
+                rec = {"from": str(m.src), "to": str(m.dst), "kind": "copy" if m.copy else m.kind}
                 journal.intend(rec)
-                move_path(m.src, m.dst)
+                if m.copy:
+                    shutil.copy2(m.src, m.dst)
+                else:
+                    move_path(m.src, m.dst)
                 done.append(rec)
                 meter.add(m.size)
                 emptied.add(m.src.parent)
@@ -464,6 +468,16 @@ def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
     reset_retries()
     for m in reversed(d.get("moves", [])):
         src, dst = Path(m["to"]), Path(m["from"])
+        if m.get("kind") == "copy":                    # a copy is taken away again (the original is where it was)
+            if os.path.lexists(src):
+                try:
+                    remove_file(src)
+                    restored += 1
+                    dirs.add(src.parent)
+                except OSError as exc:
+                    skipped.append({"path": str(src), "reason": str(exc)})
+                    left.append(m)
+            continue
         if not os.path.lexists(src):
             if partial and os.path.lexists(dst):
                 continue                               # written down, then never moved (the run died or the move failed)

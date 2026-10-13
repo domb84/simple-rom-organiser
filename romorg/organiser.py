@@ -98,10 +98,11 @@ MOVE_STATUSES = ("move", "rename")  # "rename" accepted for backwards compatibil
 DELETE_STATUS = "delete"            # our own stale m3u playlists
 ACTION_STATUSES = MOVE_STATUSES + (DELETE_STATUS,)
 
-# Unmatched files that belong next to the ROMs (frontends / emulators) stay in place.
+# Unmatched files that belong next to the ROMs for a FRONTEND (its lists and media) stay in place. Everything else that is not a
+# checksummed ROM - saves, states, configs, notes - is set aside like any unmatched file, its path kept (the user's rule, 2026-10-13).
 KEEP_NAMES = {"systeminfo.txt", "metadata.txt", "metadata.pegasus.txt", "gamelist.xml",
               "rom.key", "desktop.ini", "thumbs.db"}
-KEEP_SUFFIXES = {".uae", ".key", ".srm", ".sav", ".state", ".nvram"}
+KEEP_SUFFIXES = {".key"}                 # (key files of the emulators: a console's keys, an Amiga Kickstart's rom.key)
 # Frontend media folders inside a flat console root (EmulationStation, Pegasus ...).
 KEEP_DIRS = {"media", "images", "videos", "manuals", "downloaded_images", "snap", "boxart"}
 
@@ -142,6 +143,7 @@ class RenameOp:
     reasons: tuple[str, ...] = ()  # excluded: every reason code (rules, "flag_<x>", "language"), first = primary
     bios: bool = False       # a BIOS / firmware file or an emulator's key file, kept with the ROMs (the library rule)
     bios_game: str = ""      # a BIOS told by a TOSEC firmware list: its entry's name there, flags and all (the library rules read it like a ROM's)
+    copies: tuple[str, ...] = ()   # a save pinned to several titles: the others (the file goes under the first, a copy under each of these)
 
 
 # --------------------------------------------------------------------------- names
@@ -466,8 +468,10 @@ class _Planner:
     """Per-plan settings for files that matched nothing."""
 
     def __init__(self, root: Path, missing_dats: Iterable[str],
-                 layout: str = LAYOUT_PER_DAT, keep_bios: bool = True, bios_found: Optional[Mapping[Path, Any]] = None) -> None:
+                 layout: str = LAYOUT_PER_DAT, keep_bios: bool = True, bios_found: Optional[Mapping[Path, Any]] = None,
+                 pinner: Any = None) -> None:
         self.root = root
+        self.pinner = pinner                        # savepin.Pinner: a save in the folder is set aside under the game it belongs to
         self.layout = layout
         self.keep_bios = keep_bios                  # the library rule: BIOS / firmware / key files stay with the ROMs
         from . import bios
@@ -494,6 +498,10 @@ class _Planner:
             back = bios_out_of(kept, root) if kept is not None else None         # (a BIOS an earlier build set aside comes back, as a ROM does)
             if back is not None:
                 return back
+            if name == UNMATCHED_DIR:                  # a save an earlier build put in _unmatched, that can be pinned to a game now
+                pinned = self._pin(src)
+                if pinned is not None:
+                    return pinned
             return RenameOp(src, src, "ok", f"{why}, already in {name}", "", "move", "", True)
         rel = _rel_to(src, root)
         if rel is None:
@@ -509,7 +517,24 @@ class _Planner:
         kept = bios_op(src, self.bios_found) if self.keep_bios else None
         if kept is not None:
             return kept
+        pinned = self._pin(src)
+        if pinned is not None:
+            return pinned
         return _finish_op(src, root / UNMATCHED_DIR / rel, [why], "", "", True)
+
+    def _pin(self, src: Path) -> Optional[RenameOp]:
+        """The op that sets a save aside under the game it belongs to (``_saves/<Title>/``), or None when it is not pinned to one."""
+        if self.pinner is None:
+            return None
+        titles = self.pinner.titles(src)
+        if not titles:
+            return None
+        from . import savepin
+        op = _finish_op(src, savepin.destination(self.root, titles[0], src.name),
+                        [f"a save of {titles[0]}" + (f" (and {len(titles) - 1} more)" if len(titles) > 1 else "")], "", "", True)
+        op.copies = tuple(titles[1:])
+        op.folder = folders.SAVES_DIR
+        return op
 
 
 def _matched_op(src: Path, root: Path, roms: Sequence["Rom"], archive_ext: Optional[str],
@@ -749,8 +774,9 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
     root = result.root
     if layout is None:
         layout = getattr(result, "layout", LAYOUT_PER_DAT) or LAYOUT_PER_DAT
+    from . import savepin
     planner = _Planner(root, missing_dats, layout, keep_bios=profile.keep_bios if profile is not None else True,
-                       bios_found=getattr(result, "bios_files", None))
+                       bios_found=getattr(result, "bios_files", None), pinner=savepin.Pinner(getattr(result, "dats", None)))
     units, others = _scan_units(result, layout, planner)
     ops: list[RenameOp] = [u.op for u in units] + others
     links = {id(u.op) for u in units if u.link}        # the units already know (one lstat per file, done once)
@@ -1129,7 +1155,7 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
     from . import bios, library
 
     out = dict.fromkeys(("kept", "renamed", "moved", "excluded", "superseded", "incomplete", "duplicates", "bios",
-                         "unmatched", "conflict", "skip", "playlists_write", "playlists_ok",
+                         "unmatched", "saves", "conflict", "skip", "playlists_write", "playlists_ok",
                          "playlists_remove", "playlists_conflict"), 0)
     out.update(dict.fromkeys((f"excluded_{c}" for c in library.ALL_CODES), 0))
     borrow = plan.selection.borrow_summary()
@@ -1149,7 +1175,9 @@ def reason_counts(plan: "LibraryPlan") -> dict[str, int]:
                     key = f"excluded_{op.reasons[0]}" if op.reasons else "excluded_other"
                     out[key] = out.get(key, 0) + 1
         elif op.unmatched:
-            if op.status in MOVE_STATUSES and op.folder in ("", UNMATCHED_DIR):
+            if op.status in MOVE_STATUSES and op.folder == folders.SAVES_DIR:
+                out["saves"] += 1                        # (a save lying in the ROM folder, set aside under its game)
+            elif op.status in MOVE_STATUSES and op.folder in ("", UNMATCHED_DIR):
                 out["unmatched"] += 1
         elif op.status in MOVE_STATUSES or op.status in ("ok", "duplicate"):
             if bios.is_firmware_dat(op.dat) and getattr(getattr(plan, "profile", None), "keep_bios", True):

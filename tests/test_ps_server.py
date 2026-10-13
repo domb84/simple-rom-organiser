@@ -81,19 +81,20 @@ class Ps2EndpointTests(PsServerCase):
         self.call("/api/chdman", {"verify_scan": False})
         plan = self.call("/api/library/plan", {"platform": PS2})
         row = [r for r in plan["items"] if r.get("game") == "Alpha (USA)"][0]
-        self.assertEqual((row["status"], row["to"], row["files"]), ("move", "Alpha (USA)/Alpha (USA).chd", 2))
+        self.assertEqual((row["status"], row["to"], row["files"]), ("move", "Alpha (USA)/Alpha (USA).chd", 1))
         lib = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual(lib["playlists"]["write"], 0)
         self.call("/api/library/apply", {})
         j = self.job()
         self.assertEqual(j["status"], "done", j)
-        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).state").is_file())
+        self.assertTrue((self.roms / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
         self.assertTrue((self.roms / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())
         self.assertFalse(list(self.roms.rglob("*.m3u")))
         logs = self.call(f"/api/organise/undo-logs?path={self.roms}")["logs"]
         self.call("/api/organise/undo", {"log": logs[0]["log"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertTrue((self.roms / "Alpha loose.chd").is_file())
+        self.assertTrue((self.roms / "Alpha loose.state").is_file())
 
     def test_convert_plan_offers_createdvd_for_an_iso(self) -> None:
         (self.roms / "raw").mkdir()

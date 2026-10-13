@@ -164,6 +164,7 @@ class LibraryProfile:
     saved_overrides: tuple[tuple[str, str, str], ...] = ()
     # BIOS / firmware / key files (told by checksum or name) stay with the ROMs; off: they are files like any other that matches no game.
     keep_bios: bool = True
+    keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -196,7 +197,8 @@ class LibraryProfile:
                 "min_rating": self.min_rating, "top_n": self.top_n, "min_votes": self.min_votes,
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
                 "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
-                "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios}
+                "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
+                "keep_extras": self.keep_extras}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -249,7 +251,7 @@ class LibraryProfile:
                    saved_games=d["saved_games"] if isinstance(d.get("saved_games"), str) and d["saved_games"] in SAVED_GAMES
                    else base.saved_games,
                    saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides,
-                   keep_bios=flag("keep_bios", base.keep_bios))
+                   keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -286,7 +288,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
-               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios")
+               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras")
 GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
 REGION_FIELDS = ("region_priority", "region_ties")      # the region order and which of its regions are equally good: one rule
 
@@ -304,6 +306,8 @@ def applicable_fields(platform: "Platform") -> frozenset:
                       ("region_priority", has_regions), ("region_ties", has_regions), ("one_per_game", has_regions), ("borrow_other_editions", _borrow_scope(platform))):
         if ok:
             out.add(field)
+    if getattr(platform, "layout", "") == "game_folder":            # (the disc systems with a folder per game: Dreamcast, PlayStation, PlayStation 2)
+        out.add("keep_extras")
     if _ratings_supported(platform):
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
     return frozenset(out)
@@ -1888,6 +1892,11 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "A BIOS or firmware file in the system's folder (told by its checksum: libretro's list and the TOSEC firmware lists, also "
         "in a zip) and the key files of the emulators (told by name) stay with the ROMs instead of going to _unmatched or the "
         "archive. Off: they are files like any other that match no game.", _ALL)
+    opt("keep_extras", "keep_extras", "Keep other files that sit with a game", False,
+        "A disc game lives in a folder of its own, and the files next to its disc image (saves and save states, a .zip, checksum files "
+        "and the like) are not part of the game. Off: they are set aside like any file that matches no game (into _unmatched or the "
+        "archive folder, with their path kept, and Undo brings them back); only the disc image stays. On: they stay with the game and "
+        "are renamed with it.", [STYLE_REDUMP])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])

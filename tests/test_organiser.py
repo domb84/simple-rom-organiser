@@ -381,11 +381,15 @@ class OrganiseTests(unittest.TestCase):
         self.write("systeminfo.txt", b"es-de")
         self.write("gamelist.xml", b"<gameList/>")
         self.write("cfg/game.uae", b"cfg")
+        self.write("cfg/Game.srm", b"save")
+        self.write("Game.state1", b"state")
         self.write("other/thing.bin", b"t")
         ops = self.plan()
-        for k in ("systeminfo.txt", "gamelist.xml", "cfg/game.uae"):
+        for k in ("systeminfo.txt", "gamelist.xml"):
             self.assertEqual(ops[k].status, "skip", k)
-        self.assertEqual(ops["other/thing.bin"].status, "move")
+        for k in ("cfg/game.uae", "cfg/Game.srm", "Game.state1", "other/thing.bin"):     # not a checksummed ROM: set aside, path kept
+            self.assertEqual(ops[k].status, "move", k)
+        self.assertEqual(Path(ops["cfg/Game.srm"].dst).relative_to(self.root).as_posix(), "_unmatched/cfg/Game.srm")
         # stale callers cannot switch moving off any more: the parameter is gone
         with self.assertRaises(TypeError):
             plan_renames(self.scan(), move_unmatched=False)

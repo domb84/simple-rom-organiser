@@ -308,7 +308,7 @@ class TidyTest(unittest.TestCase):
         ops = dreamcast.plan_tidy(self.w.scan())
         st = {Path(o.src).name: o.status for o in ops}
         self.assertEqual(st["gamelist.xml"], "skip")
-        self.assertEqual(st["save.srm"], "skip")
+        self.assertEqual(st["save.srm"], "move")          # a save is no checksummed ROM: set aside, like random.dat
         self.assertEqual(st["a.png"], "skip")
         self.assertEqual(st["random.dat"], "move")
 
@@ -416,6 +416,26 @@ class LibraryTest(unittest.TestCase):
         counts = organiser.reason_counts(plan)
         self.assertEqual((counts["excluded"], counts["superseded"], counts["kept"]), (2, 1, 4))
         self.assertEqual(counts["playlists_write"], 1)
+
+    def test_files_next_to_a_disc_are_set_aside_unless_asked_to_keep(self) -> None:
+        profile = dataclasses.replace(self.profile, keep_extras=False)
+        plan = self.plan(profile)
+        by_name = {Path(o.src).name: o for o in plan.ops if Path(o.src).name in ("b1.state", "b2.state")}
+        self.assertEqual({n: (o.status, o.folder) for n, o in by_name.items()}, {"b1.state": ("move", "_saves"), "b2.state": ("move", "_saves")})
+        self.assertIn("sat with Big Game (USA) (Disc 1)", by_name["b1.state"].reason)
+        self.assertEqual(Path(by_name["b1.state"].dst), self.w.root / "_saves" / "Big Game" / "b1.state")           # under its game's title
+        kept = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Big Game (USA) (Disc 1)"][0]
+        self.assertEqual([Path(d).name for _s, d in kept.moves], ["Big Game (USA) (Disc 1).chd"])       # only the disc image is the game
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        self.assertEqual((self.w.root / "_saves" / "Big Game" / "b1.state").read_bytes(), b"sidecar b1.state")      # set aside under its game, never deleted
+        self.assertFalse((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").exists())
+        self.assertTrue((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).chd").is_file())
+
+    def test_the_files_travel_with_the_game_when_asked_to(self) -> None:
+        plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        self.assertEqual((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").read_bytes(), b"sidecar b1.state")
+        self.assertFalse((self.w.root / "_unmatched").exists())
 
     def test_discs_of_a_game_stay_together_and_get_one_playlist(self) -> None:
         plan = self.plan()

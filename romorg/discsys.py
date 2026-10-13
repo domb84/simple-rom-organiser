@@ -1333,6 +1333,7 @@ class _Plan:
         self.keep_bios = True               # the library rule: a console's BIOS / firmware stays with the discs
         self.profile: Any = None            # the library profile (None: tidy only)
         self.bios_seen: dict[tuple[str, str], DcOp] = {}     # the BIOS files planned so far, by what they are: a second one is a spare copy
+        self.pinner: Any = None             # savepin.Pinner: a save in the folder is set aside under the game it belongs to
 
     def free(self, dst: Path) -> bool:
         key = _fold(dst)
@@ -1395,6 +1396,8 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     bios.refresh()                            # (the TOSEC lists may have changed since the last plan)
     plan.keep_bios = getattr(profile, "keep_bios", True)
     plan.profile = profile
+    from . import savepin
+    plan.pinner = savepin.Pinner(getattr(result, "dats", None) or ([result.index.dat] if getattr(result, "index", None) is not None else []))
     index = result.index
     chd_units = [u for u in result.units if u.kind == "chd" and u.game is not None]
     for u in result.units:
@@ -1442,6 +1445,7 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
         sel = library.select(items, profile, result_platform(result), ratings=ratings, lang_games=lang_games, saved=saved)
     decisions = sel.decisions
     unit_key = {id(u): i for i, u in key_of.items()}
+    extra_ops: list[DcOp] = []
     for u in sorted(keepers, key=lambda x: os.fspath(x.top).casefold()):
         i = unit_key.get(id(u), -1)
         d = decisions.get(i)
@@ -1454,8 +1458,20 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
                           superseded_by=d.superseded_by, reason=d.reason,
                           flags_text=d.detail)
         else:
-            mapping = unit_target(u, root)
-            op = _unit_op(u, root, mapping, reason=(d.reason if d is not None and d.action == library.KEEP else ""))
+            core = u
+            if profile is not None and not getattr(profile, "keep_extras", False) and u.kind == "chd":
+                # the files next to the disc image are no part of the game: they are set aside like any file that matches nothing
+                extras = [f for f in u.files if f != u.path and not _stays_with_game(f)]
+                if extras:
+                    core = dataclasses.replace(u, files=[f for f in u.files if f not in extras])
+                    from . import savepin
+                    own = [plan.pinner.title_of(u.game.rep, u.game.rep.dat)]
+                    for f in extras:
+                        extra_ops.append(_junk_op(f, root, plan, result.system.label if result.system else "Dreamcast",
+                                                  why=f"not a disc image: it sat with {u.game.name}", with_game=True,
+                                                  titles=own if savepin.is_save(f.name) else None))
+            mapping = unit_target(core, root)
+            op = _unit_op(core, root, mapping, reason=(d.reason if d is not None and d.action == library.KEEP else ""))
         op.key = i
         ops.append(op)
         owners[i] = op
@@ -1498,6 +1514,7 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
         _claim(plan, op)
     for f in result.junk:
         ops.append(_junk_op(f, root, plan, result.system.label if result.system else "Dreamcast"))
+    ops.extend(extra_ops)
     _resolve(ops, plan)
     return ops, sel, owners
 
@@ -1514,19 +1531,29 @@ def _claim(plan: _Plan, op: DcOp) -> None:
         plan.claimed[_fold(d)] = op
 
 
-def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast") -> DcOp:
+def _stays_with_game(f: Path) -> bool:
+    """A frontend file in a game folder (a playlist, a gamelist, a media folder, a symlink): never set aside, it travels with the game.
+    Saves and states are not among them: next to a disc they are set aside with the rest (the option keeps them)."""
+    low = f.name.lower()
+    return low in organiser.KEEP_NAMES or low.endswith(".m3u") or f.is_symlink() or any(p.casefold() in organiser.KEEP_DIRS for p in f.parts)
+
+
+def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast", why: str = "", with_game: bool = False,
+             titles: Optional[list[str]] = None) -> DcOp:
     parts = _parts(f, root)
     name = f.name
     base = dict(src=f, dst=f, rom_name=name, unit_kind="file", n_files=1, kind="rename", unmatched=True)
     reserved = folders.reserved_of(parts)
     low = name.lower()
-    if reserved is None and (low in organiser.KEEP_NAMES or f.suffix.lower() in organiser.KEEP_SUFFIXES or low.endswith(".m3u")
+    if reserved is None and (low in organiser.KEEP_NAMES or (f.suffix.lower() in organiser.KEEP_SUFFIXES and not with_game) or low.endswith(".m3u")
                              or (len(parts) > 1 and parts[0].casefold() in organiser.KEEP_DIRS) or f.is_symlink()):
         return DcOp(status="skip", reason="left in place (frontend / user file)", **base)
     kept = organiser.bios_op(f) if plan.keep_bios else None       # a console's BIOS, told by its checksum: it stays with the discs, under its name
     if kept is not None and reserved is not None:                 # ... also one that an earlier build set aside: it comes back, as a ROM does
         kept = organiser.bios_out_of(kept, root)
-    if kept is None and reserved is not None:
+    pins = titles if titles is not None else (plan.pinner.titles(f) if plan.pinner is not None and kept is None
+                                              and reserved in (None, UNMATCHED_DIR) else [])
+    if kept is None and reserved is not None and not pins:
         return DcOp(status="ok", reason="already in a reserved folder", folder=reserved or "", **base)
 
     def aside(folder: str, reason: str, **extra: Any) -> DcOp:
@@ -1560,7 +1587,23 @@ def _junk_op(f: Path, root: Path, plan: _Plan, label: str = "Dreamcast") -> DcOp
         plan.claimed[_fold(kept.dst)] = op
         plan.bios_seen[(kept.rom_name.casefold(), kept.bios_game)] = op
         return op
-    return aside(UNMATCHED_DIR, f"not part of a {label} game")
+    if pins:                                         # a save: set aside under the game it belongs to
+        from . import savepin
+        dst = savepin.destination(root, pins[0], name)
+        text = why or f"a save of {pins[0]}"
+        if len(pins) > 1:
+            text += f" (and {len(pins) - 1} more)"
+        if dst == f:
+            return DcOp(status="ok", reason=f"{text}, already in {folders.SAVES_DIR}", folder=folders.SAVES_DIR, copies=tuple(pins[1:]), **base)
+        n = 1
+        while not plan.free(dst):
+            n += 1
+            dst = dst.with_name(f"{dst.stem} ({n}){dst.suffix}")
+        op = DcOp(src=f, dst=dst, status="move", reason=text, rom_name=name, kind="move", unmatched=True, folder=folders.SAVES_DIR,
+                  moves=[(f, dst)], unit_kind="file", n_files=1, copies=tuple(pins[1:]))
+        plan.claimed[_fold(dst)] = op
+        return op
+    return aside(UNMATCHED_DIR, why or f"not part of a {label} game")
 
 
 def _resolve(ops: list[DcOp], plan: _Plan) -> None:
@@ -1652,7 +1695,9 @@ def file_ops(ops: Iterable[RenameOp]) -> list[RenameOp]:
             if op.status != "move":
                 continue
             for s, d in op.moves:
-                out.append(RenameOp(s, d, "move", op.reason, op.rom_name, "move", op.dat, op.unmatched))
+                flat = RenameOp(s, d, "move", op.reason, op.rom_name, "move", op.dat, op.unmatched)
+                flat.copies = tuple(getattr(op, "copies", ()) or ())
+                out.append(flat)
         else:
             out.append(op)
     return out

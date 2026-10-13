@@ -809,8 +809,8 @@
   // ------------------------------------------------------------- routing
   // Hash routes (no server support needed; back / forward / reload just work):
   //   #/                                  home: one card per system
-  //   #/system/<slug>/<tab>[?view=...]    <tab> = library | browse   (an old "overview" address opens the library)
-  const TABS = ["library", "browse"];
+  //   #/system/<slug>/<tab>[?view=...]    <tab> = library | browse | tree   (an old "overview" address opens the library)
+  const TABS = ["library", "browse", "tree"];
   const slugOf = (p) => p.slug || String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const Route = {
     /** "#/system/snes/browse?view=missing&have=0" -> {view: "system", slug, tab, params}; anything else -> home. */
@@ -1168,6 +1168,8 @@
       Previews.resume("lib");
     } else if (tab === "browse") {
       renderBrowse();
+    } else if (tab === "tree") {
+      Tree.show();
     }
   }
 
@@ -1406,6 +1408,7 @@
     updateActionState();
     loadTotals();
     if (inSystem() && state.tab === "library") Previews.resume("lib");
+    if (inSystem() && state.tab === "tree") Tree.show();
   }
 
   /** A summary card; with ``link`` it opens the Browse tab on the matching list (deep link). */
@@ -1569,7 +1572,7 @@
     if (!t) { box.replaceChildren(); return; }
     const p = currentPlatform();
     const line = t.sets
-      ? `${nPlural(t.files, "save file", "save files")} for ${nPlural(t.sets, "game", "games")} (${fmt(t.rom_sets)} with a ROM here, ${fmt(t.dat_sets)} without, ${fmt(t.unmatched_sets)} unmatched)`
+      ? `${nPlural(t.files, "save file", "save files")} for ${nPlural(t.sets, "game", "games")} (${fmt(t.rom_sets)} with a ROM here, ${fmt(t.dat_sets)} without, ${fmt(t.unmatched_sets)} unmatched${t.guessed_sets ? `, of which ${fmt(t.guessed_sets)} told by their title` : ""})`
       : "No save files found for this system.";
     const plan = libPlan && libPlan.saves;
     const will = [];
@@ -1582,9 +1585,10 @@
     box.replaceChildren(
       el("h2", { id: "ov-saves-title", text: `Saves (${(t.sources && t.sources.length ? t.sources : ["RetroArch"]).join(", ")})` }),
       el("div", { class: "saves-line", id: "ov-saves-line", text: line }),
+      t.cards ? el("div", { class: "sub", id: "ov-saves-cards", text: `${nPlural(t.cards, "memory card", "memory cards")} hold${t.cards === 1 ? "s" : ""} ${nPlural(t.card_games, "save", "saves")} of games (listed under Browse > Saves).` }) : null,
       t.sets ? el("div", { class: "sub", text: `${savesText(t)}${t.screenshots ? ` \u00b7 ${nPlural(t.screenshots, "state screenshot", "state screenshots")} (not counted)` : ""} \u00b7 ${fmtBytes(t.bytes)}` }) : null,
       plan ? el("div", { class: "sub", id: "ov-saves-plan", text: will.length ? `A build with the current rules would ${will.join(", ")}.` : "A build with the current rules changes none of them." })
-        : el("div", { class: "sub", text: "Press Preview library on the Library tab to see what a build would do with them." }),
+        : el("div", { class: "sub", text: "The list on this page shows what a build would do with them." }),
       t.sets && p ? el("div", {}, el("a", { href: Route.build(slugOf(p), "browse", { view: "saves" }), text: "Which title does each belong to?" })) : null);
   }
 
@@ -2044,11 +2048,14 @@
               label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
                 el("div", { class: "game-name", text: i.title }),
                 i.game && i.game !== i.title ? el("div", { class: "sub", text: i.game }) : null,
-                i.name !== i.title ? el("div", { class: "sub mono-path", text: i.name }) : null),
+                i.name !== i.title ? el("div", { class: "sub mono-path", text: i.name }) : null,
+                i.guess ? el("div", { class: "sub" }, badge("info", "looks like"), ` ${i.guess}`) : null,
+                ...(i.cards || []).map((c) => el("div", { class: "sub card-games" }, el("span", { class: "muted", text: `${c.label}: ` }),
+                  c.games.join("; ")))),
             },
             {
               label: "Matched to", cls: "wrap", render: (i) => (i.match === "rom" ? badge("ok", "ROM here")
-                : i.match === "dat" ? badge("info", "title, no ROM here") : badge("skip", "unmatched")),
+                : i.match === "dat" ? badge("info", "title, no ROM here") : i.guess ? badge("info", "title only") : badge("skip", "unmatched")),
             },
             { label: "Saves", sortKey: "files", sortFirst: "desc", cls: "num", render: (i) => el("div", {}, el("div", { class: "saves-total", text: fmt(i.files) }),
               el("div", { class: "sub", text: savesText(i) + (i.screenshots ? ` \u00b7 ${nPlural(i.screenshots, "screenshot", "screenshots")}` : "") })) },
@@ -2590,10 +2597,10 @@
     ...protectedDirs.map((d) => [d, "your files - left alone by every step"]),
   ].map(([name, text]) => `  ${(name + "/").padEnd(23)}${text}`);
   const REASON_LABEL = { kept: "Kept", bios: "BIOS / firmware", excluded: "Excluded", superseded: "Superseded", incomplete: "Incomplete",
-    duplicate: "Duplicates", unmatched: "Unmatched", playlist: "Playlists" };
-  const REASON_ORDER = ["kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "unmatched", "playlist"];
+    duplicate: "Duplicates", saves: "Saves", unmatched: "Unmatched", playlist: "Playlists" };
+  const REASON_ORDER = ["kept", "bios", "excluded", "superseded", "incomplete", "duplicate", "saves", "unmatched", "playlist"];
   const REASON_BADGE = { kept: "ok", bios: "info", excluded: "bad", superseded: "info", incomplete: "warn", duplicate: "warn",
-    unmatched: "skip", playlist: "move" };
+    saves: "info", unmatched: "skip", playlist: "move" };
   let libTable = null;
   let vanishTable = null;
   let vanishPlanId = "";         // the plan the vanish list on screen belongs to
@@ -2831,7 +2838,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", keep_bios: "BIOS and firmware" };
+    saved_games: "Saves", keep_bios: "BIOS and firmware", keep_extras: "Files with a game" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
   /** Move item i of a list by dir (-1 up, +1 down); returns a new array. */
@@ -3693,7 +3700,7 @@
       const n = st && st.vanish ? ((st.vanish.by_code || {})[code] || (st.vanish.by_reason || {})[code] || 0) : null;
       const what = code === "language" ? "have no version in the ticked languages" : "exist only with that dump type";
       node.textContent = st ? (n ? `${fmt(n)} title${n === 1 ? "" : "s"} ${what} (see "Games that vanish" in the preview).` : "")
-        : (code === "language" ? "" : "Press Preview library to see how many titles this affects.");
+        : (code === "language" ? "" : "The list below says how many titles this affects once it is calculated.");
     }
   }
 
@@ -3773,6 +3780,7 @@
       card(fmt(r.superseded), aside("Superseded", r.superseded, cats.superseded), r.superseded ? "warn" : ""),
       ...(isGameFolder(currentPlatform()) ? [] : [card(fmt(r.incomplete), aside("Incomplete", r.incomplete, cats.incomplete), r.incomplete ? "warn" : "")]),
       card(fmt(r.duplicates), aside("Duplicates", r.duplicates, cats.duplicate), r.duplicates ? "warn" : ""),
+      ...(r.saves ? [card(fmt(r.saves), "Saves found here → _saves/<game>/", "info")] : []),
       ...(r.unmatched ? [card(fmt(r.unmatched), `Unmatched → ${UNMATCHED}/`, "warn")] : []),
       ...(pl.write || pl.remove || pl.ok ? [card(fmt(pl.write), "Playlists to write", pl.write ? "info" : ""),
         card(fmt(pl.remove), "Playlists to remove", pl.remove ? "warn" : "")] : []),
@@ -4133,6 +4141,7 @@
         line(r.superseded, `superseded file(s) → ${SUPERSEDED}/${into}`),
         line(r.incomplete, `file(s) of incomplete sets → ${INCOMPLETE}/${into}`),
         line(r.duplicates, `duplicate(s) → ${DUPLICATES}/${into}`),
+        line(r.saves, `save file(s) found in this folder → _saves/<game>/${into}`),
         line(r.unmatched, `unmatched file(s) → ${UNMATCHED}/${into} (they match nothing in the DATs; subfolders are kept)`),
         line((plan.vanish || {}).titles, "title(s) have no kept version (see \"Games that vanish\")"),
         line(pl.write, "playlist(s) written"),
@@ -4674,6 +4683,114 @@
     },
   };
 
+  // ------------------------------------------------------------------ the library tree: what a build would leave, as a preview
+  // Two trees side by side, the ROM folders and the archive, a system at the top level of each. A folder is asked for when it is
+  // opened (GET /api/tree: one level, with the totals below it), so a library of tens of thousands of files opens at once.
+  const TREE_STATES = { same: ["", "unchanged"], renamed: ["move", "renamed"], moved: ["move", "moved"], new: ["ok", "new"],
+    existing: ["", "already there"], ignored: ["skip", "not looked at"], incoming: ["warn", "set aside"], copy: ["info", "copy"], saves: ["info", "saves"] };
+  const Tree = {
+    shown: "",          // "<platform>|<scan id>|<rules>" of the trees on screen: drawn again only when one of them changed
+
+    /** This system's two trees, their top level open. */
+    async show() {
+      const p = currentPlatform();
+      if (!p) return;
+      $("tree-legend").replaceChildren(el("span", { class: "muted small", text: "Marks: " }),
+        ...["renamed", "moved", "new", "incoming", "copy", "saves"].map((k) => el("span", { class: "tree-key" }, badge(TREE_STATES[k][0] || "skip", TREE_STATES[k][1]))));
+      const has = !!state.scan;
+      $("tree-gate").classList.toggle("hidden", has);
+      $("tree-body").classList.toggle("hidden", !has);
+      if (!has) { scanGate($("tree-gate"), "The file tree"); this.shown = ""; return; }
+      const info = state.library[p.name];
+      const key = `${p.name}|${state.scan.id}|${JSON.stringify(info ? info.profile : null)}`;
+      if (key === this.shown) return;
+      this.shown = key;
+      $("tree-note").textContent = "";
+      for (const side of ["library", "archive"]) {
+        const box = $(`tree-${side}`), where = $(side === "library" ? "tree-lib-where" : "tree-arch-where"), totals = $(side === "library" ? "tree-lib-totals" : "tree-arch-totals");
+        box.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " working out the tree..."));
+        where.textContent = "";
+        totals.textContent = "";
+        this.fill(box, p.name, side, "", 0).then(() => {
+          if (this.shown !== key) return;
+          const d = box.dataset;
+          where.textContent = d.root || (side === "archive" ? "No archive folder is set (Settings): what the rules set aside stays in the ROM folder, in _excluded, _superseded ..." : "");
+          totals.textContent = d.root ? `${fmt(Number(d.files || 0))} files \u00b7 ${fmtBytes(Number(d.bytes || 0))}${Number(d.changed) ? ` \u00b7 ${fmt(Number(d.changed))} changed by the build` : " \u00b7 nothing changed by the build"}` : "";
+          this.applyFilter();
+        }).catch((err) => { box.replaceChildren(el("div", { class: "error-text small", text: `Could not work out the tree: ${err.message}` })); this.shown = ""; });
+      }
+    },
+
+    /** A folder row with its (lazily loaded) children. ``info``: {name, files, bytes, changed, sub}. */
+    folderNode(info, platform, side, path, top = false) {
+      const kids = el("div", { class: "tree-kids hidden", role: "group" });
+      const caret = el("span", { class: "tree-caret", "aria-hidden": "true", text: "\u25B8" });
+      const meta = el("span", { class: "tree-meta muted small" });
+      const setMeta = (d) => {
+        meta.textContent = d.files === undefined ? (info.sub || "")
+          : `${fmt(d.files)} ${d.files === 1 ? "file" : "files"} \u00b7 ${fmtBytes(d.bytes)}${d.changed ? ` \u00b7 ${fmt(d.changed)} changed` : ""}`;
+      };
+      setMeta(info);
+      const head = el("button", { class: `tree-row tree-dir${top ? " tree-top" : ""}`, type: "button", role: "treeitem", "aria-expanded": "false",
+        "data-tree-path": path, "data-tree-platform": platform, "data-tree-side": side },
+      caret, el("span", { class: "tree-name", text: info.name }), meta);
+      const node = el("div", { class: "tree-node", "data-changed": String(info.changed || 0) }, head, kids);
+      let loaded = false;
+      head.addEventListener("click", async () => {
+        const open = kids.classList.contains("hidden");
+        kids.classList.toggle("hidden", !open);
+        head.setAttribute("aria-expanded", open ? "true" : "false");
+        caret.textContent = open ? "\u25BE" : "\u25B8";
+        if (!open || loaded) return;
+        loaded = true;
+        kids.replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), top ? " working out the tree..." : " loading..."));
+        try {
+          await this.fill(kids, platform, side, path, 0);
+          if (top) { const t = kids.dataset; setMeta({ files: Number(t.files || 0), bytes: Number(t.bytes || 0), changed: Number(t.changed || 0) }); node.dataset.changed = t.changed || "0"; }
+        } catch (err) {
+          loaded = false;
+          kids.replaceChildren(el("div", { class: "error-text small", text: `Could not load: ${err.message}` }));
+        }
+        this.applyFilter();
+      });
+      return node;
+    },
+
+    async fill(kids, platform, side, path, offset) {
+      const doc = await get(`/api/tree?${qs({ platform, side, path, offset: offset || undefined })}`);
+      if (!doc.ready) { kids.replaceChildren(el("div", { class: "muted small", text: doc.reason || "Not available." })); return; }
+      if (doc.none) { kids.replaceChildren(el("div", { class: "muted small", text: "No archive folder is used for this system." })); return; }
+      if (doc.totals && !path) { kids.dataset.files = doc.totals.files; kids.dataset.bytes = doc.totals.bytes; kids.dataset.changed = doc.totals.changed; kids.dataset.root = doc.root || ""; }
+      const rows = [];
+      if (!offset) for (const d of doc.dirs) rows.push(this.folderNode(d, platform, side, path ? `${path}/${d.name}` : d.name));
+      for (const f of doc.files) {
+        const [cls, label] = TREE_STATES[f.state] || ["", f.state];
+        rows.push(el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" },
+          el("span", { class: "tree-caret", "aria-hidden": "true" }), el("span", { class: "tree-name mono-path", text: f.name }),
+          f.state !== "same" && f.state !== "existing" ? badge(cls || "skip", label) : null,
+          el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })));
+      }
+      const shown = doc.offset + doc.files.length;
+      if (shown < doc.total_files) {
+        rows.push(el("button", { class: "btn btn-small btn-ghost tree-more", type: "button", text: `Show more (${fmt(doc.total_files - shown)} more files)`,
+          on: { click: async (ev) => { const btn = ev.currentTarget; btn.disabled = true; const more = el("div", {}); btn.replaceWith(more); await this.fill(more, platform, side, path, shown); more.replaceWith(...more.childNodes); this.applyFilter(); } } }));
+      }
+      if (!offset && !rows.length) rows.push(el("div", { class: "muted small", text: "Empty." }));
+      kids.replaceChildren(...rows);
+    },
+
+    /** "Only folders with changes": hide the folders (not the systems) and files a build leaves as they are. */
+    applyFilter() {
+      const on = $("tree-changed-only").checked;
+      for (const pane of ["tree-library", "tree-archive"]) {
+        for (const n of $(pane).querySelectorAll(".tree-node")) n.classList.toggle("hidden", on && n.dataset.changed === "0");
+        for (const f of $(pane).querySelectorAll(".tree-file")) f.classList.toggle("hidden", on && ["same", "existing", "ignored"].includes(f.dataset.state));
+      }
+    },
+
+    bind() { $("tree-changed-only").addEventListener("change", () => this.applyFilter()); },
+  };
+
   // ------------------------------------------------------------------ settings for every system
   const Settings = {
     ratingsTimer: 0,
@@ -4860,6 +4977,7 @@
     RetroArch.bind();
     $("lib-apply-btn").addEventListener("click", applyLibrary);
     $("set-tiles-reset").addEventListener("click", () => Settings.resetTiles());
+    Tree.bind();
     $("rules-toggle").addEventListener("click", () => { const box = $("library-rules-box"); box.open = !box.open; });
     $("library-rules-box").addEventListener("toggle", () => $("rules-toggle").setAttribute("aria-expanded", $("library-rules-box").open ? "true" : "false"));
     $("lib-undo-btn").addEventListener("click", undoLibrary);

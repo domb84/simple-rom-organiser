@@ -4,6 +4,7 @@ discs (see chdtestlib). Real Redump DATs / real CHDs are only used when present 
 
 from __future__ import annotations
 
+import dataclasses
 import glob
 import hashlib
 import os
@@ -404,6 +405,17 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertIn("_unmatched/Mystery/m.chd", got)
         self.assertIn("_unmatched/Mystery/m.state", got)
 
+    def test_the_option_keeps_the_files_of_a_disc_with_it(self) -> None:
+        self.w.cd_chd("Beta (Europe) (En,Fr,De)", "be.chd", ["be.state", "be.srm"])
+        plan = discsys.plan_library(self.w.scan(), dataclasses.replace(self.profile, keep_extras=True))
+        discsys.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        got = tree(self.w.root)
+        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)
+        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).srm", got)
+        self.assertFalse([k for k in got if k.startswith("_unmatched")])
+        again = discsys.plan_library(self.w.scan(), dataclasses.replace(self.profile, keep_extras=True))
+        self.assertEqual([op for op in again.ops if op.status == "move"], [])
+
     def test_library_build_keeps_discs_together_and_writes_no_playlist(self) -> None:
         self.w.cd_chd("Two Part (USA) (Disc 1)", "a.chd")
         self.w.cd_chd("Two Part (USA) (Disc 2)", "b.chd")
@@ -417,7 +429,8 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertIn("Two Part (USA) (Disc 1)/Two Part (USA) (Disc 1).chd", got)
         self.assertIn("Two Part (USA) (Disc 2)/Two Part (USA) (Disc 2).chd", got)
         self.assertIn("_excluded/d.chd", got)                             # demo (category)
-        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)
+        self.assertIn("_saves/Beta/be.state", got)                        # not a disc image: set aside under its game (the option "keep other files" keeps it)
+        self.assertNotIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)
         self.assertFalse([k for k in got if k.endswith(".m3u")])
         again = discsys.plan_library(self.w.scan(), self.profile)
         self.assertEqual([op for op in again.ops if op.status == "move"], [])

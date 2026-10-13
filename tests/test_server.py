@@ -2677,14 +2677,14 @@ class UiStructureTests(unittest.TestCase):
     def test_html_has_home_tabs_and_global_header(self) -> None:
         html = server.read_static("index.html").decode()
         for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups", "side", "side-toggle", "more-btn",
-                           "view-system", "back-link", "sys-tabs", "tabbtn-library", "tabbtn-browse",
-                           "tab-library", "tab-browse", "folder-input",
+                           "view-system", "back-link", "sys-tabs", "tabbtn-library", "tabbtn-browse", "tabbtn-tree",
+                           "tab-library", "tab-browse", "tab-tree", "folder-input",
                            "scan-btn", "summary-cards", "sys-tiles", "library-rules-summary",
                            "browse-gate", "lib-gate", "result-table"):
             self.assertIn(f'id="{element_id}"', html)
         for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"'):
             self.assertNotIn(gone, html)
-        self.assertEqual(html.count('role="tab"'), 2)
+        self.assertEqual(html.count('role="tab"'), 3)
         self.assertNotIn("http://", html.replace("http://www.w3.org", ""))      # no external resources
         self.assertNotIn("https://", html)
 

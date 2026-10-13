@@ -157,7 +157,7 @@
         <h2>Ratings</h2>
         <p class="muted small">Community ratings come from the <b>LaunchBox Games Database</b>:
           downloaded at the first start and kept up to date at every start (at most once a week). They are used by the rating rules above and counted on each system's
-          Overview and Library page.</p>
+          page.</p>
         <div id="set-ratings-lb" class="small" role="status"></div>
         <h3>More ratings: your own IGDB key (optional)</h3>
         <p class="muted small"><b>IGDB</b> rates many titles LaunchBox has no (or too few) votes for. It is free,
@@ -352,6 +352,7 @@
       <div class="tabs systabs" role="tablist" id="sys-tabs" aria-label="System sections">
         <button class="tab" role="tab" id="tabbtn-library" data-tab="library" aria-controls="tab-library">Library</button>
         <button class="tab" role="tab" id="tabbtn-browse" data-tab="browse" aria-controls="tab-browse">Browse</button>
+        <button class="tab" role="tab" id="tabbtn-tree" data-tab="tree" aria-controls="tab-tree">File tree</button>
       </div>
 
       <!-- ---------- Library: scan, totals, rules and the live preview on one page ---------- -->
@@ -452,7 +453,7 @@
           </div>
           <div id="lib-failures" class="notice hidden"></div>
           <div id="lib-warnings" class="notice hidden"></div>
-          <div id="lib-empty" class="empty">Press "Preview library" to see what would happen.</div>
+          <div id="lib-empty" class="empty">Scan the folder to see what the library would look like.</div>
           <div id="lib-output" class="hidden">
             <div class="cards" id="lib-cards"></div>
             <div id="lib-uptodate" class="notice notice-ok hidden">Nothing to do - the library is already built.</div>
@@ -510,6 +511,35 @@
         <div id="browse-body" class="hidden">
           <div class="tabs" role="tablist" id="result-tabs" aria-label="Result lists"></div>
           <div id="result-table"></div>
+        </div>
+      </div>
+
+      <!-- ---------- File tree: this system's ROM folder and its part of the archive after a build (a preview) ---------- -->
+      <div class="tabpanel hidden" role="tabpanel" id="tab-tree" aria-labelledby="tabbtn-tree" tabindex="-1">
+        <p class="muted small">Every file of this system: what its ROM folder and its part of the archive would hold after a build with the current rules. A preview: nothing is moved here.</p>
+        <div id="tree-gate" class="empty hidden"></div>
+        <div id="tree-body">
+          <div class="panel">
+            <div class="row tree-legend" id="tree-legend" aria-label="What the marks mean"></div>
+            <div class="row">
+              <label class="check"><input type="checkbox" id="tree-changed-only"> Only what the build changes</label>
+              <span class="muted small" id="tree-note"></span>
+            </div>
+          </div>
+          <div class="tree-pair">
+            <section class="panel tree-pane" aria-labelledby="tree-lib-title">
+              <h2 id="tree-lib-title">ROM folder</h2>
+              <div class="muted small mono-path" id="tree-lib-where"></div>
+              <div class="muted small" id="tree-lib-totals"></div>
+              <div class="tree" id="tree-library" role="tree" aria-labelledby="tree-lib-title"></div>
+            </section>
+            <section class="panel tree-pane" aria-labelledby="tree-arch-title">
+              <h2 id="tree-arch-title">Archive</h2>
+              <div class="muted small mono-path" id="tree-arch-where"></div>
+              <div class="muted small" id="tree-arch-totals"></div>
+              <div class="tree" id="tree-archive" role="tree" aria-labelledby="tree-arch-title"></div>
+            </section>
+          </div>
         </div>
       </div>
     </section>

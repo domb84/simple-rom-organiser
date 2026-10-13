@@ -281,6 +281,40 @@ class LibraryDefaultsTests(UiTestCase):
         self.assertTrue(before)
         self.no_js_errors()
 
+    def test_a_rule_only_some_systems_have_is_in_settings_and_only_on_those_systems(self) -> None:
+        self.open("#/settings")
+        self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"keep_extras\"]')", timeout=30)      # the disc systems' rule: a default too
+        self.assertFalse(self.page.eval("document.querySelector('#set-library-rules input[data-opt=\"keep_extras\"]').checked"))
+        self.click("#set-library-rules input[data-opt=\"keep_extras\"]")
+        deadline = time.time() + 15
+        while time.time() < deadline and not self.api("GET", "/api/library/defaults")["profile"]["keep_extras"]:
+            time.sleep(0.3)
+        self.assertTrue(self.api("GET", "/api/library/defaults")["profile"]["keep_extras"])
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/library")
+        self.click("#rules-toggle")
+        self.page.wait("!!document.querySelector('#library-rules input[data-opt=\"latest_only\"]')", timeout=30)
+        self.assertFalse(self.page.eval("!!document.querySelector('#library-rules input[data-opt=\"keep_extras\"]')"))     # (the Amiga has no game folders)
+        self.page.goto(self.fx.url + "#/system/sony-playstation/library")
+        self.click("#rules-toggle")
+        self.page.wait("!!document.querySelector('#library-rules input[data-opt=\"keep_extras\"]')", timeout=30)
+        self.assertTrue(self.page.eval("document.querySelector('#library-rules input[data-opt=\"keep_extras\"]').checked"))    # it follows the default
+        self.no_js_errors()
+
+    def test_the_file_tree_tab_shows_the_systems_folder_and_its_archive(self) -> None:
+        self.open("#/system/commodore-amiga/tree")
+        self.page.wait("!document.getElementById('tree-gate').classList.contains('hidden')", timeout=30)        # no scan yet: it says so
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/tree")
+        self.page.wait("document.getElementById('tabbtn-tree').getAttribute('aria-selected') === 'true'", timeout=30)
+        self.page.wait("document.querySelectorAll('#tree-library .tree-row').length > 1 && !!document.getElementById('tree-lib-totals').textContent", timeout=60)
+        self.assertIn("files", self.page.eval("document.getElementById('tree-lib-totals').textContent"))
+        self.assertTrue(self.page.eval("document.getElementById('tree-lib-where').textContent.length > 3"))      # the folder's own path
+        self.page.eval("document.querySelector('#tree-library .tree-dir')?.click()")
+        self.page.wait("document.querySelectorAll('#tree-library .tree-file').length > 0", timeout=30)
+        self.assertFalse(self.page.eval("!!document.getElementById('tree-link')"))                               # (no page of its own: it is the system's)
+        self.assertFalse(self.page.eval("document.documentElement.scrollWidth > window.innerWidth + 2"))          # (no sideways scrolling)
+        self.no_js_errors()
+
     def test_settings_lists_every_tile_to_tick_and_order(self) -> None:
         self.open("#/settings")
         self.page.wait("document.querySelectorAll('#set-tiles-list .sortable-row').length === 16", timeout=30)
