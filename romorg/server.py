@@ -2710,6 +2710,9 @@ class App:
             match = query.get("match", "").strip()
             if match in ("rom", "dat", "none"):
                 rows = [r for r in rows if r[0]["match"] == match]
+            have = query.get("have", "").strip()                       # 1: the saves of games you have a ROM for; 0: of those you have not
+            if have:
+                rows = [r for r in rows if (r[0]["match"] == "rom") is _bool_arg(have)]
         elif kind in ("matched", "unmatched", "missing", "unsupported", "errors", "games"):
             self._kind_rows(state, kind)
             rows = state.items[kind]
@@ -4619,6 +4622,24 @@ class App:
                                 "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"]},
                                         "cs_kind": "games", "cs_id": item.get("id")},
                                 "text": (item["name"] + " " + (item.get("title") or "")).casefold()})
+        report = self._saves_report(state) if self._saves_available(state.platform.name) else None
+        if report is not None:                                   # the saves of games you have no file for are listed too: by their game, else by their title
+            known: set[tuple[str, str]] = set()
+            for e in entries:
+                row = e["row"]
+                if e["state"] == treeview.MISSING and row:
+                    known.add((row.get("dat", ""), row.get("name", "")))
+                    row["saves"] = self._row_saves(report, "games", row)
+            for st in sorted(report.counted(), key=lambda x: (x.title or x.name).casefold()):
+                if st.match == "rom" or (st.match == "dat" and (st.dat, st.game) in known):
+                    continue
+                title = st.title or st.game or st.name
+                total = {"saves": st.saves, "states": st.states, "total": st.files, "title_total": st.files}
+                entries.append({"side": treeview.LIBRARY, "parts": (f"{title} ({st.shown})" if st.source != "retroarch" else title,), "size": 0,
+                                "state": treeview.SAVEONLY, "from": "",
+                                "row": {"item": "game", "name": title, "title": title, "category": "saves_only", "saves": total,
+                                        "tags": {}, "set_name": st.name},
+                                "text": f"{title} {st.name}".casefold()})
         state.items[("library", "tree")] = (ident, entries, base)
         state.items.pop(("library", "treeidx"), None)
         return entries, base, ident
@@ -4771,7 +4792,7 @@ class App:
                     d["upgrades"] = below[d["name"]]
         if not path and not offset:
             out["facets"] = self._tree_facets(entries, side, f)
-            out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] != "missing" and self._tree_pass(e, f))
+            out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] not in ("missing", "saveonly") and self._tree_pass(e, f))
                             for s in ("library", "archive")}
             out["archive_root"] = str(base) if base is not None else ""
         return out

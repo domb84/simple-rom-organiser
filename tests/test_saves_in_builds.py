@@ -237,6 +237,21 @@ class RenamePreview(SavesCase):
 
 
 
+class SavesOfGamesYouLack(SavesCase):
+    def test_a_save_of_a_game_with_no_file_is_in_the_tree_under_its_game(self) -> None:
+        root = self.rom_folder("Zed (USA)")
+        self.save("bsnes", "Zed (USA)", ("{n}.srm",))
+        self.save("bsnes", "Mix (Europe)", ("{n}.srm", "{n}.state1"))                      # (a game of the database you have no file for)
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=saves")
+        by = {f["name"]: f for f in tree["files"]}
+        self.assertEqual(sorted(by), ["Mix (Europe)", "Zed (USA).sfc"])
+        self.assertEqual((by["Mix (Europe)"]["state"], by["Mix (Europe)"]["row"]["saves"]["total"]), ("missing", 2))
+        self.assertEqual(by["Zed (USA).sfc"]["row"]["saves"]["saves"], 1)
+        self.assertEqual(tree["facets"]["show"]["saves"], 2)
+        self.assertEqual(tree["facets"]["show"]["have"], 1)
+
+
 class CarryMode(SavesCase):
     """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
 

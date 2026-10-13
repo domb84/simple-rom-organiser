@@ -1819,10 +1819,16 @@
 
   function showSavesTable() {
     if (savesTable || !state.scan) return;
+    const chips = $("saves-filter");
+    const drawChips = () => chips.replaceChildren(...[["", "All saves"], ["1", "Games I have a ROM for"], ["0", "No ROM here"]].map(([v, text]) => el("button", {
+      class: `chip chip-sm ${state.savesHave === v ? "active" : ""}`, type: "button", "data-value": v, text,
+      on: { click: () => { if (state.savesHave !== v) { state.savesHave = v; drawChips(); savesTable.offset = 0; savesTable.load(); } } } })));
+    state.savesHave = state.savesHave || "";
+    drawChips();
     savesTable = new PagedTable($("saves-table"), {
       id: "browse-saves", placeholder: "Search titles or save names...", emptyText: "No save files found for this system.",
       sort: { get: () => state.kindSort.saves || "", set: (v) => { state.kindSort = { ...state.kindSort, saves: v }; } },
-      fetch: ({ offset, limit, q }) => get(`/api/scan/results?${qs({ kind: "saves", offset, limit, q, sort: state.kindSort.saves || "" })}`),
+      fetch: ({ offset, limit, q }) => get(`/api/scan/results?${qs({ kind: "saves", offset, limit, q, have: state.savesHave || undefined, sort: state.kindSort.saves || "" })}`),
       columns: [
         {
           label: "Title", cls: "wrap", sortKey: "name", sortFirst: "asc", always: true, render: (i) => el("div", {},
@@ -3625,7 +3631,7 @@
 
   /** The Saves cell of a Library row: how many, what the build does with them, and the choice for this game. */
   function libSavesCell(i) {
-    const s = i.item === "file" ? i.saves : null;
+    const s = i.saves || null;
     if (!s) return el("span", { class: "muted", text: "" });
     const eff = SAVED_EFFECT[s.effect];
     const info = state.library[state.platform];
@@ -4402,7 +4408,7 @@
   // every filter's choices), so a library of tens of thousands of files opens at once. A file opens into what is known about it.
   const TREE_STATES = { same: ["", "unchanged"], renamed: ["move", "renamed"], moved: ["move", "moved"], new: ["ok", "new"],
     existing: ["", "already archived"], ignored: ["skip", "not looked at"], incoming: ["warn", "set aside"], copy: ["info", "copy"],
-    saves: ["info", "saves"], missing: ["missing", "missing"] };
+    saves: ["info", "saves"], missing: ["missing", "missing"], saveonly: ["info", "saves only"] };
   const FILES_SHOW = [["", "Everything"], ["have", "Games you have"], ["missing", "Missing"], ["bios", "BIOS and firmware"], ["unmatched", "Unmatched"], ["saves", "Saves"]];
   const FILES_STATES = ["renamed", "moved", "new", "incoming", "copy", "saves", "existing", "ignored"];
   const FILES_MORE = 10;          // region / language choices shown before "More"
@@ -4605,7 +4611,8 @@
         i && i.bios ? badge("info", "BIOS") : null,
         f.upgrade ? el("span", { class: "tree-upgrade", title: "A better version of this game exists (open the file to see it)", "aria-label": "A better version exists", text: "⬆" }) : null,
         plain ? null : badge(cls || "skip", label),
-        f.state === "missing" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
+        i && i.saves && i.saves.total ? el("span", { class: "tree-saves small", title: "Saves and save states in the emulator's folders", text: savesText(i.saves) }) : null,
+        f.state === "missing" || f.state === "saveonly" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
       if (!i) {
         return el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
       }
@@ -4627,7 +4634,7 @@
       const i = f.row;
       const line = (label, ...content) => (content.some(Boolean) ? [el("dt", { text: label }), el("dd", {}, ...content.filter(Boolean))] : []);
       const game = i.item === "game" ? i.name : (i.rom_name || (i.game_ref && i.game_ref.game) || "");
-      const build = f.state === "missing" ? "Not in your folder."
+      const build = f.state === "saveonly" ? "No game file here: these are only its saves." : f.state === "missing" ? "Not in your folder."
         : f.state === "same" ? "Leaves it where it is."
           : f.state === "incoming" ? `Sets it aside: it goes to the archive${f.from ? ` from ${f.from}` : ""}.`
             : `${TREE_STATES[f.state] ? TREE_STATES[f.state][1] : f.state}${f.from ? ` (from ${f.from})` : ""}.`;
@@ -4642,7 +4649,7 @@
         ...line("Rating", ratingsAvailable() && i.rating !== undefined ? ratingCell(i) : null),
         ...line("The rules", i.item === "file" ? libraryWhyPanel(i) : null),
         ...line("The build", el("span", { text: build })),
-        ...line("Saves", i.item === "file" && i.saves ? libSavesCell(i) : null),
+        ...line("Saves", i.saves ? libSavesCell(i) : null),
         ...line("Year", i.year ? el("span", { text: String(i.year) }) : null)),
       sums, actions);
       if (i.category === "kept" && i.item === "file") {

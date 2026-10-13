@@ -151,6 +151,37 @@ class DiscSavesTests(PsServerCase):
     def games(self) -> list[str]:
         return sorted(p.relative_to(self.roms).as_posix() for p in self.roms.rglob("*.chd"))
 
+    def test_saves_of_games_without_a_disc_are_listed_under_their_title_and_can_be_filtered(self) -> None:
+        import sqlite3
+        db = paths.data_dir() / "nintendo" / "gametdb.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE names (kind TEXT, id TEXT, name TEXT); CREATE TABLE info (key TEXT, value TEXT);")
+        conn.execute("INSERT INTO names VALUES ('ps2', 'SLUS-20062', 'Grand Theft Auto III')")
+        conn.commit()
+        conn.close()
+        folder = self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20062GTA30000"           # (a game with no disc here)
+        folder.mkdir()
+        (folder / "data.bin").write_bytes(b"gta")
+        self.scan_ps2()
+        everything = self.call("/api/scan/results?kind=saves")["items"]
+        other = [s for s in everything if s["name"].startswith("SLUS-20062")][0]
+        self.assertEqual((other["title"], other["match"]), ("Grand Theft Auto III", "dat"))               # (named by the database, no disc here)
+        self.assertEqual(sorted(s["match"] for s in everything), ["dat", "rom", "rom"])
+        have = self.call("/api/scan/results?kind=saves&have=1")["items"]
+        none = self.call("/api/scan/results?kind=saves&have=0")["items"]
+        self.assertEqual([s["match"] for s in have], ["rom", "rom"])
+        self.assertEqual([s["title"] for s in none], ["Grand Theft Auto III"])
+        self.assertEqual(self.call("/api/status")["scan"]["saves"]["dat_sets"], 1)
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=saves")                       # the tree lists them all too
+        self.assertEqual(tree["facets"]["show"]["saves"], 3)
+        titles = sorted(f["name"] for f in tree["files"])
+        self.assertIn("Grand Theft Auto III (PCSX2)", titles)
+        gta = [f for f in tree["files"] if f["name"].startswith("Grand Theft Auto III")][0]
+        self.assertEqual((gta["state"], gta["row"]["saves"]["saves"]), ("saveonly", 1))
+        self.assertEqual(self.call("/api/tree?platform=Sony%20PlayStation%202&show=missing")["facets"]["show"]["saves"], 3)
+        self.assertEqual(tree["sides"]["library"], 2)                                                    # (no file is counted for a save-only entry)
+
     def test_the_scan_counts_the_saves_of_each_game_and_the_browse_list_shows_them(self) -> None:
         games = {g["name"]: g for g in self.call("/api/scan/results?kind=games")["items"]}
         self.assertEqual(games["Gamma (USA)"]["saves"]["total"], 2)            # a card save and a state

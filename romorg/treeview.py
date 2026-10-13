@@ -18,11 +18,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
-__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
+__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "SAVEONLY", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
 
 SAME, RENAMED, MOVED, NEW, IGNORED = "same", "renamed", "moved", "new", "ignored"
 EXISTING, INCOMING, COPY, SAVES = "existing", "incoming", "copy", "saves"
 MISSING = "missing"            # (a game the folder lacks: no file, listed where it would be)
+SAVEONLY = "saveonly"          # (saves of a game that is not in the database's list: no file, listed by the title the saves are known by)
 LIBRARY, ARCHIVE = "library", "archive"
 _MOVE = ("move", "rename")
 
@@ -43,12 +44,12 @@ class Index:
         if not parts:
             return
         folder: Tuple[str, ...] = ()
-        changed = state not in (SAME, EXISTING, IGNORED, MISSING)
-        real = state != MISSING                                   # (a missing game is listed, but it is no file)
+        changed = state not in (SAME, EXISTING, IGNORED, MISSING, SAVEONLY)
+        real = state not in (MISSING, SAVEONLY)                   # (a missing game is listed, but it is no file)
 
         def count(node: Dict[str, Any]) -> None:
             node["n"] += real
-            node["missing"] += not real
+            node["missing"] += state == MISSING
             node["bytes"] += size
             node["changed"] += changed
 

@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import nintendoapp, nintendodisc, nintendosaves, pcsx2, switchfmt, switchscan, switchsaves
-from .saveindex import NONE, ROM, SaveSet
+from . import gametdb, nintendoapp, nintendodisc, nintendosaves, pcsx2, switchfmt, switchscan, switchsaves
+from .saveindex import DAT, NONE, ROM, SaveSet
 
 __all__ = ["Owned", "applies", "active", "config_key", "owned_games", "sets_for", "PLATFORM_SOURCES"]
 
@@ -98,6 +98,15 @@ def _set(source: str, label: str, key: str, name: str, ref: Optional[Tuple[str, 
     return s
 
 
+def _titled(s: SaveSet, db: "gametdb.GameTdb", kind: str, code: str) -> SaveSet:
+    """A set for a game you have no disc for: the database knows the game by its code, so it is listed under its title (a match by title,
+    not by ROM) instead of the bare code."""
+    title = db.name(kind, code)
+    if title:
+        s.match, s.title, s.game = DAT, title, title
+    return s
+
+
 def sets_for(platform: str, owned: List[Owned], nin_cfg: Dict[str, Dict[str, str]], switch_eff: Optional[Dict[str, Any]] = None,
              header_key: Optional[bytes] = None) -> List[SaveSet]:
     """The save sets of ``platform``'s emulator; [] when it is switched off or its folder is not there."""
@@ -137,11 +146,16 @@ def _dolphin(owned: List[Owned], data: Path, want: str) -> List[SaveSet]:
         items = by_code[code]
         out.append(_set("dolphin", "Dolphin", g.key, g.path.stem, g.ref, len(items), 0, sum(i.bytes for i in items),
                         [(i.path, i.path.parent.parent if want == "gc" else i.path.parent.parent.parent, "save", i.bytes) for i in items]))
-    for code, items in sorted(by_code.items()):
-        if code not in claimed:
-            out.append(_set("dolphin", "Dolphin", f"dolphin:{code}", f"{code} (no game file here)", None, len(items), 0,
-                            sum(i.bytes for i in items),
-                        [(i.path, i.path.parent.parent if want == "gc" else i.path.parent.parent.parent, "save", i.bytes) for i in items]))
+    db = gametdb.GameTdb()
+    try:
+        for code, items in sorted(by_code.items()):
+            if code not in claimed:
+                out.append(_titled(_set("dolphin", "Dolphin", f"dolphin:{code}", f"{code} (no game file here)", None, len(items), 0,
+                                        sum(i.bytes for i in items),
+                                        [(i.path, i.path.parent.parent if want == "gc" else i.path.parent.parent.parent, "save", i.bytes)
+                                         for i in items]), db, want, code))
+    finally:
+        db.close()
     for c in cards:                                          # a memory card image holds the saves of many games: counted, not movable
         out.append(_set("dolphin", "Dolphin", f"dolphin:card:{c.path.name}", f"Memory card {c.path.name}", None, 1, 0, c.bytes, []))
     return out
@@ -244,7 +258,12 @@ def _pcsx2(owned: List[Owned], root: Path) -> List[SaveSet]:
         claimed.add(serial)
         n, st, size, members = parts(serial)
         out.append(_set("pcsx2", "PCSX2", g.key, g.path.stem, g.ref, n, st, size, members))
-    for serial in sorted((set(saves_by) | set(states_by)) - claimed):
-        n, st, size, members = parts(serial)
-        out.append(_set("pcsx2", "PCSX2", f"pcsx2:{serial}", f"{serial} (no game file here)", None, n, st, size, members))
+    db = gametdb.GameTdb()
+    try:
+        for serial in sorted((set(saves_by) | set(states_by)) - claimed):
+            n, st, size, members = parts(serial)
+            out.append(_titled(_set("pcsx2", "PCSX2", f"pcsx2:{serial}", f"{serial} (no game file here)", None, n, st, size, members),
+                               db, "ps2", serial))
+    finally:
+        db.close()
     return out
