@@ -275,6 +275,17 @@ class LatestReleaseForSaves(SavesCase):
         self.assertNotIn("save_for", by["Mix (USA)"]["row"])
 
 
+class SavesGoToTheReleaseYouHave(SavesCase):
+    def test_a_save_known_by_its_title_goes_to_the_rom_you_have_before_a_release_you_lack(self) -> None:
+        root = self.rom_folder("Zed (USA)")                                              # (Zed (Europe) is in the database, not here)
+        self.save("bsnes", "Zed (Japan) - Copy", ("{n}.srm",))
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=saves")
+        by = {f["name"]: f for f in tree["files"]}
+        self.assertEqual(sorted(by), ["Zed (USA).sfc"])
+        self.assertEqual((by["Zed (USA).sfc"]["state"], by["Zed (USA).sfc"]["row"]["saves"]["saves"]), ("same", 1))
+
+
 class CarryMode(SavesCase):
     """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
 

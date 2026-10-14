@@ -4378,6 +4378,33 @@ class App:
         base = _str_arg(body.get("base")) or saved.get("shared_base") or ra.shared_base(sel)
         return {"base": base, "rows": ra.shared_folders(sel, base)}
 
+    def retroarch_assets(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/assets``: RetroArch's asset settings (playlists, thumbnails, cheats ...) and the folder each uses now."""
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        return {"rows": ra.asset_folders(sel)}
+
+    def retroarch_assets_set(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/retroarch/assets/set {key, folder}``: point one asset setting at a folder you chose ("" = RetroArch's own). Only
+        retroarch.cfg changes; Undo puts the old setting back."""
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        folder = _str_arg(body.get("folder")).strip()
+        if folder and not os.path.isdir(os.path.expanduser(folder)):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "That folder does not exist.", "bad_folder")
+        try:
+            res = ra.set_asset_folder(sel, _str_arg(body.get("key")), folder, self._ra_dirs(saved)[0])
+        except KeyError:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown setting.", "bad_key") from None
+        except RuntimeError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
+        res["rows"] = ra.asset_folders(sel)
+        return res
+
     def retroarch_shared_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         ra, installs, saved = self._ra_state()
         sel = self._ra_selected(installs, saved)
@@ -4739,9 +4766,9 @@ class App:
                     return True
                 return st.source == "pcsx2" and bool(code) and bool(self._ps2_codes(title, theirs))       # (converted for it)
             edition = self._edition(own["name"]) if own is not None else None      # (the same disc, mode and edition: Disc 1 is not Disc 2)
+            if self._attach_to_owned(st, title, edition, total, owned, entries, usable):
+                continue                                                           # (a release of its title you have that it works in: that ROM's)
             fit = [i for i in same if usable(i) and (edition is None or self._edition(i["name"]) == edition)]
-            if not fit and self._attach_to_owned(st, title, edition, total, owned, entries, usable):
-                continue                                                           # (a release of its title you have: the save is that ROM's)
             pick = self._preferred_release(platform, fit, "") if fit else None
             if pick is not None and (pick.get("dat", ""), pick["name"]) in ghosts:
                 row = ghosts[(pick.get("dat", ""), pick["name"])]["row"]
@@ -5447,6 +5474,8 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/retroarch/undo"): App.retroarch_undo,
     ("POST", "/api/retroarch/follow"): App.retroarch_follow,
     ("POST", "/api/retroarch/shared"): App.retroarch_shared,
+    ("POST", "/api/retroarch/assets"): App.retroarch_assets,
+    ("POST", "/api/retroarch/assets/set"): App.retroarch_assets_set,
     ("POST", "/api/retroarch/shared/apply"): App.retroarch_shared_apply,
     ("POST", "/api/retroarch/bios"): App.retroarch_bios,
     ("POST", "/api/retroarch/bios/scan"): App.retroarch_bios_scan,

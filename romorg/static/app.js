@@ -644,7 +644,6 @@
   function paintExamplePaths() {
     if (serverOs() !== "windows") return;
     $("lib-export-dest").placeholder = "Folder to build the library in, e.g. D:\\Emulation\\library";
-    $("ra-shared-base").placeholder = "The folder that holds them, e.g. D:\\Emulation\\assets";
   }
 
   // ------------------------------------------------ DAT updates (automatic)
@@ -4138,9 +4137,15 @@
 
   // ------------------------------------------------------------------ RetroArch: saves and config (v0.2)
 
+  /** The saves and states the last scans found for these systems (the sidebar's counts). */
+  function savesOfSystems(names) {
+    return state.platforms.filter((p) => names.includes(p.name)).reduce((n, p) => n + ((p.last_scan && p.last_scan.saves && p.last_scan.saves.files) || 0), 0);
+  }
+
   // ------------------------------------------------------------------ the emulators whose saves are looked at (besides RetroArch)
   const Emu = {
     list: [],
+    open: {},
 
     async show() {
       try { this.list = (await get("/api/emulators")).emulators; } catch (err) { toast(err.message, "error"); return; }
@@ -4148,22 +4153,31 @@
     },
 
     render() {
-      $("emu-list").replaceChildren(...this.list.map((e) => {
+      const order = [...this.list].sort((a, b) => Number(b.active) - Number(a.active));     // (the ones in use first)
+      $("emu-list").replaceChildren(...order.map((e) => {
         const input = el("input", { type: "text", class: "input grow mono", id: `emu-${e.key}-folder`, value: e.folder, spellcheck: "false", autocomplete: "off",
           placeholder: e.what, "aria-label": `${e.label}: ${e.what}`, disabled: e.enabled ? null : true,
           on: { change: () => this.save(e.key, { folder: input.value.trim() }) } });
-        const note = !e.enabled ? "Switched off: its saves are ignored."
-          : e.found ? (e.auto ? "Found on this machine and selected." : "Your folder.")
-          : e.folder ? "That folder does not exist." : "Not found: choose its folder, or leave it if you do not use it.";
-        return el("div", { class: "emu-row", "data-emulator": e.key },
-          el("div", { class: "row" },
-            el("label", { class: "check" }, el("input", { type: "checkbox", id: `emu-${e.key}-on`, checked: e.enabled ? true : null,
-              on: { change: (ev) => this.save(e.key, { enabled: ev.target.checked }) } }), el("b", { text: e.label })),
-            el("span", { class: "muted small", text: e.platforms.join(", ") })),
+        const status = !e.enabled ? "switched off" : e.found ? (e.auto ? "found on this machine" : "your folder") : e.folder ? "that folder does not exist" : "not found";
+        const n = savesOfSystems(e.platforms);
+        const box = el("div", { class: `emu-change${this.open[e.key] ? "" : " hidden"}`, id: `emu-${e.key}-box` },
+          el("label", { class: "small muted", for: `emu-${e.key}-folder`, text: e.what }),
           el("div", { class: "row" }, input,
             el("button", { class: "btn", id: `emu-${e.key}-browse`, text: "Folders...", disabled: e.enabled ? null : true,
               on: { click: () => FolderBrowser.open(input, `Choose ${e.label}'s folder`) } })),
-          el("div", { class: "muted small", id: `emu-${e.key}-note`, text: note }));
+          el("label", { class: "check" }, el("input", { type: "checkbox", id: `emu-${e.key}-on`, checked: e.enabled ? true : null,
+            on: { change: (ev) => this.save(e.key, { enabled: ev.target.checked }) } }), ` Look at ${e.label}'s saves`));
+        const btn = el("button", { class: "btn btn-small", type: "button", id: `emu-${e.key}-change`, "aria-expanded": this.open[e.key] ? "true" : "false",
+          text: this.open[e.key] ? "Done" : e.active ? "Change..." : "Set its folder...",
+          on: { click: () => { this.open[e.key] = !this.open[e.key]; this.render(); } } });
+        return el("div", { class: `emu-card${e.active ? "" : " off"}`, "data-emulator": e.key },
+          el("div", { class: "emu-head" }, el("span", { class: `dot${e.active ? "" : " off"}`, "aria-hidden": "true" }),
+            el("b", { class: "emu-name", text: e.label }),
+            el("span", { class: "emu-meta", id: `emu-${e.key}-note`,
+              text: `${e.platforms.join(", ")} · ${e.active ? (n ? `${fmt(n)} ${n === 1 ? "save or state" : "saves and states"}` : status) : status}` }),
+            el("span", { class: "grow" }), btn),
+          e.active ? el("dl", { class: "emu-facts" }, el("dt", { text: "Folder" }), el("dd", { class: "mono", text: e.folder })) : null,
+          box);
       }));
     },
 
@@ -4184,7 +4198,7 @@
     async show() {
       await this.load();
       this.render();
-      if (this.info && this.info.settings && !this.sharedShown) { this.sharedShown = true; this.sharedCheck(); }
+      if (this.info && this.info.settings) this.loadAssets();
     },
 
     async load() {
@@ -4200,22 +4214,27 @@
       $("ra-install").disabled = !info.installs.length;
       $("ra-running").classList.toggle("hidden", !info.running);
       $("ra-change-panel").classList.toggle("hidden", !info.settings);
-      $("ra-follow-panel").classList.toggle("hidden", !info.settings);
-      $("ra-shared-panel").classList.toggle("hidden", !info.settings);
+      $("ra-assets-panel").classList.toggle("hidden", !info.settings);
       $("ra-bios-panel").classList.toggle("hidden", !info.settings);
       $("bios-no-ra").classList.toggle("hidden", !!info.settings);
-      $("ra-current-panel").classList.toggle("hidden", !info.settings);
-      if (!info.settings) return;
+      $("ra-dot").className = `dot${info.settings ? "" : " off"}`;
+      $("ra-card").classList.toggle("off", !info.settings);
+      const chosen = info.installs.find((x) => x.cfg === info.selected);
+      const others = new Set(Emu.list.flatMap((e) => e.platforms));     // (the systems another emulator's saves are for)
+      const n = savesOfSystems(state.platforms.map((p) => p.name).filter((x) => !others.has(x)));
+      $("ra-meta").textContent = info.settings
+        ? `${chosen ? chosen.label.replace(/^RetroArch\s*/, "").replace(/^\((.*)\)$/, "$1") || "found" : "your RetroArch"} · every other system${n ? ` · ${fmt(n)} saves and states` : ""}`
+        : "not found";
+      if (!info.settings) { $("ra-facts").replaceChildren(); this.openChange(true); return; }
       const s = info.settings;
-      const where = (k) => s[k] || "(RetroArch's default: next to the games)";
-      const yes = (v) => (v ? "yes" : "no");
-      $("ra-current").replaceChildren(
-        ...[["Save files", where("savefile_path")], ["Save states", where("savestate_path")],
-          ["One folder per core (saves / states)", `${yes(s.sort_savefiles_enable)} / ${yes(s.sort_savestates_enable)}`],
-          ["Saves next to the games (saves / states)", `${yes(s.savefiles_in_content_dir)} / ${yes(s.savestates_in_content_dir)}`],
-          ["BIOS / system files", where("system_path")], ["Games folder RetroArch opens at", s.content_path || "-"],
-          ["Config file", s.cfg]]
-          .map(([k, v]) => el("tr", {}, el("th", { text: k }), el("td", { class: "mono", text: v }))));
+      const where = (k) => s[k] || "next to the games (RetroArch's default)";
+      const perCore = (on) => (on ? " · one folder per core" : "");
+      $("ra-facts").replaceChildren(
+        el("dt", { text: "Saves" }), el("dd", {}, el("span", { class: "mono", text: where("savefile_path") }), el("span", { class: "muted", text: perCore(s.sort_savefiles_enable) })),
+        el("dt", { text: "States" }), s.savestate_path && s.savestate_path === s.savefile_path
+          ? el("dd", { class: "muted", text: `The same folder${perCore(s.sort_savestates_enable)}` })
+          : el("dd", {}, el("span", { class: "mono", text: where("savestate_path") }), el("span", { class: "muted", text: perCore(s.sort_savestates_enable) })),
+        el("dt", { text: "Config" }), el("dd", { class: "mono small", text: s.cfg }));
       const ov = $("ra-overrides");
       ov.classList.toggle("hidden", !info.overrides.length);
       ov.replaceChildren(el("div", { text: "These override files change the save folders for one core or game, so the setting here does not apply to them:" }),
@@ -4227,9 +4246,8 @@
         $("ra-sort-saves").checked = !!s.sort_savefiles_enable;
         $("ra-sort-states").checked = !!s.sort_savestates_enable;
       }
-      $("ra-follow").checked = info.follow;
       state.raFollow = info.follow;
-      $("ra-follow-panel").classList.remove("hidden");
+      syncFollowBoxes();
       $("ra-bios-panel").classList.remove("hidden");
       if (!$("ra-bios-platform").options.length) {
         $("ra-bios-platform").replaceChildren(
@@ -4298,34 +4316,51 @@
       Jobs.start("/api/retroarch/apply", this.body());
     },
 
-    async sharedCheck(base) {
-      try {
-        const r = await post("/api/retroarch/shared", base ? { base } : {});
-        if (!$("ra-shared-base").value.trim() || base === undefined) $("ra-shared-base").value = r.base;
-        const LABEL = { ok: "already used", set: "points elsewhere", unset: "not set (RetroArch's own folder)", none: "no such folder here" };
-        $("ra-shared-table").replaceChildren(...r.rows.map((x) => el("tr", {},
-          el("td", {}, el("input", { type: "checkbox", "data-key": x.key, checked: x.status === "unset", disabled: !x.want || x.status === "ok",
-            "aria-label": `Use the shared folder for ${x.label}` })),
-          el("td", { text: x.label }), el("td", { class: "mono small", text: x.current_path || x.current || "-" }),
-          el("td", { class: "mono small", text: x.want || "-" }),
-          el("td", {}, badge(x.status === "ok" ? "ok" : x.status === "unset" ? "warn" : x.status === "set" ? "info" : "skip", LABEL[x.status]),
-            x.status === "unset" && x.want_has_files && !x.current_has_files ? el("span", { class: "small muted", text: "  has files, unused" }) : null))));
-        $("ra-shared-note").textContent = r.rows.some((x) => x.status === "unset" && x.want_has_files)
-          ? "Ticked: folders that have files but that RetroArch is not using yet." : "";
-        return r;
-      } catch (err) { toast(err.message, "error"); return null; }
+    /** "Change...": which RetroArch (the list found on this machine, or another one). */
+    openChange(on) {
+      const open = on === undefined ? $("ra-change-box").classList.contains("hidden") : on;
+      $("ra-change-box").classList.toggle("hidden", !open);
+      $("ra-change-btn").textContent = open ? "Done" : "Change...";
+      $("ra-change-btn").setAttribute("aria-expanded", open ? "true" : "false");
     },
 
-    async sharedApply() {
-      const keys = [...document.querySelectorAll("#ra-shared-table input[type=checkbox]:checked")].map((c) => c.dataset.key);
-      if (!keys.length) { toast("Tick the folders to use.", "info"); return; }
-      if (this.info && this.info.running) { toast("Close RetroArch first.", "error"); return; }
-      if (!(await confirmDialog({ title: "Use shared folders", body: `Change ${keys.length} setting(s) in retroarch.cfg to the shared folders? The config is backed up first, files are not moved, and Undo restores the old settings.`, okText: "Change settings" }))) return;
+    /** The asset folders: what RetroArch uses for each; you change one folder at a time (nothing is guessed, no file moves). */
+    async loadAssets() {
+      try { this.assets = (await post("/api/retroarch/assets", {})).rows; } catch (_) { return; }
+      this.renderAssets();
+    },
+
+    renderAssets() {
+      const rows = this.assets || [];
+      $("ra-assets-sum").textContent = rows.length ? `(${rows.map((r) => r.label.toLowerCase()).slice(0, 4).join(", ")} ...)` : "";
+      $("ra-assets-table").replaceChildren(...rows.map((r) => {
+        const cell = el("td", {}, el("button", { class: "btn btn-small", type: "button", id: `ra-asset-${r.key}-change`, text: "Change...",
+          on: { click: () => editor() } }));
+        const editor = () => {
+          const input = el("input", { type: "text", class: "input grow mono", id: `ra-asset-${r.key}`, value: r.own ? "" : r.current_path, spellcheck: "false",
+            autocomplete: "off", placeholder: "A folder", "aria-label": `Folder for ${r.label}` });
+          cell.replaceChildren(el("div", { class: "row" }, input,
+            el("button", { class: "btn btn-small", type: "button", id: `ra-asset-${r.key}-browse`, text: "Folders...", on: { click: () => FolderBrowser.open(input, `Choose the folder for ${r.label}`) } }),
+            el("button", { class: "btn btn-small btn-primary", type: "button", text: "Use this folder", on: { click: () => this.setAsset(r, input.value.trim()) } }),
+            r.own ? null : el("button", { class: "btn btn-small", type: "button", text: "Back to RetroArch's own", on: { click: () => this.setAsset(r, "") } }),
+            el("button", { class: "btn btn-small btn-ghost", type: "button", text: "Cancel", on: { click: () => this.renderAssets() } })));
+          input.focus();
+        };
+        return el("tr", { "data-asset": r.key }, el("td", { text: r.label }),
+          el("td", { class: "mono small", text: r.own ? `RetroArch's own${r.current_path ? ` (${r.current_path})` : ""}` : r.current_path || r.current }), cell);
+      }));
+    },
+
+    async setAsset(r, folder) {
+      if (!folder && !r.own && !(await confirmDialog({ title: r.label, body: `Point ${r.label} back at RetroArch's own folder? Only the setting changes.`, okText: "Change" }))) return;
+      if (folder === "" && r.own) { toast("Choose a folder first.", "info"); return; }
       try {
-        const r = await post("/api/retroarch/shared/apply", { base: $("ra-shared-base").value.trim(), keys });
-        toast(`Changed ${r.changed.length} setting(s)`, "ok", 6000);
-        await this.show();
-        this.sharedCheck($("ra-shared-base").value.trim());
+        const res = await post("/api/retroarch/assets/set", { key: r.key, folder });
+        this.assets = res.rows;
+        this.renderAssets();
+        toast(`${r.label}: ${folder || "RetroArch's own folder"} (Undo last change puts it back)`, "ok", 6000);
+        await this.load();
+        this.render();
       } catch (err) { toast(err.message, "error"); }
     },
 
@@ -4401,10 +4436,7 @@
       $("ra-save-browse").addEventListener("click", () => FolderBrowser.open($("ra-save-dir"), "Choose the folder for save files"));
       $("ra-state-browse").addEventListener("click", () => FolderBrowser.open($("ra-state-dir"), "Choose the folder for save states"));
       $("ra-backup-browse").addEventListener("click", () => FolderBrowser.open($("ra-backup-dir"), "Choose the backup folder"));
-      $("ra-follow").addEventListener("change", async () => { try { this.info = await post("/api/retroarch/follow", { follow: $("ra-follow").checked }); state.raFollow = this.info.follow; syncFollowBoxes(); } catch (err) { toast(err.message, "error"); } });
-      $("ra-shared-check").addEventListener("click", () => this.sharedCheck($("ra-shared-base").value.trim()));
-      $("ra-shared-apply").addEventListener("click", () => this.sharedApply());
-      $("ra-shared-browse").addEventListener("click", () => FolderBrowser.open($("ra-shared-base"), "Choose the folder that holds the shared assets"));
+      $("ra-change-btn").addEventListener("click", () => this.openChange());
       $("ra-bios-check").addEventListener("click", () => this.biosCheck());
       $("ra-bios-apply").addEventListener("click", () => this.biosApply());
       $("ra-bios-browse").addEventListener("click", () => FolderBrowser.open($("ra-bios-search"), "Choose a folder to look for BIOS files in"));

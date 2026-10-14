@@ -1597,6 +1597,28 @@ def shared_folders(install: Install, base: str, home: Optional[Path] = None) -> 
     return rows
 
 
+def asset_folders(install: Install, home: Optional[Path] = None) -> List[dict]:
+    """The asset settings (:data:`SHARED`) and the folder RetroArch uses for each now (``own``: RetroArch's default, inside its folder)."""
+    cfg = read_cfg(install.cfg)
+    rows = []
+    for key, label, _names in SHARED:
+        raw = cfg.get(key, "")
+        cur = resolve(raw, install, home)
+        rows.append({"key": key, "label": label, "current": raw, "current_path": str(cur) if cur else "",
+                     "own": cur is None or _is_within(cur, install.base) or raw in ("", "default")})
+    return rows
+
+
+def set_asset_folder(install: Install, key: str, folder: str, journal_dir: Path, home: Optional[Path] = None) -> dict:
+    """Point one asset setting at ``folder`` ("" = back to RetroArch's own). Only retroarch.cfg changes (backed up, journalled)."""
+    if key not in {k for k, _l, _n in SHARED}:
+        raise KeyError(key)
+    want = Path(os.path.expanduser(folder)) if folder else None
+    row = {"key": key, "want": str(want) if want else "default", "status": "set",
+           "want_cfg": to_cfg_path(want, home, install) if want else "default"}
+    return apply_shared(install, [row], [key], journal_dir, home)
+
+
 def apply_shared(install: Install, rows: List[dict], keys: Iterable[str], journal_dir: Path,
                  home: Optional[Path] = None) -> dict:
     """Point the chosen settings at the shared folders (files are not moved). Refuses while RetroArch runs."""

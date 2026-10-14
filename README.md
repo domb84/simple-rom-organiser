@@ -888,38 +888,41 @@ the folders for the system you have open. The system folder then holds only what
 
 ## RetroArch: saves, states and the config (v0.2)
 
-**RetroArch** in the list on the left (`#/retroarch`). Optional: with no RetroArch found, and none chosen, nothing here matters.
+**Emulators** in the list on the left (`#/retroarch`): one card per emulator, all the same shape. A green dot is an emulator
+that was found and is in use, a hollow one an emulator that was not found or is switched off. Each card says which systems it
+serves and how many saves and states its systems' last scans found, shows its folder, and has **Change...** (its folder,
+**Folders...**, and the switch that makes the app look at its saves or not). The ones in use come first. RetroArch is optional:
+with no RetroArch found, and none chosen, nothing on its card matters.
 
-- **Finding it:** the app looks for the Steam build (also in other Steam libraries), Flatpak, a normal Linux install and Snap,
-  on Windows `%APPDATA%\RetroArch`, Steam and the usual portable folders, and on macOS the Application Support folder. You
-  can also point at any `retroarch.cfg` (or its folder) yourself.
-- **Right now:** where RetroArch keeps save files and save states, whether it makes one folder per core, whether saves sit next
-  to the games, the BIOS folder and the games folder, read from `retroarch.cfg`. Core and game override files that set their
-  own save folders are listed, because the global setting does not apply to those.
-- **Saves and states:** choose the folder for save files, the folder for states (the same or separate) and whether each gets one
-  folder per core. **Preview** lists every file that moves. **Move saves and update RetroArch** then
+- **Finding RetroArch:** the app looks for the Steam build (also in other Steam libraries), Flatpak, a normal Linux install and
+  Snap, on Windows `%APPDATA%\RetroArch`, Steam and the usual portable folders, and on macOS the Application Support folder.
+  **Change...** on its card picks another one found, or any `retroarch.cfg` (or its folder) you point at.
+- **What RetroArch's card shows:** where it keeps save files and save states, whether each gets one folder per core, and its config
+  file, read from `retroarch.cfg`. Core and game override files that set their own save folders are listed, because the global
+  setting does not apply to those.
+- **Move saves and states to another folder...** (folded away): the folder for save files, the folder for states (the same or
+  separate) and whether each gets one folder per core. **Preview** lists every file that moves. **Move saves and update RetroArch**
+  then
   1. writes a zip backup of those files (optional; the folder is yours to choose),
   2. moves the files, never overwriting one (a name already taken is left alone and reported) and removing folders it emptied,
   3. backs up `retroarch.cfg` and changes only its save settings.
   Each core keeps its own folder (`bsnes/`, `Flycast/` ...): nothing is merged. States and their `.png` thumbnails go to the
-  state folder, everything else to the save folder.
-- **One folder per core:** turning it off flattens the core folders. Turning it on cannot tell which core a flat file belongs to:
-  those files are moved as they are and listed, since RetroArch will not find them until they are in their core's folder.
-- **Safety:** the app will not change anything while RetroArch is running (it rewrites its config when it closes).
-  **Undo last change** moves the files back and restores the config from its backup.
-- **Shared folders:** assets you keep outside RetroArch (menu assets, content database, cheats, playlists, thumbnails, downloaded
-  core assets, controller remaps, the config browser folder). Name the folder that holds them (the app suggests the one that
-  holds your playlists or saves) and each setting shows whether RetroArch already uses the folder of that name there, uses a
-  different one, or is on its own default. Ticked folders that exist but are unused (for example cheats that RetroArch still
-  looks for in its own empty folder) are set in `retroarch.cfg`; the favourites / history lists follow the playlist folder.
-  Nothing is moved, the config is backed up, and **Undo last change** restores it.
+  state folder, everything else to the save folder. Turning one folder per core off flattens the core folders; turning it on
+  cannot tell which core a flat file belongs to: those files are moved as they are and listed. Nothing changes while RetroArch
+  is running (it rewrites its config when it closes); **Undo last change** moves the files back and restores the config.
+- **Asset folders** (folded away): RetroArch's menu assets, content database, cheats, playlists, thumbnails, downloaded core
+  assets, controller remaps and config browser folder, each with the folder RetroArch uses now ("RetroArch's own" for its default).
+  **Change...** on a row points that one setting at a folder you choose, or back at RetroArch's own. Nothing is guessed and no
+  file is moved: only that setting in `retroarch.cfg` changes (the favourites / history lists follow the playlist folder), the
+  config is backed up first, and **Undo last change** restores it.
+- **PCSX2** is also looked for in RetroArch's system folder (`<system>/pcsx2`, where RetroArch's PlayStation 2 core keeps its
+  memory cards and states, and where many set a standalone PCSX2's folders too).
 - **Saves follow the games:** RetroArch finds a save by the game's file name (`<name>.srm`, `<name>.state`, `.state1` ...,
   `<name>.state1.png`, Flycast's `<name>.A1.bin` memory cards ...). When a library build renames a game, its saves and states
   are renamed to match, in the same core folder (cores stay separate). A build into another folder **copies**
   them to the new names and leaves the old ones. Nothing is overwritten (a file already at the new name is left alone).
   Undoing the build undoes the saves too. It waits if RetroArch is running (RetroArch writes its saves back when it closes).
-  The switch is on this page and, as **Rename saves with their ROMs**, in the Library rules (one
-  stored setting).
+  The switch is **Rename saves with their ROMs** in the Library rules.
 - **Saves in the scan, the library and the builds:** all of this exists only when the app knows a RetroArch config (it found an
   install, or you chose a `retroarch.cfg` on this page). Without one the app does not look at any save folder, shows no saves
   column and no saves setting, and sorts and builds exactly as if saves did not exist.

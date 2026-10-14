@@ -956,6 +956,16 @@ class RealModulesIntegrationTests(unittest.TestCase):
         except urllib.error.HTTPError as err:
             self.fail(f"{path}: {err.code} {err.read()!r}")
 
+    def http(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+        """``(status, answer)``, an error status included."""
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body or {}).encode(), method=method,
+                                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "X-Romorg-Token": "t"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read() or b"{}")
+
     def job(self, path: str, body: Any) -> dict[str, Any]:
         self.call("POST", path, body)
         deadline = time.time() + 10
@@ -1123,6 +1133,30 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertIn(str(assets / "cht"), (ra_dir / "retroarch.cfg").read_text())
         self.assertIn('video_vsync = "true"', (ra_dir / "retroarch.cfg").read_text())
         self.assertEqual(next(r for r in res["rows"] if r["key"] == "cheat_database_path")["status"], "ok")
+
+    def test_retroarch_asset_folders_are_set_one_by_one_and_undone(self) -> None:
+        ra_dir, cht = self.tmp / "ra-assets", self.tmp / "my-cheats"
+        ra_dir.mkdir()
+        cht.mkdir()
+        (ra_dir / "retroarch.cfg").write_text('cheat_database_path = ":/cheats"\nvideo_vsync = "true"\n')
+        self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        rows = {r["key"]: r for r in self.call("POST", "/api/retroarch/assets", {})["rows"]}
+        self.assertTrue(rows["cheat_database_path"]["own"])                                  # (RetroArch's own folder: nothing guessed)
+        self.assertEqual(len(rows), 8)
+        with mock.patch("romorg.retroarch.is_running", return_value=False):
+            res = self.call("POST", "/api/retroarch/assets/set", {"key": "cheat_database_path", "folder": str(cht)})
+            self.assertEqual(res["changed"], ["cheat_database_path"])
+            self.assertIn(str(cht), (ra_dir / "retroarch.cfg").read_text())
+            self.assertIn('video_vsync = "true"', (ra_dir / "retroarch.cfg").read_text())
+            row = next(r for r in res["rows"] if r["key"] == "cheat_database_path")
+            self.assertEqual((row["own"], row["current_path"]), (False, str(cht)))
+            self.assertEqual(self.http("POST", "/api/retroarch/assets/set", {"key": "cheat_database_path", "folder": str(self.tmp / "nope")})[0], 400)
+            self.assertEqual(self.http("POST", "/api/retroarch/assets/set", {"key": "nonsense", "folder": ""})[0], 400)
+            back = self.call("POST", "/api/retroarch/assets/set", {"key": "cheat_database_path", "folder": ""})        # back to RetroArch's own
+            self.assertEqual(back["changed"], ["cheat_database_path"])
+            self.assertIn('cheat_database_path = "default"', (ra_dir / "retroarch.cfg").read_text())
+            self.call("POST", "/api/retroarch/undo", {"journal": back["journal"]})
+            self.assertIn(str(cht), (ra_dir / "retroarch.cfg").read_text())
 
     def test_retroarch_bios_for_every_system_with_a_folder(self) -> None:
         ra_dir = self.tmp / "ra-bios-all"
@@ -2396,7 +2430,7 @@ class LibraryServerTests(ServerTestCase):
         walk = Walk()
         walk.feed(server.read_static("index.html").decode())
         self.assertEqual((walk.problems, walk.stack), ([], []))
-        for ident, view in (("emu-list", "view-retroarch"), ("ra-shared-apply", "view-retroarch"), ("ra-follow-panel", "view-retroarch"),
+        for ident, view in (("emu-list", "view-retroarch"), ("ra-assets-table", "view-retroarch"), ("ra-card", "view-retroarch"),
                             ("chdman-box", "view-chd"), ("set-archive-own-box", "view-settings"), ("set-library-rules", "view-settings"),
                             ("databases-body", "view-databases"), ("lib-plan-btn", "view-system"), ("ra-bios-panel", "view-bios"),
                             ("bios-sources", "view-bios"), ("bios-found", "view-bios")):

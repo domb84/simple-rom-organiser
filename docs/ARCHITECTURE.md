@@ -2768,3 +2768,18 @@ extension. The Overview card says *found*, the Library card *kept*.
 * `idsaves`: Switch and Cemu sets of games with no file get their title (`_named`, match `dat`); Dolphin codes of 4 characters give a
   region in `_save_code`.
 
+# AMENDMENT 32 - the Emulators page: one card per emulator, asset folders set by hand (later wins)
+
+* `#/retroarch` is one list of cards: RetroArch's (`#ra-card`: `#ra-facts` summary of its save / state folders, per-core folders and
+  config file; `#ra-change-box` behind **Change...** with the install list and a custom `retroarch.cfg`; `details#ra-change-panel`
+  the save move with backup, preview and undo; `details#ra-assets-panel` the asset folders), then the other emulators (`Emu` in app.js:
+  status dot, systems, save count from the systems' scan records, folder; folder field and on/off behind **Change...**; the ones in use
+  first). Gone: the "Right now" table (the card's summary), the shared-folder table that proposed folders by their names
+  (`/api/retroarch/shared` stays for a caller that wants it), and the page's own "Saves follow the games" switch (it is in the
+  library rules).
+* `retroarch.asset_folders(install)` (the `SHARED` settings and the folder each uses; `own` for RetroArch's default) and
+  `set_asset_folder(install, key, folder)` ("" = `default`; through `apply_shared`: the config is backed up and journalled).
+  `POST /api/retroarch/assets`, `POST /api/retroarch/assets/set {key, folder}` (a folder that does not exist is a 400).
+* `pcsx2.detect_pcsx2` also looks in `<RetroArch's system folder>/pcsx2` of every RetroArch found (`_beside_retroarch`, after the
+  usual places; not with `ROMORG_RETROARCH_DETECT=0`).
+

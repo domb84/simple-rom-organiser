@@ -326,6 +326,21 @@ def _resolve(root: Path, text: str, default: str) -> Path:
     return Path(os.path.normpath(p if p.is_absolute() else root / p))
 
 
+def _beside_retroarch() -> List[Path]:
+    """``<RetroArch's system folder>/pcsx2`` of every RetroArch found on this machine: where many setups keep PCSX2's memory cards and
+    states (RetroArch's PlayStation 2 core uses that folder, and a standalone PCSX2 is often pointed at it)."""
+    out: List[Path] = []
+    try:
+        from . import retroarch
+        for inst in retroarch.detect_installs():
+            system = retroarch.resolve(retroarch.read_cfg(inst.cfg).get("system_directory", ""), inst)
+            if system is not None:
+                out.append(system / "pcsx2")
+    except Exception:  # noqa: BLE001 - a place to look, never an error
+        pass
+    return out
+
+
 def detect_pcsx2(home: Optional[Path] = None, root: Optional[Path] = None) -> Dict[str, object]:
     """PCSX2's folders: ``root`` (the one with ``inis``), ``cards`` (the memory cards in its slots), ``states`` and ``games``; {} when
     it is not installed. With ``root`` only that folder is looked at (the user chose it)."""
@@ -335,6 +350,7 @@ def detect_pcsx2(home: Optional[Path] = None, root: Optional[Path] = None) -> Di
         cands.append(Path(os.environ["APPDATA"]) / "PCSX2")
     cands += [docs / "PCSX2" for docs in winproc.documents_dirs()]          # Windows: Documents\PCSX2 (wherever Documents is)
     cands.append(home / "Documents" / "PCSX2")
+    cands += _beside_retroarch()                                                 # (a PCSX2 folder kept in RetroArch's system folder)
     if root is not None:
         cands = [Path(root)]
     for root in cands:

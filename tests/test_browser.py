@@ -897,9 +897,11 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
                 break
             time.sleep(0.1)
         self.assertFalse(self.api("GET", "/api/retroarch")["follow"])
-        self.page.goto(self.fx.url + "#/retroarch")
-        self.page.wait("!!document.getElementById('ra-follow')")
-        self.page.wait("document.getElementById('ra-follow').checked === false", timeout=10)
+        self.page.goto(self.fx.url + "#/retroarch")                                        # (the switch is in the rules only: not on the Emulators page)
+        self.page.wait("!document.getElementById('view-retroarch').classList.contains('hidden')")
+        self.assertFalse(self.page.eval("!!document.getElementById('ra-follow')"))
+        self.settings_of()
+        self.page.wait("document.getElementById('lib-saves-follow').checked === false", timeout=10)
         self.no_js_errors()
 
 
@@ -1094,7 +1096,7 @@ _FETCH_STUB = r"""(() => {
 FOLDER_FIELDS = {          # "Folders..." button -> the field it fills (the in-app folder browser, the same on every platform)
     "folder-browse-btn": "folder-input", "lib-export-browse-btn": "lib-export-dest", "lib-aside-browse": "lib-aside-dir",
     "ra-custom-browse": "ra-custom", "ra-save-browse": "ra-save-dir", "ra-state-browse": "ra-state-dir",
-    "ra-backup-browse": "ra-backup-dir", "ra-shared-browse": "ra-shared-base", "ra-bios-browse": "ra-bios-search",
+    "ra-backup-browse": "ra-backup-dir", "ra-bios-browse": "ra-bios-search",
     "set-archive-browse": "set-archive-dir",
     **{f"emu-{k}-browse": f"emu-{k}-folder" for k in ("dolphin", "cemu", "pcsx2", "eden", "ryujinx")},
 }
@@ -1164,7 +1166,10 @@ class PlatformTests(UiTestCase):
               for (const e of document.querySelectorAll('input[placeholder]')) if (bad.test(e.placeholder)) out.push(e.id + ': ' + e.placeholder);
               for (const e of document.querySelectorAll('[title]')) if (bad.test(e.title)) out.push('title: ' + e.title);
               const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-              while (w.nextNode()) if (bad.test(w.currentNode.textContent)) out.push(w.currentNode.textContent.trim().slice(0, 120));
+              while (w.nextNode()) {                         // (a folder found on this machine is data shown, not wording: left out)
+                if (w.currentNode.parentElement && w.currentNode.parentElement.closest('.emu-facts')) continue;
+                if (bad.test(w.currentNode.textContent)) out.push(w.currentNode.textContent.trim().slice(0, 120));
+              }
               return out; })()""" % LINUX_ONLY)
         self.assertEqual(sorted(set(found)), [])
         self.assertIn("D:\\Emulation\\roms\\psx", self.page.eval("document.getElementById('folder-input').placeholder"))
@@ -1358,12 +1363,15 @@ class EmulatorsUiTests(NoMachineFolders, UiTestCase):
         (home / ".config" / "PCSX2" / "inis").mkdir(parents=True)
         (home / ".config" / "PCSX2" / "inis" / "PCSX2.ini").write_text("[Folders]\n")
         self.open("#/retroarch")
-        self.page.wait("document.querySelectorAll('#emu-list .emu-row').length === 5", timeout=30)
+        self.page.wait("document.querySelectorAll('#emu-list .emu-card').length === 5", timeout=30)
         self.page.wait(f"document.getElementById('emu-pcsx2-folder').value === {str(home / '.config' / 'PCSX2')!r}", timeout=30)
-        self.assertIn("Found on this machine", self.page.eval("document.getElementById('emu-pcsx2-note').textContent"))
-        self.assertIn("Not found", self.page.eval("document.getElementById('emu-dolphin-note').textContent"))
+        self.assertIn("found on this machine", self.page.eval("document.getElementById('emu-pcsx2-note').textContent"))
+        self.assertIn("not found", self.page.eval("document.getElementById('emu-dolphin-note').textContent"))
+        self.assertTrue(self.page.eval("document.getElementById('emu-pcsx2-box').classList.contains('hidden')"))   # (the folder is behind Change...)
+        self.page.eval("document.getElementById('emu-pcsx2-change').click()")
+        self.page.wait("!document.getElementById('emu-pcsx2-box').classList.contains('hidden')")
         self.page.eval("document.getElementById('emu-pcsx2-on').click()")
-        self.page.wait("document.getElementById('emu-pcsx2-note').textContent.includes('Switched off')", timeout=30)
+        self.page.wait("document.getElementById('emu-pcsx2-note').textContent.includes('switched off')", timeout=30)
         self.assertTrue(self.page.eval("document.getElementById('emu-pcsx2-folder').disabled"))
         self.assertIn("Nintendo Switch", self.page.eval("document.querySelector('[data-emulator=eden]').textContent"))
         self.no_js_errors()

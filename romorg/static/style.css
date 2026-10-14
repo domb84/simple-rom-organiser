@@ -749,3 +749,26 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 .busy-hidden { display: none !important; }
 .sys-busy { display: inline-flex; align-items: center; gap: 0.4em; }
 .sys-busy.hidden { display: none; }
+
+/* ---- Emulators page: one card per emulator */
+.emu-cards { display: grid; gap: 10px; }
+.emu-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.emu-card.off { background: none; }
+.emu-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.emu-name { font-size: 16px; }
+.emu-meta { color: var(--muted); font-size: 13px; }
+.emu-card .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: none; display: inline-block; }
+.emu-card .dot.off { background: none; border: 2px solid var(--muted); }
+.emu-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 8px 0 0 22px; font-size: 13.5px; }
+.emu-facts dt { color: var(--muted); }
+.emu-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.emu-change { display: grid; gap: 8px; margin: 10px 0 0 22px; }
+.emu-fold { margin: 8px 0 0 22px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.emu-fold > summary { cursor: pointer; font-size: 14px; }
+.emu-fold-body { display: grid; gap: 8px; margin: 10px 0 2px 0; }
+@media (max-width: 560px) { .emu-facts { grid-template-columns: 1fr; margin-left: 0; } .emu-change, .emu-fold { margin-left: 0; } }
+.emu-fold > summary { list-style: none; }
+.emu-fold > summary::-webkit-details-marker { display: none; }
+.emu-fold > summary::before { content: "\25B8"; display: inline-block; width: 1.2em; color: var(--muted); }
+.emu-fold[open] > summary::before { content: "\25BE"; }
+.emu-fold > summary .muted { margin-left: 0.4em; }
