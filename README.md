@@ -542,6 +542,22 @@ region, version or disc, so every edition shares a folder). A file is pinned to 
 game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**;
 Undo puts the original back and removes the copies. A save no title claims goes to `_unmatched`. These rows are the **Saves** reason of the Library list.
 
+**Saves of games you have no file for** are listed in the Files tree too (Show: Saves). Each sits on the release your library rules
+would choose among those the save works in: the same region; any region for a cartridge system; for the PlayStation 2, another region
+it can be converted for (below). It never moves to another disc or mode of a game (Disc 1 is not Disc 2, Arcade Mode is not
+Simulation Mode). Its details say which release the save is named for ("The save is named for ...") and list the other releases it
+fits. A save whose title is a game you *do* have goes with that ROM (the one release your rules prefer, when you have several).
+Titles are compared without articles, accents, ™ and punctuation ("The Legend of Zelda™: Breath of the Wild" is "Legend of Zelda,
+The - Breath of the Wild"), then as another spelling would have them ("Okami", "Ookami"). Saves the emulators name by a game code
+(PCSX2, Dolphin, Cemu, Eden / Ryujinx) get the title the game database or the emulator gives that code.
+
+**Convert a save for another region** (PlayStation and PlayStation 2, experimental): a game you have with no save of its own, whose
+title has a save from another region, shows **Convert the save of ... for this disc** in its details (the disc's code is read from the
+`.chd` / `.iso`). A PlayStation 2 save of a game you lack, shown on another region's release, offers **Convert SLUS-xxxxx →
+SLES-xxxxx** (the code from the game database). The copy is made next to the original (a PlayStation card copy named after the disc;
+a PCSX2 folder card's save folder copied under the new code; a card image rewritten in place, its old content kept), and **Undo** on
+the message takes it back. Not while the emulator runs.
+
 **The file tree** is the Files tab of every system (above): the ROM folder and the archive as a build would leave them, made from the
 system's scan and following the rules. It is a preview: looking at it moves nothing.
 

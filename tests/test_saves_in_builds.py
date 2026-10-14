@@ -252,6 +252,29 @@ class SavesOfGamesYouLack(SavesCase):
         self.assertEqual(tree["facets"]["show"]["have"], 1)
 
 
+class LatestReleaseForSaves(SavesCase):
+    def test_a_cartridge_save_of_a_game_you_lack_is_shown_on_the_release_your_rules_prefer(self) -> None:
+        root = self.rom_folder("Solo (USA)")
+        self.save("bsnes", "Mix (USA)", ("{n}.srm",))                                        # (no ROM; Europe comes first by default)
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=saves")
+        by = {f["name"]: f for f in tree["files"]}
+        self.assertEqual(sorted(by), ["Mix (Europe)"])
+        self.assertEqual((by["Mix (Europe)"]["row"]["save_for"], by["Mix (Europe)"]["row"]["saves"]["saves"]), ("Mix (USA)", 1))
+
+    def test_a_save_that_only_works_in_its_region_stays_on_its_region(self) -> None:
+        from romorg import savecarry
+        root = self.rom_folder("Solo (USA)")
+        self.save("bsnes", "Mix (USA)", ("{n}.srm",))
+        with mock.patch.object(savecarry, "ANY_RELEASE", frozenset()), \
+                mock.patch.object(savecarry, "SAME_REGION", frozenset({"Super Nintendo Entertainment System"})):
+            self.job("/api/scan", {"path": str(root), "platform": SNES})
+            tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=saves")
+        by = {f["name"]: f for f in tree["files"]}
+        self.assertEqual(sorted(by), ["Mix (USA)"])
+        self.assertNotIn("save_for", by["Mix (USA)"]["row"])
+
+
 class CarryMode(SavesCase):
     """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
 
@@ -507,3 +530,34 @@ class EmulatorSettingsKey(SavesCase):
         cfg = __import__("json").loads(paths.config_path().read_text())
         self.assertIn("emulators", cfg)
         self.assertNotIn("nintendo", cfg)
+
+
+class TitlesOfSaves(unittest.TestCase):
+    def test_titles_are_compared_without_articles_marks_accents_or_a_second_spelling(self) -> None:
+        from romorg.server import App
+        same = [("The Legend of Zelda™: Breath of the Wild", "Legend of Zelda, The - Breath of the Wild"), ("Luigi’s Mansion™ 3", "Luigi's Mansion 3"),
+                ("Ōkami", "Okami")]
+        for a, b in same:
+            self.assertEqual(App._fold_title(a), App._fold_title(b), a)
+        self.assertNotEqual(App._fold_title("Okami"), App._fold_title("Ookami"))
+        self.assertEqual(App._loose_title("Okami"), App._loose_title("Ookami"))                  # (only when the exact title finds nothing)
+
+    def test_a_disc_or_a_mode_is_part_of_the_edition_a_revision_or_a_re_release_is_not(self) -> None:
+        from romorg.server import App
+        self.assertNotEqual(App._edition("Gran Turismo 2 (USA) (Arcade Mode) (Rev 1)"), App._edition("Gran Turismo 2 (USA) (Simulation Mode) (Rev 2)"))
+        self.assertNotEqual(App._edition("Driver 2 (USA) (Disc 1)"), App._edition("Driver 2 (USA) (Disc 2)"))
+        self.assertEqual(App._edition("Driver 2 (USA) (Disc 1)"), App._edition("Driver 2 (USA) (Disc 1) (Rev 1)"))
+        self.assertEqual(App._edition("Dark Cloud 2 (USA)"), App._edition("Dark Cloud 2 (USA) (Greatest Hits)"))
+
+
+class SavesOfAnotherRelease(SavesCase):
+    def test_a_save_of_a_release_you_lack_joins_the_one_rom_of_its_title_your_rules_prefer(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (Japan) - Copy", ("{n}.srm",))                             # (unmatched; read loosely it is Zed)
+        self.mode("leave")
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=saves")
+        withsaves = [f for f in tree["files"] if (f["row"] or {}).get("saves")]
+        self.assertEqual([f["name"] for f in withsaves], ["Zed (Europe).sfc"])            # (one ROM, not both: Europe comes first by default)
+        self.assertEqual(withsaves[0]["row"]["saves"]["saves"], 1)
+        self.assertEqual(tree["facets"]["show"]["saves"], 1)

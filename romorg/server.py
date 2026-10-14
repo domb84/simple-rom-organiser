@@ -2587,6 +2587,73 @@ class App:
             profile, overrides=tuple((d, n, a) for (d, n), a in current.items())))
         return self._profile_info(platform)
 
+    def saves_convert(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/saves/convert {platform, set, to_file | to_code}``: make a copy of a save for another region's release of its game.
+        ``to_file`` is a disc you have (relative to the system's folder; its code is read from it), ``to_code`` another release's code
+        (PlayStation 2 only: the game database knows it). PlayStation: the card's entry of the game is renamed (a copy named after the disc);
+        PlayStation 2: the save folder is copied under the new code, or renamed in a card image. Journalled: ``journal`` undoes it
+        (``POST /api/retroarch/undo``). Nothing is written while the emulator runs."""
+        platform = self._resolve_platform(body.get("platform"))
+        savecarry, ra = _mod("savecarry"), _mod("retroarch")
+        if platform.name not in savecarry.CONVERTIBLE:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Saves of this system are not converted between regions.", "not_convertible")
+        state = self._state_of(platform)
+        report = self._saves_report(state) if state is not None else None
+        st = report.sets.get(_str_arg(body.get("set"))) if report is not None else None
+        if st is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "No such save (scan the system again).", "no_save")
+        old = self._set_code(st)
+        if not old:
+            raise ApiError(HTTPStatus.CONFLICT, "The game code of this save is not known, so it cannot be converted.", "no_code")
+        target: Path | None = None
+        if _str_arg(body.get("to_file")):
+            target = (state.root / _str_arg(body.get("to_file"))).resolve()
+            if target.is_dir():                                   # (a disc game's folder: its image)
+                target = next((f for f in sorted(target.iterdir()) if f.suffix.lower() in (".chd", ".iso")), target)
+            if not target.is_file() or state.root.resolve() not in target.parents:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "That disc is not in the system's folder.", "bad_target")
+            new = _mod("pcsx2").read_serial(target, psx=True)
+            if not new:
+                raise ApiError(HTTPStatus.CONFLICT, "The game code of that disc cannot be read (a .chd or .iso is needed).", "no_code")
+        else:
+            import re
+            new = _str_arg(body.get("to_code")).strip().upper()
+            if not re.fullmatch(r"[A-Z]{4}-\d{5}", new) or st.source != "pcsx2":
+                raise ApiError(HTTPStatus.BAD_REQUEST, "to_file (a disc you have) or, for a PlayStation 2 save, to_code is needed.", "bad_target")
+        if new == old:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "That release has the same game code: the save works there as it is.", "same_code")
+        journal_dir = _mod("paths").data_dir() / "retroarch-undo"
+        if st.source == "pcsx2":
+            ops, info = self._ps2_ops({"ps2": [(old, new)]})
+            res = ra.apply_follow(ops, journal_dir, {"converted": [old, new]}, None, running=_mod("emulators").source_running("pcsx2"))
+        else:
+            sel = self._ra_active()
+            if sel is None or target is None:
+                raise ApiError(HTTPStatus.CONFLICT, "A PlayStation save is converted for a disc you have, with RetroArch set up.", "bad_target")
+            info = {"saves": 0, "conflicts": 0}
+            ops = []
+            for o in ra.plan_follow(sel, [(st.name, target.stem)], "copy", files=self._report_files(report)):
+                if o.kind != "save":
+                    continue
+                if o.status != "copy":
+                    info["conflicts"] += 1
+                    continue
+                done = savecarry.convert_ps1_card(Path(o.src).read_bytes(), old, new)
+                if done is not None:
+                    o.data, o.size = done[0], len(done[0])
+                    ops.append(o)
+                    info["saves"] += done[1]
+            res = ra.apply_follow(ops, journal_dir, {"converted": [old, new]}, sel)
+        res.update(info, old=old, new=new)
+        self._saves_forget_all()
+        for holder in (state,):                                   # (the tree and the saves are read again)
+            for attr, empty in (("saves", None), ("saves_for", ""), ("save_walk", None), ("save_reports", {})):
+                if hasattr(holder, attr):
+                    setattr(holder, attr, empty)
+            holder.items.pop(("library", "tree"), None)
+            holder.items.pop(("library", "treeidx"), None)
+        return res
+
     def library_saved(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/library/saved``: ``{platform, choice: keep | archive | leave | carry | default, games: [{dat, game}]}`` - what
         a build does with the saves of single games the rules would replace or archive (stored in the platform's library
@@ -4623,26 +4690,276 @@ class App:
                                         "cs_kind": "games", "cs_id": item.get("id")},
                                 "text": (item["name"] + " " + (item.get("title") or "")).casefold()})
         report = self._saves_report(state) if self._saves_available(state.platform.name) else None
-        if report is not None:                                   # the saves of games you have no file for are listed too: by their game, else by their title
-            known: set[tuple[str, str]] = set()
-            for e in entries:
-                row = e["row"]
-                if e["state"] == treeview.MISSING and row:
-                    known.add((row.get("dat", ""), row.get("name", "")))
-                    row["saves"] = self._row_saves(report, "games", row)
-            for st in sorted(report.counted(), key=lambda x: (x.title or x.name).casefold()):
-                if st.match == "rom" or (st.match == "dat" and (st.dat, st.game) in known):
-                    continue
-                title = st.title or st.game or st.name
-                total = {"saves": st.saves, "states": st.states, "total": st.files, "title_total": st.files}
-                entries.append({"side": treeview.LIBRARY, "parts": (f"{title} ({st.shown})" if st.source != "retroarch" else title,), "size": 0,
-                                "state": treeview.SAVEONLY, "from": "",
-                                "row": {"item": "game", "name": title, "title": title, "category": "saves_only", "saves": total,
-                                        "tags": {}, "set_name": st.name},
-                                "text": f"{title} {st.name}".casefold()})
+        if report is not None:                                   # the saves of games you have no file for are listed too
+            try:
+                self._place_saves(state, entries, games, report)
+            except Exception:  # noqa: BLE001 - the saves are a courtesy of the tree
+                traceback.print_exc()
         state.items[("library", "tree")] = (ident, entries, base)
         state.items.pop(("library", "treeidx"), None)
         return entries, base, ident
+
+    def _place_saves(self, state: ScanState, entries: list[dict[str, Any]], games: list[tuple[dict[str, Any], str]], report: Any) -> None:
+        """Put the saves of the games you have no file for into the tree: on the release your library rules would choose among those the
+        save works in - the same region, any region for a cartridge, or (PlayStation 2) another region it can be converted for -, as a
+        row of a game you lack; a save no game of the database fits is a ``saveonly`` row of its own. A ROM you have gets the saves of
+        another release of its title that can be converted for it (``convert``)."""
+        treeview, savecarry = _mod("treeview"), _mod("savecarry")
+        platform = state.platform
+        ghosts = {(e["row"].get("dat", ""), e["row"].get("name", "")): e for e in entries if e["state"] == treeview.MISSING and e["row"]}
+        lacking = [item for item, _t in games if not item.get("have")]
+        owned = [item for item, _t in games if item.get("have")]
+        by_name = {item["name"]: item for item, _t in games}
+
+        def regions(item: dict[str, Any]) -> list[str]:
+            return list((item.get("tags") or {}).get("regions") or ())
+
+        for e in entries:                                        # (a tree made again starts from the plain rows)
+            if e["state"] == treeview.MISSING and e["row"]:
+                for k in ("saves", "also_fits", "save_for", "convert"):
+                    e["row"].pop(k, None)
+        self._place_platform = platform
+        shown = {(e["row"].get("game_ref") or {}).get("game") for e in entries
+                 if e["row"] and e["side"] == "library" and (e["row"].get("saves") or {}).get("total")}
+        for st in sorted(report.counted(), key=lambda x: (x.title or x.name).casefold()):
+            total = {"saves": st.saves, "states": st.states, "total": st.files, "title_total": st.files}
+            if st.match == "rom":                                 # (a ROM's own saves: on its row, also when the save has the ROM's old name)
+                if st.game and st.game not in shown:
+                    self._attach_rows(st, {st.game}, total, entries, own_save=True)
+                continue
+            own = by_name.get(st.game) if st.match == "dat" else None              # (the game a RetroArch save is named after)
+            title = (own.get("title") if own else "") or (st.guess if st.match == "none" else "") or st.title or st.game or st.name
+            code, region = self._save_code(st)
+            from_regions = regions(own) if own else ([region] if region else [])
+            same = self._same_title(lacking, title)
+
+            def usable(item: dict[str, Any]) -> bool:
+                theirs = regions(item)
+                if not from_regions or not theirs or set(theirs) & set(from_regions) or savecarry.works(platform.name, from_regions, theirs):
+                    return True
+                return st.source == "pcsx2" and bool(code) and bool(self._ps2_codes(title, theirs))       # (converted for it)
+            edition = self._edition(own["name"]) if own is not None else None      # (the same disc, mode and edition: Disc 1 is not Disc 2)
+            fit = [i for i in same if usable(i) and (edition is None or self._edition(i["name"]) == edition)]
+            if not fit and self._attach_to_owned(st, title, edition, total, owned, entries, usable):
+                continue                                                           # (a release of its title you have: the save is that ROM's)
+            pick = self._preferred_release(platform, fit, "") if fit else None
+            if pick is not None and (pick.get("dat", ""), pick["name"]) in ghosts:
+                row = ghosts[(pick.get("dat", ""), pick["name"])]["row"]
+                had = row.get("saves") or {}
+                row["saves"] = {k: had.get(k, 0) + total[k] for k in total}
+                row["also_fits"] = [i["name"] for i in fit if i is not pick and self._normal_release(i["name"])][:12]
+                if own is not None and own is not pick:
+                    row["save_for"] = own["name"]
+                if st.source == "pcsx2" and code and from_regions and not set(regions(pick)) & set(from_regions):
+                    targets = self._ps2_codes(title, regions(pick))
+                    if targets:
+                        row["convert"] = {"set": st.key, "from": code, "to": targets}
+                continue
+            entries.append({"side": treeview.LIBRARY, "parts": (f"{title} ({st.shown})" if st.source != "retroarch" else title,), "size": 0,
+                            "state": treeview.SAVEONLY, "from": "",
+                            "row": {"item": "game", "name": title, "title": title, "category": "saves_only", "saves": total,
+                                    "tags": {"regions": from_regions, "languages": []}, "set_name": st.name, "code": code,
+                                    "candidates": [i["name"] for i in same if self._normal_release(i["name"])][:12]},
+                            "text": f"{title} {st.name}".casefold()})
+        self._offer_conversions(state, entries, report)
+
+    def _attach_to_owned(self, st: Any, title: str, edition: Any, total: dict[str, int], owned: list[dict[str, Any]],
+                         entries: list[dict[str, Any]], usable: Any) -> bool:
+        """A save no game you lack fits, whose title is a game you have: it is shown with that ROM (True when it was)."""
+        fit = [i for i in self._same_title_owned(owned, title) if usable(i) and (edition is None or self._edition(i["name"]) == edition)]
+        if not fit:
+            return False
+        names = {self._preferred_release(self._place_platform, fit, "")["name"]}          # (one ROM: the release your rules prefer)
+        return self._attach_rows(st, names, total, entries)
+
+    @staticmethod
+    def _attach_rows(st: Any, names: set[str], total: dict[str, int], entries: list[dict[str, Any]], own_save: bool = False) -> bool:
+        """Add a save set's counts to the rows of the games ``names`` (each row once: a disc game's files share theirs)."""
+        seen: set[int] = set()
+        for e in entries:
+            row = e["row"]
+            if not row or id(row) in seen or e["side"] != "library" or (row.get("game_ref") or {}).get("game") not in names:
+                continue
+            seen.add(id(row))
+            had = row.get("saves") or {}
+            row["saves"] = {**had, **{k: had.get(k, 0) + total[k] for k in total}}
+            if not own_save:
+                row.setdefault("save_for", st.title or st.name)
+        return bool(seen)
+
+    def _same_title_owned(self, owned: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+        def fits(fold: Any) -> list[dict[str, Any]]:
+            return [i for i in owned if fold(i.get("title") or i.get("name", "")) == fold(title)]
+        return fits(self._fold_title) or fits(self._loose_title)
+
+    @staticmethod
+    def _edition(name: str) -> tuple[str, ...]:
+        """What tells two releases of a title apart beyond region, version and re-release: the disc, the mode, the edition."""
+        t = _mod("tags").parse_name(name)
+        again = ("greatest hits", "platinum", "best", "player's choice", "classics", "budget")
+        return tuple(sorted(f.casefold() for f in t.flags if not any(w in f.casefold() for w in again) and not f.casefold().startswith("rev ")))
+
+    def _offer_conversions(self, state: ScanState, entries: list[dict[str, Any]], report: Any) -> None:
+        """A game you have that has no save of its own, while another region's release of its title has one that can be converted for it
+        (PlayStation: the card's one game code; PlayStation 2: the save's code), gets ``convert`` on its row: the button of its details."""
+        savecarry = _mod("savecarry")
+        if state.platform.name not in savecarry.CONVERTIBLE:
+            return
+        sets = [st for st in report.counted() if st.saves]
+        if not sets:
+            return
+        by_title: dict[str, list[Any]] = {}
+        for st in sets:
+            by_title.setdefault(self._fold_title(st.title or st.game or st.name), []).append(st)
+        for e in entries:
+            row = e["row"]
+            if not row or row.get("category") != "kept" or row.get("item") != "file" or (row.get("saves") or {}).get("saves"):
+                continue
+            title = _mod("tags").parse_name(Path(row.get("rom_name") or e["parts"][-1]).stem if "." in (row.get("rom_name") or "")[-5:]
+                                             else (row.get("rom_name") or e["parts"][-1])).title
+            mine = set((row.get("tags") or {}).get("regions") or ())
+            for st in by_title.get(self._fold_title(title), []):
+                code = self._set_code(st)
+                theirs = set(self._regions_of_code(code)) if code else set()
+                if not code or not theirs or theirs & mine:
+                    continue
+                row["convert"] = {"set": st.key, "from": code, "to": [], "disc": True, "name": st.title or st.name}
+                break
+
+    def _set_code(self, st: Any) -> str:
+        """The game code a save set is for: from its name (a set with no game file here), its save folder (PCSX2), or the one code on its
+        memory card (a PlayStation card made by RetroArch); "" when it says none or several."""
+        code, _region = self._save_code(st)
+        if code:
+            return code
+        if st.source == "pcsx2":
+            names = {_mod("pcsx2").save_serial(Path(f).name) for f, _root, _k, _z in st.members}
+            names.discard("")
+            return names.pop() if len(names) == 1 else ""
+        codes = {c.get("code") for c in self._card_entries(st)}
+        codes.discard("")
+        codes.discard(None)
+        return codes.pop() if len(codes) == 1 else ""
+
+    @staticmethod
+    def _card_entries(st: Any) -> list[dict[str, Any]]:
+        out = []
+        for f, _root, kind, _size in st.members:
+            if kind == "save" and Path(f).suffix.lower() in (".srm", ".mcr", ".mcd", ".mc", ".gme", ".vmp"):
+                card = _mod("memcards").read(Path(f))
+                if card is not None and card.kind == "ps1":
+                    out += [{"code": e.code, "name": e.name, "file": str(f)} for e in card.entries]
+        return out
+
+    @staticmethod
+    def _regions_of_code(code: str) -> list[str]:
+        letter = code[2:3] if len(code) == 10 else ""
+        return [{"U": "USA", "E": "Europe", "P": "Japan", "A": "Asia", "K": "Korea"}[letter]] if letter in "UEPAK" and letter else []
+
+    def _same_title(self, items: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+        """The games of ``items`` with ``title`` (then as another transliteration spells it: Okami, Ookami). The folded titles of a list are
+        worked out once."""
+        memo = getattr(self, "_title_maps", None)
+        if memo is None or memo[0] is not items:
+            exact: dict[str, list[dict[str, Any]]] = {}
+            loose: dict[str, list[dict[str, Any]]] = {}
+            for i in items:
+                t = i.get("title") or i.get("name", "")
+                exact.setdefault(self._fold_title(t), []).append(i)
+                loose.setdefault(self._loose_title(t), []).append(i)
+            memo = self._title_maps = (items, exact, loose)
+        return memo[1].get(self._fold_title(title)) or memo[2].get(self._loose_title(title)) or []
+
+    def _ps2_codes(self, title: str, regions: Iterable[str]) -> list[str]:
+        """The PlayStation 2 serials the game database has for ``title`` in one of ``regions`` (another release of a game: what its saves are
+        named with)."""
+        cache = getattr(self, "_ps2_names", None)
+        if cache is None:
+            cache = {}
+            db = _mod("gametdb").GameTdb()
+            try:
+                if db.conn is not None:
+                    for gid, name in db.conn.execute("SELECT id, name FROM names WHERE kind='ps2'"):
+                        cache.setdefault(self._loose_title(name), []).append(gid)
+            finally:
+                db.close()
+            self._ps2_names = cache
+        wanted = set(regions)
+        return sorted({c for c in cache.get(self._loose_title(title), []) if set(self._regions_of_code(c)) & wanted})
+
+    @staticmethod
+    def _fold_title(text: str) -> str:
+        """A title for comparing: no accents (``Ōkami`` is ``Okami``), case or punctuation."""
+        import re
+        import unicodedata
+        t = re.sub(r"[\u2122\u00ae\u00a9]", "", text.casefold())                  # (™ ® ©: not part of a title)
+        t = re.sub(r",\s*(the|a|an)\b", "", t)                                    # ("Legend of Zelda, The" is "The Legend of Zelda")
+        t = re.sub(r"^(the|a|an)\s+", "", t)
+        return "".join(c for c in unicodedata.normalize("NFKD", t) if c.isalnum() and not unicodedata.combining(c))
+
+    def _preferred_release(self, platform: Any, same: list[dict[str, Any]], region: str) -> dict[str, Any]:
+        """The release a save most likely belongs to among ``same`` (the games of the database that fit its title and region): the one your
+        library rules would keep (the same rules that choose the version in "upgrades": no betas, demos and the like, the latest
+        revision), with this region put first and the language and rating filters left out. The rules' answer, else :meth:`_best_candidate`."""
+        try:
+            library, totals = self._library_mod(), _mod("totals")
+            key = (platform.name, totals.signature_text(self._dats_signature(platform)))
+            cache = getattr(self, "_all_items", None)
+            if cache is None or cache[0] != key:                       # (every game of the databases, made once per set of databases)
+                dats, _missing = self._platform_dats(platform)
+                cache = self._all_items = (key, totals.target_items(platform, list(dats)))
+            names = {i["name"] for i in same}
+            pool = [it for it in cache[1] if library._rom_name(it) in names]
+            base = self._profile(platform)
+            prof = dataclasses.replace(base, region_priority=(region,) if region else base.region_priority,
+                                       region_ties=() if region else base.region_ties, languages=(),
+                                       min_rating=None, top_n=None, keep_other_language=False)
+            sel = library.select(pool, prof, platform)
+            kept = {library._rom_name(it) for it in pool if sel.decisions.get(it.key) is not None and sel.decisions[it.key].action == library.KEEP}
+            rows = [i for i in same if i["name"] in kept]
+            if rows:
+                return self._best_candidate(rows)
+        except Exception:  # noqa: BLE001 - a guess for the screen: the plain ranking will do
+            traceback.print_exc()
+        return self._best_candidate(same)
+
+    @staticmethod
+    def _loose_title(text: str) -> str:
+        """``_fold_title`` with repeated letters made one (``Ookami`` is ``Okami``): for the titles a database spells another way."""
+        import re
+        return re.sub(r"(.)\1+", r"\1", App._fold_title(text))
+
+    @staticmethod
+    def _normal_release(name: str) -> bool:
+        t = _mod("tags").parse_name(name)
+        return t.status == "" and not t.bad
+
+    @staticmethod
+    def _best_candidate(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """The release of a title a save most likely belongs to when its code fits several: a normal release over a demo, beta or other
+        excluded kind, over a re-release (Greatest Hits, Platinum ...), then the latest version or revision, then the shortest name."""
+        tags = _mod("tags")
+        keys = tags.group_version_keys([i["name"] for i in items])
+        again = ("greatest hits", "platinum", "best", "player's choice", "classics", "budget", "bundle", "collection", "edition")
+
+        def score(item: dict[str, Any]) -> tuple:
+            t = tags.parse_name(item["name"])
+            return (t.status == "" and not t.bad, not any(w in f.casefold() for f in t.flags for w in again),
+                    keys.get(item["name"], (0,)), -len(item["name"]))
+        return max(items, key=score)
+
+    @staticmethod
+    def _save_code(st: Any) -> tuple[str, str]:
+        """``(game code, region)`` of a save set known by a game code (a PlayStation 2 serial ``SLUS-20946``, a Dolphin ID ``GALE01``); "" for a
+        region it does not say."""
+        import re
+        m = re.search(r"\b([A-Z]{4})-(\d{5})\b", st.name)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}", {"U": "USA", "E": "Europe", "P": "Japan", "A": "Asia", "K": "Korea"}.get(m.group(1)[2], "")
+        m = re.search(r"\b([A-Z0-9]{3}[EPJKUW](?:[A-Z0-9]{2})?)\b", st.name)
+        if m and st.source == "dolphin":
+            return m.group(1), {"E": "USA", "P": "Europe", "J": "Japan", "K": "Korea", "W": "Taiwan"}.get(m.group(1)[3], "")
+        return "", ""
 
     TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves")
 
@@ -5115,6 +5432,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/library/profile"): App.library_profile_save,
     ("POST", "/api/library/override"): App.library_override,
     ("POST", "/api/library/saved"): App.library_saved,
+    ("POST", "/api/saves/convert"): App.saves_convert,
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,
     ("POST", "/api/library/apply"): App.library_apply,

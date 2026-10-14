@@ -101,7 +101,11 @@ def _set(source: str, label: str, key: str, name: str, ref: Optional[Tuple[str, 
 def _titled(s: SaveSet, db: "gametdb.GameTdb", kind: str, code: str) -> SaveSet:
     """A set for a game you have no disc for: the database knows the game by its code, so it is listed under its title (a match by title,
     not by ROM) instead of the bare code."""
-    title = db.name(kind, code)
+    return _named(s, db.name(kind, code))
+
+
+def _named(s: SaveSet, title: str) -> SaveSet:
+    """The set of a game you have no file for, under the title its emulator or a database knows it by (a match by title)."""
     if title:
         s.match, s.title, s.game = DAT, title, title
     return s
@@ -194,8 +198,9 @@ def _switch(owned: List[Owned], eff: Dict[str, Any], header_key: Optional[bytes]
             n, size, members = parts(grouped[tid])
             title = db.title(tid)
             labels = sorted({i.emulator for i in grouped[tid]})
-            out.append(_set("switch", " + ".join(l.capitalize() for l in labels), f"switch:{tid}",
-                            f"{title['name'] if title else tid} (no game file here)", None, n, 0, size, members))
+            out.append(_named(_set("switch", " + ".join(l.capitalize() for l in labels), f"switch:{tid}",
+                                   f"{title['name'] if title else tid} (no game file here)", None, n, 0, size, members),
+                              title["name"] if title else ""))
     finally:
         db.close()
     return out
@@ -224,8 +229,8 @@ def _cemu(owned: List[Owned], data: Path) -> List[SaveSet]:
         out.append(_set("cemu", "Cemu", g.key, g.path.stem, g.ref, n, 0, size, members))
     for tid in sorted(set(grouped) - claimed):
         n, size, members = parts(grouped[tid])
-        name = listing.get(tid, {}).get("name") or tid
-        out.append(_set("cemu", "Cemu", f"cemu:{tid}", f"{name} (no game file here)", None, n, 0, size, members))
+        name = listing.get(tid, {}).get("name") or ""
+        out.append(_named(_set("cemu", "Cemu", f"cemu:{tid}", f"{name or tid} (no game file here)", None, n, 0, size, members), name))
     return out
 
 

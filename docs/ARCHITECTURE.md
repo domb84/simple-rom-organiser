@@ -2748,3 +2748,23 @@ extension. The Overview card says *found*, the Library card *kept*.
   `App._rename_emulator_settings` (at start) moves an old `nintendo` over, keeping an `emulators` that already exists; `_nin_cfg` still reads a
   `nintendo` that is somehow there, and `POST /api/emulators/config` writes `emulators`. The inner keys are the console ids and are unchanged.
 
+# AMENDMENT 31 - saves placed on the best release they work in; conversion from the tree (later wins)
+
+* `server.App._place_saves(state, entries, games, report)` (from `_tree_entries`): for each counted save set not matched to a ROM, the
+  games you lack with its title (`_same_title`: `_fold_title` drops articles, ™ ® ©, accents and punctuation; `_loose_title` also
+  collapses repeated letters, used only when the exact fold finds nothing) that it works in (`usable`: same region, `savecarry.works`,
+  or a PlayStation 2 code for that region in the game database: `_ps2_codes`) and of the same `_edition` (disc, mode and other flags
+  but revisions and re-releases); `_preferred_release` (the library rules with the region order kept, languages and ratings off) picks
+  one; its ghost row gets `saves`, `also_fits`, `save_for` (the game a RetroArch save is named after, when it is another) and `convert`
+  (PCSX2 save on another region's release: `{set, from, to: [codes]}`). No game you lack: `_attach_to_owned` adds the counts to the
+  row of the one ROM of the title your rules prefer; else a `saveonly` row. A ROM's own set whose name is not the ROM's (renamed ROM)
+  is added to its row too. `_offer_conversions`: a kept ROM of PS1 / PS2 with no save of its own and a set of its title from another
+  region with one code (`_set_code`: the set's name, its PCSX2 folder, or the one code on its PlayStation card) gets
+  `convert {set, from, disc: true}`.
+* `POST /api/saves/convert {platform, set, to_file | to_code}`: the new code from the disc (`to_file`, a folder means its `.chd` /
+  `.iso`) or given (`to_code`, PCSX2 only); PCSX2 through `_ps2_ops`, PlayStation through `plan_follow` + `savecarry.convert_ps1_card`
+  (copy named after the disc). Journalled in `retroarch-undo`; `POST /api/retroarch/undo {journal}` takes it back. The saves and the
+  tree of that scan are read again.
+* `idsaves`: Switch and Cemu sets of games with no file get their title (`_named`, match `dat`); Dolphin codes of 4 characters give a
+  region in `_save_code`.
+

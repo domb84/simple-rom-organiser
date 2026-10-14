@@ -182,6 +182,89 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual(self.call("/api/tree?platform=Sony%20PlayStation%202&show=missing")["facets"]["show"]["saves"], 3)
         self.assertEqual(tree["sides"]["library"], 2)                                                    # (no file is counted for a save-only entry)
 
+    def test_a_save_of_a_game_with_no_disc_takes_the_database_game_of_its_region(self) -> None:
+        import sqlite3
+        self.iso.update({"Delta (USA)": T.make_iso(30, 9), "Delta (Europe)": T.make_iso(31, 10),
+                         "Echo (USA)": T.make_iso(32, 11), "Echo (USA) (Greatest Hits)": T.make_iso(33, 12),
+                         "Foxtrot (USA) (Rev 1)": T.make_iso(34, 13), "Foxtrot (USA) (Rev 2)": T.make_iso(35, 14),
+                         "Ookami (USA)": T.make_iso(36, 15), "Ookami (USA) (Demo)": T.make_iso(37, 16)})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03-41-38")
+        db = paths.data_dir() / "nintendo" / "gametdb.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE names (kind TEXT, id TEXT, name TEXT); CREATE TABLE info (key TEXT, value TEXT);")
+        conn.executemany("INSERT INTO names VALUES ('ps2', ?, ?)", [("SLUS-20999", "Delta"), ("SLUS-20998", "Echo"), ("SLUS-20997", "Foxtrot"), ("SLUS-20996", "Okami")])
+        conn.commit()
+        conn.close()
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        for name in ("BASLUS-20999DELTA", "BASLUS-20998ECHO", "BASLUS-20997FOX", "BASLUS-20996OKAMI"):
+            (card / name).mkdir()
+            (card / name / "data.bin").write_bytes(b"x")
+        self.scan_ps2()
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=saves")
+        by = {f["name"]: f for f in tree["files"]}
+        delta = by["Delta (USA)"]                                              # one USA game of that title: it is that game, as any game you lack
+        self.assertEqual((delta["state"], delta["row"]["saves"]["total"], delta["row"]["tags"]["regions"]), ("missing", 1, ["USA"]))
+        self.assertTrue(delta["row"].get("cs_kind"))                           # (so it has the database's checksums)
+        self.assertNotIn("Delta (Europe)", by)
+        self.assertEqual((by["Echo (USA)"]["state"], by["Echo (USA)"]["row"]["saves"]["total"]), ("missing", 1))       # (the plain one of two: the name says it)
+        self.assertNotIn("Echo (USA) (Greatest Hits)", by)
+        fox = by["Foxtrot (USA) (Rev 2)"]                                      # two revisions and no plain one: the latest, the other is listed
+        self.assertEqual((fox["state"], fox["row"]["saves"]["total"], fox["row"]["also_fits"]), ("missing", 1, ["Foxtrot (USA) (Rev 1)"]))
+        self.assertNotIn("Foxtrot (USA) (Rev 1)", by)
+        self.assertEqual(by["Echo (USA)"]["row"]["also_fits"], ["Echo (USA) (Greatest Hits)"])
+        self.assertTrue(fox["row"].get("cs_kind"))
+        self.assertEqual((by["Ookami (USA)"]["state"], by["Ookami (USA)"]["row"]["saves"]["total"], by["Ookami (USA)"]["row"]["also_fits"]), ("missing", 1, []))
+
+    def gametdb(self, rows: list) -> None:
+        import sqlite3
+        db = paths.data_dir() / "nintendo" / "gametdb.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE IF NOT EXISTS names (kind TEXT, id TEXT, name TEXT); CREATE TABLE IF NOT EXISTS info (key TEXT, value TEXT);")
+        conn.executemany("INSERT INTO names VALUES ('ps2', ?, ?)", rows)
+        conn.commit()
+        conn.close()
+
+    def test_a_save_of_another_region_is_offered_converted_for_the_release_there_and_undone(self) -> None:
+        self.iso.update({"Golf (Europe)": T.make_iso(38, 17)})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03-41-38")
+        self.gametdb([("SLUS-20990", "Golf"), ("SLES-59990", "Golf")])
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        (card / "BASLUS-20990GOLF").mkdir()
+        (card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").write_bytes(b"golf")
+        self.scan_ps2()
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=saves")
+        golf = {f["name"]: f for f in tree["files"]}["Golf (Europe)"]              # (no USA release in the database: Europe, by conversion)
+        conv = golf["row"]["convert"]
+        self.assertEqual((conv["from"], conv["to"]), ("SLUS-20990", ["SLES-59990"]))
+        res = self.call("/api/saves/convert", {"platform": PS2, "set": conv["set"], "to_code": "SLES-59990"})
+        self.assertEqual((res["saves"], res["copied"]), (1, 1))
+        self.assertEqual((card / "BESLES-59990GOLF" / "BESLES-59990GOLF").read_bytes(), b"golf")
+        self.assertTrue((card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").is_file())          # the original stays
+        self.call("/api/retroarch/undo", {"journal": res["journal"]})
+        self.assertFalse((card / "BESLES-59990GOLF").exists())
+
+    def test_a_disc_you_have_is_offered_the_save_of_its_other_region(self) -> None:
+        import shutil
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        shutil.rmtree(card / "BESLES-50012OTHER")                                        # (the European disc has no save of its own)
+        self.scan_ps2()
+        self.call("/api/library/plan", {"platform": PS2})
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=have")
+        rows = []
+        for d in tree["dirs"]:
+            rows += self.call("/api/tree?platform=Sony%20PlayStation%202&show=have&path=" + d["name"].replace(" ", "%20"))["files"]
+        europe = [f for f in rows if f["name"].startswith("Gamma (Europe)")][0]["row"]
+        self.assertTrue(europe["convert"]["disc"])
+        self.assertEqual(europe["convert"]["from"], "SLUS-20946")
+        res = self.call("/api/saves/convert", {"platform": PS2, "set": europe["convert"]["set"], "to_file": europe["from"]})
+        self.assertEqual((res["old"], res["new"], res["saves"]), ("SLUS-20946", "SLES-50012", 1))
+        self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"save")
+        self.call("/api/saves/convert", {"platform": PS2, "set": europe["convert"]["set"], "to_code": "nonsense"}, expect=400)
+
     def test_the_scan_counts_the_saves_of_each_game_and_the_browse_list_shows_them(self) -> None:
         games = {g["name"]: g for g in self.call("/api/scan/results?kind=games")["items"]}
         self.assertEqual(games["Gamma (USA)"]["saves"]["total"], 2)            # a card save and a state

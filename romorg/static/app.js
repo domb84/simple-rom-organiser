@@ -82,6 +82,7 @@
     const node = el("div", { class: `toast ${kind}`, text: message });
     $("toasts").append(node);
     setTimeout(() => node.remove(), ms);
+    return node;
   }
   function showBanner(message) {
     const b = $("banner");
@@ -3646,6 +3647,33 @@
       select);
   }
 
+  /** The buttons that copy a save for another region's release (PlayStation: for a disc you have; PlayStation 2: also for a release you lack,
+   *  by its code). Experimental: the original stays; Undo takes the copy away. */
+  let convertDone = () => {};
+  function convertButtons(i) {
+    const c = i.convert;
+    const go = async (body, label) => {
+      try {
+        const r = await post("/api/saves/convert", { platform: state.platform, set: c.set, ...body });
+        if (r.skipped_running) { toast("The emulator is running: close it and try again.", "error"); return; }
+        const n = r.saves || 0;
+        const t = toast(n ? `${nPlural(n, "save", "saves")} converted from ${r.old} to ${r.new} (${label})` : "Nothing was converted (the card has no save of that game, or the new name is taken).",
+          n ? "ok" : "error", 10000);
+        if (n && r.journal && t) t.append(el("button", { class: "btn btn-small", type: "button", text: "Undo", on: { click: async () => {
+          try { await post("/api/retroarch/undo", { journal: r.journal }); toast("Conversion undone", "ok"); convertDone(); } catch (err) { toast(err.message, "error"); }
+        } } }));
+        convertDone();
+      } catch (err) { toast(err.message, "error"); }
+    };
+    const note = el("div", { class: "sub", text: "Makes a copy of the save renamed for this release's game code (experimental: a game that keeps the region inside its save may still refuse it). The original is not touched." });
+    if (c.disc) {
+      return el("div", {}, note, el("button", { class: "btn btn-small", type: "button", text: `Convert the save of ${c.name} (${c.from}) for this disc`,
+        on: { click: () => go({ to_file: i.from }, "for this disc") } }));
+    }
+    return el("div", {}, note, ...(c.to || []).map((code) => el("button", { class: "btn btn-small", type: "button", text: `Convert ${c.from} → ${code}`,
+      on: { click: () => go({ to_code: code }, code) } })));
+  }
+
   /** One game's own choice for its saves (stored in the library profile). */
   async function setSavedChoice(s, choice) {
     try {
@@ -4646,6 +4674,12 @@
       panel.replaceChildren(el("dl", { class: "tree-facts" },
         ...line("Game", game ? copyChip(game, "", "name") : null, i.title && i.title !== game ? el("span", { class: "muted small", text: ` ${i.title}` }) : null,
           i.dat ? el("div", { class: "sub", text: shortDat(i.dat) }) : null),
+        ...line("Game code", i.code ? el("span", { class: "mono", text: i.code }) : null),
+        ...line("Could be", i.candidates && i.candidates.length ? el("div", {}, ...i.candidates.map((n) => copyChip(n, "", "name"))) : null),
+        ...line("Also fits", i.also_fits && i.also_fits.length ? el("div", {}, el("div", { class: "sub", text: "Its game code is the same for these releases; the best one is shown." }),
+          ...i.also_fits.map((n) => copyChip(n, "", "name"))) : null),
+        ...line("Save for", i.save_for ? el("span", { class: "small", text: `The save is named for ${i.save_for}; it works in this release too.` }) : null),
+        ...line("Convert", i.convert ? convertButtons(i) : null),
         ...line("Rating", ratingsAvailable() && i.rating !== undefined ? ratingCell(i) : null),
         ...line("The rules", i.item === "file" ? libraryWhyPanel(i) : null),
         ...line("The build", el("span", { text: build })),
@@ -4676,6 +4710,7 @@
 
     bind() {
       const search = debounce(() => { this.f.q = $("files-q").value.trim(); this.reload(); }, 350);
+      convertDone = () => this.reload();
       $("files-q").addEventListener("input", search);
       $("files-clear").addEventListener("click", () => {
         this.f = { show: "have", state: "", region: "", language: "", rated: "", q: "" };
