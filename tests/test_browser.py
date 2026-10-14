@@ -571,6 +571,17 @@ class FileDetailTests(UiTestCase):
             self.assertRegex(text, r"^⬆ \d+$")
         self.no_js_errors()
 
+    def test_the_details_of_a_game_you_lack_show_no_stray_text(self) -> None:
+        self.library_preview()
+        self.pick("show", "missing")
+        self.open_folders()
+        self.page.eval("document.querySelector('#files-tree button.tree-file').click()")
+        self.page.wait("!!document.querySelector('#files-tree .tree-detail:not(.hidden) .tree-facts')", timeout=30)
+        text = self.page.eval("document.querySelector('#files-tree .tree-detail:not(.hidden)').innerText")
+        self.assertIn("Not in your folder", text)
+        self.assertNotIn("null", text)                                # (a game with no file has no buttons: nothing is written in their place)
+        self.no_js_errors()
+
     def test_always_exclude_a_game_from_its_details_and_the_tree_follows(self) -> None:
         self.library_preview()
         target = "Beta Blaster (1992)(Bits).adf"

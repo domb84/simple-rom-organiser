@@ -4685,7 +4685,7 @@
         ...line("The build", el("span", { text: build })),
         ...line("Saves", i.saves ? libSavesCell(i) : null),
         ...line("Year", i.year ? el("span", { text: String(i.year) }) : null)),
-      sums, actions);
+      ...[sums, actions].filter(Boolean));          // (a game with no file has no buttons: replaceChildren would write "null")
       if (i.category === "kept" && i.item === "file") {
         const rules = panel.querySelector(".tree-facts");
         Better.of(i).then((it) => {
