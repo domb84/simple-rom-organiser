@@ -1081,6 +1081,7 @@ _FETCH_STUB = r"""(() => {
     const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
     for (const r of rules) {
       if (r.path !== u.pathname || (r.method || 'GET') !== method) continue;
+      if (r.delay) { await new Promise((res) => setTimeout(res, r.delay)); if (!r.patch && !r.pick && r.body === undefined) return real(url, opts); }
       if (r.patch) { const res = await real(url, opts); return json(res.status, Object.assign(await res.json(), r.patch)); }
       if (r.pick) return json(200, { path: r.pick + ((sent || {}).title || '') });
       return json(r.status || 200, r.body);
@@ -1112,6 +1113,43 @@ class PlatformTests(UiTestCase):
         self.page.eval(f"location.hash = {hash_!r}")
         self.page.wait(f"location.hash === {hash_!r}")
         time.sleep(0.5)
+
+    def test_while_the_list_is_worked_out_the_header_says_so_instead_of_offering_a_scan(self) -> None:
+        self.stub({"path": "/api/library/plan", "method": "POST", "delay": 2500})
+        self.open()
+        self.scan()
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/files")
+        self.page.wait("!document.getElementById('sys-busy').classList.contains('hidden')", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('scan-btn').classList.contains('busy-hidden')"))
+        self.assertIn("the list", self.page.eval("document.getElementById('sys-busy').textContent"))
+        self.page.wait("document.getElementById('lib-live').textContent.includes('up to date')", timeout=60)
+        self.assertTrue(self.page.eval("document.getElementById('sys-busy').classList.contains('hidden')"))
+        self.assertFalse(self.page.eval("document.getElementById('scan-btn').classList.contains('busy-hidden')"))
+        self.no_js_errors()
+
+    def test_while_the_last_scan_is_read_back_the_header_says_so_instead_of_scan_folder(self) -> None:
+        self.stub({"path": "/api/scan/select", "method": "POST", "delay": 2500})
+        self.open()
+        self.scan()
+        self.scan(platform="Nintendo Game Boy Advance", root=str(self.fx.gba))           # (the Amiga's scan is no longer the current one)
+        self.page.eval("location.reload()")
+        self.page.wait("document.querySelectorAll('.nav-item[data-platform]').length > 3")
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/files")
+        self.page.wait("document.getElementById('sys-busy-text').textContent.includes('Loading the last scan')", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('scan-btn').classList.contains('busy-hidden')"))
+        self.assertIn("Loading the last scan", self.page.eval("document.getElementById('lib-gate').textContent"))
+        # from the end of the load to the end of the list the header stays busy: the scan button never shows in between
+        self.page.eval("""window.__seen = []; (function look() { const b = document.getElementById('scan-btn');
+          window.__seen.push(b.classList.contains('busy-hidden') ? 'busy' : b.textContent); if (window.__seen.length < 400) setTimeout(look, 25); })()""")
+        self.page.wait("document.getElementById('lib-live').textContent.includes('up to date')", timeout=60)
+        self.page.wait("!document.getElementById('scan-btn').classList.contains('busy-hidden')", timeout=10)
+        seen = self.page.eval("window.__seen")
+        first_button = next((i for i, v in enumerate(seen) if v != "busy"), len(seen))
+        self.assertTrue(all(v != "busy" for v in seen[first_button:]), seen)               # (busy, then the button for good: no flicker)
+        self.assertEqual(self.page.eval("document.getElementById('scan-btn').textContent"), "Rescan folder")
+        self.page.eval("location.hash = '#/system/commodore-amiga/settings'")                # (on the Settings tab the header has no list to wait for)
+        self.page.wait("!document.getElementById('scan-btn').classList.contains('busy-hidden')", timeout=10)
+        self.no_js_errors()
 
     def test_a_windows_server_shows_windows_paths_and_no_linux_wording(self) -> None:
         self.stub({"path": "/api/status", "patch": {"os": "windows"}},

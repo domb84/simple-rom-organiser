@@ -1155,6 +1155,8 @@
     const p = currentPlatform();
     state.tab = tab;
     renderTabs();
+    const lib = Previews.items.lib;
+    if (lib) Previews.paint(lib);                // (the header's "Updating the list..." belongs to the Files tab)
 
     if (tab === "files") {
       loadTotals();
@@ -1348,6 +1350,17 @@
     Jobs.start("/api/scan", { path, platform: p.name, ...(force ? { force: true } : {}) });
   }
 
+  /** The header of a system says what is being worked out (the last scan being read back, the list being calculated) in place of the
+   *  scan buttons: a press there would only start it again. */
+  const headBusy = { restore: false, list: "" };
+  function renderHeadBusy() {
+    const text = headBusy.restore ? "Loading the last scan..." : headBusy.list;
+    const on = !!text && inSystem();
+    $("sys-busy").classList.toggle("hidden", !on);
+    $("sys-busy-text").textContent = text || "";
+    for (const id of ["scan-btn", "scan-force-btn"]) $(id).classList.toggle("busy-hidden", on);
+  }
+
   /** The scan buttons: "Rescan" once there is a scan (it reads new and changed files only), and the way to read everything again. */
   function renderScanButtons() {
     const scanned = !!state.scan;
@@ -1358,10 +1371,16 @@
 
   /** Coming back to a system whose scan is still kept by the server: no new scan. */
   async function restoreScan(name) {
+    const p = state.platforms.find((x) => x.name === name);
+    const remembered = !!(p && p.last_scan);                 // (a system scanned before: its scan is read back, which can take a moment)
+    if (remembered) { headBusy.restore = true; renderHeadBusy(); renderLibraryGate(); }
     try {
       const r = await post("/api/scan/select", { platform: name });
       if (r.selected && state.platform === name) await refreshScan();
     } catch (_) { /* the Scan button is still there */ }
+    finally {
+      if (remembered) { headBusy.restore = false; renderHeadBusy(); renderLibraryGate(); }
+    }
   }
 
   Jobs.handlers.scan = async (job) => {
@@ -1600,7 +1619,8 @@
     const has = !!state.scan;
     $("lib-gate").classList.toggle("hidden", has);
     $("lib-body").classList.toggle("hidden", !has);
-    if (!has) scanGate($("lib-gate"), "Building the library");
+    if (!has && headBusy.restore) $("lib-gate").replaceChildren(el("div", { class: "totals-wait" }, el("span", { class: "spinner", "aria-hidden": "true" }), " Loading the last scan..."));
+    else if (!has) scanGate($("lib-gate"), "Building the library");
   }
 
 
@@ -1992,15 +2012,19 @@
       const it = this.items[id];
       if (!it || !it.cfg.auto) return;
       clearTimeout(it.timer);
+      it.scheduled = true;                         // (the header says the list is coming from now on, not only once it is asked for)
       it.timer = setTimeout(() => this.autoRun(id), 500);
+      this.paint(it);
     },
 
     autoRun(id) {
       const it = this.items[id];
-      if (!it || it.state === "busy" || it.state === "ready") return;
-      if (!inSystem() || state.tab !== "files" || !state.scan) return;
-      if (it.state === "stale" && it.platform !== state.platform) return;
-      this.click(id);
+      if (!it) return;
+      it.scheduled = false;
+      const go = it.state !== "busy" && it.state !== "ready" && inSystem() && state.tab === "files" && !!state.scan
+        && !(it.state === "stale" && it.platform !== state.platform);
+      if (go) this.click(id);
+      else this.paint(it);
     },
 
     /** The library page was opened (or a scan arrived): a missing or out-of-date preview is calculated now. */
@@ -2014,6 +2038,8 @@
     clear(id) {
       const it = this.items[id];
       if (!it) return;
+      clearTimeout(it.timer);
+      it.scheduled = false;
       it.state = "none";
       it.dirty = "";
       it.at = null;
@@ -2055,10 +2081,12 @@
       it.hint.classList.toggle("hidden", !has || busy || it.cfg.auto);
       it.banner.classList.toggle("hidden", !stale || it.cfg.auto);
       if (it.live) {
-        const working = busy || stale;
+        const working = busy || stale || !!it.scheduled;
         it.live.textContent = working ? (it.at ? "Updating the list..." : "Calculating the list...")
           : err ? `Could not update the list: ${it.err} - press here to try again` : has && it.at ? `The list is up to date (${clockText(it.at)}${it.count === null || it.count === undefined ? "" : `, ${fmt(it.count)} ${it.cfg.noun}`})` : "";
         it.live.className = `live ${working ? "busy" : err ? "bad" : has ? "ok" : ""}`;
+        headBusy.list = working && state.tab === "files" ? (it.at ? "Updating the list..." : "Calculating the list...") : "";   // (only where it is worked out)
+        renderHeadBusy();
       }
       it.bannerText.textContent = stale ? `${it.why || "Rules changed since this preview"} — recalculate to see the current result.` : "";
       // while an out-of-date preview is being recalculated (or that failed) it stays dimmed and Build / Apply stay disabled

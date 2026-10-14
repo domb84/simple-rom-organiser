@@ -745,3 +745,7 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 @media (max-width: 600px) { .tree-facts { grid-template-columns: 1fr; } .tree-detail { margin-left: 6px; } }
 
 .tree-upgrade { color: var(--accent, #3b82f6); font-weight: 700; line-height: 1; cursor: help; }
+
+.busy-hidden { display: none !important; }
+.sys-busy { display: inline-flex; align-items: center; gap: 0.4em; }
+.sys-busy.hidden { display: none; }
