@@ -105,7 +105,7 @@ snes/
 - Organise **never changes file contents**, so the extension stays honest: a SNES file
   matched with its 512-byte copier header skipped is named `<game>.smc`, a byte-swapped
   N64 file `<game>.v64` / `<game>.n64`, a NES file whose iNES header differs `<game>.nes`.
-  Turn on **Convert first** in the Library tab to get the exact DAT files.
+  Turn on the rule **Convert when building** (Settings) to get the exact DAT files.
 - `.zip` / `.7z` archives with one matching game are named `<game>.zip` / `<game>.7z`
   (the file inside is unchanged).
 - Unmatched files keep their relative path under `_unmatched/`. Folders named `media`,
@@ -246,11 +246,11 @@ stays, dimmed, and **Build library** waits for the new one). Build library sends
 
 **Settings** holds everything you can set for the system: the **folder** (**Folders... / Clear**, saved the moment you choose it) and
 **Scan folder**, the **library rules** (every exclusion, language, keep-flag, region priority and option, with an Override box each), the
-**build options** (layout, Convert first, labels, where to build, the system's own archive folder), the **DAT files**, and the scan's summary
+**build options** (layout, labels, where to build, the system's own archive folder), the **DAT files**, and the scan's summary
 cards and checks.
 
 Gone with the old tabs: the sortable table and its **Columns** menu (the tree is by folder and name; the filters and the search do the finding).
-Converting is the **Convert first** option on the Settings tab, and the CHD settings are on the **Disc images (CHD)** page in the list on the
+Converting is the library rule **Convert when building** (Settings, for every system that can convert; a system can override it), and the CHD settings are on the **Disc images (CHD)** page in the list on the
 left. Kickstarts and other BIOS files are handled by the **BIOS and firmware** page.
 
 ### Library totals and the tiles
@@ -551,6 +551,10 @@ Titles are compared without articles, accents, ™ and punctuation ("The Legend 
 The - Breath of the Wild"), then as another spelling would have them ("Okami", "Ookami"). Saves the emulators name by a game code
 (PCSX2, Dolphin, Cemu, Eden / Ryujinx) get the title the game database or the emulator gives that code.
 
+**Dreamcast cards named by the disc's number.** Flycast can keep one memory card per game, named after the disc's product number
+(`HDR-0128.A1.bin`, `T36802N.A1.bin`). The Dreamcast database has no product numbers, so the app reads the number from the boot
+header of each disc you have (`.chd` or `.gdi`, remembered per file): a card with that name is that disc's save, shown with it.
+
 **Convert a save for another region** (PlayStation and PlayStation 2, experimental): a game you have with no save of its own, whose
 title has a save from another region, shows **Convert the save of ... for this disc** in its details (the disc's code is read from the
 `.chd` / `.iso`). A PlayStation 2 save of a game you lack, shown on another region's release, offers **Convert SLUS-xxxxx →
@@ -628,7 +632,8 @@ dreamcast/
     Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).chd
     Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).zip      sidecars: every file that starts with the CHD's old name
     Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).state    (.zip .md5 .gdi .cue .state .srm .sav ...) is renamed with it
-  Shenmue (Europe) (En,Fr,De,Es) (Disc 1)/...               multi-disc: one folder per disc, the playlist is next to disc 1
+  Shenmue (Europe) (En,Fr,De,Es)/                           multi-disc: one folder per game, a folder per disc inside it,
+    Shenmue (Europe) (En,Fr,De,Es) (Disc 1)/...             the playlist (.m3u) in the game's folder
   _unmatched/  _excluded/  _superseded/  _duplicates/  _converted_originals/    the usual reserved folders
 ```
 
@@ -763,7 +768,7 @@ prototype / pre-release (plus the `(Beta)`, `(Proto)`, `(Sample)` and Japanese `
 *Applications*, *Educational*, *Bonus Discs*, *Multimedia*, *Add-Ons* are kept on purpose. Budget re-releases
 (`(PlayStation the Best)`, `(Greatest Hits)`, `(Platinum)` ...), `(Unl)` and special editions are different products and are never merged;
 `(Rev N)` / `(vX.Y)` are revisions (newest wins); `(Disc A)` / `(Disc B)` count as discs 1 / 2.
-**Playlists:** PlayStation multi-disc games get an `.m3u` with relative paths next to disc 1 (RetroArch and DuckStation read it);
+**Playlists:** PlayStation multi-disc games get an `.m3u` with relative paths in the game's folder, above the folders of the discs (RetroArch and DuckStation read it);
 **PlayStation 2 gets none** - PCSX2 does not use `.m3u` playlists (the policy is a per-system setting).
 
 **Convert.** A PlayStation `.cue` + `.bin` set (or a PS2 CD set) becomes a CD-image CHD (what `chdman createcd` writes);
@@ -881,10 +886,20 @@ the folders for the system you have open. The system folder then holds only what
   track while scanning** (slower: audio tracks are decoded too, so every disc ends up *verified*; a scan alone *identifies* a
   CD by its data tracks and checks audio by length). The old per-system *Verify CHDs* tool is gone: that switch does it
   in the scan.
-- **Convert first** (Library tab, in the system's own options, off by default): *Convert raw disc sets (.gdi / .cue + tracks, or
-  an .iso) to CHD first* for disc systems, *Clean up dumps first* for SNES (copier headers) and N64 (byte order). The Library
-  preview counts them; the build converts first (each CHD is checked against Redump before the raw files move to
-  `_converted_originals/`; nothing is deleted) and then builds the library. **Undo last** reverts both.
+- **Convert when building** (a library rule: **Settings > Library defaults** for every system that can convert, and a system can override it
+  on its own Settings tab; off by default): *Convert raw discs to CHD* for the disc systems, *Clean up dumps* for the SNES (copier headers)
+  and N64 (byte order). It is a step of **Build library**, not a separate job: the Files tree shows what it will do (the new CHD in its game's
+  folder, the original in `_converted_originals`, or marked deleted), and the build converts first (each CHD is checked against Redump before
+  the original is touched), re-reads the folder and then builds the library. **Undo last** reverts both. What counts as a raw disc: an `.iso`,
+  a `.cue` / `.gdi` with its tracks, and a **`.zip` or `.7z` that holds one** (read without unpacking: the tracks are streamed through
+  their checksums, the CRC-32 the archive lists rules most games out first, the answer is remembered per archive; a 7z needs no 7-Zip when it
+  is LZMA / LZMA2). A zipped disc is unpacked only to convert it, into a work folder next to where the CHD goes, and that folder is removed.
+  A GD-ROM in an archive needs a `.gdi` inside. An archive with no disc image in it, or a damaged one, is left as it was.
+- **Delete the originals after converting** (a rule too, disc systems only, off by default): off, the originals (the `.iso`, the zip, the
+  cue and its tracks) are kept in `_converted_originals`. On, they are deleted once the CHD has been checked against Redump, and the build's
+  confirmation says so; **Undo cannot bring them back**, so it also never takes the CHD away.
+- **A raw disc is named after its game even before it is converted:** with the rule off, an `.iso` or a zip / 7z of one is renamed to
+  `<Redump name>/<Redump name>.iso` (or `.zip`, `.7z`) like a CHD game is. A `.cue` with tracks is converted, not renamed.
 
 ## RetroArch: saves, states and the config (v0.2)
 
@@ -942,7 +957,10 @@ with no RetroArch found, and none chosen, nothing on its card matters.
   - *Rename:* when a build gives a ROM its database name its saves and states are renamed to match, in the same core folder
     (a build into another folder copies them). Nothing is overwritten; Undo gives the old names back.
   - *When a rule replaces or archives a game you have saves for* you choose, in your Library defaults (and a system's own rules)
-    for every game, and on the Library tab for a single game: **Keep both ROMs** (the default: the ROM the rules would
+    for every game, and on the Library tab for a single game: **Copy or convert the save to the latest version, leave the existing save**
+    (the default: when the version you have is not the one a save belongs to - an older revision, another region, another name, or a ROM the
+    rules replace - the save games are copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or
+    PlayStation 2 save is converted for the other disc's game code; the existing save stays and Undo removes the copies), **Keep both ROMs** (the ROM the rules would
     replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
     `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
     used; Undo brings them back) **Leave the saves where they are**, or **Copy the save to the better version**. The last one is for the day you add a better match

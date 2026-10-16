@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import os
 import re
 import struct
@@ -85,18 +87,102 @@ def _iso_serial(sector, keys: tuple = ("BOOT2",)) -> str:
     return ""
 
 
+RAW_SECTOR = 2352
+
+
+def _image_serial(read_at, keys: Tuple[str, ...]) -> str:
+    """The serial of a disc image read through ``read_at(offset, n)``: 2048-byte sectors (an ``.iso``) or raw 2352-byte ones (a ``.bin``,
+    mode 1 or mode 2)."""
+    head = read_at(16 * SECTOR, 8)
+    if head[1:6] == b"CD001":
+        return _iso_serial(lambda lba: read_at(lba * SECTOR, SECTOR).ljust(SECTOR, b"\0"), keys)
+    raw = read_at(16 * RAW_SECTOR, 32)
+    if len(raw) < 32 or raw[:12] != b"\0" + b"\xff" * 10 + b"\0":
+        return ""
+    lead = 24 if raw[15] == 2 else 16
+    if raw[lead + 1:lead + 6] != b"CD001":
+        return ""
+    return _iso_serial(lambda lba: read_at(lba * RAW_SECTOR + lead, SECTOR).ljust(SECTOR, b"\0"), keys)
+
+
+def _cue_data_file(cue: Path) -> Optional[Path]:
+    """The first file a ``.cue`` names (the data track of a disc) that lies next to it."""
+    try:
+        text = cue.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(r'^\s*FILE\s+(?:"([^"]+)"|(\S+))', text, re.I | re.M)
+    if not m:
+        return None
+    f = cue.parent / (m.group(1) or m.group(2)).replace("\\", "/")
+    return f if f.is_file() else None
+
+
+def _archive_serial(path: Path, keys: Tuple[str, ...]) -> str:
+    """The serial of the disc inside a ``.zip`` / ``.7z`` (an ``.iso``, or the data track of a ``.cue`` / ``.bin``), read through the archive's
+    stream (nothing is unpacked; SYSTEM.CNF can lie far into the disc, so the stream is read up to it and no further)."""
+    st = path.stat()
+    return _archive_serial_cached(os.fspath(path), st.st_size, st.st_mtime_ns, keys)
+
+
+@functools.lru_cache(maxsize=64)
+def _archive_serial_cached(path: str, size: int, mtime: int, keys: Tuple[str, ...]) -> str:
+    from . import discarchive
+    members = discarchive.list_members(Path(path))
+    names = {m.name.replace("\\", "/").casefold(): m.name for m in members}
+    member = next((m.name for m in members if m.name.lower().endswith(".iso")), None)
+    if member is None:
+        cue = next((m for m in members if m.name.lower().endswith(".cue")), None)
+        if cue is not None:
+            with discarchive.open_member(Path(path), cue.name) as f:
+                text = f.read(1 << 16).decode("utf-8", errors="replace")
+            m = re.search(r'^\s*FILE\s+(?:"([^"]+)"|(\S+))', text, re.I | re.M)
+            if m:
+                want = (m.group(1) or m.group(2)).replace("\\", "/").casefold()
+                base = cue.name.replace("\\", "/").rsplit("/", 1)[0] + "/" if "/" in cue.name else ""
+                member = names.get(base.casefold() + want) or names.get(want)
+        if member is None:
+            member = next((m.name for m in members if m.name.lower().endswith((".bin", ".img"))), None)
+    if member is None:
+        return ""
+    with contextlib.ExitStack() as stack:
+        state = {"f": stack.enter_context(discarchive.open_member(Path(path), member)), "pos": 0}
+
+        def read_at(offset: int, n: int) -> bytes:
+            if offset < state["pos"]:                                # (behind the stream: start again)
+                state["f"] = stack.enter_context(discarchive.open_member(Path(path), member))
+                state["pos"] = 0
+            skip = offset - state["pos"]
+            while skip > 0:
+                got = state["f"].read(min(skip, 1 << 20))
+                if not got:
+                    return b""
+                skip -= len(got)
+            data = state["f"].read(n)
+            state["pos"] = offset + len(data)
+            return data
+        return _image_serial(read_at, keys)
+
+
 def read_serial(path: Path, psx: bool = False) -> str:
-    """The serial of a PS2 disc image (``.iso`` / ``.chd``); "" when it cannot be read. ``psx``: a PlayStation disc's (its ``BOOT`` line) too."""
+    """The serial of a PS2 disc image (``.iso`` / ``.chd``, a ``.zip`` / ``.7z`` of one); "" when it cannot be read. ``psx``: a PlayStation
+    disc's (its ``BOOT`` line) too, and a ``.cue`` / ``.bin`` set."""
     keys = ("BOOT2", "BOOT") if psx else ("BOOT2",)
     path = Path(path)
     try:
-        if path.suffix.lower() == ".iso":
+        ext = path.suffix.lower()
+        if ext in (".zip", ".7z"):
+            return _archive_serial(path, keys)
+        if ext == ".cue":
+            data = _cue_data_file(path)
+            return read_serial(data, psx) if data is not None else ""
+        if ext in (".iso", ".bin", ".img"):
             with open(path, "rb") as f:
-                def sector(lba: int) -> bytes:
-                    f.seek(lba * SECTOR)
-                    return f.read(SECTOR).ljust(SECTOR, b"\0")
-                return _iso_serial(sector, keys)
-        if path.suffix.lower() == ".chd":
+                def read_at(offset: int, n: int) -> bytes:
+                    f.seek(offset)
+                    return f.read(n)
+                return _image_serial(read_at, keys)
+        if ext == ".chd":
             from . import chd as chdlib
             info = chdlib.Chd(path, load_map=False)
             try:

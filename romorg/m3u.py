@@ -866,6 +866,7 @@ class PlaylistSpec:
     total: int
     disks: list[PlaylistDisk]
     notes: list[str] = field(default_factory=list)    # one line per disk borrowed from another edition
+    directory: Optional[Path] = None                  # where the playlist goes (default: next to the lowest slot's disk)
 
 
 def content_of(lines: list[str]) -> str:
@@ -885,7 +886,7 @@ def plan_playlists(specs: Iterable[PlaylistSpec], root: Path, savedisk: bool = F
         disks = sorted(spec.disks, key=lambda d: d.slot)
         if not disks:
             continue
-        directory = _abs(disks[0].path, root).parent
+        directory = _abs(spec.directory, root) if spec.directory is not None else _abs(disks[0].path, root).parent
         path = directory / safe_filename(spec.name + ".m3u")
         n = 2
         while _fold(path) in used:

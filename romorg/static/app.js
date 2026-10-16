@@ -1407,7 +1407,6 @@
     renderLibraryIntro();
     renderLibraryGate();
     refreshUndo();
-    renderLibraryConvert();
     updateActionState();
     loadTotals();
     if (inSystem() && state.tab === "files") { Previews.resume("lib"); Files.show(); }
@@ -1546,6 +1545,12 @@
   const nPlural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
 
   /** `1 save · 6 states` (empty when there are none). */
+  /** The tag of what the build does with a game's saves (copied to a better version, renamed with the game, archived); null when nothing. */
+  const SAVE_EFFECT = { carry: "Saves copied", receive: "Saves copied", convert: "Saves converted", rename: "Saves renamed", archive: "Saves archived" };
+  function saveEffectTag(effect) {
+    return SAVE_EFFECT[effect] ? badge("info", SAVE_EFFECT[effect]) : null;
+  }
+
   function savesText(c) {
     const bits = [];
     if (c && c.saves) bits.push(nPlural(c.saves, "save", "saves"));
@@ -2626,7 +2631,8 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", keep_bios: "BIOS and firmware", keep_extras: "Files with a game" };
+    saved_games: "Saves", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
   /** Move item i of a list by dir (-1 up, +1 down); returns a new array. */
@@ -3171,6 +3177,8 @@
   // ---- What happens to the saves of a game a rule replaces or archives (Amendment 31): one group for the Library rules and
   // (it exists only when a save source is set up for the system: the profile then has ``saved_games``).
   const SAVED_CHOICES = [
+    { value: "convert", label: "Copy or convert the save to the latest version, leave the existing save (default)",
+      text: "When the version of a game you have is not the one a save belongs to (a newer revision or another region arrived, or the rules replace the old ROM), the save is copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or PlayStation 2 save is converted for the other release's game code, so it works there. Memory cards and battery saves only, not save states. The existing save is left where it is and the copies are journalled: Undo removes them. Nothing is copied over a save the new version already has, and not while the emulator is running." },
     { value: "keep", label: "Keep both ROMs",
       text: "The ROM the rules would replace or archive stays as well, so the saves still have their game. Its saves are renamed if the ROM is renamed." },
     { value: "archive", label: "Archive the saves with the ROM",
@@ -3179,14 +3187,12 @@
       text: "The ROM is replaced or archived as the rules say; its saves are not touched." },
     { value: "carry", label: "Copy the save to the better version",
       text: "When a better version of a game you have saves for arrives, the old ROM is replaced and its save games (memory cards, battery saves; not save states) are copied to the new ROM's name, if the new ROM has no save yet. Where the save would not work in the new version (a PlayStation, GameCube or Dreamcast save of another region) both ROMs stay. The old save is left where it is. Undo removes the copy." },
-    { value: "convert", label: "Copy the save, converting its region (PlayStation, PlayStation 2)",
-      text: "As above, and a PlayStation save is rewritten for the other region's disc, so a USA save works in the European release and the other way round (the card's file name for the save and its checksum are changed; nothing else). Both discs must be readable (a .chd or .iso), and the save may still not work in a game that keeps region-specific data. Experimental: the old save is never touched, and Undo removes the converted copy. A PlayStation 2 save is moved to the other release's game code the same way: on a folder card (PCSX2) the save's folder is copied under the new name; in a card image (.ps2) the names are rewritten in place (a copy of the image is kept for Undo). Not while PCSX2 is running. Other systems copy as above." },
   ];
 
   /** The group of the rules panels: what happens to a game the rules would archive when RetroArch has saves for it, and the
    *  switch that renames saves with their ROMs (the same stored setting as on the RetroArch page). */
   function savesGroup(current, onChange, where) {
-    const choice = SAVED_CHOICES.find((c) => c.value === current) || SAVED_CHOICES[0];
+    const choice = SAVED_CHOICES.find((c) => c.value === current) || SAVED_CHOICES.find((c) => c.value === "convert");
     const select = el("select", { class: "input select", id: `${where}-saved-games`, "data-field": "saved_games", "aria-label": "When a rule replaces or archives a game you have saves for",
       on: { change: (ev) => onChange(ev.target.value) } },
     ...SAVED_CHOICES.map((c) => el("option", { value: c.value, text: c.label, selected: c.value === choice.value })));
@@ -3313,7 +3319,9 @@
           el("span", { "data-vanish": "flag_cr" }), " ",
           el("button", { class: "btn btn-small", text: "Keep cracks again", on: { click: () => rctx.save({ keep_flags: [...prof.keep_flags, "cr"] }) } })) : null), "Dump types"));
     }
-    const opts = optionEntries(info);
+    const CHD_RULES = ["convert_first", "delete_converted"];                  // (the CHD rules are one group of their own)
+    const chdOpts = optionEntries(info).filter((e) => CHD_RULES.includes(e.id));
+    const opts = optionEntries(info).filter((e) => !CHD_RULES.includes(e.id));
     if (opts.length || info.ranking) {
       const datsOf = { latest_only: scopes.latest_dats, best_variant: scopes.best_variant_dats, complete_only: scopes.complete_dats,
         borrow_editions: scopes.best_variant_dats };
@@ -3327,6 +3335,18 @@
           return unit([e.field], row, plainLabel(e));
         }).filter(Boolean)),
         info.ranking ? el("div", { class: "sub ranking", id: "rules-ranking", text: info.ranking }) : null));
+    }
+    const chdRows = chdOpts.map((e) => {
+      const row = ruleRow(e, !!prof[e.field], (on) => rctx.save({ [e.field]: on }), null);
+      row.querySelector("input").dataset.opt = e.field;
+      return unit([e.field], row, plainLabel(e));
+    }).filter(Boolean);
+    if (chdRows.length) {
+      groups.push(el("div", { class: "rules-group", id: "rules-chd" },
+        el("div", { class: "rules-head", text: "Disc images (CHD)" }),
+        el("div", { class: "rules-grid" }, chdRows),
+        el("div", { class: "sub" }, "How CHDs are read and written (the built-in writer, chdman, compression, checking while scanning) is set on the ",
+          el("a", { href: "#/chd", text: "Disc images page" }), ".")));
     }
     if (avail.languages && cat.some((e) => e.id === "languages")) groups.push(unit(["languages"], languageSection(info)));
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority", "region_ties"], regionSection(info)));
@@ -3594,7 +3614,9 @@
     if (sets.length && sets.length <= 15) $("lib-incomplete-box").open = true;
     const total = plan.incomplete_total || sets.length;
     $("lib-incomplete-title").textContent = isGameFolder(currentPlatform())
-      ? `Multi-disc games with a disc missing (${fmt(total)}) - kept where they are, no playlist`
+      ? (plan.profile && plan.profile.complete_only
+        ? `Multi-disc games with a disc missing (${fmt(total)}) - archived as _incomplete until the set is complete, not converted`
+        : `Multi-disc games with a disc missing (${fmt(total)}) - not archived, no playlist${plan.convert && plan.convert.count ? "; a raw disc is still converted, into its own folder" : ", kept where they are"}`)
       : `Incomplete sets (${fmt(total)}) - disks missing, archived as _incomplete`;
     $("lib-incomplete").replaceChildren(...sets.map((x) => el("li", {},
       el("span", { text: x.name }), " ",
@@ -3654,8 +3676,23 @@
   }
 
   const SAVED_OPTIONS = [["", "Use the default"], ["keep", "Keep both ROMs"], ["archive", "Archive the saves with the ROM"], ["leave", "Leave the saves"], ["carry", "Copy the save to the better version"], ["convert", "Copy the save, converting its region (PlayStation, PlayStation 2)"]];
-  const SAVED_EFFECT = { rename: ["info", "renamed with the ROM"], keep: ["ok", "ROM kept for them"], archive: ["warn", "archived with the ROM"], leave: ["skip", "left where they are"], carry: ["info", "save copied to the better version"], convert: ["info", "save copied to the better version"] };
+  const SAVED_EFFECT = { rename: ["info", "renamed with the ROM"], keep: ["ok", "ROM kept for them"], archive: ["warn", "archived with the ROM"], leave: ["skip", "left where they are"], carry: ["info", "save copied to the better version"], convert: ["info", "save copied to the better version"] , receive: ["info", "save copied here"]};
 
+
+  /** A game that shows the save of another release but is not given a copy of it: why (the saves choice), and what to choose. */
+  function saveNotCopied(i) {
+    const info = state.library[state.platform];
+    const choice = info && info.profile ? info.profile.saved_games : "";
+    if (!i.save_for || (i.saves && i.saves.effect) || choice === "convert" || choice === "carry") return "";
+    const now = (SAVED_CHOICES.find((c) => c.value === choice) || { label: choice }).label;
+    return `This save belongs to ${i.save_for}. The build does not copy it to this game: the saves choice is "${now}". Choose "${SAVED_CHOICES[0].label}" in the Saves rules to have it copied (converted for this release's game code where needed).`;
+  }
+
+  /** What the build does for a save it copies to this game: from which save, converted for which game code. */
+  function saveCopyText(s) {
+    const conv = s.convert ? ` The save is converted for this release's game code (${s.convert.from} \u2192 ${s.convert.to}); the existing save stays where it is.` : " The existing save stays where it is.";
+    return `The build copies the save of ${s.from || s.game} to this game.${conv}`;
+  }
 
   /** The Saves cell of a Library row: how many, what the build does with them, and the choice for this game. */
   function libSavesCell(i) {
@@ -3671,6 +3708,8 @@
     return el("div", { class: "saves-cell" },
       el("div", {}, el("span", { class: "saves-total", text: fmt(s.total) }), " ", el("span", { class: "sub", text: savesText(s) })),
       eff ? el("div", {}, badge(eff[0], eff[1])) : null,
+      s.effect === "receive" ? el("div", { class: "sub", text: saveCopyText(s) }) : null,
+      saveNotCopied(i) ? el("div", { class: "sub" }, saveNotCopied(i)) : null,
       select);
   }
 
@@ -3918,10 +3957,11 @@
         line(pl.remove, "outdated playlist(s) made by this app removed"),
         ...savesLines(plan.saves)),
       el("ul", {},
-        el("li", { text: "Nothing is deleted and existing files are never overwritten." }),
+        el("li", { text: plan.convert && plan.convert.count && plan.convert.delete ? "Existing files are never overwritten. Only the originals of the conversions are deleted (see below)." : "Nothing is deleted and existing files are never overwritten." }),
         ...(plan.aside ? [el("li", { text: `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is then moved out of this folder to ${plan.aside.path}.` })] : []),
       ...(plan.convert && plan.convert.count ? [el("li", { text: plan.convert.kind === "chd"
-        ? `${fmt(plan.convert.count)} raw disc set(s) are converted to CHD first (checked against Redump; this can take a long time). The library counts above are those before the conversion.`
+        ? `${fmt(plan.convert.count)} raw disc(s)${plan.convert.archives ? ` (${fmt(plan.convert.archives)} in a zip or 7z)` : ""} are converted to CHD first (each is checked against Redump; this can take a long time). The library counts above are those before the conversion.`
+          + (plan.convert.delete ? " THE ORIGINALS ARE DELETED once their CHD is checked: Undo cannot bring them back." : " The originals are kept in _converted_originals.")
         : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
         el("li", { text: "One undo log is saved as it goes - \"Undo last\" reverts the moves and removes / restores the playlists." }),
         el("li", { text: "The folder is re-scanned afterwards." })));
@@ -4110,29 +4150,6 @@
       if (chdmanInfo.warning) toast(chdmanInfo.warning, "error", 8000);
       else toast("Saved", "ok");
     } catch (err) { toast(err.message, "error", 8000); }
-  }
-
-  // ------------------------------------------------- the Library option "convert first" (raw discs to CHD / clean up dumps)
-  function renderLibraryConvert() {
-    const p = currentPlatform();
-    const on = !!(p && p.convertible);
-    $("lib-convert-row").classList.toggle("hidden", !on);
-    if (!on) return;
-    $("lib-convert-label").textContent = isGameFolder(p)
-      ? "Convert raw disc sets (.gdi / .cue + tracks, or an .iso) to CHD first. Each CHD is checked against Redump before the raw files move to _converted_originals/ (nothing is deleted); this takes a while. Settings: Disc images (CHD)."
-      : "Clean up dumps first: remove SNES copier headers and fix the byte order of N64 dumps, so the files equal the database's. The originals move to _converted_originals/ (nothing is deleted).";
-    $("lib-convert").checked = !!p.convert_on_build;
-  }
-
-  async function saveConvertOption() {
-    const p = currentPlatform();
-    if (!p) return;
-    const value = $("lib-convert").checked;
-    try {
-      await post("/api/platforms/options", { platform: p.name, convert: value });
-      p.convert_on_build = value;
-    } catch (err) { toast(`Could not save the option: ${err.message}`, "error"); $("lib-convert").checked = !value; return; }
-    if (Previews.has("lib")) resetLibraryPreview();
   }
 
   // ------------------------------------------------------------------ RetroArch: saves and config (v0.2)
@@ -4494,11 +4511,13 @@
   // What the system's ROM folder and its part of the archive hold after a build with the current rules (a preview: nothing is
   // moved here). A folder is asked for when it is opened (GET /api/tree: one level, with the totals below it and the numbers of
   // every filter's choices), so a library of tens of thousands of files opens at once. A file opens into what is known about it.
-  const TREE_STATES = { same: ["", "unchanged"], renamed: ["move", "renamed"], moved: ["move", "moved"], new: ["ok", "new"],
-    existing: ["", "already archived"], ignored: ["skip", "not looked at"], incoming: ["warn", "set aside"], copy: ["info", "copy"],
-    saves: ["info", "saves"], missing: ["missing", "missing"], saveonly: ["info", "saves only"] };
+  const TREE_STATES = { same: ["", "Unchanged"], renamed: ["move", "Renamed"], moved: ["move", "Moved"], new: ["ok", "New"],
+    existing: ["", "Already archived"], ignored: ["skip", "Not looked at"], incoming: ["warn", "Set aside"], copy: ["info", "Copy"],
+    saves: ["info", "Saves"], missing: ["missing", "Missing"], saveonly: ["info", "Saves only"],
+    converted: ["ok", "Convert"], deleted: ["warn", "Convert, deleted"] };
+  const FOLDER_STATES = ["converted", "deleted", "renamed", "moved", "new", "incoming", "copy"];       // (what the build does below a folder, shown on it)
   const FILES_SHOW = [["", "Everything"], ["have", "Games you have"], ["missing", "Missing"], ["bios", "BIOS and firmware"], ["unmatched", "Unmatched"], ["saves", "Saves"]];
-  const FILES_STATES = ["renamed", "moved", "new", "incoming", "copy", "saves", "existing", "ignored"];
+  const FILES_STATES = ["renamed", "moved", "new", "converted", "deleted", "incoming", "copy", "saves", "existing", "ignored"];
   const FILES_MORE = 10;          // region / language choices shown before "More"
   const Files = {
     side: "library",
@@ -4660,7 +4679,9 @@
       const meta = `${info.files ? `${fmt(info.files)} ${info.files === 1 ? "file" : "files"} · ${fmtBytes(info.bytes)}` : ""}`
         + `${info.missing ? `${info.files ? " · " : ""}${fmt(info.missing)} missing` : ""}${info.changed ? ` · ${fmt(info.changed)} changed` : ""}`;
       const head = el("button", { class: "tree-row tree-dir", type: "button", role: "treeitem", "aria-expanded": "false", "data-tree-path": path },
-        caret, el("span", { class: "tree-name", text: info.name }),
+        caret, el("span", { class: "tree-name", text: info.name }), info.tags ? tagChips(info.tags) : null,
+        ...FOLDER_STATES.filter((k) => (info.states || {})[k]).map((k) => badge(TREE_STATES[k][0] || "skip", TREE_STATES[k][1])),
+        saveEffectTag(info.save_move),
         info.upgrades ? el("span", { class: "tree-upgrade", title: `${fmt(info.upgrades)} ${info.upgrades === 1 ? "game" : "games"} below ${info.upgrades === 1 ? "has" : "have"} a better version`,
           "aria-label": "Better versions exist below", text: `⬆ ${fmt(info.upgrades)}` }) : null,
         el("span", { class: "tree-meta muted small", text: meta }));
@@ -4700,6 +4721,8 @@
         f.upgrade ? el("span", { class: "tree-upgrade", title: "A better version of this game exists (open the file to see it)", "aria-label": "A better version exists", text: "⬆" }) : null,
         plain ? null : badge(cls || "skip", label),
         i && i.saves && i.saves.total ? el("span", { class: "tree-saves small", title: "Saves and save states in the emulator's folders", text: savesText(i.saves) }) : null,
+        i && i.saves ? saveEffectTag(i.saves.convert ? "convert" : i.saves.effect) : null,
+        i && saveNotCopied(i) ? el("span", { class: "badge skip", text: "Saves not copied", title: saveNotCopied(i) }) : null,
         f.state === "missing" || f.state === "saveonly" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
       if (!i) {
         return el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
@@ -4738,7 +4761,7 @@
         ...line("Could be", i.candidates && i.candidates.length ? el("div", {}, ...i.candidates.map((n) => copyChip(n, "", "name"))) : null),
         ...line("Also fits", i.also_fits && i.also_fits.length ? el("div", {}, el("div", { class: "sub", text: "Its game code is the same for these releases; the best one is shown." }),
           ...i.also_fits.map((n) => copyChip(n, "", "name"))) : null),
-        ...line("Save for", i.save_for ? el("span", { class: "small", text: `The save is named for ${i.save_for}; it works in this release too.` }) : null),
+        ...line("Save for", i.save_for ? el("span", { class: "small", text: `The save is named for ${i.save_for}; ${i.saves && i.saves.effect === "receive" ? (i.saves.convert ? "the build converts a copy of it for this release." : "the build copies it to this release.") : "it works in this release too."}` }) : null),
         ...line("Convert", i.convert ? convertButtons(i) : null),
         ...line("Rating", ratingsAvailable() && i.rating !== undefined ? ratingCell(i) : null),
         ...line("The rules", i.item === "file" ? libraryWhyPanel(i) : null),
@@ -5013,7 +5036,6 @@
     $("chdman-engine").addEventListener("change", (e) => saveChdman({ engine: e.target.value }));
     $("chd-writer").addEventListener("change", (e) => saveChdman({ writer: e.target.value }));
     $("chd-preset").addEventListener("change", (e) => saveChdman({ preset: e.target.value }));
-    $("lib-convert").addEventListener("change", saveConvertOption);
     $("chd-verify-scan").addEventListener("change", (e) => saveChdman({ verify_scan: e.target.checked }));
     $("quit-btn").addEventListener("click", quit);
     $("databases-check").addEventListener("click", () => $("updates-btn").click());

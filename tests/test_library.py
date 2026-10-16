@@ -732,7 +732,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in cat if e["kind"] == "exclude"], list(tags.RULES))
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
         opts = {e["id"]: e for e in cat if e["kind"] == "option" and e.get("group") != "ratings"}
-        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios"})
+        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios", "convert_first"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])
@@ -779,6 +779,14 @@ class OnePerGame(unittest.TestCase):
         # language order is the first key: with English preferred the English Europe release wins
         prof = replace(library.default_profile(GBA), languages=("En", "Ja"), region_priority=("Japan",))
         self.assertEqual(self.kept(names, prof), ["Game (Europe) (En,Fr,De)"])
+
+    def test_regions_tied_and_nothing_else_different_keeps_the_one_higher_in_the_list(self) -> None:
+        prof = replace(library.default_profile(GBA), region_priority=("USA", "Europe", "World"), region_ties=("Europe", "World"))
+        for names, want in ((["Game (USA)", "Game (Europe)"], "Game (USA)"), (["Game (Europe)", "Game (World)"], "Game (Europe)"),
+                            (["Game (World)", "Game (USA)"], "Game (USA)")):                     # (not the first alphabetically)
+            self.assertEqual(self.kept(names, prof), [want], names)
+        prof = replace(prof, region_priority=("Europe", "USA", "World"))
+        self.assertEqual(self.kept(["Game (USA)", "Game (Europe)"], prof), ["Game (Europe)"])   # the list decides
 
     def test_regions_tied_for_best_are_both_accepted(self) -> None:
         self.assertEqual(tags.region_tiers(["Europe", "USA", "World"], ["USA"]), {"Europe": 0, "USA": 0, "World": 1})
@@ -898,25 +906,25 @@ class SavedGames(unittest.TestCase):
 
     def sel(self, saved, profile=None):
         items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
-        prof = profile or library.default_profile(GBA)
+        prof = profile or replace(library.default_profile(GBA), saved_games="keep")
         sel = library.select(items, prof, GBA, saved=saved)
         return {self.NAMES[k - 1]: d for k, d in sel.decisions.items()}, sel
 
-    def test_the_field_defaults_to_keep_and_round_trips(self) -> None:
-        self.assertEqual(LibraryProfile().saved_games, "keep")
+    def test_the_field_defaults_to_copy_or_convert_and_round_trips(self) -> None:
+        self.assertEqual(LibraryProfile().saved_games, "convert")
         for v in ("keep", "archive", "leave"):
             p = LibraryProfile(saved_games=v)
             self.assertEqual(p.to_dict()["saved_games"], v)
             self.assertEqual(LibraryProfile.from_dict(p.to_dict()).saved_games, v)
         self.assertEqual(LibraryProfile.from_dict({"saved_games": "archive"}, LibraryProfile(saved_games="leave")).saved_games, "archive")
 
-    def test_a_bad_value_falls_back_and_an_old_profile_loads_with_keep(self) -> None:
-        self.assertEqual(LibraryProfile(saved_games="sometimes").saved_games, "keep")
-        self.assertEqual(LibraryProfile.from_dict({"saved_games": 3}).saved_games, "keep")
+    def test_a_bad_value_falls_back_and_an_old_profile_loads_with_the_default(self) -> None:
+        self.assertEqual(LibraryProfile(saved_games="sometimes").saved_games, "convert")
+        self.assertEqual(LibraryProfile.from_dict({"saved_games": 3}).saved_games, "convert")
         self.assertEqual(LibraryProfile.from_dict({"saved_games": "nope"}, LibraryProfile(saved_games="archive")).saved_games, "archive")
         old = {"exclude": ["demo"], "latest_only": True, "best_variant": True, "complete_only": True}        # saved before the field
-        self.assertEqual(LibraryProfile.from_dict(old, library.default_profile(GBA)).saved_games, "keep")
-        self.assertEqual(library.load_profile({"library": {GBA.name: old}}, GBA).saved_games, "keep")
+        self.assertEqual(LibraryProfile.from_dict(old, library.default_profile(GBA)).saved_games, "convert")
+        self.assertEqual(library.load_profile({"library": {GBA.name: old}}, GBA).saved_games, "convert")
 
     def test_nothing_changes_without_saves(self) -> None:
         by, sel = self.sel(None)
@@ -947,6 +955,17 @@ class SavedGames(unittest.TestCase):
             self.assertEqual(by["Zed (USA)"].action, SUPERSEDED, mode)
             self.assertEqual(sel.saved_kept(), 0)
 
+    def test_a_game_goes_when_the_better_release_has_the_same_game_code_whatever_the_saves_rule(self) -> None:
+        from unittest import mock
+        from romorg import pcsx2, savecarry
+        for serials, gone in (({"Zed (USA)": "SLUS-1", "Zed (Europe)": "SLUS-1"}, True), ({"Zed (USA)": "SLUS-1", "Zed (Europe)": "SLES-2"}, False)):
+            with mock.patch.object(savecarry, "SERIAL_SAVES", frozenset({GBA.name})), \
+                    mock.patch.object(pcsx2, "read_serial", lambda path, psx=False: serials.get(Path(path).name[:-4], "")):
+                items = [replace(it, path=Path(it.path.name + ".iso")) for it in ni_items(self.NAMES, "Nintendo - Game Boy Advance")]
+                sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep"), GBA, saved=self.keys("Zed (USA)"))
+            by = {self.NAMES[k - 1]: d for k, d in sel.decisions.items()}
+            self.assertEqual(by["Zed (USA)"].action, SUPERSEDED if gone else KEEP, serials)
+
     def test_the_users_own_always_exclude_beats_the_saves(self) -> None:
         prof = replace(library.default_profile(GBA), overrides=(("Nintendo - Game Boy Advance", "Zed (USA)", "exclude"),))
         by, _sel = self.sel(self.keys("Zed (USA)"), prof)
@@ -964,7 +983,7 @@ class SavedGames(unittest.TestCase):
     def test_the_archive_member_name_counts_too(self) -> None:
         items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
         items = [replace(it, path=Path("pack.zip"), member=it.path.name + ".gba") for it in items]
-        sel = library.select(items, library.default_profile(GBA), GBA, saved=self.keys("Zed (USA)"))
+        sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep"), GBA, saved=self.keys("Zed (USA)"))
         self.assertEqual(sel.decisions[1].codes, (library.SAVED_KEEP,))
 
     def test_totals_do_not_depend_on_it(self) -> None:

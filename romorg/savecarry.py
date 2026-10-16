@@ -46,6 +46,8 @@ def explain(platform: str) -> str:
 # Rewriting that one name (and the directory frame's checksum) lets the other release find it. Only the PlayStation is done: the
 # saves of the other systems are not named after the disc in this way.
 CONVERTIBLE = frozenset({"Sony PlayStation", "Sony PlayStation 2"})
+SERIAL_SAVES = frozenset({"Sony PlayStation 2"})         # (PCSX2 names a save by the game's code, so every release with the code finds it; a PlayStation
+                                                          #  card file is named after the game's file, so a new release needs the card copied)
 CONVERTIBLE_DATS = frozenset({"Sony - PlayStation", "Sony - PlayStation 2"})        # (the same systems, by the name of their database)
 _CARD = 131072
 _HEADERS = (0, 3904, 128)               # bytes before the card in a DexDrive (.gme) or PSP (.vmp) file

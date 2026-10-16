@@ -38,6 +38,8 @@ def profile_signature(profile: library.LibraryProfile) -> str:
     rules.pop("saved_overrides", None)
     rules.pop("keep_bios", None)           # (nor do BIOS / firmware files: they are no games)
     rules.pop("keep_extras", None)         # (nor the files that sit with a disc)
+    rules.pop("convert_first", None)       # (nor what a build converts first)
+    rules.pop("delete_converted", None)
     blob = json.dumps(rules, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 

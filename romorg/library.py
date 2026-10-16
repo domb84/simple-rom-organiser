@@ -162,12 +162,14 @@ class LibraryProfile:
     overrides: tuple[tuple[str, str, str], ...] = ()
     # RetroArch saves / save states (Amendment 30): "keep" (a game you have saves for is never set aside by the rules),
     # "archive" (it is set aside and its saves go to the archive with it), "leave" (it is set aside, the saves stay).
-    saved_games: str = "keep"
+    saved_games: str = "convert"
     # The same per game: (DAT name, game = set name or rom name, "keep" | "archive" | "leave"), see ``override_game``.
     saved_overrides: tuple[tuple[str, str, str], ...] = ()
     # BIOS / firmware / key files (told by checksum or name) stay with the ROMs; off: they are files like any other that matches no game.
     keep_bios: bool = True
     keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
+    convert_first: bool = False                  # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
+    delete_converted: bool = False               # ... and deletes the originals after (off: they are kept in _converted_originals)
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -181,7 +183,7 @@ class LibraryProfile:
         object.__setattr__(self, "min_votes", _norm_votes(self.min_votes))
         object.__setattr__(self, "rank_scope", self.rank_scope if self.rank_scope in RANK_SCOPES else "dat")
         object.__setattr__(self, "overrides", _norm_overrides(self.overrides))
-        object.__setattr__(self, "saved_games", self.saved_games if self.saved_games in SAVED_GAMES else "keep")
+        object.__setattr__(self, "saved_games", self.saved_games if self.saved_games in SAVED_GAMES else "convert")
         object.__setattr__(self, "saved_overrides", _norm_saved_overrides(self.saved_overrides))
 
     @property
@@ -201,7 +203,7 @@ class LibraryProfile:
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
                 "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
-                "keep_extras": self.keep_extras}
+                "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -254,7 +256,8 @@ class LibraryProfile:
                    saved_games=d["saved_games"] if isinstance(d.get("saved_games"), str) and d["saved_games"] in SAVED_GAMES
                    else base.saved_games,
                    saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides,
-                   keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras))
+                   keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras),
+                   convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -291,7 +294,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
-               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras")
+               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted")
 GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
 REGION_FIELDS = ("region_priority", "region_ties")      # the region order and which of its regions are equally good: one rule
 
@@ -310,7 +313,11 @@ def applicable_fields(platform: "Platform") -> frozenset:
         if ok:
             out.add(field)
     if getattr(platform, "layout", "") == "game_folder":            # (the disc systems with a folder per game: Dreamcast, PlayStation, PlayStation 2)
-        out.add("keep_extras")
+        out.update(("keep_extras", "complete_only"))                # (complete_only: a raw disc of a set with a disc missing is not converted yet)
+    if getattr(platform, "convertible", False):                    # (raw discs to CHD; SNES / N64: clean up the dumps)
+        out.add("convert_first")
+        if getattr(platform, "layout", "") == "game_folder":
+            out.add("delete_converted")
     if _ratings_supported(platform):
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
     return frozenset(out)
@@ -465,6 +472,16 @@ def migrate_config(cfg: dict) -> bool:
             prof = LibraryProfile.from_dict({k: v for k, v in mine.items() if k in RULE_FIELDS}, app_defaults())
             store_global(cfg, prof)
         cfg.pop("collection", None)
+        changed = True
+    table = cfg.get("convert_on_build")                           # (the old per-system "convert first" box: now a rule, overridden where it was on)
+    if isinstance(table, dict):
+        from .platforms import list_platforms
+        for platform in list_platforms():
+            if table.get(platform.name) and "convert_first" in applicable_fields(platform):
+                ov = dict(overrides_of(cfg, platform))
+                ov.setdefault("convert_first", True)
+                _put_overrides(cfg, platform, ov)
+        cfg.pop("convert_on_build", None)
         changed = True
     legacy = cfg.get("library")
     if isinstance(legacy, dict):
@@ -689,6 +706,14 @@ class _Scope:
 
     def flags(self, dat: str) -> bool:
         return dat in self.best
+
+
+def _region_pos(t: Any, profile: LibraryProfile) -> int:
+    """Where the best of a release's regions stands in the region list itself: regions you ranked as equal (``region_ties``) are the same tier, but
+    when nothing else tells two releases apart the one higher in the list is preferred, not the one that comes first alphabetically."""
+    order = tags.region_order(profile.region_priority)
+    pos = {r: i for i, r in enumerate(order)}
+    return min((pos.get(r, len(order)) for r in t.regions), default=len(order))
 
 
 def _lang_rank(langs: Iterable[str], profile: LibraryProfile) -> int:
@@ -1045,7 +1070,24 @@ def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile
             continue
         if choice in ("carry", "convert") and d.action == SUPERSEDED and _carries(sel, items, it, d, platform_name, choice == "convert"):
             continue                                                  # it goes: its saves are copied to the version that replaces it
+        if d.action == SUPERSEDED and _same_code(sel, items, it, d, platform_name):
+            continue                                                  # it goes: the version that replaces it has the same game code, the saves work there as they are
         sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)
+
+
+def _same_code(sel: Selection, items: Sequence[Item], it: Item, d: Decision, platform_name: str) -> bool:
+    """True when the game that replaces ``it`` is kept and has the same game code (PlayStation 2: PCSX2 names a save by the code, so it
+    works in every release with it)."""
+    from . import pcsx2, savecarry
+
+    if not d.superseded_by or platform_name not in savecarry.SERIAL_SAVES:
+        return False
+    for other in items:
+        od = sel.decisions.get(other.key)
+        if od is not None and od.action == KEEP and _rom_name(other) == d.superseded_by:
+            mine = pcsx2.read_serial(it.path, psx=True)
+            return bool(mine) and mine == pcsx2.read_serial(other.path, psx=True)
+    return False
 
 
 def _carries(sel: Selection, items: Sequence[Item], it: Item, d: Decision, platform_name: str, convert: bool = False) -> bool:
@@ -1161,7 +1203,7 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
         if all(_style(i) == STYLE_REDUMP for i in dat_items):
             if dat in latest_dats and (profile.latest_only or (dat in scope.region and profile.one_per_game)):
                 _select_redump(dat, dat_items, profile, dat in scope.region and profile.one_per_game, sel,
-                               decide, next_id)
+                               decide, next_id, complete_only=profile.complete_only and getattr(platform, "layout", "") == "game_folder")
             else:
                 for it in dat_items:
                     decide(it, KEEP)
@@ -1492,7 +1534,7 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
 
 
 def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one_per_game: bool,
-                   sel: Selection, decide: Any, next_id: list[int]) -> None:
+                   sel: Selection, decide: Any, next_id: list[int], complete_only: bool = False) -> None:
     """Redump (Sega Dreamcast): ONE release per game, discs of a game always stay together.
 
     A *game* = ``tags.redump_game_key`` (title + status + product tags; the disc number is not part of
@@ -1502,7 +1544,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
     of that edition; everything else is ``superseded``. With ``one_per_game`` off every edition is kept
     (still only the newest revision of each disc). A kept multi-disc edition becomes a :class:`ChosenSet`
     (a playlist) when all of its discs (``Item.disc_total`` or the highest disc number) are present,
-    else an :class:`IncompleteSet` that is only reported (the discs stay).
+    else an :class:`IncompleteSet` that is only reported (the discs stay), or, with ``complete_only``, set aside as ``incomplete``.
     """
     order = tags.region_tiers(tags.region_order(profile.region_priority), profile.region_ties)
     games: dict[tuple, list[Item]] = {}
@@ -1534,6 +1576,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
             newest = max(newest_of(m) for m in pool.values())
             pool = {k: m for k, m in pool.items() if newest_of(m) == newest}
             winner_key = min(pool, key=lambda k: (tags.extra_tag_count(_tags_of(first_of(pool[k]))),
+                                                  _region_pos(_tags_of(first_of(pool[k])), profile),
                                                   _rom_name(first_of(pool[k])).casefold(),
                                                   _rom_name(first_of(pool[k])), str(k)))
             kept_editions = {winner_key: editions[winner_key]}
@@ -1575,12 +1618,15 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                     miss = tuple(d for d in range(1, total + 1) if d not in chosen)
                     sel.incomplete.append(IncompleteSet(
                         dat=dat, name=stem, total=total, present={d: chosen[d].key for d in discs},
-                        missing=miss, kept=True))
+                        missing=miss, kept=not complete_only))
                     for d in discs:
                         dec = sel.decisions[chosen[d].key]
                         dec.missing = miss
-                        dec.reason = ("incomplete set (missing disc " + ", ".join(str(m) for m in miss)
-                                      + ") - kept, no playlist")
+                        text = "incomplete set (missing disc " + ", ".join(str(m) for m in miss) + ")"
+                        if complete_only:                      # (the rule Complete multi-disk sets only: set aside until the set is complete)
+                            dec.action, dec.reason = INCOMPLETE, text
+                        else:
+                            dec.reason = text + " - kept, no playlist"
         if one_per_game:
             for key, members in editions.items():
                 if key in kept_editions:
@@ -1618,7 +1664,7 @@ def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str]
             pool = [i for i in pool if info[i.key][idx] == best]
         newest = max(vkeys[_rom_name(i)] for i in pool)
         pool = [i for i in pool if vkeys[_rom_name(i)] == newest]
-        winner = min(pool, key=lambda i: (tags.extra_tag_count(_tags_of(i)), _rom_name(i).casefold(),
+        winner = min(pool, key=lambda i: (tags.extra_tag_count(_tags_of(i)), _region_pos(_tags_of(i), profile), _rom_name(i).casefold(),
                                           _rom_name(i), i.key))
         wname = _rom_name(winner)
         for it in group:
@@ -1903,7 +1949,8 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "Multi-disc games keep ALL discs of the chosen release.",
         [STYLE_NOINTRO, STYLE_REDUMP])
     opt("complete_only", "complete_only", "Complete multi-disk sets only", True,
-        "Multi-disk games need every disk; incomplete ones go to _incomplete.", [STYLE_TOSEC])
+        "Multi-disk games need every disk; incomplete ones go to _incomplete (disc systems: PlayStation ...; a raw disc of such a game is "
+        "not converted to a CHD either). Off: they stay where they are, with no playlist.", [STYLE_TOSEC, STYLE_REDUMP])
     opt("borrow_editions", "borrow_other_editions", "Complete sets with disks from other editions", True,
         "A multi-disk game that lacks a disk in your edition is completed with that disk from another edition "
         "you own (matched by checksum): only the country, language, edition flags, version and year may "
@@ -1921,6 +1968,14 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "and the like) are not part of the game. Off: they are set aside like any file that matches no game (into _unmatched or the "
         "archive folder, with their path kept, and Undo brings them back); only the disc image stays. On: they stay with the game and "
         "are renamed with it.", [STYLE_REDUMP])
+    opt("convert_first", "convert_first", "Convert when building", False,
+        "Build library first converts what this system can convert: raw disc images (an .iso, a .cue or .gdi with its tracks, also inside a "
+        "zip or 7z) become a CHD named after the game; for the SNES and N64 the dumps are cleaned up (copier headers, byte order) so the "
+        "files equal the database's. Each result is checked against the database before the original is touched. It takes a while; "
+        "the preview says what will be converted. Settings for the CHDs are on the Disc images page.", _ALL)
+    opt("delete_converted", "delete_converted", "Delete the originals after converting", False,
+        "Off: the originals (the .iso, the zip, the cue and its tracks) go to _converted_originals, nothing is deleted. On: they are deleted "
+        "once the CHD has been checked against the database. Undo cannot bring a deleted original back.", [STYLE_REDUMP])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])

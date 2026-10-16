@@ -88,7 +88,7 @@ class Ps2EndpointTests(PsServerCase):
         j = self.job()
         self.assertEqual(j["status"], "done", j)
         self.assertTrue((self.roms / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
-        self.assertTrue((self.roms / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())
+        self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())          # (a disc of a multi-disc game: in its game's folder)
         self.assertFalse(list(self.roms.rglob("*.m3u")))
         logs = self.call(f"/api/organise/undo-logs?path={self.roms}")["logs"]
         self.call("/api/organise/undo", {"log": logs[0]["log"]})
@@ -247,8 +247,55 @@ class DiscSavesTests(PsServerCase):
         self.call("/api/retroarch/undo", {"journal": res["journal"]})
         self.assertFalse((card / "BESLES-59990GOLF").exists())
 
+    def test_the_default_converts_a_save_of_a_release_you_lack_for_the_one_you_have(self) -> None:
+        from test_nintendo import ps2_iso
+        self.iso.update({"Golf (Europe)": ps2_iso("SLES_599.90")})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03-41-38")
+        self.gametdb([("SLUS-20990", "Golf"), ("SLES-59990", "Golf")])
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        (card / "BASLUS-20990GOLF").mkdir()
+        (card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").write_bytes(b"golf")
+        self.put_iso("Golf (Europe)", "Golf (Europe)/Golf (Europe).chd", dvd=True)
+        self.scan_ps2()
+        plan = self.call("/api/library/plan", {"platform": PS2})
+        self.assertEqual(plan["profile"]["saved_games"], "convert")
+        row = [r for r in plan["items"] if r.get("game") == "Golf (Europe)"][0]
+        self.assertEqual(row["saves"]["effect"], "receive")
+        self.assertFalse((card / "BESLES-59990GOLF").exists())                                 # (the preview copied nothing)
+        self.call("/api/library/apply", {"platform": PS2, "plan_id": plan["plan_id"]})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertEqual((card / "BESLES-59990GOLF" / "BESLES-59990GOLF").read_bytes(), b"golf")
+        self.assertTrue((card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").is_file())          # (the existing save stays)
+
+    def test_a_raw_disc_the_build_converts_says_that_its_save_is_converted(self) -> None:
+        import zipfile
+        from test_nintendo import ps2_iso
+        self.iso.update({"Golf (Europe)": ps2_iso("SLES_599.90")})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03:41:38")
+        self.gametdb([("SLUS-20990", "Golf"), ("SLES-59990", "Golf")])
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        (card / "BASLUS-20990GOLF").mkdir()
+        (card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").write_bytes(b"golf")
+        with zipfile.ZipFile(self.roms / "golf.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("golf.iso", self.iso["Golf (Europe)"])
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True})
+        self.scan_ps2()
+        self.call("/api/library/plan", {"platform": PS2})
+        shown = {}
+        for d in self.call("/api/tree?platform=Sony%20PlayStation%202&show=")["dirs"]:
+            for f in self.call("/api/tree?platform=Sony%20PlayStation%202&show=&path=" + d["name"].replace(" ", "%20"))["files"]:
+                shown[f["name"]] = f
+        saves = shown["Golf (Europe).chd"]["row"]["saves"]
+        self.assertEqual((saves["effect"], saves["convert"]), ("receive", {"from": "SLUS-20990", "to": "SLES-59990"}))
+        self.assertEqual(saves["saves"], 1)                                                       # (the one save, counted once)
+        dirs = {d["name"]: d for d in self.call("/api/tree?platform=Sony%20PlayStation%202&show=")["dirs"]}
+        self.assertEqual(dirs["Golf (Europe)"].get("save_move"), "convert")                       # (the folder says so too)
+
     def test_a_disc_you_have_is_offered_the_save_of_its_other_region(self) -> None:
         import shutil
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep"})
         card = self.pcsx2 / "memcards" / "Mcd001.ps2"
         shutil.rmtree(card / "BESLES-50012OTHER")                                        # (the European disc has no save of its own)
         self.scan_ps2()
@@ -281,7 +328,8 @@ class DiscSavesTests(PsServerCase):
         self.assertNotIn("saves", plan)
         self.assertNotIn("saved_games", self.call("/api/library/profile?platform=" + PS2.replace(" ", "%20"))["profile"])
 
-    def test_keep_is_the_default_and_the_disc_game_stays(self) -> None:
+    def test_with_keep_the_disc_game_stays(self) -> None:
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep"})
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["kept"]), (1, 1))
         self.assertEqual((plan["reasons"]["superseded"], plan["reasons"]["excluded"]), (0, 0))
@@ -396,3 +444,160 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual(card.read_bytes(), image)                                               # the card is exactly as it was
+
+
+class RawDiscTests(PsServerCase):
+    """A disc that is not a CHD: an .iso, or a zip / 7z of one. It is identified by its checksums, named after its game, and converted
+    (with the rule Convert when building) as a step of Build library; the originals are kept, or deleted with their own rule."""
+
+    def zip_of(self, name: str, game: str, member: str = "disc.iso") -> Path:
+        import zipfile
+        path = self.roms / name
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(member, self.iso[game])
+        return path
+
+    def plan(self) -> dict:
+        return self.call("/api/library/plan", {"platform": PS2, "limit": 200})
+
+    def row(self, plan: dict, name: str) -> dict:
+        return next(r for r in plan["items"] if r["from"].endswith(name))
+
+    def build(self) -> dict:
+        plan = self.plan()
+        self.call("/api/library/apply", {"platform": PS2, "plan_id": plan["plan_id"]})
+        res = self.job()
+        self.assertEqual(res["status"], "done", res)
+        return res["result"]
+
+    def test_a_zip_of_an_iso_is_identified_by_its_checksums_and_named_after_its_game(self) -> None:
+        self.zip_of("download (1).zip", "Alpha (USA)")
+        (self.roms / "notes.zip").write_bytes(b"PK\x05\x06" + bytes(18))                       # an empty zip: no disc in it, as before
+        self.scan_ps2()
+        matched = {m["file"]: m for m in self.call("/api/scan/results?kind=matched")["items"]}
+        self.assertEqual((matched["download (1).zip"]["game"], matched["download (1).zip"]["kind"]), ("Alpha (USA)", "raw"))
+        plan = self.plan()
+        row = self.row(plan, "download (1).zip")
+        self.assertEqual((row["to"], row["status"]), ("Alpha (USA)/Alpha (USA).zip", "move"))
+        self.assertEqual(self.row(plan, "notes.zip")["category"], "unmatched")
+        self.build()
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).zip").is_file())
+
+    def test_a_zip_of_another_dump_is_not_matched(self) -> None:
+        import zipfile
+        with zipfile.ZipFile(self.roms / "other.zip", "w") as zf:
+            zf.writestr("other.iso", self.iso["Alpha (USA)"][:-2048] + bytes(2048))
+        self.scan_ps2()
+        reasons = {u["file"]: u["reason"] for u in self.call("/api/scan/results?kind=unmatched")["items"]}
+        self.assertIn("do not match", reasons["other.zip"])
+
+    def test_a_loose_iso_is_renamed_with_its_game_into_its_folder(self) -> None:
+        (self.roms / "VICE_CITY.iso").write_bytes(self.iso["Beta (Europe) (En,Fr,De)"])
+        self.scan_ps2()
+        row = self.row(self.plan(), "VICE_CITY.iso")
+        self.assertEqual((row["to"], row["status"]), ("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).iso", "move"))
+        self.build()
+        self.assertTrue((self.roms / "Beta (Europe) (En,Fr,De)" / "Beta (Europe) (En,Fr,De).iso").is_file())
+
+    def test_the_rule_converts_a_zip_as_a_step_of_the_build_and_the_tree_says_so_first(self) -> None:
+        self.zip_of("a.zip", "Alpha (USA)")
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True})
+        self.scan_ps2()
+        plan = self.plan()
+        self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 1, "delete": False})
+        self.assertEqual(self.row(plan, "a.zip")["to"], "Alpha (USA)/Alpha (USA).chd")             # (the name it will have once converted)
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=")
+        names = {f["name"]: f for f in tree["files"]}
+        self.assertEqual(names["_converted_originals"] if "_converted_originals" in names else None, None)
+        self.assertEqual({d["name"]: (d.get("tags") or {}).get("regions") for d in tree["dirs"]}["Alpha (USA)"], ["USA"])        # (a folder shows its game's tags)
+        self.assertEqual({d["name"]: d.get("states") for d in tree["dirs"]}["Alpha (USA)"], {"converted": 1})                 # (and what the build does below it)
+        shown = {}
+        for d in tree["dirs"]:
+            shown[d["name"]] = self.call("/api/tree?platform=Sony%20PlayStation%202&show=&path=" + d["name"].replace(" ", "%20"))["files"]
+        self.assertEqual([(f["name"], f["state"]) for f in shown["Alpha (USA)"]], [("Alpha (USA).chd", "converted")])
+        self.assertEqual([(f["name"], f["state"]) for f in shown["_converted_originals"]], [("a.zip", "moved")])
+        res = self.build()
+        self.assertEqual((res["converted"]["count"], res["converted"]["failed"]), (1, []))
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())
+        self.assertTrue((self.roms / "_converted_originals" / "a.zip").is_file())                  # kept
+        self.assertEqual(list(self.roms.glob(".romorg-chd-*")), [])                                # no unpacked copy is left behind
+        self.assertEqual(self.call("/api/scan/results?kind=matched")["total"], 1)
+
+    def test_a_disc_of_a_set_with_a_disc_missing_is_archived_unconverted_when_complete_sets_only_is_on(self) -> None:
+        self.zip_of("p1.zip", "Part (USA) (Disc 1)")
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "complete_only": True})
+        self.scan_ps2()
+        plan = self.plan()
+        self.assertEqual(plan["convert"]["count"], 0)
+        row = self.row(plan, "p1.zip")
+        self.assertEqual(row["to"], "_incomplete/p1.zip")
+        self.assertIn("missing disc 2", row["reason"])
+        self.assertEqual([x["missing"] for x in plan["incomplete_sets"]], [[2]])
+        res = self.build()
+        self.assertNotIn("converted", res)
+        self.assertTrue((self.roms / "_incomplete" / "p1.zip").is_file())
+        self.assertEqual(list(self.roms.rglob("*.chd")), [])
+
+    def test_with_complete_sets_only_off_a_disc_of_an_incomplete_set_is_converted_and_kept(self) -> None:
+        self.zip_of("p1.zip", "Part (USA) (Disc 1)")
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "complete_only": False})
+        self.scan_ps2()
+        plan = self.plan()
+        self.assertEqual(plan["convert"]["count"], 1)
+        self.assertEqual(self.row(plan, "p1.zip")["to"], "Part (USA)/Part (USA) (Disc 1)/Part (USA) (Disc 1).chd")
+        self.build()
+        self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 1)" / "Part (USA) (Disc 1).chd").is_file())
+        self.assertFalse((self.roms / "_incomplete").exists())
+
+    def test_the_originals_can_be_deleted_after_converting_and_undo_keeps_the_chd(self) -> None:
+        self.zip_of("a.zip", "Alpha (USA)")
+        (self.roms / "b.iso").write_bytes(self.iso["Beta (Europe) (En,Fr,De)"])
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": True})
+        self.scan_ps2()
+        plan = self.plan()
+        self.assertEqual(plan["convert"], {"count": 2, "kind": "chd", "archives": 1, "delete": True})
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=")
+        self.assertEqual([f["name"] for f in tree["files"] if f["name"] in ("a.zip", "b.iso")], [])          # (no row under the old name)
+        names = {d["name"] for d in tree["dirs"]}
+        self.assertTrue({"Alpha (USA)", "Beta (Europe) (En,Fr,De)"} <= names)
+        res = self.build()
+        self.assertEqual(res["converted"]["count"], 2)
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())
+        self.assertTrue((self.roms / "Beta (Europe) (En,Fr,De)" / "Beta (Europe) (En,Fr,De).chd").is_file())
+        self.assertFalse((self.roms / "a.zip").exists() or (self.roms / "b.iso").exists())
+        self.assertFalse((self.roms / "_converted_originals").exists())                           # nothing was kept
+        self.call("/api/library/undo", {"log": res["undo_log"]})
+        self.assertEqual(self.job()["status"], "done")
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())               # the CHD is all that is left of the game
+
+    def test_a_game_that_already_has_a_chd_is_not_converted_and_its_zip_is_left_alone(self) -> None:
+        self.put_iso("Alpha (USA)", "Alpha (USA)/Alpha (USA).chd", dvd=True)
+        self.zip_of("Alpha (USA) copy.zip", "Alpha (USA)")
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": True})
+        self.scan_ps2()
+        plan = self.plan()
+        self.assertEqual(plan["convert"]["count"], 0)
+        self.build()
+        self.assertTrue((self.roms / "Alpha (USA) copy.zip").is_file() or list(self.roms.rglob("Alpha (USA) copy.zip")))      # never deleted unconverted
+
+    def test_a_7z_of_an_iso_is_read_like_a_zip(self) -> None:
+        from tests.sevenzipmini import write_7z
+        write_7z(self.roms / "b.7z", {"readme.txt": b"a note", "Some Folder/disc.iso": self.iso["Alpha (USA)"]})
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True})
+        self.scan_ps2()
+        matched = {m["file"]: m for m in self.call("/api/scan/results?kind=matched")["items"]}
+        self.assertEqual((matched["b.7z"]["game"], matched["b.7z"]["kind"]), ("Alpha (USA)", "raw"))
+        self.assertEqual(self.plan()["convert"]["archives"], 1)
+        res = self.build()
+        self.assertEqual((res["converted"]["count"], res["converted"]["failed"]), (1, []))
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())
+        self.assertTrue((self.roms / "_converted_originals" / "b.7z").is_file())
+
+    def test_a_damaged_archive_is_left_alone(self) -> None:
+        (self.roms / "broken.zip").write_bytes(b"PK\x03\x04" + bytes(300))
+        (self.roms / "broken.7z").write_bytes(b"7z\xbc\xaf\x27\x1c" + bytes(100))
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": True})
+        self.scan_ps2()
+        self.assertEqual(self.plan()["convert"]["count"], 0)
+        self.build()
+        self.assertTrue(list(self.roms.rglob("broken.zip")) and list(self.roms.rglob("broken.7z")))   # (set aside as unmatched, never deleted)

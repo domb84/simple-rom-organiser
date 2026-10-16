@@ -69,11 +69,15 @@ class SavesCase(ServerCase):
 
 
 class KeepMode(SavesCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.mode("keep")
+
     def test_a_game_with_saves_is_kept_and_the_preview_says_so(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
         self.save("bsnes", "Zed (USA)")
         plan = self.lib_plan(root)
-        self.assertEqual(plan["profile"]["saved_games"], "keep")                  # the default
+        self.assertEqual(plan["profile"]["saved_games"], "keep")
         self.assertEqual(plan["reasons"]["kept_saved"], 1)
         self.assertEqual((plan["reasons"]["superseded"], plan["reasons"]["excluded"]), (0, 0))
         self.assertEqual(plan["saves"]["kept"], 1)
@@ -286,6 +290,61 @@ class SavesGoToTheReleaseYouHave(SavesCase):
         self.assertEqual((by["Zed (USA).sfc"]["state"], by["Zed (USA).sfc"]["row"]["saves"]["saves"]), ("same", 1))
 
 
+class CarryToTheReleaseYouHave(SavesCase):
+    """``carry``: a save of a revision you have no file for is copied to the revision you have (same region), and both rows say so."""
+    GAMES = {"snes": ["Zed (USA)", "Zed (USA) (Rev 1)"], "gba": ["Run (USA)"], "gb": ["Tetra (World)"]}
+
+    def test_the_save_of_an_older_revision_is_copied_to_the_one_you_have(self) -> None:
+        root = self.rom_folder("Zed (USA) (Rev 1)")
+        old = self.save("bsnes", "Zed (USA)")
+        self.mode("carry")
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"]["games"], 1)
+        row = [r for r in plan["items"] if r["from"].endswith("Zed (USA) (Rev 1).sfc")][0]
+        self.assertEqual(row["saves"]["effect"], "receive")
+        self.assertEqual(self.saved_files(), old)                                                  # (the preview copied nothing)
+        res = self.lib_apply(plan)
+        self.assertEqual(res["saves"]["carried"], 2)
+        self.assertTrue((self.saves / "bsnes" / "Zed (USA) (Rev 1).srm").is_file())
+        self.assertTrue((self.saves / "bsnes" / "Zed (USA).srm").is_file())                        # (the old save stays)
+        self.assertTrue(res["saves"]["journal"])                                                   # (journalled: Retroarch's Undo removes the copies)
+
+    def test_the_default_choice_copies_the_save_to_the_version_you_have(self) -> None:
+        root = self.rom_folder("Zed (USA) (Rev 1)")
+        self.save("bsnes", "Zed (USA)")
+        plan = self.lib_plan(root)                                                                 # (no choice made: the default)
+        self.assertEqual(plan["profile"]["saved_games"], "convert")
+        self.assertEqual(plan["saves"]["carry"]["games"], 1)
+        self.lib_apply(plan)
+        self.assertTrue((self.saves / "bsnes" / "Zed (USA) (Rev 1).srm").is_file())
+        self.assertTrue((self.saves / "bsnes" / "Zed (USA).srm").is_file())
+
+    def test_with_another_choice_nothing_is_copied(self) -> None:
+        root = self.rom_folder("Zed (USA) (Rev 1)")
+        self.save("bsnes", "Zed (USA)")
+        self.mode("keep")
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["saves"]["carry"]["games"], 0)
+
+
+class CarryToAnotherRegion(SavesCase):
+    """The option "Copy saves to the version you have" across systems: a cartridge save works in every release, a disc system's in its region only."""
+    GAMES = {"snes": ["Zed (USA)", "Zed (Europe)"], "gba": ["Run (USA)"], "gb": ["Tetra (World)"]}
+
+    def games_carried(self, **patches: Any) -> int:
+        from romorg import savecarry
+        root = self.rom_folder("Zed (USA)")
+        self.save("bsnes", "Zed (Europe)")
+        with mock.patch.multiple(savecarry, **(patches or {"ANY_RELEASE": savecarry.ANY_RELEASE})):
+            return self.lib_plan(root)["saves"]["carry"]["games"]
+
+    def test_a_cartridge_save_of_another_region_is_copied(self) -> None:
+        self.assertEqual(self.games_carried(), 1)
+
+    def test_a_save_of_a_disc_system_is_copied_within_its_region_only(self) -> None:
+        self.assertEqual(self.games_carried(SAME_REGION=frozenset({SNES}), ANY_RELEASE=frozenset()), 0)
+
+
 class CarryMode(SavesCase):
     """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
 
@@ -298,7 +357,11 @@ class CarryMode(SavesCase):
         self.assertEqual(plan["saves"]["carry"], {"files": 2, "games": 1, "conflicts": 0, "converted": 0})        # the .srm and the .A1.bin; not the state or its picture
         row = [r for r in plan["items"] if r["from"].endswith("Zed (USA).sfc")][0]
         self.assertEqual(row["saves"]["effect"], "carry")
+        new = [r for r in plan["items"] if r["from"].endswith("Zed (Europe).sfc")][0]
+        self.assertEqual((new["saves"]["effect"], new["saves"]["saves"]), ("receive", 2))             # (the version that gets them says so too)
         self.assertEqual(self.saved_files(), old)                                                   # (the preview copied nothing)
+        shown = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=")
+        self.assertEqual({f["name"]: (f["row"] or {}).get("saves", {}).get("effect") for f in shown["files"]}["Zed (Europe).sfc"], "receive")
         res = self.lib_apply(plan)
         self.assertEqual(res["saves"]["carried"], 2)
         self.assertEqual(self.saved_files(), sorted(old + ["bsnes/Zed (Europe).srm", "bsnes/Zed (Europe).A1.bin"]))
@@ -329,8 +392,9 @@ class CarryMode(SavesCase):
     def test_it_can_be_chosen_for_a_single_game(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
         self.save("bsnes", "Zed (USA)", ("{n}.srm",))
+        self.mode("keep")
         plan = self.lib_plan(root)
-        self.assertEqual(plan["reasons"]["kept_saved"], 1)                                           # (the default: keep both)
+        self.assertEqual(plan["reasons"]["kept_saved"], 1)                                           # (keep both)
         row = [r for r in plan["items"] if r["from"].endswith("Zed (USA).sfc")][0]
         self.call("POST", "/api/library/saved", {"platform": SNES, "games": [{"dat": row["saves"]["dat"], "game": row["saves"]["game"]}], "choice": "carry"})
         plan = self.lib_plan(root, refresh=True)
@@ -572,3 +636,52 @@ class SavesOfAnotherRelease(SavesCase):
         self.assertEqual([f["name"] for f in withsaves], ["Zed (Europe).sfc"])            # (one ROM, not both: Europe comes first by default)
         self.assertEqual(withsaves[0]["row"]["saves"]["saves"], 1)
         self.assertEqual(tree["facets"]["show"]["saves"], 1)
+
+
+class DreamcastProductNumbers(unittest.TestCase):
+    """Flycast names a game's own memory cards after the disc's product number; the disc's header says which disc that is."""
+
+    @staticmethod
+    def header(code: str, raw: bool = True) -> bytes:
+        ip = bytearray(2048)
+        ip[0:16] = b"SEGA SEGAKATANA "
+        ip[0x40:0x40 + len(code)] = code.encode().ljust(10)[:10]
+        ip[0x80:0x80 + 4] = b"GAME"
+        return bytes(16) + bytes(ip) + bytes(288) if raw else bytes(ip)
+
+    def test_the_number_is_read_from_a_gdi_and_its_forms(self) -> None:
+        import tempfile
+        from romorg import dcdisc
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "track01.bin").write_bytes(self.header("HDR-0128"))
+            (d / "track02.raw").write_bytes(bytes(2352))
+            (d / "track03.bin").write_bytes(self.header("HDR-0128"))
+            (d / "game.gdi").write_text("3\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n3 45000 4 2352 track03.bin 0\n")
+            self.assertEqual(dcdisc.read_product(d / "game.gdi"), "HDR-0128")
+            (d / "none.gdi").write_text("1\n1 0 4 2352 nothing.bin 0\n")
+            self.assertEqual(dcdisc.read_product(d / "none.gdi"), "")
+        self.assertEqual(dcdisc.codes_of("T40509D 50"), {"T40509D 50", "T40509D50", "T40509D"})
+        self.assertEqual(dcdisc._from_sector(self.header("MK-51000", raw=False)), "MK-51000")
+
+    def test_a_card_named_by_the_number_is_the_save_of_the_disc_you_have(self) -> None:
+        import tempfile
+        from types import SimpleNamespace
+        from romorg import saveindex, server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Jet").mkdir()
+            (root / "Jet" / "Jet.gdi").write_text("1\n1 0 4 2352 track01.bin 0\n")
+            (root / "Jet" / "track01.bin").write_bytes(self.header("HDR-0128"))
+            app = server.App.__new__(server.App)
+            games = [({"name": "De La Jet Set Radio (Japan)", "dat": "Sega - Dreamcast", "title": "De La Jet Set Radio", "have": True,
+                       "files": ["Jet/Jet.gdi"]}, "")]
+            app._kind_rows = lambda state, kind: games
+            state = SimpleNamespace(platform=SimpleNamespace(name="Sega Dreamcast"), root=root)
+            report = saveindex.SaveReport(per_core=True, install="RetroArch")
+            card = saveindex.SaveSet("HDR-0128", "hdr-0128", saves=4)
+            other = saveindex.SaveSet("XYZ-9999", "xyz-9999", saves=1)
+            report.sets = {card.key: card, other.key: other}
+            app._match_product_codes(state, report)
+            self.assertEqual((card.match, card.game, card.title), (saveindex.ROM, "De La Jet Set Radio (Japan)", "De La Jet Set Radio"))
+            self.assertEqual(other.match, saveindex.NONE)                                        # (a number no disc you have carries)

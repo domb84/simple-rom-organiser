@@ -428,25 +428,25 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual([Path(d).name for _s, d in kept.moves], ["Big Game (USA) (Disc 1).chd"])       # only the disc image is the game
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
         self.assertEqual((self.w.root / "_saves" / "Big Game" / "b1.state").read_bytes(), b"sidecar b1.state")      # set aside under its game, never deleted
-        self.assertFalse((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").exists())
-        self.assertTrue((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).chd").is_file())
+        self.assertFalse((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").exists())
+        self.assertTrue((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).chd").is_file())
 
     def test_the_files_travel_with_the_game_when_asked_to(self) -> None:
         plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
-        self.assertEqual((self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").read_bytes(), b"sidecar b1.state")
+        self.assertEqual((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").read_bytes(), b"sidecar b1.state")
         self.assertFalse((self.w.root / "_unmatched").exists())
 
     def test_discs_of_a_game_stay_together_and_get_one_playlist(self) -> None:
         plan = self.plan()
         pl = plan.playlists
         self.assertEqual(len(pl), 1)
-        self.assertEqual(pl[0].path, self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA).m3u")
+        self.assertEqual(pl[0].path, self.w.root / "Big Game (USA)" / "Big Game (USA).m3u")
         lines = [ln for ln in pl[0].lines if not ln.startswith("#")]
-        self.assertEqual(lines, ["Big Game (USA) (Disc 1).chd", "../Big Game (USA) (Disc 2)/Big Game (USA) (Disc 2).chd"])
+        self.assertEqual(lines, ["Big Game (USA) (Disc 1)/Big Game (USA) (Disc 1).chd", "Big Game (USA) (Disc 2)/Big Game (USA) (Disc 2).chd"])
         res = dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
         self.assertEqual(res["playlists_written"], 1)
-        m3u = self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA).m3u"
+        m3u = self.w.root / "Big Game (USA)" / "Big Game (USA).m3u"
         self.assertTrue(m3u.is_file())
         for ln in m3u.read_text().splitlines():
             if ln and not ln.startswith("#"):
@@ -505,7 +505,7 @@ class LibraryTest(unittest.TestCase):
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
         # the user deletes Disc 2: the playlist (ours) is stale and goes
         import shutil
-        shutil.rmtree(self.w.root / "Big Game (USA) (Disc 2)")
+        shutil.rmtree(self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 2)")
         plan2 = self.plan()
         self.assertEqual(plan2.playlists, [])
         self.assertEqual([o.status for o in plan2.ops if o.kind == "m3u"], ["delete"])
@@ -518,7 +518,7 @@ class LibraryTest(unittest.TestCase):
         mine.write_text("b1.chd\n")
         plan = self.plan()
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
-        self.assertEqual((self.w.root / "Big Game (USA) (Disc 1)" / "my own.m3u").read_text(), "b1.chd\n")
+        self.assertEqual((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "my own.m3u").read_text(), "b1.chd\n")
 
 
 class ConvertTest(unittest.TestCase):

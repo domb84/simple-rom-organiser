@@ -838,9 +838,10 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.scan()
         self.settings_of()
         self.page.wait("!!document.getElementById('lib-saved-games')")
-        self.assertEqual(self.page.eval("document.getElementById('lib-saved-games').value"), "keep")
+        self.assertEqual(self.page.eval("document.getElementById('lib-saved-games').value"), "convert")
         self.assertEqual(self.page.eval("[...document.getElementById('lib-saved-games').options].map(o => o.textContent)"),
-                         ["Keep both ROMs", "Archive the saves with the ROM", "Leave the saves where they are", "Copy the save to the better version", "Copy the save, converting its region (PlayStation, PlayStation 2)"])
+                         ["Copy or convert the save to the latest version, leave the existing save (default)", "Keep both ROMs", "Archive the saves with the ROM",
+                          "Leave the saves where they are", "Copy the save to the better version"])
         self.assertIn("When a rule replaces or archives a game you have saves for", self.page.eval("document.getElementById('lib-saves-group').textContent"))
         self.library_open()
         self.pick("show", "saves")                                                       # only the files of games that have saves
@@ -1041,14 +1042,26 @@ class ConvertDropdownTests(UiTestCase):
         self.assertFalse(self.page.eval("!!document.getElementById('tool-convert') || !!document.getElementById('tool-verify')"))
         self.no_js_errors()
 
-    def test_the_library_converts_raw_discs_first_and_undo_reverts_it(self) -> None:
+    def api(self, method: str, path: str, body: dict | None = None) -> dict:
+        import json
+        import urllib.request
+        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+                                     headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+
+    def test_the_library_converts_raw_discs_when_building_and_undo_reverts_it(self) -> None:
         self.open()
         self.scan(self.PLATFORM, str(self.psx))
-        self.page.goto(self.fx.url + f"#/system/{self.SLUG}/settings")
-        self.page.wait("!!document.querySelector('#lib-convert-row:not(.hidden)')")
-        self.assertFalse(self.page.eval("document.getElementById('lib-convert').checked"))
-        self.page.eval("document.getElementById('lib-convert').click()")
-        self.page.wait("document.getElementById('lib-convert').checked")
+        self.page.goto(self.fx.url + "#/settings")                                       # the rule "Convert when building": your default for every system
+        self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"convert_first\"]')", timeout=30)
+        self.assertFalse(self.page.eval("document.querySelector('#set-library-rules input[data-opt=\"convert_first\"]').checked"))
+        self.click("#set-library-rules input[data-opt=\"convert_first\"]")
+        deadline = time.time() + 20
+        while time.time() < deadline and not self.api("GET", "/api/library/defaults")["profile"]["convert_first"]:
+            time.sleep(0.1)
+        self.assertTrue(self.api("GET", "/api/library/defaults")["profile"]["convert_first"])
+        self.assertFalse(self.page.eval("!!document.getElementById('lib-convert')"))               # (no box of its own on the system's page any more)
         self.page.goto(self.fx.url + f"#/system/{self.SLUG}/files")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('Raw discs to convert to CHD first')", timeout=60)
         self.click("#lib-apply-btn")

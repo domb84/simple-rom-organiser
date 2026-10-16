@@ -134,6 +134,19 @@
         <h1 id="settings-title">Settings</h1>
         <span class="muted small grow">What applies to every system. A system can still have its own on its Library tab.</span>
       </div>
+      <div class="panel">
+        <h2>Archive folder</h2>
+        <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
+        <div class="row">
+          <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
+          <button class="btn" id="set-archive-browse">Folders...</button>
+        </div>
+        <div class="muted small" id="set-archive-default"></div>
+        <div class="hidden" id="set-archive-own-box">
+          <h3>Systems with their own archive folder</h3>
+          <ul class="archive-list" id="set-archive-own"></ul>
+        </div>
+      </div>
       <div class="panel" id="set-library-panel">
         <h2>Library defaults</h2>
         <p class="muted small">The library rules every system starts from. A system follows these until you override a rule on its own Library tab.</p>
@@ -175,27 +188,13 @@
           <span class="muted small grow" id="igdb-status" role="status"></span>
         </div>
       </div>
-
-      <div class="panel">
-        <h2>Archive folder</h2>
-        <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
-        <div class="row">
-          <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
-          <button class="btn" id="set-archive-browse">Folders...</button>
-        </div>
-        <div class="muted small" id="set-archive-default"></div>
-        <div class="hidden" id="set-archive-own-box">
-          <h3>Systems with their own archive folder</h3>
-          <ul class="archive-list" id="set-archive-own"></ul>
-        </div>
-      </div>
     </section>
 
     <!-- ===================== DISC IMAGES (CHD): the settings every disc system shares ===================== -->
     <section class="view hidden" id="view-chd" aria-labelledby="chd-title">
       <div class="sys-head">
         <h1 id="chd-title">Disc images (CHD)</h1>
-        <span class="muted small grow">Settings for every system that uses CHD files: Dreamcast, PlayStation, PlayStation 2. Turning raw discs into CHDs is the <i>Convert</i> option of a system's Library tab.</span>
+        <span class="muted small grow">Settings for every system that uses CHD files: Dreamcast, PlayStation, PlayStation 2. Turning raw discs (also zipped ones) into CHDs is the rule <i>Convert when building</i>, in Settings for every system (a system can override it).</span>
       </div>
       <div class="panel">
         <h2>Reading and writing CHDs</h2>
@@ -239,7 +238,7 @@
         <div class="muted small" id="chd-levels-help">
           <b>identified</b>: every data track matches Redump, audio tracks have the right length &middot;
           <b>verified</b>: every track (audio too) was decoded and equals Redump &middot;
-          <b>raw</b>: an unpacked Redump set (.gdi / .cue + tracks, or an .iso): convert it to a CHD with the Library tab's Convert option.
+          <b>raw</b>: a Redump set that is not a CHD yet (.gdi / .cue + tracks, an .iso, or a zip or 7z of one): Build library converts it when the rule <i>Convert when building</i> is on.
         </div>
         <div class="muted small hidden" id="chd-speed-line"></div>
       </div>
@@ -450,9 +449,6 @@
         <div class="panel" id="build-panel">
           <h2>Building</h2>
           <details class="dat-details"><summary>Folder layout after building</summary><pre class="layout" id="library-layout"></pre></details>
-          <div class="row hidden" id="lib-convert-row">
-            <label class="check" id="lib-convert-wrap"><input type="checkbox" id="lib-convert"> <span id="lib-convert-label"></span></label>
-          </div>
           <div class="row">
             <label class="check" id="lib-labels-wrap"><input type="checkbox" id="lib-labels" checked> Disk labels in playlists</label>
             <label class="check" id="lib-savedisk-wrap"><input type="checkbox" id="lib-savedisk"> Add save disk (#SAVEDISK)</label>

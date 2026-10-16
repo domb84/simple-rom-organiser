@@ -49,7 +49,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
-from . import bios, cdimage, chdsched, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
+from . import bios, cdimage, chdsched, discarchive, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from . import meter, winproc
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, UNMATCHED_DIR
@@ -58,6 +58,7 @@ from .organiser import RenameOp, safe_filename
 CHD_EXT = ".chd"
 ISO_EXT = ".iso"
 SHEET_EXTS = (".gdi", ".cue")
+RENAMABLE_RAW = (".iso", ".zip", ".7z")      # a raw disc that is one file is renamed with its game; a sheet with tracks is converted, not renamed
 KIND_GD, KIND_CD, KIND_DVD = "gdrom", "cd", "dvd"
 LEVEL_VERIFIED, LEVEL_IDENTIFIED, LEVEL_RAW = "verified", "identified", "raw"
 PART_SUFFIX = ".romorg.part"        # the new CHD of a conversion while chdman writes it (next to its destination)
@@ -321,6 +322,10 @@ class DcUnit:
     disc_kind: str = ""             # gdrom | cd | dvd (what the CHD is; "" for raw sets)
     needs_chdman: bool = False      # a valid CHD in a format newer than the built-in reader, and no chdman identified it
     decoded: bool = False           # identification had to decode (not served by the cache / the header)
+    archive: bool = False           # a .zip / .7z that holds the disc (``path`` is the archive; ``members`` its files)
+    members: list = field(default_factory=list)   # archive: discarchive.Member of every file in it
+    sheet: str = ""                 # archive: the member that is the disc (the .iso, or the .cue / .gdi)
+    track_members: list = field(default_factory=list)   # archive: the members that are the disc's tracks, in order
 
     @property
     def top(self) -> Path:
@@ -488,8 +493,47 @@ def discover_units(root: Path, files: list[Path], system: Optional["DiscSystem"]
                         side.append(r)
                 units.append(DcUnit("raw", s, None, side, s.stem))
                 claimed.update(os.fspath(p) for p in side)
+    for f in files:                      # a disc in a zip / 7z (the archives next to a CHD travelled with it above)
+        if os.fspath(f) in claimed or f.suffix.lower() not in discarchive.EXTS:
+            continue
+        try:
+            members = discarchive.list_members(f)
+        except (discarchive.ArchiveError, OSError):
+            continue
+        if any(Path(m.name).suffix.lower() in kinds for m in members):
+            units.append(DcUnit("raw", f, None, [f], f.stem, archive=True, members=members))
+            claimed.add(os.fspath(f))
     rest = [f for f in files if os.fspath(f) not in claimed]
     return units, rest
+
+
+def sheet_track_names(text: str, ext: str) -> Optional[list[str]]:
+    """The track file names of the text of a ``.gdi`` / ``.cue`` in track order (None when they cannot be listed per track): the
+    rules of :func:`sheet_track_files`, for a sheet read from somewhere else (an archive)."""
+    lines = cdimage.sheet_lines(text)
+    out: list[str] = []
+    if ext == ".gdi":
+        count = cdimage.atoi(lines[0]) if lines else 0
+        for ln in lines[1:]:
+            parts = cdimage.tokenize(ln)
+            if not parts:
+                continue
+            if len(parts) < 6 or not parts[4]:
+                return None
+            out.append(parts[4])
+        return out if count > 0 and len(out) == count else None
+    files = tracks = 0
+    for ln in lines:
+        parts = cdimage.tokenize(ln)
+        word = parts[0] if parts else ""
+        if word == "FILE":
+            files += 1
+            if len(parts) < 2 or not parts[1]:
+                return None
+            out.append(parts[1])
+        elif word == "TRACK":
+            tracks += 1
+    return out if out and files == tracks else None
 
 
 def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
@@ -1035,6 +1079,90 @@ def identify_raw(unit: DcUnit, index: DcIndex, hasher_cache: scanner.HashCache,
     unit.game, unit.level, unit.via, unit.candidates = alive[0], LEVEL_RAW, "files", [g.name for g in alive]
 
 
+def _archive_text(path: Path, member: "discarchive.Member") -> str:
+    """The text of a sheet inside an archive (the sheet's own encoding rules)."""
+    with discarchive.open_member(path, member.name) as f:
+        raw = f.read(1 << 20)
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def archive_disc(unit: DcUnit, system: Optional["DiscSystem"]) -> tuple[Optional["discarchive.Member"], list, str]:
+    """``(the member that is the disc, its track members in order, why not)`` of an archive unit: the ``.iso``, or the ``.gdi`` /
+    ``.cue`` with the files it lists."""
+    import posixpath
+    members = unit.members
+    for ext in sheet_kinds(system):
+        sheets = [m for m in members if Path(m.name).suffix.lower() == ext]
+        if not sheets:
+            continue
+        if len(sheets) > 1:
+            return None, [], "the archive holds several discs"
+        sheet = sheets[0]
+        if ext == ISO_EXT:
+            return sheet, [sheet], ""
+        names = sheet_track_names(_archive_text(unit.path, sheet), ext)
+        if names is None:
+            return sheet, [], "a disc image sheet that does not list one file per track (cannot be matched)"
+        index = {m.name.replace("\\", "/").lower(): m for m in members}
+        base = posixpath.dirname(sheet.name.replace("\\", "/"))
+        found = [index.get(posixpath.normpath(posixpath.join(base, n.replace("\\", "/"))).lower()) for n in names]
+        if not all(found):
+            return sheet, [], "track files are missing in the archive: " + ", ".join(n for n, f in zip(names, found) if not f)[:120]
+        return sheet, found, ""
+    return None, [], "no disc image in the archive"
+
+
+def identify_archive(unit: DcUnit, index: DcIndex, hasher_cache: scanner.HashCache, prog: Optional[_Progress]) -> None:
+    """Match a disc in a zip / 7z track by track, without unpacking it: the sizes first, the CRC-32 the archive lists, then the SHA-1 of
+    each track streamed out of the archive (remembered per archive, size and time)."""
+    sheet, tracks, why = archive_disc(unit, index.system)
+    if why or sheet is None:
+        unit.reason = why or "no disc image in the archive"
+        return
+    unit.sheet, unit.track_members = sheet.name, tracks
+    sizes = tuple(m.size for m in tracks)
+    unit.tracks = [{"number": i + 1, "type": "", "size": m.size, "crc32": m.crc or None, "md5": None, "sha1": None}
+                   for i, m in enumerate(tracks)]
+    cands = list(index.by_sizes.get(sizes, ()))
+    if not cands:
+        unit.reason = "no Redump game has these track sizes"
+        return
+    alive = [g for g in cands if all(not m.crc or not g.tracks[i].crc or g.tracks[i].crc.lower() == m.crc for i, m in enumerate(tracks))]
+    if not alive:
+        unit.reason = "the files in the archive do not match any Redump game (a different dump?)"
+        return
+    st = unit.path.stat()
+    base = scanner._cache_key(unit.path)
+    for i in sorted(range(len(tracks)), key=lambda k: sizes[k]):
+        m = tracks[i]
+        key = f"{base}::{m.name}" if base else None
+        got = hasher_cache.get(key, st.st_size, st.st_mtime_ns, scanner.file_ident(st)) if key else None
+        if got is None:
+            if prog:
+                prog.check()
+                prog.emit(f"Reading {m.name} in {unit.path.name}")
+            try:
+                got = discarchive.hash_member(unit.path, m, progress=(prog.add if prog else None),
+                                               cancel=(prog.cancelled if prog else None))
+            except discarchive.ArchiveError as exc:
+                unit.reason = f"cannot read the archive: {exc}"
+                return
+            if key:
+                hasher_cache.put(key, st.st_size, st.st_mtime_ns, got[0], got[1], scanner.file_ident(st))
+        crc, sha1 = got
+        unit.tracks[i]["crc32"], unit.tracks[i]["sha1"] = crc, sha1
+        alive = [g for g in alive if g.tracks[i].sha1 == sha1 and (not g.tracks[i].crc or g.tracks[i].crc == crc)]
+        if not alive:
+            unit.reason = "the files in the archive do not match any Redump game (a different dump?)"
+            return
+    unit.game, unit.level, unit.via, unit.candidates = alive[0], LEVEL_RAW, "files", [g.name for g in alive]
+
+
 def _hash_file_progress(path: Path, prog: Optional[_Progress]) -> tuple[str, str]:
     """crc32 + sha1 of a raw-set file (prefetching reader, the digests in parallel threads: :mod:`romorg.multihash`)."""
     try:
@@ -1145,6 +1273,8 @@ def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full
                         total += sum(t.size for t in info.tracks)
                 finally:
                     info.close()
+            elif u.archive:
+                total += sum(m.size for m in u.members if Path(m.name).suffix.lower() not in (".txt", ".nfo", ".jpg", ".png", ".md5", ".sfv"))
             else:
                 total += sum(f.stat().st_size for f in (sheet_track_files(u.path) or []) if f.exists())
         except (OSError, chdlib.ChdError):
@@ -1210,7 +1340,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
                     before = prog.done
-                    identify_raw(u, index, fcache, prog)
+                    (identify_archive if u.archive else identify_raw)(u, index, fcache, prog)
                     if prog.done > before:
                         prog.file_done()
         finally:
@@ -1272,23 +1402,35 @@ def canonical_name(game: DcGame) -> str:
     return safe_filename(game.name)
 
 
+def game_folder(root: Path, game: DcGame) -> Path:
+    """Where a game's folder is: ``<root>/<name>`` - for a disc of a multi-disc game ``<root>/<name without the disc>/<name>``, so the discs
+    of a game sit together."""
+    from . import library
+    name = canonical_name(game)
+    group = library._disc_free_name(game.name)
+    if group and group != game.name:
+        return root / safe_filename(group) / name
+    return root / name
+
+
 def unit_target(unit: DcUnit, root: Path) -> dict[Path, Path]:
     """``{file: target}`` for the canonical place of a matched CHD unit (``<root>/<name>/``, names re-stemmed)."""
     g = unit.game
     assert g is not None
     new_stem = canonical_name(g)
-    folder = root / new_stem
+    folder = game_folder(root, g)
     out: dict[Path, Path] = {}
     base = unit.folder
+    main = new_stem + (unit.path.suffix.lower() if unit.kind == "raw" else CHD_EXT)       # (a raw disc keeps its own kind of file)
     for f in unit.files:
         if base is not None:
             rel = f.relative_to(base)
             if len(rel.parts) == 1:
-                out[f] = folder / (new_stem + CHD_EXT if f == unit.path else _rename_in(rel.name, unit.stem, new_stem))
+                out[f] = folder / (main if f == unit.path else _rename_in(rel.name, unit.stem, new_stem))
             else:
                 out[f] = folder / rel
         else:
-            out[f] = folder / (new_stem + CHD_EXT if f == unit.path else _rename_in(f.name, unit.stem, new_stem))
+            out[f] = folder / (main if f == unit.path else _rename_in(f.name, unit.stem, new_stem))
     return out
 
 
@@ -1387,6 +1529,20 @@ def _reason_mapping(unit: DcUnit, root: Path, reason_dir: str, plan: _Plan) -> d
             return cand
 
 
+def _raw_op(u: DcUnit, root: Path, plan: _Plan, converting: bool) -> DcOp:
+    """The op of a raw disc that stays where it is: named after its game when it is a single file, or left for the conversion."""
+    why = ("a raw disc: Build library converts it to a CHD first" if converting
+           else "a raw disc, not a CHD yet: the rule Convert when building makes one")
+    mapping = unit_target(u, root) if u.path.suffix.lower() in RENAMABLE_RAW and not converting else {}
+    if mapping and any(d != s for s, d in mapping.items()) and all(plan.free(d) or d == s for s, d in mapping.items()):
+        op = _unit_op(u, root, mapping, reason=why)          # a single disc file (an .iso, a zip / 7z of it): named after the game, in its folder
+        _claim(plan, op)
+        return op
+    return DcOp(src=u.top, dst=u.top, status="ok", reason=why,
+                rom_name=u.game.name, dat=u.game.rep.dat, game=u.game.name, unit_kind="raw",
+                level=u.level, n_files=len(u.files), kind="rename", unit=u)
+
+
 def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, saved: Any = None,
                ) -> tuple[list[DcOp], Any, dict[int, DcOp]]:
     """The game-level ops for tidy (``profile`` None) or Build library; returns ``(ops, selection, owners)``."""
@@ -1399,7 +1555,11 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     from . import savepin
     plan.pinner = savepin.Pinner(getattr(result, "dats", None) or ([result.index.dat] if getattr(result, "index", None) is not None else []))
     index = result.index
-    chd_units = [u for u in result.units if u.kind == "chd" and u.game is not None]
+    converting = profile is not None and getattr(profile, "convert_first", False)
+    have_chd = {u.game.name for u in result.units if u.kind == "chd" and u.game is not None}
+    # (with the rule Convert when building a raw disc of a game you have no CHD of is ranked as the CHD it will become)
+    chd_units = [u for u in result.units if u.game is not None
+                 and (u.kind == "chd" or (converting and u.kind == "raw" and u.game.name not in have_chd))]
     for u in result.units:
         for f in u.files:
             plan.sources.add(_fold(f))
@@ -1459,6 +1619,12 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
                           flags_text=d.detail)
         else:
             core = u
+            if u.kind == "raw":
+                op = _raw_op(u, root, plan, converting)
+                op.key = i
+                ops.append(op)
+                owners[i] = op
+                continue
             if profile is not None and not getattr(profile, "keep_extras", False) and u.kind == "chd":
                 # the files next to the disc image are no part of the game: they are set aside like any file that matches nothing
                 extras = [f for f in u.files if f != u.path and not _stays_with_game(f)]
@@ -1488,12 +1654,11 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
         ops.append(op)
         _claim(plan, op)
     # --- everything that is not a matched CHD game: unmatched units, raw sets, junk
-    other_units = [u for u in result.units if u.game is None or u.kind == "raw"]
+    ranked = {id(u) for u in chd_units}
+    other_units = [u for u in result.units if id(u) not in ranked and (u.game is None or u.kind == "raw")]
     for u in sorted(other_units, key=lambda x: os.fspath(x.top).casefold()):
         if u.kind == "raw" and u.game is not None:
-            op = DcOp(src=u.top, dst=u.top, status="ok", reason="raw Redump set - convert it to CHD",
-                      rom_name=u.game.name, dat=u.game.rep.dat, game=u.game.name, unit_kind="raw",
-                      level=u.level, n_files=len(u.files), kind="rename")
+            op = _raw_op(u, root, plan, converting)
             ops.append(op)
             continue
         parts = _parts(u.top, root)
@@ -1676,7 +1841,10 @@ def plan_library(result: DcScanResult, profile: Any, savedisk: bool = False,
                 break
             disks.append(m3u.PlaylistDisk(slot, final, None, cs.labels.get(slot, "")))
         if disks and len(disks) == len(cs.slots):
-            specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks))
+            homes = {Path(d.path).parent.parent for d in disks}          # (discs in a folder each below one game folder: the playlist is in that)
+            home = homes.pop() if len(homes) == 1 else None
+            together = home is not None and home != root and all(Path(d.path).parent != home for d in disks)
+            specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks, directory=home if together else None))
     playlists = m3u.plan_playlists(specs, root, savedisk=savedisk, labels=labels)
     moving = [os.fspath(s) for op in ops if op.status == "move" for s, _d in op.moves]
     rewritten = {_fold(p.path) for p in playlists if p.status in ("write", "ok")}
@@ -1731,6 +1899,9 @@ class DcConvertOp:
     mode: str = "createcd"          # chdman command: createcd (cue / gdi sheets) | createdvd (a single .iso)
     gdi_text: Optional[str] = None  # a GD-ROM set that has only a .cue: the .gdi generated from it (None = use ``src``)
     note: str = ""
+    deleted: list = field(default_factory=list)  # the originals that were deleted (``delete_originals``)
+    delete_originals: bool = False  # the originals are deleted once the CHD is checked (off: they go to _converted_originals)
+    archive: bool = False           # ``src`` is a .zip / .7z: its disc is unpacked into a work folder first
 
 
 def iso_convert_mode(system: DiscSystem, config: Optional[dict] = None) -> str:
@@ -1746,7 +1917,7 @@ def iso_convert_mode(system: DiscSystem, config: Optional[dict] = None) -> str:
 
 
 def plan_convert(result: DcScanResult, chdman_found: bool = False,
-                 config: Optional[dict] = None) -> list[DcConvertOp]:
+                 config: Optional[dict] = None, delete_originals: bool = False) -> list[DcConvertOp]:
     """The raw sets that can become a CHD. ``chdman_found`` no longer decides anything: the built-in writer
     (:mod:`romorg.chdwrite`) converts when there is no chdman."""
     root = Path(result.root)
@@ -1758,7 +1929,7 @@ def plan_convert(result: DcScanResult, chdman_found: bool = False,
                     key=lambda x: os.fspath(x.top).casefold()):
         g = u.game
         name = canonical_name(g)
-        dst = root / name / (name + CHD_EXT)
+        dst = game_folder(root, g) / (name + CHD_EXT)
         if u.folder is not None:
             top = organiser.reason_destination(u.folder, root, CONVERTED_DIR)
             moves = [(f, top / f.relative_to(u.folder)) for f in u.files]
@@ -1766,12 +1937,17 @@ def plan_convert(result: DcScanResult, chdman_found: bool = False,
         else:
             moves = [(f, organiser.reason_destination(f, root, CONVERTED_DIR)) for f in u.files]
             orig = moves[0][1] if moves else root / CONVERTED_DIR
-        is_iso = u.path.suffix.lower() == ISO_EXT
+        in_archive = u.archive
+        is_iso = (Path(u.sheet).suffix.lower() if in_archive else u.path.suffix.lower()) == ISO_EXT
         op = DcConvertOp(u.path, None, dst, orig, "convert", rom_name=g.name, unit=u, moves=moves,
-                         raw_bytes=sum(f.stat().st_size for f in u.files if f.exists()),
-                         mode=(iso_convert_mode(system, config) or "createcd") if is_iso else "createcd")
-        gd_cue = system.gd and u.path.suffix.lower() == ".cue"
-        if gd_cue:
+                         raw_bytes=(sum(m.size for m in u.track_members) if in_archive
+                                    else sum(f.stat().st_size for f in u.files if f.exists())),
+                         mode=(iso_convert_mode(system, config) or "createcd") if is_iso else "createcd",
+                         delete_originals=delete_originals, archive=in_archive)
+        gd_cue = system.gd and (Path(u.sheet).suffix.lower() if in_archive else u.path.suffix.lower()) == ".cue"
+        if gd_cue and in_archive:
+            op.status, op.reason = "skip", "a GD-ROM in an archive needs a .gdi (unpack it, or add one)"
+        elif gd_cue:
             # a GD-ROM needs a .gdi (chdman createcd of a .cue would write a CD CHD, type CHT2): generate the GDI from
             # the Redump layout markers of the .cue, or refuse
             text, why = gdi_from_cue(u.path)
@@ -2012,15 +2188,37 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         raise FileExistsError(f"target exists: {op.dst}")
     # The new CHD is the intended output: created next to its final place as a .part file (atomic rename in),
     # on the file system that will hold it. Only the verification extract below uses scratch space elsewhere.
-    chdtool.check_space(op.dst.parent if op.dst.parent.exists() else root, op.raw_bytes)
+    chdtool.check_space(op.dst.parent if op.dst.parent.exists() else root, op.raw_bytes * (2 if op.archive else 1))
     new = op.dst.with_name(op.dst.name + PART_SUFFIX)
     placed = False
     moved: list[tuple[Path, Path]] = []
     gdi_work = None
+    unpacked: Optional[Path] = None
+    archive_path = op.src
     try:
         organiser.make_dirs(op.dst.parent, created, journal)
         if new.is_file() and not new.is_symlink():
             new.unlink()                      # a leftover of a crashed run (our own distinctive name)
+        if op.archive:                        # the disc is taken out of its zip / 7z next to where the CHD goes (the same file system)
+            unpacked = op.dst.parent / (chdtool.TEMP_PREFIX + "unpack")
+            if unpacked.exists():
+                shutil.rmtree(unpacked, ignore_errors=True)
+            wanted = [m for m in unit.members if m.name == unit.sheet or any(m is t for t in unit.track_members)]
+            label0 = op.rom_name
+            done = [0]
+
+            def took(n: int) -> None:
+                done[0] += n
+                if progress:
+                    progress(done[0] // (1 << 20), max(1, op.raw_bytes // (1 << 20)), f"{label0}: Unpacking {Path(archive_path).name}")
+            try:
+                out = discarchive.extract_members(archive_path, wanted, unpacked, progress=took,
+                                                  cancel=lambda: organiser._is_cancelled(cancel))
+            except scanner.ScanCancelled:
+                raise chdtool.ChdmanError("cancelled", cancelled=True) from None
+            except discarchive.ArchiveError as exc:
+                raise chdtool.ChdmanError(f"could not unpack {Path(archive_path).name}: {exc}") from exc
+            op.src = out[unit.sheet]
         label = op.rom_name
         # Who writes: the built-in writer, unless chdman was chosen and is there. A set whose layout the built-in
         # writer does not take goes to chdman when there is one.
@@ -2103,6 +2301,14 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
             raise
         placed = True
         journal.useful = True
+        if op.delete_originals:
+            # the originals are deleted: the CHD was checked against Redump above. Undo could not bring them back, so it must never
+            # take the CHD away either: its record is marked as not done
+            for s, _d in op.moves:
+                os.unlink(s)
+            journal.failed(seq)
+            op.deleted = [s for s, _d in op.moves]
+            op.moves = []
         # keep the originals: every raw file moves to _converted_originals/ (journalled one by one)
         for s, d in op.moves:
             organiser.make_dirs(d.parent, created, journal)
@@ -2135,8 +2341,11 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
             raise
         raise
     finally:
+        op.src = archive_path
         if gdi_work is not None:
             chdtool.remove_workdir(gdi_work)
+        if unpacked is not None:
+            shutil.rmtree(unpacked, ignore_errors=True)
         try:
             if new.is_file() and not new.is_symlink():
                 new.unlink()                   # failed / cancelled: no half-written CHD stays behind
@@ -2192,7 +2401,8 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
                 failed.append({"src": str(op.src), "dst": str(op.dst),
                                "error": winproc.long_path_hint(exc, op.src, op.dst)})
         protected = organiser.protected_dirs(root, [], set())
-        sources = [Path(s).parent for op in converted for s, _d in op.moves] + [Path(c) for c in created]
+        sources = ([Path(s).parent for op in converted for s, _d in op.moves] + [Path(s).parent for op in converted for s in op.deleted]
+                   + [Path(c) for c in created])
         mine = set(created)
         for d in organiser.remove_empty_dirs(sources, root, protected):
             if d in mine:
@@ -2212,6 +2422,8 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
             "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
             "temp": tempspace.report(), "verify_text": notes[-1] if notes else "",
             "generated_gdi": sum(1 for o in converted if o.gdi_text is not None),
+            "deleted": sum(len(o.deleted) for o in converted),
+            "from_archives": sum(1 for o in converted if o.archive),
             "written_by": {v: sum(1 for o in converted if o.via == v) for v in ("builtin", "chdman")
                            if any(o.via == v for o in converted)},
             "preset": preset}

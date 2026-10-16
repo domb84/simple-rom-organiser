@@ -226,7 +226,7 @@ class DcEndpointTests(DcServerCase):
         info = self.call(f"/api/library/profile?platform={urllib.parse.quote(PLAT)}")
         self.assertEqual(info["style"], "redump")
         ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
-        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "keep_bios", "keep_extras", "languages",
+        self.assertEqual(ids, ["pre_release", "prototype", "demo", "latest_only", "one_per_game", "complete_only", "keep_bios", "keep_extras", "convert_first", "delete_converted", "languages",
                                "other_language", "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
         self.assertFalse(info["available"]["keep_flags"])
@@ -245,6 +245,9 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual((j["status"], j["result"]["failed"], j["result"]["playlists_written"]), ("done", [], 1))
         self.assertTrue((self.roms / "_excluded" / "g" / "g.chd").is_file())
         self.assertTrue((self.roms / "_superseded" / "a1" / "a.chd").is_file())
+        m3u = self.roms / "Big Game (USA)" / "Big Game (USA).m3u"                          # (the discs sit in one folder: the playlist is in it)
+        self.assertEqual([x.split("|")[0] for x in m3u.read_text().splitlines() if x.endswith(("Disc 1", "Disc 2"))],
+                         ["Big Game (USA) (Disc 1)/Big Game (USA) (Disc 1).chd", "Big Game (USA) (Disc 2)/Big Game (USA) (Disc 2).chd"])
         # after the rescan the plan is empty
         plan2 = self.call("/api/library/plan", {"platform": PLAT})
         self.assertTrue(plan2["empty"], plan2["counts"])
@@ -353,11 +356,11 @@ class DcEndpointTests(DcServerCase):
         self.scan()
         plan = self.call("/api/library/plan", {"limit": 5})
         self.assertNotIn("convert", plan)                                                  # off by default
-        self.assertEqual(self.call("/api/platforms/options", {"platform": PLAT, "convert": True})["convert"], True)
+        self.call("/api/library/profile", {"platform": PLAT, "convert_first": True})        # the rule "Convert when building"
         rows = {p["name"]: p for p in self.call("/api/platforms")}
         self.assertTrue(rows[PLAT]["convert_on_build"])
         plan = self.call("/api/library/plan", {"limit": 5})
-        self.assertEqual(plan["convert"], {"count": 1, "kind": "chd"})
+        self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 0, "delete": False})
         self.call("/api/library/apply", {})
         j = self.job()
         self.assertEqual(j["status"], "done", j)

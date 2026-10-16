@@ -299,7 +299,7 @@ LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "dupl
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
-                "keep_extras")
+                "keep_extras", "convert_first", "delete_converted")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -857,7 +857,7 @@ class App:
         """An older config: the rules of a Collection become your defaults, each system's saved profile its list of overrides (never raises)."""
         try:
             cfg = self._config()
-            if "collection" in cfg or "library" in cfg:
+            if "collection" in cfg or "library" in cfg or "convert_on_build" in cfg:
                 _mod("paths").update_config(lambda c: self._library_mod().migrate_config(c))
         except Exception:  # noqa: BLE001 - a convenience only
             traceback.print_exc()
@@ -1698,6 +1698,12 @@ class App:
             return []
         if latest_only not in state.convert_plans and self._is_dc(state):
             ops = list(_mod("discsys").plan_convert(state.result, self._chdman() is not None, self._config()))
+            if self._convert_on_build(state.platform, self._config()):      # (a raw disc the rules set aside is not worth converting)
+                lplan = self._library_plan(state)
+                aside = {id(o.unit) for o in lplan.ops if getattr(o, "unit_kind", "") == "raw" and getattr(o, "folder", "")}
+                for o in ops:
+                    if o.status == "convert" and id(o.unit) in aside:
+                        o.status, o.reason = "skip", "the library rules set this disc aside: it is not converted"
             ops.sort(key=_order_key(CONVERT_ORDER))
             state.convert_plans[latest_only] = ops
         if latest_only not in state.convert_plans:
@@ -1913,6 +1919,7 @@ class App:
                     m3us = _mod("m3u").find_m3us(state.root) if Path(state.root).is_dir() else ()
                 state.saves = saveindex.build(walk.for_platform(state.platform), by_file, by_dat, walk.per_core, sel.label,
                                               playlists=self._playlists_of(m3us))
+                self._match_product_codes(state, state.saves)
                 if any(st.match == saveindex.NONE and st.files for st in state.saves.sets.values()):
                     # a save that matched nothing here may be a game of another system the same core plays: then it is that system's
                     state.saves.mark_foreign(*self._foreign_save_names(state.platform, walk))
@@ -1921,6 +1928,33 @@ class App:
             traceback.print_exc()
             return None
         return state.saves
+
+    def _match_product_codes(self, state: ScanState, report: Any) -> None:
+        """Dreamcast: Flycast names a game's own memory cards after the disc's product number (``HDR-0128.A1.bin``). Such a set that
+        matched nothing is the save of the disc you have with that number (read from the disc's header, remembered per file)."""
+        import re
+        saveindex, dcdisc, idsaves = _mod("saveindex"), _mod("dcdisc"), _mod("idsaves")
+        if state.platform.name != "Sega Dreamcast":
+            return
+        loose = [st for st in report.sets.values() if st.match == saveindex.NONE and re.fullmatch(r"[A-Z0-9][A-Z0-9 -]{3,11}", st.name.upper())]
+        if not loose:
+            return
+        by_code: dict[str, tuple[str, str, str]] = {}
+        for item, _t in self._kind_rows(state, "games"):
+            if not item.get("have"):
+                continue
+            for rel in item.get("files") or ():
+                path = Path(state.root) / rel.partition("::")[0]
+                if path.suffix.lower() in (".chd", ".gdi"):
+                    code = idsaves._cached_id(path, dcdisc.read_product)
+                    for c in dcdisc.codes_of(code):
+                        by_code.setdefault(c, (item.get("dat") or "", item["name"], item.get("title") or ""))
+                    break
+        for st in loose:
+            ref = by_code.get(st.name.strip().upper()) or by_code.get(st.name.replace(" ", "").upper())
+            if ref is not None:
+                st.match, (st.dat, st.game, st.title) = saveindex.ROM, ref
+                st.guess = ""
 
     def _foreign_save_names(self, platform: Any, walk: Any) -> tuple[dict[str, str], dict[str, Any]]:
         """``({folded game name: system}, {system: (its title table, a DAT name of it)})`` of the games of the OTHER systems that share
@@ -1978,6 +2012,7 @@ class App:
         plan = self._make_library_plan_core(state, prof, savedisk, labels, rctx, saved_arg)
         if report is not None:
             plan.save_report = report
+        plan.platform_name = state.platform.name
         return plan
 
     def _make_library_plan_core(self, state: ScanState, prof: Any, savedisk: bool, labels: bool, rctx: Any,
@@ -2033,7 +2068,15 @@ class App:
             plan = self._library_plan(state, *key)
             items = [self._rename_item(op, state.root) for op in plan.ops]
             keep_bios = getattr(getattr(plan, "profile", None), "keep_bios", True)
+            will = {}                                       # (a raw disc the build converts first: its row shows the CHD it becomes)
+            if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
+                cplan = [c for c in self._convert_plan(state, self._latest_arg(state, {})) if getattr(c, "unit", None) is not None]
+                will = {id(c.unit): c for c in cplan if c.status == "convert"}
             for item, op in zip(items, plan.ops):
+                cop = will.get(id(getattr(op, "unit", None))) if will and getattr(op, "unit_kind", "") == "raw" else None
+                if cop is not None:
+                    to_rel = _rel(cop.dst, state.root)
+                    item.update(to=to_rel, to_name=Path(cop.dst).name, dest=self._dest_of(to_rel))
                 if not keep_bios and not getattr(op, "bios", False):
                     item["bios"] = False              # (rule off: a Kickstart is a game of its DAT, like any other)
                 item["category"] = self._library_category(item)
@@ -2356,26 +2399,22 @@ class App:
             cfg = self._config_update(folder_for=(platform.name, str(path)), strict=True)
         return {"folders": self._folders(cfg)}
 
-    @staticmethod
-    def _convert_on_build(platform: Any, cfg: dict[str, Any]) -> bool:
-        """The Library option "convert raw discs to CHD" / "clean up dumps" of a system (off by default: it takes a while)."""
-        table = cfg.get("convert_on_build") if isinstance(cfg.get("convert_on_build"), dict) else {}
-        return bool(getattr(platform, "convertible", False)) and bool(table.get(platform.name))
+    def _convert_on_build(self, platform: Any, cfg: dict[str, Any]) -> bool:
+        """The rule "Convert when building" of a system (off by default: it takes a while; your default for every system, which one
+        can override). Only for a system that can convert something."""
+        return bool(getattr(platform, "convertible", False)) and bool(self._profile(platform, cfg).convert_first)
+
+    def _delete_converted(self, platform: Any, cfg: dict[str, Any] | None = None) -> bool:
+        """The rule "Delete the originals after converting" (the originals go to ``_converted_originals`` when it is off)."""
+        return bool(getattr(platform, "convertible", False)) and bool(self._profile(platform, cfg).delete_converted)
 
     def platform_options(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """Remember per-platform options right away (``latest_only``, ``convert``), not only on the next request - so a scan
-        or DAT download in between keeps them."""
+        """Remember per-platform options right away (``latest_only``), not only on the next request - so a scan or DAT download in
+        between keeps them. (Converting is a library rule now: ``/api/library/profile``.)"""
         platform = self._resolve_platform(body.get("platform"))
-        if "latest_only" not in body and "convert" not in body:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected latest_only or convert)")
-        if "latest_only" in body:
-            self._save_latest_only(platform, _bool_arg(body.get("latest_only")))
-        if "convert" in body:
-            def mutate(cfg: dict[str, Any]) -> None:
-                table = cfg.get("convert_on_build") if isinstance(cfg.get("convert_on_build"), dict) else {}
-                table[platform.name] = _bool_arg(body.get("convert"))
-                cfg["convert_on_build"] = table
-            _mod("paths").update_config(mutate)
+        if "latest_only" not in body:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected latest_only)")
+        self._save_latest_only(platform, _bool_arg(body.get("latest_only")))
         return {"platform": platform.name, "latest_only": self._latest_only(platform),
                 "convert": self._convert_on_build(platform, self._config())}
 
@@ -2533,7 +2572,7 @@ class App:
                 body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras"):
+                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -3476,7 +3515,10 @@ class App:
             page["saves"] = {"found": False, "error": str(exc)}
         if self._convert_on_build(state.platform, self._config()):
             ops = self._convert_plan(state, self._latest_arg(state, {}))
-            page["convert"] = {"count": sum(1 for op in ops if op.status == "convert"), "kind": "chd" if self._is_dc(state) else "clean"}
+            todo = [op for op in ops if op.status == "convert"]
+            page["convert"] = {"count": len(todo), "kind": "chd" if self._is_dc(state) else "clean",
+                               "archives": sum(1 for op in todo if getattr(op, "archive", False)),
+                               "delete": self._delete_converted(state.platform)}
         aside_raw = _str_arg(body.get("aside_to"))
         if aside_raw and not _str_arg(body.get("export_to")):
             aside = self._library_aside_dir(state, body)
@@ -4178,6 +4220,8 @@ class App:
             if st is None or not st.files:
                 continue
             choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
+            if st.source == "pcsx2" and self._same_code_winner(ops_by_stem.get(stem), by_name):
+                continue                                                 # (the better release has the same code: the save works there where it is)
             if choice in ("carry", "convert"):                           # its save games go to the version that replaces it (never its states)
                 gone_op = ops_by_stem.get(stem)
                 win = by_name.get(getattr(gone_op, "superseded_by", "") or "") if gone_op is not None else None
@@ -4195,6 +4239,7 @@ class App:
                         if all(codes) and codes[0] != codes[1]:
                             convert[st.name] = codes
             (archive if choice == "archive" else leave).append(st)
+        self._carry_to_owned(plan, report, gone, prof, library, carry, convert, by_name, renamed, ps2)
         kept = {ra.fold_name(self._op_stem(op)) for op in plan.ops
                 if library.SAVED_KEEP_TEXT in (getattr(op, "reason", "") or "") and getattr(op, "status", "") != "delete"}
         pairs = [(a, b) for a, b in self._planned_pairs(plan) if ra.fold_name(a) not in gone]
@@ -4202,6 +4247,79 @@ class App:
         sp = {"gone": gone, "archive": archive, "leave": leave, "kept": kept, "pairs": pairs, "report": report, "carry": carry, "convert": convert, "ps2": ps2, "ps2_stems": ps2_stems}
         plan._saves_plan = sp
         return sp
+
+    def _same_code_winner(self, gone_op: Any, by_name: dict[str, Any]) -> bool:
+        win = by_name.get(getattr(gone_op, "superseded_by", "") or "") if gone_op is not None else None
+        if win is None:
+            return False
+        a, b = self._disc_serial(gone_op), self._disc_serial(win)
+        return bool(a) and a == b
+
+    def _carry_to_owned(self, plan: Any, report: Any, gone: dict[str, Any], prof: Any, library: Any, carry: list[tuple[str, str]],
+                        convert: dict[str, tuple[str, str]], by_name: dict[str, Any], renamed: dict[str, str],
+                        ps2: list[tuple[str, str]]) -> None:
+        """A save of a release you have no file for (an older revision, another region, another name) whose title is a game you have: with the
+        rule ``carry`` / ``convert`` it is copied to that game's name (a multi-disc game's: its playlist's; a raw disc the build converts: its
+        Redump name). ``convert`` also converts a PlayStation save for the other disc's code and a PlayStation 2 save to its code."""
+        ra, tags_mod, savecarry = _mod("retroarch"), _mod("tags"), _mod("savecarry")
+        owned: list[tuple[Any, Any]] = []
+        for op in plan.ops:
+            if getattr(op, "kind", "") == "m3u" or getattr(op, "status", "") == "delete" or getattr(op, "code", "") or getattr(op, "folder", "") \
+                    or not getattr(op, "rom_name", ""):
+                continue
+            owned.append((op, tags_mod.parse_name(op.rom_name)))
+        if not owned:
+            return
+        platform = getattr(plan, "platform_name", "")
+        have = {ra.fold_name(self._final_stem(plan, op)) for op, _t in owned}
+        for stem, st in sorted(report.sets.items()):
+            pcsx2 = st.source == "pcsx2"
+            if stem in gone or stem in have or st.match == "rom" or not st.saves or not (st.renames or pcsx2):
+                continue
+            choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
+            if choice not in ("carry", "convert") or any(a == st.name for a, _b in carry):
+                continue
+            conv = choice == "convert" and platform in savecarry.CONVERTIBLE
+            title = self._fold_title(st.title or st.game or st.name)
+            mine = tags_mod.parse_name(st.game or st.name)
+            fit = [(op, t) for op, t in owned if self._fold_title(t.title) == title and self._edition(op.rom_name) == self._edition(st.game or st.name)
+                   and (conv or not mine.regions or not t.regions or set(mine.regions) & set(t.regions)
+                        or savecarry.works(platform, mine.regions, t.regions))]
+            if not fit:
+                continue
+            op = sorted(fit, key=lambda x: (x[0].rom_name.casefold()))[0][0]
+            codes = (self._set_code(st), self._disc_serial(op)) if conv else ("", "")
+            if pcsx2:                                           # (PCSX2 names a save by the game's code: a release with that code finds it)
+                if all(codes) and codes[0] != codes[1] and codes not in ps2:
+                    ps2.append(codes)
+                continue
+            dest = self._playlist_of_op(plan, op) or renamed.get(ra.fold_name(self._op_stem(op))) or self._final_stem(plan, op)
+            if ra.fold_name(dest) != stem:
+                carry.append((st.name, dest))
+                if all(codes) and codes[0] != codes[1]:
+                    convert[st.name] = codes
+
+    @staticmethod
+    def _final_stem(plan: Any, op: Any) -> str:
+        """The content name a game has once the build is done: for a raw disc the build converts, its Redump name (the CHD's)."""
+        if getattr(op, "unit_kind", "") == "raw" and getattr(getattr(plan, "profile", None), "convert_first", False):
+            return _mod("organiser").safe_filename(op.rom_name)
+        return App._op_stem(op)
+
+    @staticmethod
+    def _playlist_of_op(plan: Any, op: Any) -> str:
+        """The name of the playlist the plan writes for a disc of ``op`` ("" when it is in none): RetroArch names a multi-disc game's saves after it."""
+        m3u, ra = _mod("m3u"), _mod("retroarch")
+        final = ra.fold_name(Path(getattr(op, "dst", None) or op.src).stem) if not getattr(op, "unit", None) else ""
+        unit = getattr(op, "unit", None)
+        if unit is not None:
+            moves = dict(getattr(op, "moves", ()) or ())
+            final = ra.fold_name(Path(moves.get(unit.path, unit.path)).stem)
+        for pl in getattr(plan, "playlists", ()) or ():
+            if getattr(pl, "status", "") in ("write", "ok") and pl.lines \
+                    and final in {ra.fold_name(Path(e).stem) for e in m3u.entry_paths(pl.lines, pl.path.parent)}:
+                return pl.path.stem
+        return ""
 
     def _saves_moves(self, plan: Any, folder: Path, aside: Path | None) -> tuple[list[Any], dict[str, Any]]:
         """The moves that take the saves and states of the games the plan sets aside (and whose choice is "archive") to
@@ -4297,6 +4415,19 @@ class App:
             stem = sp["report"].playlist_of(stem) or stem          # a multi-disc game's saves are named after its playlist
             st = sp["report"].sets.get(stem)
         if st is None or not st.files:
+            for old, dest in sp.get("carry", ()):                  # the better version the saves of an older one are copied to
+                if ra.fold_name(dest) in (ra.fold_name(self._final_stem(plan, op)), ra.fold_name(self._playlist_of_op(plan, op) or "\0")) \
+                        and (src := sp["report"].sets.get(ra.fold_name(old))) is not None:
+                    conv = (sp.get("convert") or {}).get(old)
+                    return {"saves": src.saves, "states": 0, "total": src.saves, "effect": "receive", "game": src.game, "dat": src.dat,
+                            "from": src.title or src.name, **({"convert": {"from": conv[0], "to": conv[1]}} if conv else {})}
+            code = self._disc_serial(op) if sp.get("ps2") else ""
+            for old_code, new_code in sp.get("ps2", ()):           # a PlayStation 2 save converted to this disc's code
+                if code and code == new_code:
+                    src = next((x for x in sp["report"].sets.values() if self._set_code(x) == old_code), None)
+                    if src is not None:
+                        return {"saves": src.saves, "states": 0, "total": src.saves, "effect": "receive", "game": src.game, "dat": src.dat,
+                                "from": src.title or src.name, "convert": {"from": old_code, "to": new_code}}
             return None
         effect = ""
         if stem in sp["kept"]:
@@ -4705,6 +4836,8 @@ class App:
             row = rows[e.op][0] if 0 <= e.op < len(plan.ops) else None
             entries.append({"side": e.side, "parts": e.parts, "size": e.size, "state": e.state, "from": e.origin, "row": row,
                             "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
+        if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
+            self._add_conversions(state, entries, treeview)
         games = self._kind_rows(state, "games")
         try:
             self._annotate_ratings(state, games)
@@ -4746,12 +4879,12 @@ class App:
                 for k in ("saves", "also_fits", "save_for", "convert"):
                     e["row"].pop(k, None)
         self._place_platform = platform
-        shown = {(e["row"].get("game_ref") or {}).get("game") for e in entries
-                 if e["row"] and e["side"] == "library" and (e["row"].get("saves") or {}).get("total")}
+        fold = _mod("retroarch").fold_name
+        stems = {fold(Path(e["parts"][-1]).stem) for e in entries if e["row"] and e["side"] == "library" and (e["row"].get("saves") or {}).get("total")}
         for st in sorted(report.counted(), key=lambda x: (x.title or x.name).casefold()):
             total = {"saves": st.saves, "states": st.states, "total": st.files, "title_total": st.files}
-            if st.match == "rom":                                 # (a ROM's own saves: on its row, also when the save has the ROM's old name)
-                if st.game and st.game not in shown:
+            if st.match == "rom":                                 # (a ROM's own saves are on its row; those under another name - the ROM's
+                if st.game and fold(st.name) not in stems:         #  old name, a disc's product number - are added to it)
                     self._attach_rows(st, {st.game}, total, entries, own_save=True)
                 continue
             own = by_name.get(st.game) if st.match == "dat" else None              # (the game a RetroArch save is named after)
@@ -4809,6 +4942,9 @@ class App:
                 continue
             seen.add(id(row))
             had = row.get("saves") or {}
+            if had.get("effect") == "receive" and had.get("from") in (st.title, st.name):      # (the save the build copies here: counted once)
+                row.setdefault("save_for", st.title or st.name)
+                continue
             row["saves"] = {**had, **{k: had.get(k, 0) + total[k] for k in total}}
             if not own_save:
                 row.setdefault("save_for", st.title or st.name)
@@ -4988,6 +5124,33 @@ class App:
             return m.group(1), {"E": "USA", "P": "Europe", "J": "Japan", "K": "Korea", "W": "Taiwan"}.get(m.group(1)[3], "")
         return "", ""
 
+    def _add_conversions(self, state: ScanState, entries: list[dict[str, Any]], treeview: Any) -> None:
+        """What the build's conversions do, as the tree shows it: the CHD of each raw disc (a new file, in the game's folder) and the
+        original (set aside in ``_converted_originals``, or deleted with the rule "Delete the originals after converting")."""
+        root = Path(state.root)
+        delete = self._delete_converted(state.platform)
+        by_parts = {e["parts"]: e for e in entries if e["side"] == treeview.LIBRARY}
+
+        def parts(path: Path) -> tuple[str, ...]:
+            return tuple(Path(path).relative_to(root).parts)
+
+        for op in self._convert_plan(state, self._latest_arg(state, {})):
+            if op.status != "convert":
+                continue
+            row = None
+            for s, d in op.moves:
+                e = by_parts.get(parts(s))
+                if e is None:
+                    continue
+                row = row or e["row"]                          # (the CHD is that game: its row, its tags)
+                if delete:                                     # (an original that is deleted is no row of its own: the CHD is it, under its new name)
+                    entries.remove(e)
+                else:
+                    e["from"], e["parts"], e["state"] = "/".join(parts(s)), parts(d), treeview.MOVED
+            entries.append({"side": treeview.LIBRARY, "parts": parts(op.dst), "size": 0, "state": treeview.CONVERTED,
+                            "from": "/".join(parts(op.src)), "row": row,
+                            "text": "/".join(parts(op.dst) + parts(op.src)).casefold()})
+
     TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves")
 
     @staticmethod
@@ -5119,6 +5282,8 @@ class App:
             item["row"] = entries[ref]["row"] if isinstance(ref, int) else None
             if owned and item["row"] and item["row"].get("category") == "kept" and self._has_upgrade(item["row"], owned):
                 item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
+        if page["dirs"]:
+            self._folder_tags(page["dirs"], entries, side, path)
         out = {"platform": platform.name, "side": side, "ready": True, "root": index.root, "none": side == "archive" and base is None,
                "totals": index.totals(), **page}
         if side == "library" and (page["files"] or page["dirs"]) and owned is None:
@@ -5140,6 +5305,40 @@ class App:
                             for s in ("library", "archive")}
             out["archive_root"] = str(base) if base is not None else ""
         return out
+
+    @staticmethod
+    def _folder_tags(dirs: list[dict[str, Any]], entries: list[dict[str, Any]], side: str, path: str) -> None:
+        """``tags`` of a folder that holds one game, or several discs / versions of it with the same region, language, version and status
+        (the folder of a game or of a multi-disc game); none for a folder of mixed games."""
+        where = tuple(p for p in path.replace("\\", "/").split("/") if p)
+        names = {d["name"] for d in dirs if not (not where and d["name"] in RESERVED_DIRS)}
+        seen: dict[str, tuple[Any, str]] = {}
+        mixed: set[str] = set()
+        moves: dict[str, str] = {}                                   # (saves the build copies or renames for a game below the folder)
+        for e in entries:
+            parts = e["parts"]
+            row = e["row"]
+            if e["side"] != side or len(parts) <= len(where) + 1 or tuple(parts[:len(where)]) != where or not row:
+                continue
+            name = parts[len(where)]
+            tags = row.get("tags")
+            sv = row.get("saves") or {}
+            eff = "convert" if sv.get("convert") else sv.get("effect")
+            if eff in ("carry", "receive", "rename", "convert"):
+                if moves.get(name) in (None, "rename") or eff == "convert":
+                    moves[name] = eff
+            if name not in names or name in mixed or not tags:
+                continue
+            key = json.dumps([tags.get("regions"), tags.get("languages"), tags.get("version"), tags.get("status")], sort_keys=True)
+            if name in seen and seen[name][1] != key:
+                mixed.add(name)
+            else:
+                seen.setdefault(name, (tags, key))
+        for d in dirs:
+            if d["name"] in seen and d["name"] not in mixed:
+                d["tags"] = seen[d["name"]][0]
+            if moves.get(d["name"]):
+                d["save_move"] = moves[d["name"]]
 
     def _upgrade_names(self, platform: Any) -> set[str] | None:
         """The names of the files you own whose game has a version the rules prefer that you lack (None while the numbers are not ready)."""
@@ -5231,6 +5430,10 @@ class App:
         """Do the conversions of the state's plan (raw disc sets to CHD, or SNES / N64 dumps cleaned up); returns the result
         (with ``undo_log``). The caller re-scans."""
         ops = self._convert_plan(state, latest_only)
+        delete = self._delete_converted(state.platform)
+        for op in ops:                                   # (the rule "Delete the originals after converting" at the time of the build)
+            if hasattr(op, "delete_originals"):
+                op.delete_originals = delete
         index = state.result.index if self._is_dc(state) else None
         return self._run_conversions(job, ops, state.root, state.platform, index, report)
 

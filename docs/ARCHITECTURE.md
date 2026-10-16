@@ -2783,3 +2783,58 @@ extension. The Overview card says *found*, the Library card *kept*.
 * `pcsx2.detect_pcsx2` also looks in `<RetroArch's system folder>/pcsx2` of every RetroArch found (`_beside_retroarch`, after the
   usual places; not with `ROMORG_RETROARCH_DETECT=0`).
 
+# AMENDMENT 33 - Dreamcast cards by product number; owned releases first (later wins)
+
+* `romorg/dcdisc.py`: `read_product(path)` reads the product number at 0x40 of the boot header (`SEGA SEGAKATANA`) from a `.chd`'s first
+  data track or a `.gdi`'s data tracks; `codes_of` the forms a save's name may use. `server.App._match_product_codes` (Dreamcast, after
+  the RetroArch save report is built): an unmatched set whose name looks like a product number and equals the number of a disc you have
+  (read through `idsaves._cached_id`) becomes that disc's set (`match rom`).
+* `_place_saves`: a ROM's set under another name than the ROM's file (an old name, a product number) is added to the ROM's row; a set
+  known by its title goes to a release of that title you have (it works there) before a release you lack is suggested.
+
+# AMENDMENT 34 - converting is a library rule; zips and 7z of discs; the originals can be deleted (later wins)
+
+* `library.LibraryProfile.convert_first` and `delete_converted` (RULE_FIELDS: your default for every system, a system overrides it;
+  `applicable_fields`: `convert_first` where `platform.convertible`, `delete_converted` for the disc systems; not part of the totals' signature).
+  They replace the per-system `cfg["convert_on_build"]` table (`library.migrate_config` turns the systems that had it on into an override;
+  `App._migrate_library` runs at start) and `POST /api/platforms/options {convert}` (now only `latest_only`). `App._convert_on_build(platform, cfg)`
+  reads the rule; `plan page["convert"]` is `{count, kind, archives, delete}`.
+* `romorg/discarchive.py`: `list_members` (zip: `zipfile`; 7z: `sevenzip.Archive`, else the real 7z), `open_member` (a stream, nothing on disk),
+  `hash_member` (crc32 + sha1), `extract_members` (to a work folder, each file checked against the CRC the archive lists, never outside it).
+* `discsys`: `DcUnit.archive / members / sheet / track_members`; `discover_units` makes a raw unit of an unclaimed `.zip` / `.7z` that holds a
+  disc kind of the system (`.iso` for ISO systems, `.cue`, `.gdi`); `archive_disc` finds the disc and its tracks (a sheet read out of the archive:
+  `sheet_track_names`); `identify_archive` matches by track sizes, the archive's CRC-32s, then the SHA-1 of each track streamed (cached in the
+  hash cache under `<archive>::<member>`, validated by the archive's size and time). `plan_units`: a raw disc that is one file (`RENAMABLE_RAW`) is
+  renamed to `<name>/<name><ext>` unless the build converts it. `plan_convert` / `_convert_one`: an archive's disc is unpacked into
+  `<game folder>/.romorg-chd-unpack` (space for 2x checked), converted from there, verified as before, and the work folder removed; the originals
+  go to `_converted_originals` or, with `delete_originals`, are deleted after verification and the journal's `create` record is marked failed
+  (not to be undone: Undo never removes the CHD).
+* The Files tree (`_add_conversions`): with the rule on, a raw disc's original shows as moved to `_converted_originals` (or `deleted`) and the CHD as
+  a `converted` file; the build still converts first, re-scans and then builds the library.
+* Tests: `tests/sevenzipmini.py` writes a small `.7z` (LZMA2) so no 7-Zip is needed; `RawDiscTests` in `tests/test_ps_server.py`.
+
+
+**AMENDMENT 35 — Complete multi-disk sets only on the disc systems, and old versions.**
+* `complete_only` now also applies to the folder-per-game disc systems (Dreamcast, PlayStation, PlayStation 2). With it on, a game whose set lacks a
+  disc is `INCOMPLETE` (`_select_redump(..., complete_only=True)`, `IncompleteSet.kept=False`) and goes to `_incomplete`; off, it stays where it is, with no
+  playlist (the earlier behaviour). A raw disc the rules set aside is not converted (`App._convert_plan` marks it `skip`).
+* With `convert_first` a raw disc is ranked as the CHD it will become (`plan_units`: `chd_units` includes it when its game has no CHD), so older versions
+  are superseded in the preview; the library preview shows the CHD's name for a raw disc. `pcsx2.read_serial` reads `.zip` / `.7z`, `.cue` / `.bin` too;
+  `library._same_code`: a game replaced by a release with the same game code goes whatever the saves rule is (its saves work there), and
+  `_saves_plan` leaves such PlayStation 2 saves where they are.
+
+**AMENDMENT 36 — Multi-disc games in a folder of their own; tags on tree folders.**
+* A disc of a multi-disc game (`library._disc_free_name(name) != name`) is placed at `<root>/<name without the disc>/<name>/` (`discsys.game_folder`, used by
+  `unit_target` and `plan_convert`); its playlist is written in the game's folder (`m3u.PlaylistSpec.directory`, set when the discs sit in one folder each
+  below the same folder), with relative paths into the disc folders. Earlier libraries move once on the next build; the old playlist is replaced.
+* `/api/tree`: a folder row carries `tags` (regions, languages, version, status) when everything below it that has a game shares them (`App._folder_tags`).
+  The state of a raw disc's CHD is called `convert`.
+
+**AMENDMENT 37 — Saves that are copied, shown on the tree.**
+* `saves.effect` of a plan row / tree file: `carry` (the game it replaces: its saves are copied out), `receive` (the game that gets them), `rename`,
+  `archive`; the tree shows the tag *Saves copied* / *Saves renamed* / *Saves archived* on the file and (`save_move`) on the folder above it.
+* The default of `saved_games` is now `convert` ("Copy or convert the save to the latest version, leave the existing save"); `keep`, `archive`, `leave`, `carry` remain choices.
+* With the rule `carry` / `convert`, a save of a release you have no file for (another revision or name) whose title is a game you have in the
+  same region is copied to that game's name - a multi-disc game's: its playlist's; a raw disc the build converts: its Redump name
+  (`App._carry_to_owned`, `_final_stem`, `_playlist_of_op`). `convert` also converts a PlayStation save for the owned disc's code (`sp["convert"]`) and a
+  PlayStation 2 save to its code (`sp["ps2"]`), in any region. The old save stays; the copies are journalled (RetroArch's Undo).

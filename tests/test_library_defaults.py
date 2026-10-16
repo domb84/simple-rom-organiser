@@ -218,3 +218,33 @@ class MigrationServerTests(ServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConvertRules(unittest.TestCase):
+    def platform(self, name: str):
+        from romorg import platforms
+        return platforms.get_platform(name) if hasattr(platforms, "get_platform") else next(p for p in platforms.list_platforms() if p.name == name)
+
+    def test_the_rules_apply_where_a_system_can_convert(self) -> None:
+        from romorg import library
+        disc = library.applicable_fields(self.platform("Sony PlayStation 2"))
+        cart = library.applicable_fields(self.platform("Super Nintendo Entertainment System"))
+        none = library.applicable_fields(self.platform("Nintendo Game Boy Advance"))
+        self.assertTrue({"convert_first", "delete_converted"} <= disc)
+        self.assertIn("convert_first", cart)                                 # (clean up the dumps)
+        self.assertNotIn("delete_converted", cart)                           # (originals are only deleted after a CHD was checked)
+        self.assertFalse({"convert_first", "delete_converted"} & none)
+        self.assertFalse(library.app_defaults().convert_first or library.app_defaults().delete_converted)   # off until you turn them on
+
+    def test_the_old_per_system_box_becomes_an_override_of_the_rule(self) -> None:
+        from romorg import library
+        psx, gba = self.platform("Sony PlayStation"), self.platform("Nintendo Game Boy Advance")
+        cfg = {"convert_on_build": {"Sony PlayStation": True, "Nintendo Game Boy Advance": True, "Sega Dreamcast": False}}
+        self.assertTrue(library.migrate_config(cfg))
+        self.assertNotIn("convert_on_build", cfg)
+        self.assertTrue(library.load_profile(cfg, psx).convert_first)
+        self.assertEqual(library.overrides_of(cfg, psx).get("convert_first"), True)
+        self.assertFalse(library.load_profile(cfg, gba).convert_first)       # (a system that cannot convert keeps nothing of it)
+        self.assertFalse(library.load_profile(cfg, self.platform("Sega Dreamcast")).convert_first)
+        library.store_global(cfg, library.LibraryProfile(convert_first=True))   # and your default is for every system that can
+        self.assertTrue(library.load_profile(cfg, self.platform("Sega Dreamcast")).convert_first)

@@ -18,11 +18,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
-__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "SAVEONLY", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
+__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "SAVEONLY", "CONVERTED", "DELETED", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
 
 SAME, RENAMED, MOVED, NEW, IGNORED = "same", "renamed", "moved", "new", "ignored"
 EXISTING, INCOMING, COPY, SAVES = "existing", "incoming", "copy", "saves"
 MISSING = "missing"            # (a game the folder lacks: no file, listed where it would be)
+CONVERTED = "converted"        # (the CHD a build makes of a raw disc: a new file, its size not known before)
+DELETED = "deleted"            # (an original the build deletes after converting it)
 SAVEONLY = "saveonly"          # (saves of a game that is not in the database's list: no file, listed by the title the saves are known by)
 LIBRARY, ARCHIVE = "library", "archive"
 _MOVE = ("move", "rename")
@@ -37,7 +39,7 @@ class Index:
 
     @staticmethod
     def _node() -> Dict[str, Any]:
-        return {"dirs": set(), "files": [], "n": 0, "bytes": 0, "changed": 0, "missing": 0}
+        return {"dirs": set(), "files": [], "n": 0, "bytes": 0, "changed": 0, "missing": 0, "states": {}}
 
     def add(self, parts: Iterable[str], size: int = 0, state: str = SAME, origin: str = "", ref: Any = None) -> None:
         parts = tuple(parts)
@@ -45,13 +47,14 @@ class Index:
             return
         folder: Tuple[str, ...] = ()
         changed = state not in (SAME, EXISTING, IGNORED, MISSING, SAVEONLY)
-        real = state not in (MISSING, SAVEONLY)                   # (a missing game is listed, but it is no file)
+        real = state not in (MISSING, SAVEONLY, DELETED)         # (a missing game is listed, but it is no file; nor is a file the build deletes)
 
         def count(node: Dict[str, Any]) -> None:
             node["n"] += real
             node["missing"] += state == MISSING
             node["bytes"] += size
             node["changed"] += changed
+            node["states"][state] = node["states"].get(state, 0) + 1
 
         for i, name in enumerate(parts[:-1]):
             node = self.dirs[folder]
@@ -74,7 +77,8 @@ class Index:
         dirs = []
         for name in sorted(node["dirs"], key=str.casefold):
             sub = self.dirs[key + (name,)]
-            dirs.append({"name": name, "files": sub["n"], "bytes": sub["bytes"], "changed": sub["changed"], "missing": sub["missing"]})
+            dirs.append({"name": name, "files": sub["n"], "bytes": sub["bytes"], "changed": sub["changed"], "missing": sub["missing"],
+                         "states": dict(sub["states"])})
         files = sorted(node["files"], key=lambda f: f[0].casefold())
         page = files[max(0, offset):max(0, offset) + max(1, limit)]
         return {"path": "/".join(key), "dirs": dirs, "total_files": len(files), "offset": max(0, offset),

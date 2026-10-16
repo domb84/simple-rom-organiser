@@ -371,7 +371,7 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 # modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
 APP_MODULES = (
     "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
-    "convert", "datfile", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
+    "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
     "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "keyfiles", "libexport", "library", "m3u", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "redump", "retroarch", "rvz", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec",

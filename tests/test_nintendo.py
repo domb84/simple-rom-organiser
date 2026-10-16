@@ -312,6 +312,27 @@ class Ps2(Base):
         self.assertEqual(pcsx2.serial_from_cnf("BOOT2 = cdrom0:\\SCUS_973.99;1\nVER = 1.0"), "SCUS-97399")
         self.assertEqual(pcsx2.serial_from_cnf("BOOT = cdrom0:\\SLPS_123.45;1"), "")                                   # (a PS1 disc: BOOT)
 
+    def test_the_serial_of_a_raw_bin_a_cue_and_a_zip_of_them(self) -> None:
+        import zipfile
+        from romorg import pcsx2
+        img = ps2_iso("SCUS_944.91", boot="BOOT")                                       # (a PlayStation disc: BOOT)
+        for mode, lead in ((2, 24), (1, 16)):
+            raw = bytearray()
+            for i in range(len(img) // 2048):
+                head = b"\0" + b"\xff" * 10 + b"\0" + bytes(3) + bytes([mode]) + (bytes(8) if mode == 2 else b"")
+                raw += head.ljust(lead, b"\0") + img[i * 2048:(i + 1) * 2048] + bytes(2352 - lead - 2048)
+            bin_ = self.put(f"g{mode}.bin", bytes(raw))
+            cue = self.put(f"g{mode}.cue", f'FILE "g{mode}.bin" BINARY\r\n  TRACK 01 MODE2/2352\r\n    INDEX 01 00:00:00\r\n'.encode())
+            self.assertEqual(pcsx2.read_serial(bin_, psx=True), "SCUS-94491", mode)
+            self.assertEqual(pcsx2.read_serial(cue, psx=True), "SCUS-94491", mode)
+            z = bin_.parent / f"z{mode}.zip"
+            with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("Game/g.cue", f'FILE "g.bin" BINARY\r\n  TRACK 01 MODE2/2352\r\n'.encode())
+                zf.writestr("Game/g.bin", bytes(raw))
+            self.assertEqual(pcsx2.read_serial(z, psx=True), "SCUS-94491", mode)
+        self.assertEqual(pcsx2.read_serial(self.put("n.bin", b"x" * 100000), psx=True), "")
+        self.assertEqual(pcsx2.read_serial(self.put("p.iso", img), psx=False), "")                                       # (BOOT is a PlayStation line)
+
     def test_save_folder_names(self) -> None:
         from romorg import pcsx2
         self.assertEqual([pcsx2.save_serial(n) for n in ("BASLUS-20946GTA50000", "BESLES-54674c28_1", "BISLPS-25000X", "BADATA-SYSTEM", "_pcsx2_deleted_x")],

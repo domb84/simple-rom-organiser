@@ -363,6 +363,7 @@ class Policies(SavesCase):
         root, _saves = self.world()
         put(root / "Solo (USA).sfc", self.rom["Solo (USA)"])
         self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.call("POST", "/api/library/profile", {"platform": SNES, "saved_games": "keep"})        # (no copies: only the games with saves have saves)
         everything = self.call("POST", "/api/library/plan", {"limit": 100})
         with_saves = self.call("POST", "/api/library/plan", {"limit": 100, "saves": "with"})
         self.assertEqual(sorted(i["from"] for i in with_saves["items"]), ["Mix (USA).sfc", "Zed (USA).sfc"])
@@ -429,7 +430,7 @@ class ProfileRoundTrip(unittest.TestCase):
         old = library.LibraryProfile().to_dict()
         del old["saved_games"], old["saved_overrides"]
         got = library.LibraryProfile.from_dict(old)
-        self.assertEqual((got.saved_games, got.saved_overrides), ("keep", ()))
+        self.assertEqual((got.saved_games, got.saved_overrides), ("convert", ()))
         self.assertEqual(library.LibraryProfile.from_dict({"saved_overrides": "nonsense"}).saved_overrides, ())
 
     def test_signature_of_the_totals_ignores_the_saves_choices(self) -> None:
