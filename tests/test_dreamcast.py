@@ -513,6 +513,23 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(res["deleted"], 1)
         self.assertFalse(list(self.w.root.rglob("*.m3u")))
 
+    def test_a_library_of_the_old_layout_moves_into_the_game_folder_and_leaves_no_empty_folder(self) -> None:
+        import shutil
+        plan = self.plan()
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        game = self.w.root / "Big Game (USA)"
+        pl = (game / "Big Game (USA).m3u").read_text()
+        for d in ("Disc 1", "Disc 2"):                                    # (as an earlier version laid it out: a folder per disc, the playlist next to disc 1)
+            shutil.move(str(game / f"Big Game (USA) ({d})"), str(self.w.root / f"Big Game (USA) ({d})"))
+        (game / "Big Game (USA).m3u").unlink()
+        game.rmdir()
+        (self.w.root / "Big Game (USA) (Disc 1)" / "Big Game (USA).m3u").write_text(pl.replace("Big Game (USA) (Disc 1)/", "").replace("Big Game (USA) (Disc 2)/", "../Big Game (USA) (Disc 2)/"))
+        plan = self.plan()
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        self.assertTrue((game / "Big Game (USA) (Disc 2)" / "Big Game (USA) (Disc 2).chd").is_file())
+        self.assertTrue((game / "Big Game (USA).m3u").is_file())
+        self.assertEqual([p.name for p in self.w.root.iterdir() if p.name.startswith("Big Game")], ["Big Game (USA)"])     # (no empty disc folders left)
+
     def test_user_playlist_is_never_touched(self) -> None:
         mine = self.w.root / "big1" / "my own.m3u"
         mine.write_text("b1.chd\n")

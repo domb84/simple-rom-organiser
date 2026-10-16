@@ -293,6 +293,30 @@ class DiscSavesTests(PsServerCase):
         dirs = {d["name"]: d for d in self.call("/api/tree?platform=Sony%20PlayStation%202&show=")["dirs"]}
         self.assertEqual(dirs["Golf (Europe)"].get("save_move"), "convert")                       # (the folder says so too)
 
+    def test_a_save_of_another_release_is_flagged_for_a_copy_only_when_the_game_code_differs(self) -> None:
+        from test_nintendo import ps2_iso
+        self.iso.update({"Delta (USA)": ps2_iso("SLUS_210.00") + b"\1" * 2048, "Delta (USA) (v2.00)": ps2_iso("SLUS_210.00") + b"\2" * 2048,
+                         "Golf (Europe)": ps2_iso("SLES_599.90")})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03:41:38")
+        self.gametdb([("SLUS-21000", "Delta"), ("SLUS-20990", "Golf"), ("SLES-59990", "Golf")])
+        card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        for d in ("BASLUS-21000DELTA", "BASLUS-20990GOLF"):
+            (card / d).mkdir()
+            (card / d / d).write_bytes(b"s")
+        self.put_iso("Delta (USA) (v2.00)", "Delta (USA) (v2.00)/Delta (USA) (v2.00).chd", dvd=True)
+        self.put_iso("Golf (Europe)", "Golf (Europe)/Golf (Europe).chd", dvd=True)
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
+        self.scan_ps2()
+        rows = {}
+        for d in self.call("/api/tree?platform=Sony%20PlayStation%202&show=")["dirs"]:
+            for f in self.call("/api/tree?platform=Sony%20PlayStation%202&show=&path=" + d["name"].replace(" ", "%20"))["files"]:
+                rows[f["name"]] = f["row"] or {}
+        self.assertIn("Delta (USA) (v2.00).chd", rows, sorted(rows))
+        delta, golf = rows["Delta (USA) (v2.00).chd"], rows["Golf (Europe).chd"]
+        self.assertEqual(((delta.get("saves") or {}).get("saves"), delta.get("save_copy")), (1, None))  # (the same code: it is this disc's own save)
+        self.assertEqual((bool(golf.get("save_for")), golf.get("save_copy")), (True, True))          # (another code: only a converted copy works)
+
     def test_a_disc_you_have_is_offered_the_save_of_its_other_region(self) -> None:
         import shutil
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep"})

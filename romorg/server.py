@@ -4274,8 +4274,8 @@ class App:
         have = {ra.fold_name(self._final_stem(plan, op)) for op, _t in owned}
         for stem, st in sorted(report.sets.items()):
             pcsx2 = st.source == "pcsx2"
-            if stem in gone or stem in have or st.match == "rom" or not st.saves or not (st.renames or pcsx2):
-                continue
+            if stem in gone or stem in have or st.match == "rom" or not st.saves or not (st.renames or pcsx2) or (st.game and st.game in by_name):
+                continue                                        # (a save of a game you have is that game's: renamed with it, never copied)
             choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
             if choice not in ("carry", "convert") or any(a == st.name for a, _b in carry):
                 continue
@@ -4876,9 +4876,10 @@ class App:
 
         for e in entries:                                        # (a tree made again starts from the plain rows)
             if e["state"] == treeview.MISSING and e["row"]:
-                for k in ("saves", "also_fits", "save_for", "convert"):
+                for k in ("saves", "also_fits", "save_for", "convert", "save_copy"):
                     e["row"].pop(k, None)
         self._place_platform = platform
+        self._place_root = Path(state.root)
         fold = _mod("retroarch").fold_name
         stems = {fold(Path(e["parts"][-1]).stem) for e in entries if e["row"] and e["side"] == "library" and (e["row"].get("saves") or {}).get("total")}
         for st in sorted(report.counted(), key=lambda x: (x.title or x.name).casefold()):
@@ -4929,11 +4930,25 @@ class App:
         fit = [i for i in self._same_title_owned(owned, title) if usable(i) and (edition is None or self._edition(i["name"]) == edition)]
         if not fit:
             return False
-        names = {self._preferred_release(self._place_platform, fit, "")["name"]}          # (one ROM: the release your rules prefer)
-        return self._attach_rows(st, names, total, entries)
+        pick = self._preferred_release(self._place_platform, fit, "")                    # (one ROM: the release your rules prefer)
+        return self._attach_rows(st, {pick["name"]}, total, entries, copy=self._save_needs_copy(st, pick))
+
+    def _save_needs_copy(self, st: Any, item: dict[str, Any]) -> bool:
+        """Whether the save of another release has to be copied (or converted) for the game ``item`` to find it: a RetroArch save is named
+        after the ROM; a PCSX2 save after the game code, so a release with the same code finds it as it is; other emulators' by their ID."""
+        if st.source == "pcsx2":
+            files = item.get("files") or []
+            root = getattr(self, "_place_root", None)
+            if not files or root is None:
+                return True
+            new = _mod("pcsx2").read_serial(root / str(files[0]).split("::", 1)[0], psx=True)
+            old = self._set_code(st)
+            return not (old and new and old == new)
+        return bool(st.renames)
 
     @staticmethod
-    def _attach_rows(st: Any, names: set[str], total: dict[str, int], entries: list[dict[str, Any]], own_save: bool = False) -> bool:
+    def _attach_rows(st: Any, names: set[str], total: dict[str, int], entries: list[dict[str, Any]], own_save: bool = False,
+                     copy: bool = False) -> bool:
         """Add a save set's counts to the rows of the games ``names`` (each row once: a disc game's files share theirs)."""
         seen: set[int] = set()
         for e in entries:
@@ -4948,6 +4963,8 @@ class App:
             row["saves"] = {**had, **{k: had.get(k, 0) + total[k] for k in total}}
             if not own_save:
                 row.setdefault("save_for", st.title or st.name)
+                if copy:
+                    row["save_copy"] = True                     # (it needs a copy to work here: see _save_needs_copy)
         return bool(seen)
 
     def _same_title_owned(self, owned: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:

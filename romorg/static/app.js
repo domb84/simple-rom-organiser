@@ -3682,8 +3682,9 @@
   /** A game that shows the save of another release but is not given a copy of it: why (the saves choice), and what to choose. */
   function saveNotCopied(i) {
     const info = state.library[state.platform];
-    const choice = info && info.profile ? info.profile.saved_games : "";
-    if (!i.save_for || (i.saves && i.saves.effect) || choice === "convert" || choice === "carry") return "";
+    if (!info || !info.profile || !i.save_for || !i.save_copy || (i.saves && i.saves.effect)) return "";     // (rules not loaded yet; or the save works here as it is)
+    const choice = info.profile.saved_games;
+    if (choice === "convert" || choice === "carry") return "";
     const now = (SAVED_CHOICES.find((c) => c.value === choice) || { label: choice }).label;
     return `This save belongs to ${i.save_for}. The build does not copy it to this game: the saves choice is "${now}". Choose "${SAVED_CHOICES[0].label}" in the Saves rules to have it copied (converted for this release's game code where needed).`;
   }

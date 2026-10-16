@@ -10,6 +10,7 @@ running it on its own kept output changes nothing.
 from __future__ import annotations
 
 import re
+import functools
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -711,9 +712,13 @@ class _Scope:
 def _region_pos(t: Any, profile: LibraryProfile) -> int:
     """Where the best of a release's regions stands in the region list itself: regions you ranked as equal (``region_ties``) are the same tier, but
     when nothing else tells two releases apart the one higher in the list is preferred, not the one that comes first alphabetically."""
-    order = tags.region_order(profile.region_priority)
-    pos = {r: i for i, r in enumerate(order)}
-    return min((pos.get(r, len(order)) for r in t.regions), default=len(order))
+    pos = _region_positions(tuple(profile.region_priority))
+    return min((pos.get(r, len(pos)) for r in t.regions), default=len(pos))
+
+
+@functools.lru_cache(maxsize=16)
+def _region_positions(priority: tuple) -> dict:
+    return {r: i for i, r in enumerate(tags.region_order(priority))}
 
 
 def _lang_rank(langs: Iterable[str], profile: LibraryProfile) -> int:

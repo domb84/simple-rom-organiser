@@ -1836,8 +1836,8 @@ def plan_library(result: DcScanResult, profile: Any, savedisk: bool = False,
                 continue
             unit = op.unit
             final = dict(op.moves).get(unit.path, unit.path)
-            if op.code:       # set aside discs are no playlist members
-                disks = []
+            if op.code or getattr(unit, "archive", False):       # set aside discs are no playlist members; nor is a disc still in a zip / 7z
+                disks = []                                         #  (an emulator cannot load it from a playlist: it gets one once it is a CHD)
                 break
             disks.append(m3u.PlaylistDisk(slot, final, None, cs.labels.get(slot, "")))
         if disks and len(disks) == len(cs.slots):
