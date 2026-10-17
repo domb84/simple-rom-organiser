@@ -31,6 +31,27 @@ def works(platform: str, old_regions: Iterable[str], new_regions: Iterable[str])
     return False
 
 
+def behaviour() -> list[dict]:
+    """What the saves of each system are like and so what a build does with them (the Saves page): one row per kind of system. The lists of
+    systems come from the rules above, so the page cannot disagree with them."""
+    def row(systems: Iterable[str], kept_by: str, follows: str, copies: str, converts: str) -> dict:
+        return {"systems": sorted(systems), "kept_by": kept_by, "follows": follows, "copies": copies, "converts": converts}
+    ps1, ps2 = "Sony PlayStation", "Sony PlayStation 2"
+    return [
+        row(ANY_RELEASE, "RetroArch, named after the ROM file", "Yes", "Yes, in any region", "Not needed: a save works in every release"),
+        row([ps1], "RetroArch memory card, named after the game file (the product code is inside the card)", "Yes",
+            "Yes, in the same region", "Yes, in any region: the card entry is rewritten for the other disc's code (both discs must be readable)"),
+        row([ps2], "PCSX2, a folder or a card image, by the game's code", "Not needed: the code does not change",
+            "Not needed when the other release has the same code", "Yes, in any region: copied under the other release's code (a card image is rewritten, its old content kept); not while PCSX2 runs"),
+        row(["Sega Dreamcast"], "RetroArch (Flycast) memory card, named after the disc's product number", "Not needed: the number does not change",
+            "No", "No"),
+        row(["Nintendo GameCube", "Nintendo Wii"], "Dolphin, by game ID", "Not needed", "No", "No"),
+        row(["Nintendo Wii U"], "Cemu, by title ID", "Not needed", "No", "No"),
+        row(["Nintendo Switch"], "Eden or Ryujinx, by title ID", "Not needed", "No", "No"),
+        row(["Commodore Amiga", "Commodore Amiga - WHDLoad"], "RetroArch, named after the file", "Yes", "No", "No"),
+    ]
+
+
 def explain(platform: str) -> str:
     """One line for the screen: what this system's saves do across releases."""
     if platform in ANY_RELEASE:

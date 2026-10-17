@@ -425,6 +425,35 @@ class TotalsManager:
                               for r, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]] if total else []
         return out
 
+    def target_names(self, name: str) -> Optional[frozenset]:
+        """The rom names the rules keep for the whole database (the games a library of this system is meant to have); None while the
+        target for the rules now in force is not calculated."""
+        with self._cv:
+            want, t = self._want.get(name), self._targets.get(name)
+            if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
+                return None
+            return frozenset(n for names in t[1].games.values() for n in names)
+
+    def name_keys(self, name: str) -> dict:
+        """``{rom name: game key}`` of every rom the rules keep (the key the tiles count games by); empty while the target is not ready."""
+        with self._cv:
+            want, t = self._want.get(name), self._targets.get(name)
+            if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
+                return {}
+            return {n: key for key, names in t[1].games.items() for n in names}
+
+    def missing_names(self, name: str) -> Optional[frozenset]:
+        """The rom names the rules keep for games you have no version of (what "missing" counts); None while the target, or your scan
+        of the system, is not calculated for the rules now in force."""
+        with self._cv:
+            want, t, u = self._want.get(name), self._targets.get(name), self._users.get(name)
+            if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
+                return None
+            if want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
+                return None
+            owned = u[1].games
+            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE for n in names)
+
     def problems(self, name: str, state: str) -> Optional[list[dict[str, Any]]]:
         """The owned games that are not kept (``state``: EXCLUDED_OWNED or INCOMPLETE_OWNED): title, the names you own, and why."""
         with self._cv:

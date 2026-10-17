@@ -337,6 +337,9 @@ tr.row-missing .game-name { color: var(--muted); }
 .chip-bad.active { border-color: var(--bad); background: rgba(255, 107, 107, 0.16); }
 
 /* ---------- library rules panel (rendered from the server's catalog) ---------- */
+.rules-section { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.rules-section .rules-head { color: var(--text); font-size: 15px; margin: 0 0 2px; }
+.rules-section .rules-group { background: transparent; }
 .rules-group { padding: 8px 12px 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
 .rules-group .rules-head { color: var(--text); font-size: 15px; margin: 0 0 4px; }
 .rules-group .note { margin: 0 0 6px; }
@@ -772,3 +775,12 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 .emu-fold > summary::before { content: "\25B8"; display: inline-block; width: 1.2em; color: var(--muted); }
 .emu-fold[open] > summary::before { content: "\25BE"; }
 .emu-fold > summary .muted { margin-left: 0.4em; }
+
+/* ---------- the Saves page ---------- */
+.saves-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.saves-table th, .saves-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.saves-table th { color: var(--muted); font-weight: 600; }
+.saves-table td:first-child { font-weight: 600; min-width: 11em; }
+.saves-table .ok-text { color: var(--ok); }
+.table-wrap { overflow-x: auto; }
+.saves-table .dim { opacity: 0.45; }

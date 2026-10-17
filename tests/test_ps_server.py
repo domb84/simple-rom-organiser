@@ -174,12 +174,12 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual([s["title"] for s in none], ["Grand Theft Auto III"])
         self.assertEqual(self.call("/api/status")["scan"]["saves"]["dat_sets"], 1)
         tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=saves")                       # the tree lists them all too
-        self.assertEqual(tree["facets"]["show"]["saves"], 3)
+        self.assertEqual(tree["facets"]["show"]["saves"], 2)                                                  # (games: the USA and European Gamma are one)
         titles = sorted(f["name"] for f in tree["files"])
         self.assertIn("Grand Theft Auto III (PCSX2)", titles)
         gta = [f for f in tree["files"] if f["name"].startswith("Grand Theft Auto III")][0]
         self.assertEqual((gta["state"], gta["row"]["saves"]["saves"]), ("saveonly", 1))
-        self.assertEqual(self.call("/api/tree?platform=Sony%20PlayStation%202&show=missing")["facets"]["show"]["saves"], 3)
+        self.assertEqual(self.call("/api/tree?platform=Sony%20PlayStation%202&show=missing")["facets"]["show"]["saves"], 2)
         self.assertEqual(tree["sides"]["library"], 2)                                                    # (no file is counted for a save-only entry)
 
     def test_a_save_of_a_game_with_no_disc_takes_the_database_game_of_its_region(self) -> None:
@@ -468,6 +468,32 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual(card.read_bytes(), image)                                               # the card is exactly as it was
+
+
+class MissingFollowsTheRules(PsServerCase):
+    def test_missing_lists_the_games_the_rules_want_not_every_game_of_the_database(self) -> None:
+        self.iso.update({"Delta (USA)": T.make_iso(34, 21), "Delta (Europe)": T.make_iso(35, 22), "Delta (USA) (Demo)": T.make_iso(36, 23)})
+        T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
+                    name=PS2_DAT, version="2026-06-15 03:41:38")
+        self.put_iso("Alpha (USA)", "Alpha (USA)/Alpha (USA).chd")
+        self.scan_ps2()
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=missing")
+        names = sorted(f["name"] for f in tree["files"])
+        self.assertEqual(sum(n.startswith("Delta") for n in names), 1, names)                  # (one release of the game: the one the rules prefer, not the three)
+        self.assertNotIn("Delta (USA) (Demo)", names)                                            # (a demo is no game the rules want)
+        self.assertEqual(tree["facets"]["show"]["missing"], len(names) - 1)                       # (counted in games: the two discs of Part are one)
+        self.assertEqual(tree["facets"]["unit"], "games")
+
+    def test_the_discs_of_a_game_count_once_and_its_playlist_not_at_all(self) -> None:
+        self.put_iso("Alpha (USA)", "Alpha (USA)/Alpha (USA).chd")
+        self.put_iso("Part (USA) (Disc 1)", "Part (USA) (Disc 1)/Part (USA) (Disc 1).chd")
+        self.put_iso("Part (USA) (Disc 2)", "Part (USA) (Disc 2)/Part (USA) (Disc 2).chd")
+        self.scan_ps2()
+        self.call("/api/library/plan", {"platform": PS2})
+        tree = self.call("/api/tree?platform=Sony%20PlayStation%202&show=")
+        show = tree["facets"]["show"]
+        self.assertEqual(show["have"], 2)                                                           # (Alpha and Part: three disc images)
+        self.assertEqual(tree["totals"]["files"], 3)                                                # (the tree itself still lists the files)
 
 
 class RawDiscTests(PsServerCase):

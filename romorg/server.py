@@ -2520,11 +2520,15 @@ class App:
         for style in (library.STYLE_NOINTRO, library.STYLE_REDUMP, library.STYLE_WHDLOAD):
             seen = {e["id"] for e in info["catalog"]}
             info["catalog"] = info["catalog"] + [e for e in library.rule_catalog(style) if e["id"] not in seen]
-        info["inherit"] = {**info["inherit"], "applicable": list(library.RULE_FIELDS)}      # (every rule: it is the defaults of every system)
+        info["inherit"] = {**info["inherit"], "applicable": list(library.OVERRIDE_FIELDS)}      # (every rule: it is the defaults of every system)
         info["available_languages"] = [{"code": c, "name": n, "count": None, "games": None} for c, n in tags.LANGUAGES.items()]
         info["defaults_page"] = True
         info["changed"] = [f for f in library.RULE_FIELDS if profile.to_dict()[f] != library.app_defaults().to_dict()[f]]
         return info
+
+    def saves_behaviour(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/saves/behaviour``: what the saves of each kind of system are like and what a build can do with them (the Saves page)."""
+        return {"rows": _mod("savecarry").behaviour()}
 
     def library_defaults_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/defaults``: the same answer as a system's profile, for your defaults."""
@@ -4274,7 +4278,8 @@ class App:
         have = {ra.fold_name(self._final_stem(plan, op)) for op, _t in owned}
         for stem, st in sorted(report.sets.items()):
             pcsx2 = st.source == "pcsx2"
-            if stem in gone or stem in have or st.match == "rom" or not st.saves or not (st.renames or pcsx2) or (st.game and st.game in by_name):
+            if platform == "Sega Dreamcast" or stem in gone or stem in have or st.match == "rom" or not st.saves or not (st.renames or pcsx2) \
+                    or (st.game and st.game in by_name):
                 continue                                        # (a save of a game you have is that game's: renamed with it, never copied)
             choice = library.saved_choice(prof, st.dat, st.game) if st.match != "none" else prof.saved_games
             if choice not in ("carry", "convert") or any(a == st.name for a, _b in carry):
@@ -4283,12 +4288,13 @@ class App:
             title = self._fold_title(st.title or st.game or st.name)
             mine = tags_mod.parse_name(st.game or st.name)
             fit = [(op, t) for op, t in owned if self._fold_title(t.title) == title and self._edition(op.rom_name) == self._edition(st.game or st.name)
-                   and (conv or not mine.regions or not t.regions or set(mine.regions) & set(t.regions)
-                        or savecarry.works(platform, mine.regions, t.regions))]
+                   and (conv or savecarry.works(platform, mine.regions, t.regions))]      # (a disc system's save of another region only by converting it)
             if not fit:
                 continue
-            op = sorted(fit, key=lambda x: (x[0].rom_name.casefold()))[0][0]
+            op, theirs = sorted(fit, key=lambda x: (x[0].rom_name.casefold()))[0]
             codes = (self._set_code(st), self._disc_serial(op)) if conv else ("", "")
+            if not all(codes) and not savecarry.works(platform, mine.regions, theirs.regions):
+                continue                                                    # (it would need converting, and a disc's code cannot be read)
             if pcsx2:                                           # (PCSX2 names a save by the game's code: a release with that code finds it)
                 if all(codes) and codes[0] != codes[1] and codes not in ps2:
                     ps2.append(codes)
@@ -4761,6 +4767,21 @@ class App:
         _mod("paths").update_config(lambda cfg: cfg.__setitem__("page_tiles", chosen))
         return self._tiles_info()
 
+    def _target_names(self, platform: Any) -> frozenset | None:
+        """The games the rules want for the system (what "missing" is measured against); None when that cannot be told (no database, a
+        rating filter without its data, or the numbers are not ready after a short wait): then every game of the database counts."""
+        if not self._totals_want(platform):
+            return None
+        manager = self._totals()
+        for _ in range(2):
+            names = manager.missing_names(platform.name)         # (without a game of it of yours; the scan of this system must be the current one)
+            if names is None:
+                names = manager.target_names(platform.name)
+            if names is not None:
+                return names
+            manager.wait_idle(10.0)
+        return manager.missing_names(platform.name) or manager.target_names(platform.name)
+
     def _totals_want(self, platform: Any) -> bool:
         """Tell the totals worker what this system's rules, databases and scan are NOW, so that what is read from it next (the lists
         behind the hints, the tiles) is of these and never of the rules before a change. False when there is nothing to calculate
@@ -4813,7 +4834,8 @@ class App:
         the system's plans."""
         key = (False, _layout(state.platform) != LAYOUT_GAME_FOLDER)
         aside = self._archive_of(state.platform, state.root)
-        ident = f"{self._plan_id(state, key)}|{aside}"
+        wanted = self._target_names(state.platform)
+        ident = f"{self._plan_id(state, key)}|{aside}|{wanted is not None}"
         cached = state.items.get(("library", "tree"))
         if cached is not None and cached[0] == ident:
             return cached[1], cached[2], ident
@@ -4843,7 +4865,7 @@ class App:
             self._annotate_ratings(state, games)
         except ImportError:
             pass
-        for item, _t in games:                                   # the games the folder lacks: listed where they would be, no file
+        for item, _t in games:                                   # the games the folder lacks (of those the rules want): listed where they would be, no file
             if not item.get("have"):
                 entries.append({"side": treeview.LIBRARY, "parts": (item["name"],), "size": 0, "state": treeview.MISSING, "from": "",
                                 "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"]},
@@ -4855,6 +4877,9 @@ class App:
                 self._place_saves(state, entries, games, report)
             except Exception:  # noqa: BLE001 - the saves are a courtesy of the tree
                 traceback.print_exc()
+        if wanted is not None:        # a game you lack is "missing" only when the rules want it (and a game of yours that has saves is listed with them)
+            entries = [e for e in entries if not (e["state"] == treeview.MISSING and e["row"].get("name") not in wanted
+                                                  and not (e["row"].get("saves") or {}).get("total"))]
         state.items[("library", "tree")] = (ident, entries, base)
         state.items.pop(("library", "treeidx"), None)
         return entries, base, ident
@@ -5218,32 +5243,64 @@ class App:
             cache[ckey] = idx
         return cache[ckey], entries, base
 
-    def _tree_facets(self, entries: list[dict[str, Any]], side: str, f: dict[str, str]) -> dict[str, Any]:
-        """The numbers next to the choices of every filter: how many files each would leave, the other filters applied."""
+    def _tree_facets(self, entries: list[dict[str, Any]], side: str, f: dict[str, str], platform: Any = None) -> dict[str, Any]:
+        """The numbers next to the choices of every filter, the other filters applied. They count GAMES (the discs of a multi-disc game are
+        one, and its playlist is no game), as the tiles do; a file that belongs to no game counts as itself."""
         mine = [e for e in entries if e["side"] == side]
-        show = {k: 0 for k in self.TREE_SHOW}
-        states: dict[str, int] = {}
-        regions: dict[str, int] = {}
-        languages: dict[str, int] = {}
-        rated = {"1": 0, "0": 0}
+        keys = self._totals().name_keys(platform.name) if platform is not None else {}      # (the tiles' own key of every game the rules keep)
+        units: dict[int, Any] = {id(e): self._game_unit(e, platform, keys) for e in mine}
+        show: dict[str, set] = {k: set() for k in self.TREE_SHOW}
+        states: dict[str, set] = {}
+        regions: dict[str, set] = {}
+        languages: dict[str, set] = {}
+        rated: dict[str, set] = {"1": set(), "0": set()}
         for e in mine:
             row = e["row"] or {}
+            u = units[id(e)]
+            if u is None:
+                continue
             if self._tree_pass(e, f, "show"):
                 for k in self.TREE_SHOW:
                     if self._tree_pass(e, {"show": k}):
-                        show[k] += 1
+                        show[k].add(u)
             if self._tree_pass(e, f, "state"):
-                states[e["state"]] = states.get(e["state"], 0) + 1
+                states.setdefault(e["state"], set()).add(u)
             tags = row.get("tags") or {}
             if self._tree_pass(e, f, "region"):
                 for r in tags.get("regions") or ():
-                    regions[r] = regions.get(r, 0) + 1
+                    regions.setdefault(r, set()).add(u)
             if self._tree_pass(e, f, "language"):
                 for lang in tags.get("languages") or ():
-                    languages[lang] = languages.get(lang, 0) + 1
+                    languages.setdefault(lang, set()).add(u)
             if row and self._tree_pass(e, f, "rated"):
-                rated["1" if row.get("rating") is not None else "0"] += 1
-        return {"show": show, "state": states, "region": regions, "language": languages, "rated": rated}
+                rated["1" if row.get("rating") is not None else "0"].add(u)
+        count = lambda d: {k: len(v) for k, v in d.items()}      # noqa: E731
+        return {"show": count(show), "state": count(states), "region": count(regions), "language": count(languages), "rated": count(rated),
+                "unit": "games"}
+
+    @staticmethod
+    def _game_unit(entry: dict[str, Any], platform: Any, keys: dict[str, Any] | None = None) -> Any:
+        """What one entry of the tree counts as: its game (as the tiles count them: the discs of a game, and its regions and revisions, are one), the file
+        itself for one that is no game's, nothing for a playlist."""
+        parts = entry["parts"]
+        row = entry["row"] or {}
+        if str(parts[-1]).lower().endswith(".m3u"):
+            return None
+        name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
+        if not name or row.get("bios"):
+            return ("file", entry["side"], tuple(parts))
+        if keys and name in keys:
+            return ("game", keys[name])
+        tags_mod = _mod("tags")
+        style = _mod("library")._style_of_platform(platform) if platform is not None else "nointro"
+        try:
+            category = str((row.get("tags") or {}).get("category") or "")
+            t = (tags_mod.redump_tags(name, category) if style == "redump" else tags_mod.parse_whdload(name, "") if style == "whdload"
+                 else tags_mod.parse_name(name, style))
+            dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
+            return ("game", (dat, tags_mod.game_key(t)))                            # (the tiles' key: no region, no disc number)
+        except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
+            return ("name", name)
 
     def tree_systems(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/tree/systems``: the systems that have a folder, each with its folder, its part of the archive and whether a
@@ -5317,7 +5374,7 @@ class App:
                 if below.get(d["name"]):
                     d["upgrades"] = below[d["name"]]
         if not path and not offset:
-            out["facets"] = self._tree_facets(entries, side, f)
+            out["facets"] = self._tree_facets(entries, side, f, platform)
             out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] not in ("missing", "saveonly") and self._tree_pass(e, f))
                             for s in ("library", "archive")}
             out["archive_root"] = str(base) if base is not None else ""
@@ -5679,6 +5736,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/library/profile"): App.library_profile_save,
     ("POST", "/api/library/override"): App.library_override,
     ("POST", "/api/library/saved"): App.library_saved,
+    ("GET", "/api/saves/behaviour"): App.saves_behaviour,
     ("POST", "/api/saves/convert"): App.saves_convert,
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,

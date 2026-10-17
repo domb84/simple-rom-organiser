@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -218,6 +219,36 @@ class MigrationServerTests(ServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AmigaExclusions(unittest.TestCase):
+    """The exclusion rules only the Amiga systems have are an override of their own (``exclude_amiga``) next to ``exclude``."""
+
+    def test_the_amiga_only_rules_are_those_of_the_amiga_styles(self) -> None:
+        self.assertEqual(library.amiga_exclusions(), frozenset({"virus", "bad_size", "faked", "modified", "unreleased"}))
+        self.assertIn("exclude_amiga", library.applicable_fields(platforms.get_platform("Commodore Amiga")))
+        self.assertNotIn("exclude_amiga", library.applicable_fields(platforms.get_platform("Super Nintendo Entertainment System")))
+
+    def test_each_override_decides_its_own_rules(self) -> None:
+        amiga = platforms.get_platform("Commodore Amiga")
+        cfg = {"library_defaults": {"exclude": ["demo", "virus", "faked"]}}
+        self.assertEqual(sorted(library.load_profile(cfg, amiga).exclude), ["demo", "faked", "virus"])
+        library.set_override(cfg, amiga, ["exclude_amiga"], True)                      # (the Amiga rules are the system's own now, shared ones still follow you)
+        prof = library.load_profile(cfg, amiga)
+        library.store_profile(cfg, amiga, dataclasses.replace(prof, exclude=frozenset(set(prof.exclude) - {"virus"})))
+        self.assertEqual(library.overridden_fields(cfg, amiga), ["exclude_amiga"])
+        cfg["library_defaults"] = {"exclude": ["demo", "faked", "virus", "prototype"]}   # (you change the shared ones)
+        self.assertEqual(sorted(library.load_profile(cfg, amiga).exclude), ["demo", "faked", "prototype"])
+        library.set_override(cfg, amiga, ["exclude"], True)
+        self.assertEqual(library.overridden_fields(cfg, amiga), ["exclude", "exclude_amiga"])
+        library.set_override(cfg, amiga, ["exclude", "exclude_amiga"], False)
+        self.assertNotIn("library_overrides", cfg)                                       # (nothing left behind, not even the marker)
+
+    def test_an_override_made_when_there_was_one_list_still_decides_all_of_them(self) -> None:
+        amiga = platforms.get_platform("Commodore Amiga")
+        cfg = {"library_overrides": {amiga.name: {"exclude": ["demo"]}}}
+        self.assertEqual(sorted(library.load_profile(cfg, amiga).exclude), ["demo"])
+        self.assertEqual(library.overridden_fields(cfg, amiga), ["exclude", "exclude_amiga"])
 
 
 class ConvertRules(unittest.TestCase):

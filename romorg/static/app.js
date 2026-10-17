@@ -826,6 +826,7 @@
       }
       if (parts[0] === "retroarch") return { view: "retroarch", slug: "", tab: "", params: {} };
       if (parts[0] === "chd") return { view: "chd", slug: "", tab: "", params: {} };
+      if (parts[0] === "saves") return { view: "saves", slug: "", tab: "", params: {} };
       if (parts[0] === "settings") return { view: "settings", slug: "", tab: "", params: {} };
       if (parts[0] === "databases") return { view: "databases", slug: "", tab: "", params: {} };
       if (parts[0] === "bios") return { view: "bios", slug: "", tab: "", params: {} };
@@ -930,6 +931,7 @@
     box.replaceChildren(...(groups.length ? groups : [el("div", { class: "muted small side-none", text: "No system matches." })]));
     $("retroarch-link").setAttribute("aria-current", state.route && state.route.view === "retroarch" ? "true" : "false");
     $("chd-link").setAttribute("aria-current", state.route && state.route.view === "chd" ? "true" : "false");
+    $("saves-link").setAttribute("aria-current", state.route && state.route.view === "saves" ? "true" : "false");
     $("settings-link").setAttribute("aria-current", state.route && state.route.view === "settings" ? "true" : "false");
     $("databases-link").setAttribute("aria-current", state.route && state.route.view === "databases" ? "true" : "false");
     $("bios-link").setAttribute("aria-current", state.route && state.route.view === "bios" ? "true" : "false");
@@ -1179,6 +1181,7 @@
     if (!wideLayout()) setSide(r.view === "home");
     $("view-retroarch").classList.toggle("hidden", r.view !== "retroarch");
     $("view-chd").classList.toggle("hidden", r.view !== "chd");
+    $("view-saves").classList.toggle("hidden", r.view !== "saves");
     $("view-settings").classList.toggle("hidden", r.view !== "settings");      // (every page is shown or hidden before any of them returns)
     $("view-databases").classList.toggle("hidden", r.view !== "databases");
     $("view-bios").classList.toggle("hidden", r.view !== "bios");
@@ -1220,6 +1223,16 @@
       document.title = "Disc images - Simple ROM Organiser";
       state.viewWas = "chd";
       loadChdman();
+      renderHome();
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (r.view === "saves") {
+      $("view-home").classList.add("hidden");
+      $("view-system").classList.add("hidden");
+      document.title = "Saves - Simple ROM Organiser";
+      state.viewWas = "saves";
+      SavesPage.show();
       renderHome();
       window.scrollTo(0, 0);
       return;
@@ -2538,6 +2551,9 @@
 
   // Everything below is rendered from the server's rule catalog (library.rule_catalog / profile_info): no rule list lives here.
   const GROUP_TITLE = { exclude: "Exclude", keep_flag: "Keep these dump types" };
+  const AMIGA_STYLES = ["tosec", "whdload"];
+  /** A rule of the catalog that only the Amiga systems (TOSEC, WHDLoad) have. */
+  const amigaOnly = (e) => !!(e.applies_to && e.applies_to.length) && e.applies_to.every((x) => AMIGA_STYLES.includes(x));
   const catalogOf = (info) => info.catalog || [];
   const optionEntries = (info) => catalogOf(info).filter((e) => e.kind === "option" && e.id !== "languages" && e.id !== "region_priority"
     && !e.group && (info.available || {})[e.id] !== false);
@@ -2631,7 +2647,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    saved_games: "Saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
     convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
@@ -3206,11 +3222,13 @@
       state.raFollow = true;
       get("/api/retroarch").then((i) => { state.raFollow = i.follow; syncFollowBoxes(); }).catch(() => {});
     }
-    const found = state.scan && state.scan.saves ? state.scan.saves : null;
+    const global = where === "set";                                     // (Settings: for every system, not the one that was scanned last)
+    const found = !global && state.scan && state.scan.saves ? state.scan.saves : null;
     const renames = !found || found.renames !== false;                  // (only RetroArch's saves are named after the ROM)
     const names = found && found.sources && found.sources.length ? found.sources.join(", ") : "RetroArch";
+    const head = el("div", { class: "rules-head", text: global ? "Saves" : `Saves (${names})` });
     return el("div", { class: "rules-group", id: `${where}-saves-group` },
-      el("div", { class: "rules-head", text: `Saves (${names})` }),
+      head,
       el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: "When a rule replaces or archives a game you have saves for: " }), select),
       el("div", { class: "sub note", id: `${where}-saved-games-note`, text: choice.text }),
       renames ? el("label", { class: "check rule-check", title: "The same setting as on the RetroArch page" }, follow,
@@ -3297,18 +3315,26 @@
     const cat = catalogOf(info);
     const groups = [];
 
-    const excl = cat.filter((e) => e.kind === "exclude");
+    const amiga = [];                                                          // (the rules only the Amiga systems have: one section of their own)
+    const exclRows = (list) => list.map((e) => ruleRow(e, prof.exclude.includes(e.id),
+      (on) => rctx.save({ exclude: on ? [...prof.exclude, e.id] : prof.exclude.filter((x) => x !== e.id) }), `excluded_${e.id}`));
+    const excl = cat.filter((e) => e.kind === "exclude" && !amigaOnly(e));
     if (excl.length) {
       groups.push(unit(["exclude"], el("div", { class: "rules-group", id: "rules-exclude" },
         el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (moved to _excluded/)` }),
-        el("div", { class: "rules-grid" }, excl.map((e) => ruleRow(e, prof.exclude.includes(e.id),
-          (on) => rctx.save({ exclude: on ? [...prof.exclude, e.id] : prof.exclude.filter((x) => x !== e.id) }), `excluded_${e.id}`))),
+        el("div", { class: "rules-grid" }, exclRows(excl)),
         el("div", { class: "sub", text: scope(scopes.exclude_dats) })), "Exclusions"));
+    }
+    const amigaExcl = cat.filter((e) => e.kind === "exclude" && amigaOnly(e));
+    if (amigaExcl.length) {
+      amiga.push(unit(["exclude_amiga"], el("div", { class: "rules-group", id: "rules-exclude-amiga" },
+        el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (moved to _excluded/)` }),
+        el("div", { class: "rules-grid" }, exclRows(amigaExcl))), "Amiga exclusions"));
     }
     const flags = cat.filter((e) => e.kind === "keep_flag");
     if (flags.length && avail.keep_flags !== false) {
       const cr = flags.find((e) => e.id === "cr");
-      groups.push(unit(["keep_flags"], el("div", { class: "rules-group", id: "rules-flags" },
+      amiga.push(unit(["keep_flags"], el("div", { class: "rules-group", id: "rules-flags" },
         el("div", { class: "rules-head", text: GROUP_TITLE.keep_flag }),
         el("div", { class: "sub note", text: `Untick a type to leave out every variant that carries it. ${scope(scopes.best_variant_dats)}` }),
         el("div", { class: "rules-grid" }, flags.map((e) => ruleRow(e, prof.keep_flags.includes(e.id),
@@ -3321,7 +3347,8 @@
     }
     const CHD_RULES = ["convert_first", "delete_converted"];                  // (the CHD rules are one group of their own)
     const chdOpts = optionEntries(info).filter((e) => CHD_RULES.includes(e.id));
-    const opts = optionEntries(info).filter((e) => !CHD_RULES.includes(e.id));
+    const opts = optionEntries(info).filter((e) => !CHD_RULES.includes(e.id) && !amigaOnly(e));
+    const amigaOpts = optionEntries(info).filter((e) => amigaOnly(e));
     if (opts.length || info.ranking) {
       const datsOf = { latest_only: scopes.latest_dats, best_variant: scopes.best_variant_dats, complete_only: scopes.complete_dats,
         borrow_editions: scopes.best_variant_dats };
@@ -3336,6 +3363,15 @@
         }).filter(Boolean)),
         info.ranking ? el("div", { class: "sub ranking", id: "rules-ranking", text: info.ranking }) : null));
     }
+    const amigaRows = amigaOpts.map((e) => {
+      const row = ruleRow(e, !!prof[e.field], (on) => rctx.save({ [e.field]: on }), null);
+      row.querySelector("input").dataset.opt = e.field;
+      const sc = scope(e.id === "best_variant" || e.id === "borrow_editions" ? scopes.best_variant_dats : null);
+      if (sc) row.querySelector(".rule-text").append(el("span", { class: "sub", text: sc }));
+      return unit([e.field], row, plainLabel(e));
+    }).filter(Boolean);
+    if (amigaRows.length) amiga.unshift(el("div", { class: "rules-group", id: "rules-amiga-options" },
+      el("div", { class: "rules-head", text: "Options" }), el("div", { class: "rules-grid" }, amigaRows)));
     const chdRows = chdOpts.map((e) => {
       const row = ruleRow(e, !!prof[e.field], (on) => rctx.save({ [e.field]: on }), null);
       row.querySelector("input").dataset.opt = e.field;
@@ -3351,7 +3387,11 @@
     if (avail.languages && cat.some((e) => e.id === "languages")) groups.push(unit(["languages"], languageSection(info)));
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority", "region_ties"], regionSection(info)));
     if (ratingEntries(info).length) groups.push(ratingsSection(info));
-    if (prof.saved_games !== undefined) groups.push(unit(["saved_games"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set"), "Saves"));
+    if (amiga.filter(Boolean).length) groups.push(el("div", { class: "rules-section", id: "rules-amiga" },
+      el("div", { class: "rules-head rules-section-head", text: "Amiga only (TOSEC and WHDLoad)" }),
+      el("div", { class: "sub note", text: "These rules only have an effect on the Amiga systems: their databases carry the variants, dump types and disk sets they read." }),
+      ...amiga.filter(Boolean)));
+    if (prof.saved_games !== undefined && rctx.overrides) groups.push(unit(["saved_games"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set"), "Saves"));
     const drawn = groups.filter(Boolean);
     if (!drawn.length) drawn.push(el("div", { class: "muted", text: "No library rules apply to this system." }));
     rctx.host().replaceChildren(...drawn);
@@ -3371,6 +3411,7 @@
 
   /** Your defaults, on the Settings page. */
   function renderDefaultsRules() {
+    SavesPage.render();
     rctx = defaultsRules;
     if (!state.libDefaults) { $("set-library-rules").replaceChildren(el("div", { class: "muted", text: "Loading..." })); return; }
     renderRules();
@@ -4612,7 +4653,7 @@
       label, el("span", { class: "count", text: `(${fmt(n[side] || 0)})` }))));
     },
 
-    /** The filters, each choice with the number of files it would leave. */
+    /** The filters, each choice with the number of games it would leave (a game's discs are one). */
     drawChips(facets) {
       const row = (label, key, choices, any) => {
         if (!choices.length) return null;
@@ -4647,7 +4688,7 @@
       const langRow = row("Language", "language", langs, "Any");
       if (regionRow && moreR) regionRow.lastChild.append(moreR);
       if (langRow && moreL) langRow.lastChild.append(moreL);
-      $("files-chips").replaceChildren(...[showRow, row("The build", "state", states, "Anything"), regionRow, langRow,
+      $("files-chips").replaceChildren(...[el("div", { class: "muted small", text: "The numbers count games: the discs of a multi-disc game are one, and its playlist is none." }), showRow, row("The build", "state", states, "Anything"), regionRow, langRow,
         ratingsAvailable() && (rated["1"] || rated["0"]) ? row("Rating", "rated", [["1", "Rated", rated["1"] || 0], ["0", "Unrated", rated["0"] || 0]], "Rated or not") : null,
       ].filter(Boolean));
       $("files-clear").classList.toggle("hidden", !this.filtered());
@@ -4762,7 +4803,7 @@
         ...line("Could be", i.candidates && i.candidates.length ? el("div", {}, ...i.candidates.map((n) => copyChip(n, "", "name"))) : null),
         ...line("Also fits", i.also_fits && i.also_fits.length ? el("div", {}, el("div", { class: "sub", text: "Its game code is the same for these releases; the best one is shown." }),
           ...i.also_fits.map((n) => copyChip(n, "", "name"))) : null),
-        ...line("Save for", i.save_for ? el("span", { class: "small", text: `The save is named for ${i.save_for}; ${i.saves && i.saves.effect === "receive" ? (i.saves.convert ? "the build converts a copy of it for this release." : "the build copies it to this release.") : "it works in this release too."}` }) : null),
+        ...line("Save for", i.save_for ? el("span", { class: "small", text: `The save is named for ${i.save_for}, another release of this game.${i.saves && i.saves.effect === "receive" ? (i.saves.convert ? " The build converts a copy of it for this release." : " The build copies it to this release.") : " It is shown here; unless the build copies it, this release does not find it under that name."}` }) : null),
         ...line("Convert", i.convert ? convertButtons(i) : null),
         ...line("Rating", ratingsAvailable() && i.rating !== undefined ? ratingCell(i) : null),
         ...line("The rules", i.item === "file" ? libraryWhyPanel(i) : null),
@@ -4807,6 +4848,37 @@
   };
 
   // ------------------------------------------------------------------ settings for every system
+  const SavesPage = {
+    rows: null,
+    show() {
+      this.render();
+      get("/api/library/defaults").then((d) => { state.libDefaults = d; this.render(); })
+        .catch((err) => $("saves-page-rules").replaceChildren(el("div", { class: "muted", text: `Your defaults are not available: ${err.message}` })));
+      if (!this.rows) get("/api/saves/behaviour").then((r) => { this.rows = r.rows; this.render(); }).catch(() => {});
+    },
+    render() {
+      const host = $("saves-page-rules");
+      if (!host || !state.libDefaults) return;
+      const choice = state.libDefaults.profile.saved_games;
+      const prev = rctx;
+      rctx = defaultsRules;
+      host.replaceChildren(savesGroup(choice, (v) => saveDefaults({ saved_games: v }), "set"));
+      rctx = prev;
+      const copies = choice === "convert" || choice === "carry", converts = choice === "convert";
+      const now = (SAVED_CHOICES.find((c) => c.value === choice) || { label: choice }).label;
+      $("saves-now").textContent = `Your default is "${now}": a build ${copies ? "copies a save to the version you have where the system allows it" : "does not copy saves to another version"}`
+        + `${converts ? ", and converts it for another region where it can" : ""}.`;
+      const head = ["System", "Where its saves are kept", "Follow a renamed ROM", "Copied to the version you have", "Converted for another region"];
+      const dim = (on) => (on ? "" : "dim");
+      $("saves-table").replaceChildren(el("thead", {}, el("tr", {}, head.map((h) => el("th", { text: h })))),
+        el("tbody", {}, (this.rows || []).map((r) => el("tr", {},
+          el("td", { text: r.systems.join(", ") }), el("td", { text: r.kept_by }),
+          el("td", { text: r.follows, class: r.follows.startsWith("Yes") ? "ok-text" : "" }),
+          el("td", { text: r.copies, class: `${r.copies.startsWith("Yes") ? "ok-text" : ""} ${dim(copies)}`.trim() }),
+          el("td", { text: r.converts, class: `${r.converts.startsWith("Yes") ? "ok-text" : ""} ${dim(converts)}`.trim() })))));
+    },
+  };
+
   const Settings = {
     ratingsTimer: 0,
 

@@ -260,6 +260,22 @@ class LibraryDefaultsTests(UiTestCase):
         self.assertEqual(self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["inherit"]["overridden"], [])
         self.no_js_errors()
 
+    def test_the_amiga_only_rules_are_a_section_of_their_own_in_settings(self) -> None:
+        self.open("#/settings")
+        self.page.wait("!!document.querySelector('#set-library-rules #rules-amiga')", timeout=30)
+        inside = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-amiga input[data-opt]')].map(i => i.dataset.opt).sort()")
+        self.assertEqual(inside, ["best_variant", "borrow_other_editions", "rescue_only_dump"])
+        self.assertTrue(self.page.eval("!!document.querySelector('#rules-amiga #rules-flags')"))                       # (the dump types too)
+        outside = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-options input[data-opt]')].map(i => i.dataset.opt)")
+        self.assertFalse({"best_variant", "borrow_other_editions", "rescue_only_dump"} & set(outside), outside)
+        self.assertIn("latest_only", outside)
+        amiga_rules = ["bad_size", "faked", "modified", "unreleased", "virus"]                                   # (the exclusions only the Amiga systems have)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('#rules-amiga #rules-exclude-amiga input[data-rule]')].map(i => i.dataset.rule).sort()"), amiga_rules)
+        shared = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-exclude input[data-rule]')].map(i => i.dataset.rule)")
+        self.assertFalse(set(amiga_rules) & set(shared), shared)
+        self.assertIn("demo", shared)
+        self.no_js_errors()
+
     def test_settings_has_the_region_order_and_two_regions_can_be_equally_best(self) -> None:
         self.open("#/settings")
         self.page.wait("document.querySelectorAll('#set-library-rules .rules-region .sortable-row').length > 3", timeout=30)
@@ -830,6 +846,29 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.page.wait("!!document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves')", timeout=30)
         self.assertEqual(self.page.eval("document.querySelector('.nav-item[data-platform=\"Commodore Amiga\"] .nav-saves').textContent"), "4 saves")
         self.assertFalse(self.page.eval("!!document.querySelector('.nav-item[data-platform=\"Nintendo Game Boy Advance\"] .nav-saves')"))
+        self.no_js_errors()
+
+    def test_the_saves_have_a_page_of_their_own_with_the_choice_and_how_each_system_behaves(self) -> None:
+        self.retroarch_with_saves()
+        self.open()
+        self.scan()
+        self.open("#/saves")
+        self.page.wait("!!document.querySelector('#saves-page-rules #set-saved-games')", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelector('#set-saves-group .rules-head').textContent"), "Saves")
+        self.assertEqual(self.page.eval("document.getElementById('set-saved-games').value"), "convert")
+        self.page.wait("document.querySelectorAll('#saves-table tbody tr').length === 8", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelectorAll('#saves-table thead th').length"), 5)                     # (no column for save states: the app never copies them)
+        self.assertIn("copies a save to the version you have", self.page.eval("document.getElementById('saves-now').textContent"))
+        self.assertIn("PCSX2", self.page.eval("document.getElementById('saves-table').textContent"))
+        self.page.eval("(() => { const s = document.getElementById('set-saved-games'); s.value = 'keep'; s.dispatchEvent(new Event('change')); })()")
+        deadline = time.time() + 20
+        while time.time() < deadline and self.api("GET", "/api/library/defaults")["profile"]["saved_games"] != "keep":
+            time.sleep(0.1)
+        self.assertEqual(self.api("GET", "/api/library/defaults")["profile"]["saved_games"], "keep")
+        self.page.wait("document.getElementById('saves-now').textContent.includes('does not copy saves')", timeout=30)
+        self.open("#/settings")                                                                        # (Settings no longer has it)
+        self.page.wait("!!document.querySelector('#set-library-rules #rules-options')", timeout=30)
+        self.assertFalse(self.page.eval("!!document.querySelector('#view-settings #set-saves-group')"))
         self.no_js_errors()
 
     def test_the_rules_wording_the_saves_of_a_file_the_filter_and_the_per_game_choice(self) -> None:

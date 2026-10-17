@@ -76,6 +76,7 @@ class SaveSet:
     saves: int = 0
     states: int = 0
     shots: int = 0
+    empty: int = 0                              # memory cards with no game on them (not counted as saves)
     bytes: int = 0
     cores: List[str] = field(default_factory=list)     # the sub-folders of the save folder the files are in
     here: bool = False                          # some file is in a folder of a core that plays this system
@@ -292,10 +293,13 @@ def build(entries: Iterable[Tuple[Path, Path, bool]], by_file: Dict[str, Tuple[s
         except OSError:
             size = 0
         kind = kind_of(rest)
+        card = memcards.read(f) if kind == SAVE else None
         if kind == SHOT:
             s.shots += 1
         elif kind == STATE:
             s.states += 1
+        elif card is not None and not card.entries:           # a memory card with no game on it: no save (the file still follows its game)
+            s.empty += 1
         else:
             s.saves += 1
         s.bytes += size
@@ -308,7 +312,6 @@ def build(entries: Iterable[Tuple[Path, Path, bool]], by_file: Dict[str, Tuple[s
             s.cores.append(parts[0])
         s.members.append((f, root, kind, size))
         if kind == SAVE:
-            card = memcards.read(f)
             if card is not None and card.entries:                 # (an empty card has nothing to say)
                 s.cards.append({"kind": card.kind, "label": card.label, "file": name, "games": card.games()})
     table = title_table(t for _d, _g, t in by_dat.values())

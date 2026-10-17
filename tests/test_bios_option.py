@@ -79,7 +79,7 @@ class BiosOption(ServerCase):
         self.assertTrue(info["profile"]["keep_bios"])
         self.assertIn("keep_bios", info["inherit"]["applicable"])
         mine = self.call("GET", "/api/library/defaults")                                    # your defaults have every rule, the ratings included
-        self.assertEqual(sorted(mine["inherit"]["applicable"]), sorted(__import__("romorg.library", fromlist=["x"]).RULE_FIELDS))
+        self.assertEqual(sorted(mine["inherit"]["applicable"]), sorted(__import__("romorg.library", fromlist=["x"]).OVERRIDE_FIELDS))
         self.assertIn("keep_bios", [e["field"] for e in info["catalog"] if e["kind"] == "option"])
 
     def test_the_bios_page_says_where_the_lists_come_from_and_what_the_scans_found(self) -> None:

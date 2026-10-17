@@ -46,6 +46,7 @@
       <input type="search" id="side-q" class="input side-q" placeholder="Find a system" aria-label="Find a system" autocomplete="off">
       <a class="nav-item nav-collection" href="#/chd" id="chd-link"><span class="nav-name">Disc images <span class="muted small">CHD settings</span></span></a>
       <a class="nav-item nav-collection" href="#/retroarch" id="retroarch-link"><span class="nav-name">Emulators <span class="muted small">saves and config</span></span></a>
+      <a class="nav-item nav-collection" href="#/saves" id="saves-link"><span class="nav-name">Saves <span class="muted small">what a build does with them</span></span></a>
       <a class="nav-item nav-collection" href="#/bios" id="bios-link"><span class="nav-name">BIOS and firmware <span class="muted small">checksums and keys</span></span></a>
       <a class="nav-item nav-collection" href="#/databases" id="databases-link"><span class="nav-name">Databases <span class="muted small">where the lists come from</span></span></a>
       <a class="nav-item nav-collection" href="#/settings" id="settings-link"><span class="nav-name">Settings <span class="muted small">for every system</span></span></a>
@@ -187,6 +188,25 @@
           <button class="btn btn-ghost" id="igdb-remove">Remove the key</button>
           <span class="muted small grow" id="igdb-status" role="status"></span>
         </div>
+      </div>
+    </section>
+
+    <!-- ===================== SAVES: what a build does with the saves of every system ===================== -->
+    <section class="view hidden" id="view-saves" aria-labelledby="saves-title">
+      <div class="sys-head">
+        <h1 id="saves-title">Saves</h1>
+        <span class="muted small grow">What Build library does with a game's saves, for every system. A system can still choose differently on its own Library tab, and a single game on its row.</span>
+      </div>
+      <div class="panel">
+        <h2>When a build changes the version of a game you have saves for</h2>
+        <div class="rules-body" id="saves-page-rules"></div>
+      </div>
+      <div class="panel">
+        <h2>How each system's saves behave</h2>
+        <p class="muted small">Where a save lives and how it is named decides what a build can do with it. Copies are journalled (Undo removes them), the existing save is never changed, and nothing is copied over a save the new version already has. Save states are never touched.</p>
+        <p class="small" id="saves-now"></p>
+        <div class="table-wrap"><table class="saves-table" id="saves-table"></table></div>
+        <p class="muted small">Which emulators are looked at, and where their saves are, is on the <a href="#/retroarch">Emulators page</a>.</p>
       </div>
     </section>
 

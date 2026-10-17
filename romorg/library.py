@@ -296,8 +296,32 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
                "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted")
+# A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
+# (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
+# decides its own rules. Your defaults keep the one list ``exclude``.
+AMIGA_STYLES = frozenset({STYLE_TOSEC, STYLE_WHDLOAD})
+OVERRIDE_FIELDS = RULE_FIELDS + ("exclude_amiga",)
 GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
 REGION_FIELDS = ("region_priority", "region_ties")      # the region order and which of its regions are equally good: one rule
+
+
+@functools.lru_cache(maxsize=1)
+def amiga_exclusions() -> frozenset:
+    """The exclusion rules only the Amiga styles (TOSEC, WHDLoad) have."""
+    return frozenset(e["id"] for e in rule_catalog("tosec") if e["kind"] == "exclude" and e["applies_to"] and set(e["applies_to"]) <= AMIGA_STYLES)
+
+
+def _split_exclude(ov: Mapping[str, Any], base: Iterable[str], split: bool) -> Optional[list]:
+    """The effective exclusion rules of a system: its override of ``exclude`` decides the rules every system has, its override of
+    ``exclude_amiga`` the Amiga-only ones (``split``: the system has those); what is not overridden comes from ``base``."""
+    if "exclude" not in ov and "exclude_amiga" not in ov:
+        return None
+    if not split:
+        return list(ov["exclude"]) if "exclude" in ov else None
+    amiga = amiga_exclusions()
+    shared = set(ov["exclude"] if "exclude" in ov else base) - amiga
+    mine = set(ov["exclude_amiga"] if "exclude_amiga" in ov else base) & amiga
+    return sorted(shared | mine)
 
 
 def applicable_fields(platform: "Platform") -> frozenset:
@@ -321,6 +345,8 @@ def applicable_fields(platform: "Platform") -> frozenset:
             out.add("delete_converted")
     if _ratings_supported(platform):
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
+    if _style_of_platform(platform) in AMIGA_STYLES:
+        out.add("exclude_amiga")
     return frozenset(out)
 
 
@@ -353,9 +379,14 @@ def effective_profile(platform: "Platform", defaults: Optional[Mapping[str, Any]
     ok = applicable_fields(platform)
     mine = {k: v for k, v in (defaults or {}).items() if k in RULE_FIELDS and k in ok}
     prof = LibraryProfile.from_dict(mine, base)
-    ov = {k: v for k, v in (overrides or {}).items() if k in GAME_FIELDS or (k in RULE_FIELDS and k in ok)}
+    ov = {k: v for k, v in (overrides or {}).items() if k in GAME_FIELDS or (k in OVERRIDE_FIELDS and k in ok)}
     if "region_priority" in ov and "region_ties" not in ov:      # (ties name the regions of an order: they do not carry over to another one)
         ov["region_ties"] = []
+    own = ov.pop("exclude_amiga", None)
+    merged = _split_exclude({**({"exclude": ov["exclude"]} if "exclude" in ov else {}), **({"exclude_amiga": own} if own is not None else {})},
+                            prof.exclude, "exclude_amiga" in ok)
+    if merged is not None:
+        ov["exclude"] = merged
     return LibraryProfile.from_dict({**prof.to_dict(), **ov}, base)
 
 
@@ -385,15 +416,17 @@ def overrides_of(cfg: dict, platform: "Platform") -> dict:
     """The system's overrides (a copy): only the rules it overrides, and its per-game choices."""
     table = cfg.get("library_overrides") if isinstance(cfg, dict) else None
     entry = table.get(platform.name) if isinstance(table, dict) else None
-    if isinstance(entry, dict):
-        return dict(entry)
-    return _legacy_overrides(cfg, platform) or {}
+    out = dict(entry) if isinstance(entry, dict) else (_legacy_overrides(cfg, platform) or {})
+    if "exclude" in out and "exclude_amiga" in applicable_fields(platform) and not out.get("exclude_split"):
+        out["exclude_amiga"] = out["exclude"]           # (an override made when there was one list of exclusions decided all of them)
+        out["exclude_split"] = True
+    return out
 
 
 def overridden_fields(cfg: dict, platform: "Platform") -> list:
     """The rules this system overrides (in the order of ``RULE_FIELDS``)."""
     ov, ok = overrides_of(cfg, platform), applicable_fields(platform)
-    return [f for f in RULE_FIELDS if f in ov and f in ok]
+    return [f for f in OVERRIDE_FIELDS if f in ov and f in ok]
 
 
 def load_profile(cfg: dict, platform: "Platform") -> LibraryProfile:
@@ -409,9 +442,17 @@ def store_profile(cfg: dict, platform: "Platform", profile: LibraryProfile) -> N
     current = load_profile(cfg, platform).to_dict()
     mine = profile.to_dict()
     ok = applicable_fields(platform)
+    split = "exclude_amiga" in ok
     for f in RULE_FIELDS:
-        if f in ok and mine[f] != current[f]:
+        if f in ok and mine[f] != current[f] and not (split and f == "exclude"):
             ov[f] = mine[f]
+    if split and mine["exclude"] != current["exclude"]:         # (which of the two exclusion overrides: by the rules that changed)
+        changed = set(mine["exclude"]) ^ set(current["exclude"])
+        if changed - amiga_exclusions():
+            ov["exclude"] = mine["exclude"]
+        if changed & amiga_exclusions():
+            ov["exclude_amiga"] = mine["exclude"]
+        ov["exclude_split"] = True
     if any(f in ov for f in REGION_FIELDS) and all(f in ok for f in REGION_FIELDS):
         for f in REGION_FIELDS:                # the order and its ties are one rule: a system that has its own has both
             ov[f] = mine[f]
@@ -447,12 +488,16 @@ def set_override(cfg: dict, platform: "Platform", fields: Iterable[str], on: boo
     if any(f in REGION_FIELDS for f in wanted):
         wanted += [f for f in REGION_FIELDS if f not in wanted]      # (one rule: overridden, or not, together)
     for f in wanted:
-        if f not in RULE_FIELDS or f not in ok:
+        if f not in OVERRIDE_FIELDS or f not in ok:
             continue
         if on:
-            ov.setdefault(f, current[f])
+            ov.setdefault(f, current["exclude" if f == "exclude_amiga" else f])
+            if f in ("exclude", "exclude_amiga") and "exclude_amiga" in ok:
+                ov["exclude_split"] = True
         else:
             ov.pop(f, None)
+    if "exclude" not in ov and "exclude_amiga" not in ov:
+        ov.pop("exclude_split", None)
     _put_overrides(cfg, platform, ov)
 
 

@@ -401,6 +401,51 @@ class CarryMode(SavesCase):
         self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["carry"]["files"]), (0, 1))
 
 
+def memory_card(*games: str) -> bytes:
+    """A PlayStation memory card image: the frames of the games given (the product code and the name) in use, the rest free."""
+    import struct
+    card = bytearray(131072)
+    card[0:2] = b"MC"
+    for i in range(1, 16):
+        card[i * 128] = 0xA0
+    for n, name in enumerate(games, 1):
+        card[n * 128] = 0x51
+        struct.pack_into("<I", card, n * 128 + 4, 8192)
+        card[n * 128 + 10:n * 128 + 10 + len(name)] = name.encode()
+    return bytes(card)
+
+
+class EmptyCards(SavesCase):
+    def test_a_memory_card_with_no_game_on_it_is_no_save_and_one_with_a_game_is(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Solo (USA)")
+        put(self.saves / "bsnes" / "Zed (USA).srm", memory_card())                                    # (what a core makes when nothing was ever saved)
+        put(self.saves / "bsnes" / "Solo (USA).srm", memory_card("BASCUS-94455GT2"))
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        counts = {s["name"]: s["saves"] for s in self.call("GET", "/api/scan/results?kind=saves")["items"]}
+        self.assertEqual(counts.get("Solo (USA)"), 1)
+        self.assertNotIn("Zed (USA)", counts)                                                          # (nothing on it: not listed as a save)
+
+
+class SavesBehaviourTable(unittest.TestCase):
+    """The table of the Saves page is the rules of ``savecarry``, for every system the app has."""
+
+    def test_every_system_is_in_exactly_one_row_and_the_rows_agree_with_the_rules(self) -> None:
+        from romorg import platforms, savecarry
+        rows = savecarry.behaviour()
+        listed = [name for r in rows for name in r["systems"]]
+        self.assertEqual(sorted(listed), sorted(p.name for p in platforms.list_platforms()))
+        by = {name: r for r in rows for name in r["systems"]}
+        for name in savecarry.ANY_RELEASE:                                   # (cartridges: a copy in every region)
+            self.assertEqual((by[name]["follows"], by[name]["copies"]), ("Yes", "Yes, in any region"), name)
+        for name in savecarry.CONVERTIBLE:                                   # (the two systems whose saves are converted say so)
+            self.assertTrue(by[name]["converts"].startswith("Yes"), name)
+        for name in ("Sega Dreamcast", "Nintendo GameCube", "Nintendo Wii", "Nintendo Wii U", "Nintendo Switch", "Commodore Amiga", "Commodore Amiga - WHDLoad"):
+            self.assertEqual((by[name]["copies"], by[name]["converts"]), ("No", "No"), name)
+        for name in savecarry.SERIAL_SAVES:                                  # (a save named by the game's code needs no new name when the code is the same)
+            self.assertIn("same code", by[name]["copies"])
+        self.assertFalse(any("state" in text.lower() for r in rows for text in (r["kept_by"], r["follows"], r["copies"], r["converts"])))
+
+
 class WhichSavesWork(unittest.TestCase):
     def test_cartridge_saves_work_everywhere_and_disc_saves_only_in_their_region(self) -> None:
         from romorg import savecarry
