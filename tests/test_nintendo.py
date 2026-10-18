@@ -552,11 +552,10 @@ class DatabasesList(unittest.TestCase):
         from romorg import autoupdate, databases, platforms
         rows = databases.describe({"nointro": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in __import__("romorg.nointro", fromlist=["x"]).all_dat_names()]},
                                    "redump": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.REDUMP_DATS]},
-                                   "whdload": {"dats": [{"name": n, "version": "1", "status": "up_to_date"} for n in autoupdate.WHDLOAD_DATS]},
                                    "switchdb": {"status": "up_to_date"}, "gametdb": {"status": "up_to_date"}})
         listed = {r["name"] for r in rows}
         every_dat = {d for p in platforms.list_platforms() for d in p.dats}
-        tosec = {d for d in every_dat if d.startswith("Commodore Amiga - ") and d != "Commodore - Amiga - WHDLoad"}
+        tosec = {d for d in every_dat if d.startswith("Commodore Amiga - ")}
         made = {"Nintendo - Wii U", "Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"}      # (each is said by the list it is made from)
         self.assertEqual(every_dat - listed - tosec - made, set(), "a DAT of a system that the Databases page does not list")
         covered = {s for r in rows if r["group"].startswith("Game lists made") for s in r["used_by"]}

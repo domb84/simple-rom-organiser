@@ -102,48 +102,6 @@ class FakeNointro:
         return {"dats": rows, "failed": 0}
 
 
-WHD = "Commodore - Amiga - WHDLoad"
-
-
-class FakeWhdload:
-    """The WHDLoad source: one DAT, own folder (``paths.whdload_dir()``), own ETag."""
-
-    def __init__(self) -> None:
-        self.remote_etag = {WHD: "w1"}
-        self.local: dict[str, str] = {}
-        self.offline = False
-        self.downloads: list[str] = []
-
-    def check_updates(self, names=None, opener=None, directory=None, timeout=10):
-        rows = []
-        for n in (names if names is not None else [WHD]):
-            if self.offline:
-                rows.append({"name": n, "installed": None, "status": "error", "error": "no route"})
-            elif n not in self.local:
-                rows.append({"name": n, "installed": None, "status": "missing"})
-            else:
-                st = "up_to_date" if self.local[n] == self.remote_etag[n] else "update_available"
-                rows.append({"name": n, "installed": "2026-07-05", "status": st})
-        return rows
-
-    def list_dats(self, directory=None):
-        return [DatInfo(n, "2026-07-05", paths.whdload_dir() / f"{n}.dat") for n in sorted(self.local)]
-
-    def update_dats(self, names=None, progress=None, cancel=None, force=False, commit_lock=None, **kw):
-        rows = []
-        for n in names:
-            if cancel is not None and cancel.is_set():
-                raise Cancelled()
-            self.downloads.append(n)
-            with commit_lock:
-                (paths.whdload_dir() / f"{n}.dat").write_text("x")
-                changed = self.local.get(n) != self.remote_etag[n]
-                self.local[n] = self.remote_etag[n]
-            rows.append({"name": n, "version": "2026-07-05",
-                         "status": "downloaded" if changed else "unchanged"})
-        return {"dats": rows, "failed": 0}
-
-
 RED = "Sega - Dreamcast"
 
 
@@ -195,14 +153,13 @@ class Base(unittest.TestCase):
         os.environ.pop("ROMORG_OFFLINE", None)
         self.tosec = FakeTosec()
         self.nointro = FakeNointro()
-        self.whdload = FakeWhdload()
         self.redump = FakeRedump()
         self.clock = lambda: 1_700_000_000.0
         self.mgr = self.make()
 
     def make(self, **kw) -> autoupdate.UpdateManager:
         kw.setdefault("ratings", None)              # (the ratings are fetched at every start now: never from a test)
-        return autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, whdload=self.whdload,
+        return autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro,
                                         redump=self.redump, clock=self.clock, **kw)
 
 
@@ -212,7 +169,6 @@ class StartupTest(Base):
     def install_everything(self) -> None:
         self.tosec.installed = "2025-03-13"
         self.nointro.local = {n: "a" for n in all_dat_names()}
-        self.whdload.local = {WHD: "w1"}
         self.redump.local = {n: self.redump.remote for n in autoupdate.REDUMP_DATS}
         for dat in autoupdate.MADE_DATS:
             (paths.redump_dir()).mkdir(parents=True, exist_ok=True)
@@ -228,7 +184,7 @@ class StartupTest(Base):
     def test_a_later_start_does_not_touch_the_network(self) -> None:
         self.install_everything()
         calls: list[str] = []
-        for fake in (self.nointro, self.whdload, self.redump):
+        for fake in (self.nointro, self.redump):
             original = fake.check_updates
             fake.check_updates = lambda *a, _o=original, **k: (calls.append("check"), _o(*a, **k))[1]
         sw = FakeSwitchdb()
@@ -306,7 +262,7 @@ class BackgroundTest(Base):
 
     def test_disabled_does_nothing(self) -> None:
         mgr = autoupdate.UpdateManager(
-            tosec=self.tosec, nointro=self.nointro, whdload=self.whdload, redump=self.redump, enabled=False)
+            tosec=self.tosec, nointro=self.nointro, redump=self.redump, enabled=False)
         mgr.start_background()
         self.assertFalse(mgr.check())
         self.assertFalse(mgr.status()["running"])
@@ -339,7 +295,7 @@ class OfflineTest(Base):
     def go_offline(self) -> None:
         self.tosec.offline = True
         self.nointro.offline = True
-        self.whdload.offline = self.redump.offline = True
+        self.redump.offline = True
 
     def test_offline_with_cache_is_a_quiet_notice(self) -> None:
         self.mgr.start_background()
@@ -353,7 +309,7 @@ class OfflineTest(Base):
         self.assertEqual(st["state"], "idle")
         self.assertEqual(st["notice"], "Offline - using the installed DATs (checked 2023-11-14)")
         # coming back online clears it
-        self.tosec.offline = self.nointro.offline = self.whdload.offline = self.redump.offline = False
+        self.tosec.offline = self.nointro.offline = self.redump.offline = False
         self.mgr.check()
         wait_idle(self.mgr)
         self.assertFalse(self.mgr.status()["offline"])
@@ -466,13 +422,13 @@ class EnsureTest(Base):
         self.assertEqual(self.tosec.pack_downloads, 1)   # waited, did not start a second download
 
     def test_offline_nothing_cached_raises(self) -> None:
-        self.tosec.offline = self.nointro.offline = self.whdload.offline = self.redump.offline = True
+        self.tosec.offline = self.nointro.offline = self.redump.offline = True
         with self.assertRaises(autoupdate.UpdateError) as cm:
             self.mgr.ensure(platforms.get_platform("Commodore Amiga"))
         self.assertEqual(cm.exception.code, "offline")
 
     def test_disabled_missing_raises_offline(self) -> None:
-        mgr = autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro, whdload=self.whdload,
+        mgr = autoupdate.UpdateManager(tosec=self.tosec, nointro=self.nointro,
                                        redump=self.redump, enabled=False)
         with self.assertRaises(autoupdate.UpdateError) as cm:
             mgr.ensure(platforms.get_platform("Nintendo 64"))

@@ -49,7 +49,7 @@ TEMP_MARKER = ".romorg-tmp-"   # temporary names used by organiser/kickstart whi
 CONVERT_TEMP_MARKER = ".romorg-convert-"  # clean files being written by convert.py
 from . import folders  # noqa: E402  (reserved folder names: folders.py is their only home)
 from .folders import (CONVERTED_DIR, DUPLICATES_DIR, REASON_DIRS, RESERVED_DIRS,  # noqa: E402,F401
-                      UNMATCHED_DIR)
+                      UNMATCHED_DIR, WHDLOAD_MARKER)
 
 CACHE_FILENAME = "hashes.sqlite"
 LAYOUT_PER_DAT = "per_dat"
@@ -1137,6 +1137,8 @@ def collect_files(root: Path, recursive: bool = True,
                         if de.is_dir(follow_symlinks=False):
                             if protected and d == root and de.name.casefold() in protected_folded:
                                 continue    # a protected top-level folder (e.g. Kickstarts/): never scanned
+                            if os.path.isfile(os.path.join(de.path, WHDLOAD_MARKER)):
+                                continue    # a WHDLoad install downloaded next to a game's disks: none of its files is a game file
                             if recursive:
                                 stack.append(Path(de.path))
                         elif de.is_file():

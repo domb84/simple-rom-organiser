@@ -59,7 +59,7 @@ function Stop-Tree([int]$RootPid, [string]$Image) {
 
 function Get-Text([string]$Path, [hashtable]$Headers = @{}) {
     $r = Invoke-WebRequest "$script:url$Path" -UseBasicParsing -Headers $Headers -TimeoutSec 60
-    if ($r.StatusCode -ne 210) { throw "smoke test failed: GET $Path answered $($r.StatusCode)" }
+    if ($r.StatusCode -ne 200) { throw "smoke test failed: GET $Path answered $($r.StatusCode)" }
     if ($r.Content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($r.Content) }
     return [string]$r.Content
 }
@@ -105,7 +105,7 @@ try {
     $token = $Matches[1]
     $auth = @{ "X-Romorg-Token" = $token }
     $platforms = Get-Text "/api/platforms" $auth
-    foreach ($name in "Commodore Amiga", "Commodore Amiga - WHDLoad", "Nintendo Game Boy Advance", "Nintendo 64",
+    foreach ($name in "Commodore Amiga", "Nintendo Game Boy Advance", "Nintendo 64",
                       "Nintendo Entertainment System", "Super Nintendo Entertainment System", "Nintendo Game Boy",
                       "Nintendo Game Boy Color", "Nintendo DS", "Sega Mega Drive - Genesis", "Sega Master System",
                       "Sega Game Gear", "Sega 32X", "Atari Lynx", "Sega Dreamcast", "Sony PlayStation",
@@ -113,7 +113,7 @@ try {
         Assert-Match $platforms ('"' + [regex]::Escape($name) + '"') "platform missing: $name"
     }
     $count = [regex]::Matches($platforms, '"folder_hint"').Count
-    if ($count -ne 21) { throw "smoke test failed: expected 21 systems, the app lists $count" }
+    if ($count -ne 20) { throw "smoke test failed: expected 20 systems, the app lists $count" }
     Write-Host "GET /api/platforms -> $count systems"
     $updates = Get-Text "/api/updates"
     Assert-Match $updates '"state"' "/api/updates missing"

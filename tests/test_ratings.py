@@ -474,7 +474,7 @@ class ProfileFieldTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in grp], ["min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"])
         self.assertEqual({e["id"]: e["kind"] for e in grp}["rank_scope"], "choice")
         self.assertEqual([c["value"] for c in grp[-1]["choices"]], ["dat", "owned"])
-        for style in ("tosec", "nointro", "whdload", "redump"):
+        for style in ("tosec", "nointro", "redump"):
             self.assertEqual(len([e for e in library.rule_catalog(style) if e.get("group") == "ratings"]), 5)
         info = library.profile_info(GBA)
         self.assertTrue(info["available"]["ratings"])
@@ -840,7 +840,7 @@ class UpdaterTests(TmpDirCase):
         super().setUp()
         self.fake = FakeRatings(paths.ratings_dir())
         self.wanted = [False]
-        self.mgr = autoupdate.UpdateManager(tosec=mock.MagicMock(), nointro=mock.MagicMock(), enabled=True, whdload=None, redump=None,
+        self.mgr = autoupdate.UpdateManager(tosec=mock.MagicMock(), nointro=mock.MagicMock(), enabled=True, redump=None,
                                             ratings=self.fake, ratings_wanted=lambda: self.wanted[0],
                                             state_path=self.tmp / "updates.json")
         self.mgr.enabled = True                       # (ROMORG_OFFLINE is set for the other tests)

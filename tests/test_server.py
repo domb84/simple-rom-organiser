@@ -2699,7 +2699,7 @@ class ChecksumServerTests(unittest.TestCase):
                                   "raw": 0}, "/x", ["D"], now=0)
         self.assertEqual((rec["total"], rec["have"], rec["pct"], rec["identified"], rec["dats"]), (10, 4, 40.0, 1, ["D"]))
         self.assertNotIn("chd_files", server.scan_record({"dat_total": 1}, "/x"))
-        self.assertEqual(server._slug("Commodore Amiga - WHDLoad"), "commodore-amiga-whdload")
+        self.assertEqual(server._slug("Commodore Amiga - Games"), "commodore-amiga-games")
         slugs = [p["slug"] for p in self.call("/api/platforms")]
         self.assertEqual(len(slugs), len(set(slugs)))
         self.assertTrue(all(s and s == s.lower() and "/" not in s and " " not in s for s in slugs))
@@ -2729,8 +2729,8 @@ class UiStructureTests(unittest.TestCase):
                        "const Files", "/api/tree?", "history.replaceState", "/api/scan/checksums", "checksums:",
                        "function checksumPanel", "Show checksums", "ArrowRight", "function sideItem", "p.last_scan"):
             self.assertIn(needle, js)
-        for system in ("Dreamcast", "PlayStation", "Nintendo 64", "WHDLoad\"", "Game Boy"):   # systems come from /api/platforms
-            self.assertNotIn(f'"{system}', js.replace('"WHDLoad"', ""))
+        for system in ("Dreamcast", "PlayStation", "Nintendo 64", "Game Boy"):   # systems come from /api/platforms
+            self.assertNotIn(f'"{system}', js)
         self.assertNotIn("src=\"http", js)       # (a docs hyperlink is fine; no external script / image is loaded)
         css = server.read_static("style.css").decode()
         self.assertNotIn("url(http", css)

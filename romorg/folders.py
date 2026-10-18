@@ -32,10 +32,11 @@ INCOMPLETE_DIR = "_incomplete"
 DUPLICATES_DIR = "_duplicates"
 CONVERTED_DIR = "_converted_originals"
 SAVES_DIR = "_saves"
+# A folder holding this file is a WHDLoad install downloaded next to a game's disks (romorg.whdinstalls): never scanned or moved
+WHDLOAD_MARKER = ".romorg-whdload.json"
 
 # Folders the app never touches inside a platform folder (a PROTECTED name, not a reason folder):
-# a ``Kickstarts/`` folder of the WHDLoad system holds the user's Kickstart ROMs for its own Kickstart
-# step. A platform lists the protected top-level folders it has (``Platform.protected_dirs``); the scanner
+# e.g. a ``Kickstarts/`` folder holding the user's Kickstart ROMs. A platform lists the protected top-level folders it has (``Platform.protected_dirs``); the scanner
 # skips them completely, so scan / organise / Build library / Convert never see or move what is inside.
 KICKSTARTS_DIR = "Kickstarts"
 PROTECTED_DIRS = (KICKSTARTS_DIR,)

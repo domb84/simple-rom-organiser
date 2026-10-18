@@ -67,10 +67,6 @@ class PlatformTests(unittest.TestCase):
         for p in list_platforms():
             if p is amiga:
                 continue
-            if p.name == platforms.WHDLOAD_PLATFORM:   # its own source: checked in test_whdload.py
-                self.assertEqual(platforms.source_of(p), "whdload")
-                self.assertEqual((p.latest_dats, p.best_variant_dats), (p.dats, p.dats))
-                continue
             if p.name == platforms.SWITCH_PLATFORM:
                 self.assertEqual(platforms.source_of(p), "redump")
                 continue
@@ -129,8 +125,8 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(DatSource.NOINTRO, "nointro")
         names = [p.name for p in list_platforms()]
         self.assertEqual(names, sorted(names, key=str.lower))
-        # Amiga, Amiga - WHDLoad, Dreamcast, PlayStation (2), GameCube, Wii, Wii U, Switch and the cartridge systems of CONSOLES
-        self.assertEqual(len(names), 9 + len(CONSOLES))
+        # Amiga, Dreamcast, PlayStation (2), GameCube, Wii, Wii U, Switch and the cartridge systems of CONSOLES
+        self.assertEqual(len(names), 8 + len(CONSOLES))
         self.assertEqual(platforms.DEFAULT_PLATFORM, "Commodore Amiga")
         self.assertIn("Nintendo - Nintendo 64", platforms.all_dat_names())
         # positional construction (old signature) still works with the defaults
@@ -222,9 +218,6 @@ class LibraryScopes(unittest.TestCase):
         self.assertEqual(amiga.region_dats, ())
         for p in list_platforms():
             if p.name == "Commodore Amiga":
-                continue
-            if p.name == platforms.WHDLOAD_PLATFORM:   # language filter yes, regions never
-                self.assertEqual((p.language_dats, p.region_dats), (p.dats, ()))
                 continue
             if p.name == platforms.SWITCH_PLATFORM:    # regions on the games, languages on games and updates, "latest" on the updates
                 self.assertEqual((p.language_dats, p.region_dats, p.latest_dats),

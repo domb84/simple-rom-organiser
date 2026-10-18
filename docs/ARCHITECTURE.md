@@ -2883,3 +2883,17 @@ extension. The Overview card says *found*, the Library card *kept*.
   kind (`_two_games`); titles with the same normal form, or one the other plus a subtitle, always join; titles spelt alike join without
   LaunchBox (`\x01` groups); `node` drops a bracketed gloss in another script.
 
+**AMENDMENT 41 (v0.3) — WHDLoad installs instead of the WHDLoad system.**
+* The *Commodore Amiga - WHDLoad* system (MrV2K's DAT of Retroplay packs, `romorg/whdload.py`, `paths.whdload_dir`, the `whdload` DAT source
+  and update rows, the WHDLoad tag style: `tags.parse_whdload` / `whd_identity_key`, `library._select_whdload`, its rule texts) is removed;
+  a config that still names it is ignored. Earlier amendments that describe it are history.
+* `romorg/lha.py`: LhA reader (header levels 0-2; `-lh0-`, `-lh1-` LZHUF, `-lh4-`..`-lh7-`; CRC-16 checked), stdlib only. Checked against all
+  2,843 install archives of whdload.de's weekly archive.
+* `romorg/whdinstalls.py`: the list of game installs (`games/all.html` -> `whdinstalls/installs.json`, an "extra" database of
+  `autoupdate`, kept 7 days); `Matcher` (title, same letters, `alttitles` group, subtitle / main title; add-on disks never);
+  `download_install` (fetch, LhA + CRC check, safe paths, unpack into `<dir>/<title> (WHDLoad install)/` with `folders.WHDLOAD_MARKER`).
+  `scanner.collect_files` skips a folder holding the marker; `treeview` gives its files the state `whdload` (`_game_unit`: no game).
+* `GET /api/whdload/installs` (the scanned Amiga games outside the reserved folders, by title, with their install and whether it is
+  downloaded), `POST /api/whdload/download` (`titles` or `all`; a job, one download at a time, 0.3 s apart). UI: the *WHDLoad installs*
+  section of the Amiga Files page (`Whd` in app.js).
+

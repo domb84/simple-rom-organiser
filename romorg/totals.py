@@ -62,7 +62,7 @@ def _no_bios(items: list[Item]) -> list[Item]:
 
 
 def target_items(platform: Any, dats: Iterable[Any]) -> list[Item]:
-    """One :class:`library.Item` per game-unit of the platform's DATs: a rom (TOSEC / WHDLoad), a set
+    """One :class:`library.Item` per game-unit of the platform's DATs: a rom (TOSEC), a set
     (No-Intro: the first of its alternate roms) or a disc (Redump), as if every file was present."""
     from . import discsys
 
@@ -82,7 +82,7 @@ def target_items(platform: Any, dats: Iterable[Any]) -> list[Item]:
         seen: set[str] = set()
         for rom in dat.roms:
             style = tags.style_of_rom(rom)
-            if rom.set_name:                  # No-Intro / WHDLoad: alternates share one set
+            if rom.set_name:                  # No-Intro: alternates share one set
                 if rom.set_name in seen:
                     continue
                 seen.add(rom.set_name)

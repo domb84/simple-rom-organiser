@@ -6,7 +6,6 @@ Supported systems:
 | System | DATs | Source |
 | --- | --- | --- |
 | Commodore Amiga | 4 [TOSEC](https://www.tosecdev.org/) DATs (Games ADF, Workbench, Kickstart-Disks, Firmware) | TOSEC pack from tosecdev.org |
-| Commodore Amiga - WHDLoad | *Commodore - Amiga - WHDLoad* (4121 Retroplay `.lha` archives) | MrV2K's [WHDLoad-Database](https://github.com/MrV2K/WHDLoad-Database) on GitHub |
 | Nintendo Game Boy Advance | *Nintendo - Game Boy Advance* | No-Intro, via libretro-database |
 | Nintendo 64 | *Nintendo - Nintendo 64* | No-Intro, via libretro-database |
 | Nintendo Entertainment System | *Nintendo - Nintendo Entertainment System* | No-Intro, via libretro-database |
@@ -25,19 +24,16 @@ Every system has its own folder (e.g. `.../roms/amiga`, `.../roms/snes`). The ap
 every file against the system's DATs, shows what you have and what is missing, renames
 and sorts the files, and - for the Amiga - writes M3U playlists for multi-disk games.
 
-**Commodore Amiga - WHDLoad is a separate system from Commodore Amiga (TOSEC).** It has its own
-row, folder, DAT, library rules and config keys; nothing is shared or
-cross-matched with the TOSEC ADF system. Each DAT entry is one pre-installed Retroplay `.lha`
-archive; files are matched by the hash (sha1, crc + size) of the **whole `.lha` file** - the
-archives are never opened. Organising renames them to the database name
-(`1000ccTurbo_v1.0.lha`), flat in the system folder; files that match nothing go to `_unmatched/`.
-Its library rules: exclude *Beta / Pre Release / Preview*, *Game Demo / Demo* and *Unreleased*
-(the exact tokens are listed in the panel), keep your languages (no tag = English, `(German)` /
-`_De` = German, `EnFrDe` = three languages) and keep **one best archive per game**: your language
-order, then CD32 > AGA > OCS, then standard memory over `512KB` / `Low Mem` builds, then PAL /
-untagged over NTSC, then the newest version (highest build number last). Different products
-(`Two Disk` / `One Disk` installs, `Image` / `Files`, demos, cover disks, hacks, CDTV, CD-ROM) are
-never merged. No dump-flag, multi-disk or playlist options exist for it.
+**WHDLoad installs (Amiga).** The Amiga's Files page lists, under **WHDLoad installs**, which of your games has a WHDLoad
+install on [whdload.de](https://www.whdload.de/) - 2,843 game installs; about two thirds of a typical TOSEC collection has one. An
+install is a game's WHDLoad slave, installer script, icons and ReadMe (some hundred KB, no game data); it installs the game from its disks
+to a hard drive. **Download** one, or **Download all**: each is unpacked next to the game's disks, in `<game> (WHDLoad install)/` (with a
+small `.romorg-whdload.json` note), checked first (a real LhA archive, every file's CRC). Scans, builds and the counts leave those folders
+alone; the Files tree shows their files as *WHDLoad install*. A game is matched by its title, the same letters (`Push-Over` /
+`Pushover`), another title of the game (`Die Siedler` / `The Settlers`) or its subtitle / main title; a data, course or scenario disk gets
+none. The list of installs is fetched with the other databases and kept for a week. Most installs need the game's **original** disks
+(WHDLoad's RawDIC reads their own disk format): the ADFs of a TOSEC collection are mostly cracked copies, which such an installer may not
+accept. (The separate *Commodore Amiga - WHDLoad* system of v0.2, which matched Retroplay's pre-installed packs, is gone.)
 
 **Sega Dreamcast, Sony PlayStation and Sony PlayStation 2 (Redump)** are the *folder per game* systems (one shared engine): `<system folder>/<Redump name>/<Redump name>.chd`
 plus the sidecar files next to it (see [Sega Dreamcast: CHD + Redump](#sega-dreamcast-chd--redump) and
@@ -273,7 +269,7 @@ returns it (docs/ARCHITECTURE.md, Amendment 17).
 
 Every row of Games / Matched / Missing / Unmatched has a **Show / Hide** button in its
 *Checksums* column, and the toolbar has **Show checksums** which opens it for every visible row.
-It lists **DAT (No-Intro / TOSEC / Redump / WHDLoad)** rows and **Your file** rows in monospace
+It lists **DAT (No-Intro / TOSEC / Redump)** rows and **Your file** rows in monospace
 (CRC32, MD5, SHA-1); a hash is a button - click it to copy. A green check means both sides are
 equal. Nothing is re-hashed: the values are what the scan already knows, and `-` means *not
 known* (hover for why) - the app never invents a hash:
@@ -379,8 +375,8 @@ without version tokens plus its edition flags; the year, the language and bare c
 **Combine alternate titles** (on by default) the country, the publisher and the game's other titles
 (`Another World` / `Out of This World`, `Anstoss` / `On the Ball`) are not part of it either: the German
 release of another publisher competes too, and the language filter then sets aside a game that has no
-version in your languages (off: every country and publisher is a game of its own). `PAL` / `NTSC` and `(M3)` releases, and WHDLoad's CDTV,
-Files / Image, MT32, crunched and cover-disk builds, are the same game too. A few titles are two different games by different publishers
+version in your languages (off: every country and publisher is a game of its own). `PAL` / `NTSC` and `(M3)` releases are the same game
+too. A few titles are two different games by different publishers
 (Overlord, Arena, Legend ...): `library.KEEP_APART` keeps them apart, and `tools/keep_apart_candidates.py` lists the titles LaunchBox knows
 as two Amiga games to check new ones by hand. The disks of a set still come from one release. Among the *complete* sets of a game exactly one is kept, ranked:
 1. your preferred language (the order you ticked / arranged in *Languages*),
@@ -411,9 +407,9 @@ Japan-only release, for example) is **kept** by default (option *Keep games that
 rules). The whole DAT decides, not the files you own: if an English version of the game exists in the DAT,
 your Japanese copy is still left out, and the English one is "missing". Among several versions of such a game the usual
 region and revision order picks one. Turn the option off to have every title without a version in your languages left out.
-TOSEC and WHDLoad keep the rule below.
+TOSEC keeps the rule below.
 
-A TOSEC / WHDLoad title with no version in a ticked language is left out; the **Games that vanish** list
+A TOSEC title with no version in a ticked language is left out; the **Games that vanish** list
 shows them with the languages they do have, and offers a button to tick one of those languages.
 
 **Keep these dump types** (Amiga Games). Cracks `[cr]`, hacks `[h]`, trainers `[t]`,
@@ -493,7 +489,7 @@ rules** undoes it; press Recalculate to see the result). The **Columns** menu hi
 remembered per system. `tools/bench_server.py` times the scan, lists and planner on a real folder; `python3 -m unittest tests.test_browser` clicks through the UI in a real browser.
 
 **Ratings (optional filter).** The rules panel has a **Ratings** group for every system with a LaunchBox
-platform (Amiga, WHDLoad, GBA, GB, GBC, DS, N64, NES, SNES, Mega Drive, Master System, Game Gear, 32X, Lynx, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
+platform (Amiga, GBA, GB, GBC, DS, N64, NES, SNES, Mega Drive, Master System, Game Gear, 32X, Lynx, Dreamcast, PlayStation, PlayStation 2). It is **off by default - nothing changes and no
 rating data is needed**. Set a **Minimum rating** (0-10, shown as LaunchBox stars x 2 with the vote count, e.g.
 `8.4 · 123 votes`), a **Top N games** limit, or both; **Minimum votes** (default 5: a game with fewer votes counts as
 *unrated*); **Keep unrated games** (off: while a rating filter is set, games with no usable rating are left out - tick it to keep
@@ -1147,8 +1143,7 @@ files the emulators need: `prod.keys` and `title.keys` for Eden / yuzu (`<user f
 
 There is no Kickstart tool on the Amiga systems any more: the **RetroArch** page's BIOS & firmware check
 covers every installed core, PUAE included, and copies the Kickstart ROMs you have (matched by MD5) into
-RetroArch's system folder. For WHDLoad, the `Kickstarts/` folder inside the WHDLoad system folder is still
-protected: it is never scanned, moved, archived or counted as unmatched.
+RetroArch's system folder.
 
 ## Building and installing
 
@@ -1239,13 +1234,13 @@ Windows offered opened behind the browser, and the Linux one only worked in Desk
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro
 DATs and their `manifest.json` - kept separate, so updating the TOSEC pack never touches
 them), `cache/` (downloaded pack zip, hash cache), `updates.json` (when the DATs were last
-checked), `whdload/` (the WHDLoad DAT and its `manifest.json`, again separate from the other two), `ratings/` (the LaunchBox ratings index, only when a rating filter is used), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
+checked), `whdinstalls/` (the list of WHDLoad installs), `ratings/` (the LaunchBox ratings index, only when a rating filter is used), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
 are written into your platform folder.
 
 ## Adding a platform
 
 Platforms are defined in one place, `romorg/platforms.py`: a name, its DAT names in
-priority order, where they come from (`tosec`, `nointro`, `whdload` or `redump`), the layout (`per_dat` folders,
+priority order, where they come from (`tosec`, `nointro` or `redump`), the layout (`per_dat` folders,
 `flat` or `game_folder`), which DATs get M3U playlists, the optional Kickstart / BIOS DAT, and for
 consoles the alternative hashes to try (`snes_header`, `nes_header`, `n64_byteorder`) and
 whether Convert is offered. The server and UI pick new entries up automatically. No-Intro
@@ -1264,13 +1259,9 @@ DATs are fetched from
   use the GitHub ETag, so unchanged files are not downloaded again; no GitHub API calls are
   made. Each download is validated (parsed) before it replaces the old file. Offline, the
   DATs already downloaded keep working.
-- **WHDLoad**: only the one DAT, `Commodore - Amiga - WHDLoad.dat`, from
-  `https://raw.githubusercontent.com/MrV2K/WHDLoad-Database/main/Commodore%20-%20Amiga%20-%20WHDLoad.dat`
-  (the version shown is the header `date`, e.g. `2026-07-05`; checked with the ETag like the
-  No-Intro DATs, validated by parsing before it replaces the old file, cached offline). It is
-  stored in its own folder and never touched by TOSEC / No-Intro updates. **That repository
-  states no licence: this app downloads only the DAT (a list of names and hashes), never any
-  game file.** The DAT is Windows-1252 encoded; it is read as such.
+- **WHDLoad installs**: the list of game installs, `https://www.whdload.de/games/all.html` (titles, archive names, sizes), fetched with
+  the other databases and kept for a week. An install (`https://www.whdload.de/games/<name>.lha`) is downloaded only when you ask for it;
+  only install packages are ever downloaded, never pre-installed games.
 - **Redump (Sega Dreamcast, Sony PlayStation, Sony PlayStation 2)**: `http://redump.org/datfile/dc/`, `.../psx/` and `.../ps2/` over **plain HTTP** (HTTPS is refused by
   the site). One HEAD request per start reads the version from the `Content-Disposition` file name; the zip
   (about 0.7 MB, one `.dat`) is downloaded only when that date is newer, validated by parsing, and replaces the

@@ -372,10 +372,10 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 APP_MODULES = (
     "alttitles", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
-    "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "keyfiles", "libexport", "library", "m3u", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
+    "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "keyfiles", "lha", "libexport", "library", "m3u", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "redump", "retroarch", "rvz", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
-    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec",
-    "totals", "treeview", "whdload", "winproc", "zstddec", "zstdnative",
+    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls",
+    "totals", "treeview", "winproc", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("index.html", "app.js", "style.css")
 # the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added

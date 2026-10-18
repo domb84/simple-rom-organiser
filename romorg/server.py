@@ -805,8 +805,6 @@ class _NoUpdates:
                 "progress": {"done": 0, "total": 0, "message": "", "source": ""}, "error": None,
                 "tosec": {"installed": None, "latest": None, "status": "unknown", "checked_at": None},
                 "nointro": {"installed": None, "latest": None, "status": "unknown", "dats": [],
-                            "checked_at": None},
-                "whdload": {"installed": None, "latest": None, "status": "unknown", "dats": [],
                             "checked_at": None}}
 
 
@@ -892,7 +890,8 @@ class App:
         module = _optional_mod("autoupdate")
         if module is not None:
             try:
-                return module.UpdateManager(enabled=enabled, switchdb=_mod("switchdb"), gametdb=_mod("gametdb"))
+                return module.UpdateManager(enabled=enabled, switchdb=_mod("switchdb"), gametdb=_mod("gametdb"),
+                                            whdinstalls=_mod("whdinstalls"))
             except Exception:  # noqa: BLE001 - never stop the app from starting
                 traceback.print_exc()
         return _NoUpdates()
@@ -1121,10 +1120,6 @@ class App:
         library = _optional_mod("library")
         tags = getattr(library, "tags", None) or _optional_mod("tags")
         order = list(getattr(tags, "PLATFORM_ORDER", None) or ("CD32", "AGA", "OCS"))
-        if style == "whdload":
-            return ("Preference: your language order, then " + " over ".join(order)
-                    + ", then standard memory over 512KB / Low Mem builds, then PAL / untagged over NTSC, "
-                    "then the newest version (highest build number last)")
         return "Preference: cracked, then " + " over ".join(order) + ", then newest (your language order comes first)"
 
     @staticmethod
@@ -2495,6 +2490,102 @@ class App:
         started = bool(self.updates.request_ratings())
         return {"started": started, "ratings": self.ratings_get({}, None), "updates": self.updates_status()}
 
+    # ---- WHDLoad installs for the Amiga games you have (romorg.whdinstalls)
+    def _whd_matcher(self, platform: Any) -> Any:
+        whd = _mod("whdinstalls")
+        cat = whd.load()
+        if cat is None:
+            return None, None
+        key = (cat.get("fetched_at"), platform.name)
+        cached = getattr(self, "_whd_matcher_cache", None)
+        if cached is None or cached[0] != key:
+            cached = self._whd_matcher_cache = (key, whd.Matcher(cat["installs"], platform))
+        return cat, cached[1]
+
+    def _whd_games(self, platform: Any) -> tuple[Any, list[dict[str, Any]]]:
+        """``(catalogue, rows)``: one row per game of the system's Games DAT you have - its title, its disks' folder, its install."""
+        whd, tags = _mod("whdinstalls"), _mod("tags")
+        state = self._state_of(platform)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, f"Scan the {platform.name} folder first.", "scan_needed")
+        cat, matcher = self._whd_matcher(platform)
+        folders = _mod("folders")
+        games: dict[str, dict[str, Any]] = {}
+        for m in getattr(state.result, "matched", ()):
+            rom = m.roms[0] if m.roms else None
+            if rom is None or "Games" not in getattr(rom, "dat", ""):
+                continue
+            try:
+                parts = Path(m.entry.path).relative_to(state.root).parts
+            except ValueError:
+                parts = ()
+            if folders.reserved_of(parts) is not None:
+                continue                         # (a game the rules set aside: _excluded/, _superseded/ ... gets no install)
+            t = tags.parse_name(rom.name, tags.STYLE_TOSEC)
+            row = games.setdefault(t.title.casefold(), {"title": t.title, "disks": [], "dir": str(Path(m.entry.path).parent)})
+            row["disks"].append(rom.name)
+        installed: dict[str, dict[str, Any]] = {}
+        rows = []
+        for row in sorted(games.values(), key=lambda r: r["title"].casefold()):
+            hit = matcher.match(row["title"]) if matcher is not None else None
+            folder = row["dir"]
+            if folder not in installed:
+                installed[folder] = whd.installed_in(Path(folder))
+            inst = hit[0] if hit else None
+            done = installed[folder].get(inst["archive"]) if inst else None
+            try:
+                rel = os.path.relpath(folder, state.root)
+            except ValueError:
+                rel = folder
+            rows.append({"title": row["title"], "disks": len(row["disks"]), "dir": rel,
+                         "install": ({k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")} if inst else None),
+                         "how": hit[1] if hit else "", "downloaded": bool(done),
+                         "folder": os.path.relpath(done["folder"], state.root) if done else ""})
+        return cat, rows
+
+    def whdload_installs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """The Amiga games you have and their WHDLoad installs (``available``: the list of installs has been fetched)."""
+        platform = self._resolve_platform(query.get("platform") or "Commodore Amiga")
+        cat, rows = self._whd_games(platform)
+        return {"available": cat is not None, "fetched": (cat or {}).get("fetched", ""), "installs": len((cat or {}).get("installs", ())),
+                "games": rows, "counts": {"games": len(rows), "with_install": sum(1 for r in rows if r["install"]),
+                                          "downloaded": sum(1 for r in rows if r["downloaded"])}}
+
+    def whdload_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """Download the installs of some games (``titles``) or of every game that has one and lacks it (``all``), next to their disks."""
+        body = body if isinstance(body, dict) else {}
+        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        whd = _mod("whdinstalls")
+        cat, rows = self._whd_games(platform)
+        if cat is None:
+            raise ApiError(HTTPStatus.CONFLICT, "The list of WHDLoad installs has not been fetched yet (it is fetched with the other "
+                                                "databases; check for updates).", "whdinstalls_missing")
+        state = self._state_of(platform)
+        wanted = {str(t).casefold() for t in body.get("titles") or ()}
+        todo = [r for r in rows if r["install"] and ((r["title"].casefold() in wanted) or (body.get("all") and not r["downloaded"]))]
+        if not todo:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "No game with a WHDLoad install to download.")
+
+        def work(job: Job) -> Any:
+            done, failed = [], []
+            for n, r in enumerate(todo):
+                if job.cancel.is_set():
+                    break
+                job.report(n, len(todo), f"WHDLoad install of {r['title']}")
+                try:
+                    folder = whd.download_install(r["install"], Path(state.root) / r["dir"], game=r["title"], cancel=job.cancel)
+                    done.append({"title": r["title"], "folder": os.path.relpath(folder, state.root)})
+                except InterruptedError:
+                    break
+                except Exception as exc:  # noqa: BLE001 - one install that fails does not stop the others
+                    failed.append({"title": r["title"], "error": str(exc) or type(exc).__name__})
+                if n + 1 < len(todo):
+                    time.sleep(0.3)                  # (one download at a time, a pause between: whdload.de is a small site)
+            job.report(len(todo), len(todo), "WHDLoad installs downloaded")
+            return {"action": "whdload", "downloaded": done, "failed": failed}
+
+        return {"job": self.jobs.start("whdload", work, platform=platform.name).to_dict()}
+
     def updates_cancel(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return {"cancelled": bool(self.updates.cancel())}
 
@@ -2517,7 +2608,7 @@ class App:
         info["defaults"] = self._profile_json(library.app_defaults(), "")
         info["available"] = {**info["available"], "ratings": True}
         # (a TOSEC catalog has no region priority and no disc-system rule: the defaults carry every system's rules)
-        for style in (library.STYLE_NOINTRO, library.STYLE_REDUMP, library.STYLE_WHDLOAD):
+        for style in (library.STYLE_NOINTRO, library.STYLE_REDUMP):
             seen = {e["id"] for e in info["catalog"]}
             info["catalog"] = info["catalog"] + [e for e in library.rule_catalog(style) if e["id"] not in seen]
         info["inherit"] = {**info["inherit"], "applicable": list(library.OVERRIDE_FIELDS)}      # (every rule: it is the defaults of every system)
@@ -5338,8 +5429,8 @@ class App:
         itself for one that is no game's, nothing for a playlist."""
         parts = entry["parts"]
         row = entry["row"] or {}
-        if str(parts[-1]).lower().endswith(".m3u"):
-            return None
+        if str(parts[-1]).lower().endswith(".m3u") or entry["state"] == "whdload":
+            return None                                     # (a playlist, a file of a WHDLoad install: no game)
         name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
         if "borrowed as disk " in str(row.get("reason") or ""):
             return None                                     # (a disk of another edition that completes a set: part of that game, counted there)
@@ -5351,7 +5442,7 @@ class App:
         style = _mod("library")._style_of_platform(platform) if platform is not None else "nointro"
         try:
             category = str((row.get("tags") or {}).get("category") or "")
-            t = (tags_mod.redump_tags(name, category) if style == "redump" else tags_mod.parse_whdload(name, "") if style == "whdload"
+            t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
             dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
             return ("game", (dat, _mod("library").combined_key(dat, tags_mod.game_key(t), combine)))     # (the tiles' key: no region, no disc number)
@@ -5784,6 +5875,8 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/updates/cancel"): App.updates_cancel,
     ("GET", "/api/ratings"): App.ratings_get,
     ("POST", "/api/ratings/download"): App.ratings_download,
+    ("GET", "/api/whdload/installs"): App.whdload_installs,
+    ("POST", "/api/whdload/download"): App.whdload_download,
     ("POST", "/api/ratings/igdb"): App.ratings_igdb_save,
     ("POST", "/api/ratings/igdb/test"): App.ratings_igdb_test,
     ("GET", "/api/library/profile"): App.library_profile,

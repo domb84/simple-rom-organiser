@@ -331,7 +331,7 @@ def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        # some community DATs (the WHDLoad one) are Windows-1252, not UTF-8: "Alien\xb3", "D\xe9but"
+        # some community DATs are Windows-1252, not UTF-8: "Alien\xb3", "D\xe9but"
         text = raw.decode("cp1252", errors="replace")
     tk = _Tokens(text, str(p))
     items = tk.items
@@ -360,7 +360,7 @@ def parse_clrmamepro(path: Union[str, os.PathLike[str]], set_names: bool = True)
                     elif key == "homepage":
                         homepage = value
                     elif key == "date" and not date:
-                        date = value   # e.g. the WHDLoad DAT: ``date "2026-07-05"`` (no ``version``)
+                        date = value   # e.g. a community DAT: ``date "2026-07-05"`` (no ``version``)
         elif low in _GAME_BLOCKS:
             games.append(block)
         # other top-level blocks (resource, ...) are ignored

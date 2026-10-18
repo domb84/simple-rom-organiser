@@ -1,4 +1,4 @@
-"""What the DAT sources have in common (``nointro``, ``whdload``, ``redump``): a folder of ``<name>.dat`` files with a
+"""What the DAT sources have in common (``nointro``, ``redump``): a folder of ``<name>.dat`` files with a
 ``manifest.json`` beside them, a download that is validated before it replaces the installed file, and one run over several DATs.
 
 Each source module keeps its own names, addresses, error class and what its version is read from; the work is here.

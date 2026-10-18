@@ -2,13 +2,12 @@
 
 Usage:  py -3.14 tools/fetch_real_dats.py <target-folder>
 
-Needs the network. Downloads Redump (Dreamcast, PlayStation, PlayStation 2), No-Intro (libretro mirror), WHDLoad and
+Needs the network. Downloads Redump (Dreamcast, PlayStation, PlayStation 2), No-Intro (libretro mirror) and
 the TOSEC pack into a private data dir (<target>/datadir), then arranges <target>/realscratch for the test variables:
 
-    ROMORG_REAL_SCRATCH   = <target>/realscratch      (dats/TOSEC, nointro, whd, pack.zip)
+    ROMORG_REAL_SCRATCH   = <target>/realscratch      (dats/TOSEC, nointro, pack.zip)
     ROMORG_REAL_SONY_DATS = <target>/realscratch/redump_sony
     ROMORG_REAL_DC_DAT    = <target>/realscratch/redump/Sega - Dreamcast*.dat
-    WHD_REAL_DAT          = <target>/realscratch/whd/whd.dat
     (ROMORG_REAL_DC_DIR = a folder of the four Redump-named Dreamcast games, ROMORG_REAL_SETS / _CHDMAN_CHDS: see
      tests/test_chd.py and tests/test_chdwrite.py)
 
@@ -34,10 +33,10 @@ def main(argv: list[str]) -> int:
     os.environ["ROMORG_DATA_DIR"] = str(data)
     os.environ.pop("ROMORG_OFFLINE", None)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from romorg import nointro, paths, redump, tosec, whdload
+    from romorg import nointro, paths, redump, tosec
 
     failed = False
-    for mod in (redump, nointro, whdload):
+    for mod in (redump, nointro):
         res = mod.update_dats(progress=lambda *a: None)
         print(mod.__name__, {k: res[k] for k in ("downloaded", "unchanged", "failed", "count")}, flush=True)
         failed |= bool(res["failed"])
@@ -48,8 +47,6 @@ def main(argv: list[str]) -> int:
     for f in paths.dats_dir().glob("*.dat"):
         shutil.copy2(f, out / "dats" / "TOSEC" / f.name)
     shutil.copytree(paths.nointro_dir(), out / "nointro", dirs_exist_ok=True)
-    (out / "whd").mkdir(exist_ok=True)
-    shutil.copy2(paths.whdload_dir() / f"{whdload.DAT_NAME}.dat", out / "whd" / "whd.dat")
     for pack in sorted(paths.cache_dir().glob("*.zip"))[-1:]:
         shutil.copy2(pack, out / "pack.zip")
     (out / "redump").mkdir(exist_ok=True)

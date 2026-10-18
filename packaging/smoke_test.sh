@@ -65,14 +65,14 @@ done
 TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$INDEX" | head -n1)"
 if [[ -n "$TOKEN" ]]; then
   PLATFORMS="$(curl -fsS -H "X-Romorg-Token: $TOKEN" "$URL/api/platforms")"
-  for name in "Commodore Amiga" "Commodore Amiga - WHDLoad" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
+  for name in "Commodore Amiga" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \
               "Super Nintendo Entertainment System" "Nintendo Game Boy" "Nintendo Game Boy Color" "Nintendo DS" \
               "Sega Mega Drive - Genesis" "Sega Master System" "Sega Game Gear" "Sega 32X" "Atari Lynx" \
               "Sega Dreamcast" "Sony PlayStation" "Sony PlayStation 2" "Nintendo GameCube" "Nintendo Wii" "Nintendo Wii U" "Nintendo Switch"; do
     grep -q "\"$name\"" <<<"$PLATFORMS" || { echo "platform missing: $name" >&2; exit 1; }
   done
   COUNT="$(grep -o '"folder_hint"' <<<"$PLATFORMS" | wc -l)"
-  [[ "$COUNT" == "21" ]] || { echo "expected 21 systems, the app lists $COUNT" >&2; exit 1; }
+  [[ "$COUNT" == "20" ]] || { echo "expected 20 systems, the app lists $COUNT" >&2; exit 1; }
   echo "GET /api/platforms -> $COUNT systems"
   grep -q '"state"' <<<"$(curl -fsS "$URL/api/updates")" || { echo "/api/updates missing" >&2; exit 1; }
   grep -q '"rules"' <<<"$(curl -fsS "$URL/api/library/profile?platform=Commodore%20Amiga")" \

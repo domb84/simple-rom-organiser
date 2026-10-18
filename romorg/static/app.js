@@ -595,7 +595,8 @@
   /** "0.4%" for a sliver, "37%" otherwise: a scan of hundreds of gigabytes is below 1 % for minutes. */
   const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
-    m3u: "Playlists", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums" };
+    m3u: "Playlists", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums",
+    whdload: "WHDLoad installs" };
 
 
   const UNMATCHED = "_unmatched";
@@ -612,7 +613,7 @@
   const currentPlatform = () => state.platforms.find((p) => p.name === state.platform) || null;
   const pctText = (pct) => `${pct.toFixed(pct >= 10 || pct === 0 ? 1 : 2)}%`;
   const isFlat = (p) => !!p && p.layout === "flat";
-  const sourceLabel = (source) => (source === "nointro" ? "No-Intro" : source === "whdload" ? "WHDLoad"
+  const sourceLabel = (source) => (source === "nointro" ? "No-Intro"
     : source === "redump" ? "Redump" : "TOSEC");
   /** Where a system's DATs come from, for the screen: two systems have no DAT of checksums, their catalogue is made from a list. */
   const platformSource = (p) => (p.name === "Nintendo Switch" ? "titledb" : p.name === "Nintendo Wii U" ? "GameTDB" : sourceLabel(p.source));
@@ -707,11 +708,10 @@
   /** The single status line, progress bar, offline note and error box of the updates bar. */
   function renderUpdates(u) {
     if (!u) return;
-    const tosec = u.tosec || {}, ni = u.nointro || {}, whd = u.whdload || {}, red = u.redump || {};
+    const tosec = u.tosec || {}, ni = u.nointro || {}, red = u.redump || {};
     const parts = [
       tosec.installed ? `TOSEC ${tosec.installed}` : "TOSEC not installed",
       ni.installed ? `No-Intro ${ni.installed}` : "No-Intro not installed",
-      whd.installed ? `WHDLoad ${whd.installed}` : "WHDLoad not installed",
       red.installed ? `Redump ${red.installed}` : "Redump not installed",
     ];
     const rat = u.ratings || {};
@@ -725,7 +725,7 @@
     const btn = $("updates-btn");
     btn.textContent = u.running ? "Cancel update" : "Check for updates";
     btn.disabled = !u.enabled && !u.running;
-    btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro, WHDLoad, Redump and the ratings for newer versions and install them" : "Automatic updates are switched off in this run";
+    btn.title = u.enabled || u.running ? "Check TOSEC, No-Intro, Redump and the ratings for newer versions and install them" : "Automatic updates are switched off in this run";
     if (Databases.open) Databases.load();
 
     const pr = u.progress || {};
@@ -802,7 +802,7 @@
             el("td", { class: "wrap small", text: r.used_by.length > 4 ? `${r.used_by.length} systems` : r.used_by.join(", ") || "-", title: r.used_by.join(", ") }),
             el("td", { class: "num", text: r.installed || "not installed" }), el("td", { class: "num", text: r.latest || "-" }),
             el("td", {}, status(r.status)), el("td", { class: "num muted", text: r.checked_at ? checkedText(r.checked_at) : (r.status === "bundled" ? "-" : "never") }))))))))
-        .concat([el("div", { class: "muted small", text: "Versions are the date in each DAT. \"Newest known\" is what the last check found online; No-Intro and WHDLoad are compared by content, so they show the installed date once they are current. The Nintendo Wii U and Switch lists are made here from the names and IDs below them: no checksum list exists for those systems." })]));
+        .concat([el("div", { class: "muted small", text: "Versions are the date in each DAT. \"Newest known\" is what the last check found online; No-Intro is compared by content, so they show the installed date once they are current. The Nintendo Wii U and Switch lists are made here from the names and IDs below them: no checksum list exists for those systems." })]));
     },
   };
 
@@ -1096,7 +1096,7 @@
       ...(gameFolder ? ["  <Redump name>/<Redump name>.chd   (+ .zip .md5 .state .srm ... named alike)",
         discPlaylists(p) ? "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc + a playlist next to disc 1)"
           : "  <Redump name> (Disc 2)/...         (multi-disc games: one folder per disc, no playlist)"] : []),
-      ...(gameFolder ? [] : flat ? [p.source === "whdload" ? "  <WHDLoad name>.lha   (the exact database file name)" : "  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
+      ...(gameFolder ? [] : flat ? ["  <No-Intro name>.<ext>   (or .zip / .7z named after the game)"]
         : p.dats.map((d) => `  ${d.folder}/`)),
       ...reserved(hasM3uLayout && !gameFolder, !!p.convertible, p.protected_dirs || [], archived)].join("\n");
   }
@@ -1104,6 +1104,7 @@
   function renderPlatform() {
     const p = currentPlatform();
     state.rendered = p ? p.name : null;
+    if (!Whd.applies()) $("ov-whdload").classList.add("hidden");       // (the WHDLoad installs are the Amiga's)
     $("platform-details-title").textContent = p ? `DAT files for ${p.name} (${platformSource(p)})` : "DAT files";
     const rows = p ? p.dats.map((d) => el("tr", {},
       el("td", { class: "wrap" }, el("div", { text: d.name }),
@@ -1502,6 +1503,8 @@
 
     renderDcBar(s);
     renderSavesCard();
+    const whdKey = `${scan.platform}|${scan.root}|${s.matched || 0}|${s.total || 0}`;
+    if (Whd.key !== whdKey) { Whd.key = whdKey; Whd.load(); } else Whd.render();
     const via = s.matched_via || {};
     const normalised = (via.headerless || 0) + (via.byteswapped || 0);
     const L = (view, extra = {}) => ({ view, ...extra });
@@ -1610,6 +1613,99 @@
       t.sets && p ? el("div", { class: "sub", text: "Which game each belongs to is listed at the foot of the Files page." }) : null);
   }
 
+  /** WHDLoad installs (Amiga): which of your games has one on whdload.de, download one or all of them next to the disks. */
+  const Whd = {
+    data: null,
+    show: "with",
+    q: "",
+    limit: 200,
+    platform: "",
+
+    applies() {
+      const p = currentPlatform();
+      return !!(p && p.name === "Commodore Amiga" && state.scan);
+    },
+
+    async load() {
+      const box = $("ov-whdload");
+      if (!this.applies()) { box.classList.add("hidden"); return; }
+      const p = currentPlatform();
+      try {
+        this.data = await get(`/api/whdload/installs?platform=${encodeURIComponent(p.name)}`);
+        this.platform = p.name;
+      } catch (err) {
+        this.data = null;
+        box.classList.remove("hidden");
+        $("ov-whdload-title").textContent = "WHDLoad installs";
+        $("ov-whdload-body").replaceChildren(el("div", { class: "sub", text: err.message }));
+        return;
+      }
+      this.render();
+    },
+
+    rows() {
+      const q = this.q.trim().toLowerCase();
+      return (this.data ? this.data.games : []).filter((g) =>
+        (this.show === "all" || (this.show === "with" && g.install && !g.downloaded) || (this.show === "done" && g.downloaded)
+          || (this.show === "none" && !g.install))
+        && (!q || g.title.toLowerCase().includes(q) || (g.install && g.install.title.toLowerCase().includes(q))));
+    },
+
+    render() {
+      const box = $("ov-whdload");
+      const d = this.data;
+      if (!d || !this.applies()) { box.classList.add("hidden"); return; }
+      box.classList.remove("hidden");
+      const body = $("ov-whdload-body");
+      if (!d.available) {
+        $("ov-whdload-title").textContent = "WHDLoad installs";
+        body.replaceChildren(
+          el("p", { class: "muted small", text: "The list of WHDLoad installs (whdload.de) is not fetched yet: it comes with the next check for updates." }),
+          el("div", { class: "row" }, el("button", { class: "btn", text: "Check for updates", on: { click: async () => {
+            try { await post("/api/updates/check"); toast("Checking for updates...", "info"); } catch (err) { toast(err.message, "error"); } } } })));
+        return;
+      }
+      const c = d.counts;
+      const todo = d.games.filter((g) => g.install && !g.downloaded).length;
+      $("ov-whdload-title").textContent = `WHDLoad installs: ${fmt(c.with_install)} of your ${nPlural(c.games, "game", "games")} have one (${fmt(c.downloaded)} downloaded)`;
+      const all = el("button", { class: "btn btn-primary", text: todo ? `Download all (${fmt(todo)})` : "All downloaded", "data-needs-idle": "",
+        on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, all: true }) } });
+      if (!todo) all.dataset.blocked = "1";
+      body.replaceChildren(
+        el("p", { class: "muted small", text: `An install is a game's WHDLoad slave, installer and icons - no game data (from the list of ${fmt(d.installs)} installs on whdload.de, ${d.fetched}). `
+          + "It is unpacked next to the game's disks, in a folder named \u201c<game> (WHDLoad install)\u201d: run its installer with the disks to put the game on a hard drive." }),
+        el("div", { class: "row" }, all),
+        this.list());
+      Jobs.setRunning(Jobs.running);
+    },
+
+    list() {
+      const shown = this.rows();
+      const sel = el("select", { class: "input", "aria-label": "Which games", on: { change: (e) => { this.show = e.target.value; this.limit = 200; this.render(); } } },
+        ...[["with", "With an install to download"], ["done", "Downloaded"], ["none", "Without an install"], ["all", "All games"]]
+          .map(([v, t]) => el("option", { value: v, text: t, selected: this.show === v ? "" : null })));
+      const search = el("input", { class: "input grow", type: "search", id: "whd-search", placeholder: "Search games", value: this.q, "aria-label": "Search games",
+        on: { input: (e) => { this.q = e.target.value; clearTimeout(this.qt); this.qt = setTimeout(() => { this.render(); const s = document.getElementById("whd-search"); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }, 250); } } });
+      const HOW = { title: "", spelling: "same letters", "other title": "another title of the game", subtitle: "by its subtitle", "main title": "by its main title" };
+      const body = el("tbody", {}, ...shown.slice(0, this.limit).map((g) => {
+        const i = g.install;
+        const info = i ? el("a", { href: `https://www.whdload.de/games/${i.archive.replace(/\.lha$/i, ".html")}`, target: "_blank", rel: "noopener", text: i.title }) : el("span", { class: "muted", text: "none" });
+        let act;
+        if (g.downloaded) act = el("span", { class: "badge", text: "Downloaded", title: g.folder });
+        else if (i) act = el("button", { class: "btn btn-small", text: "Download", "data-needs-idle": "",
+          on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, titles: [g.title] }) } });
+        else act = el("span", {});
+        return el("tr", {}, el("td", { text: g.title }), el("td", {}, info, i && HOW[g.how] ? el("div", { class: "muted small", text: HOW[g.how] }) : null),
+          el("td", { class: "num", text: i ? fmtBytes(i.size) : "" }), el("td", {}, act));
+      }));
+      const more = shown.length > this.limit ? el("button", { class: "btn btn-small", text: `Show ${fmt(Math.min(500, shown.length - this.limit))} more`, on: { click: () => { this.limit += 500; this.render(); } } }) : null;
+      return el("div", { class: "whd-list" },
+        el("div", { class: "row" }, sel, search, el("span", { class: "muted small", id: "whd-count", text: nPlural(shown.length, "game", "games") })),
+        el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "Install" }), el("th", { text: "Size" }), el("th", { text: "" }))), body)),
+        more);
+    },
+  };
+
   /** The RetroArch choice changed (or a config appeared): the saves columns, the saves option and the Saves card follow. */
   async function refreshSavesAwareness() {
     for (const k of Object.keys(state.library)) delete state.library[k];
@@ -1680,7 +1776,7 @@
   // ------------------------------------------------ checksums (Browse tab)
   // The server sends what the scan already knows (DAT hashes, the hashes of the local file that matched,
   // per-track hashes of discs); "-" means "not known" - nothing is ever guessed or computed here.
-  const SOURCE_NAME = { nointro: "No-Intro", tosec: "TOSEC", redump: "Redump", whdload: "WHDLoad" };
+  const SOURCE_NAME = { nointro: "No-Intro", tosec: "TOSEC", redump: "Redump" };
   const HASH_LABEL = { crc32: "CRC32", md5: "MD5", sha1: "SHA-1" };
   const HASH_KEYS = ["crc32", "md5", "sha1"];
 
@@ -2551,8 +2647,8 @@
 
   // Everything below is rendered from the server's rule catalog (library.rule_catalog / profile_info): no rule list lives here.
   const GROUP_TITLE = { exclude: "Exclude", keep_flag: "Keep these dump types" };
-  const AMIGA_STYLES = ["tosec", "whdload"];
-  /** A rule of the catalog that only the Amiga systems (TOSEC, WHDLoad) have. */
+  const AMIGA_STYLES = ["tosec"];
+  /** A rule of the catalog that only the Amiga (TOSEC) has. */
   const amigaOnly = (e) => !!(e.applies_to && e.applies_to.length) && e.applies_to.every((x) => AMIGA_STYLES.includes(x));
   const catalogOf = (info) => info.catalog || [];
   const optionEntries = (info) => catalogOf(info).filter((e) => e.kind === "option" && e.id !== "languages" && e.id !== "region_priority"
@@ -2696,9 +2792,7 @@
           on: { click: () => set(moved(prof.languages, i, 1)) } })))) : null;
     return el("div", { class: "rules-group", id: rctx.overrides ? "rules-languages" : null },
       el("div", { class: "rules-head", text: "Languages" }),
-      el("div", { class: "sub note", text: info.style === "whdload"
-        ? ((catalogOf(info).find((e) => e.id === "languages") || {}).description || "No language tag means English.")
-        : "No language or country tag means English/neutral (TOSEC convention); (de-en) counts as English; [tr en] counts as an English translation." }),
+      el("div", { class: "sub note", text: "No language or country tag means English/neutral (TOSEC convention); (de-en) counts as English; [tr en] counts as an English translation." }),
       known.length ? el("div", { class: "lang-grid" }, boxes) : el("div", { class: "muted small", text: "Languages appear here once the DAT is installed." }),
       order,
       el("div", { class: "sub", text: prof.languages.length ? "Titles with no version in a ticked language are left out." : "Nothing ticked: every language stays." }),
@@ -3392,7 +3486,7 @@
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority", "region_ties"], regionSection(info)));
     if (ratingEntries(info).length) groups.push(ratingsSection(info));
     if (amiga.filter(Boolean).length) groups.push(el("div", { class: "rules-section", id: "rules-amiga" },
-      el("div", { class: "rules-head rules-section-head", text: "Amiga only (TOSEC and WHDLoad)" }),
+      el("div", { class: "rules-head rules-section-head", text: "Amiga only" }),
       el("div", { class: "sub note", text: "These rules only have an effect on the Amiga systems: their databases carry the variants, dump types and disk sets they read." }),
       ...amiga.filter(Boolean)));
     if (prof.saved_games !== undefined && rctx.overrides) groups.push(unit(["saved_games", "prefer_saved"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set",
@@ -4510,6 +4604,16 @@
     },
   };
 
+  Jobs.handlers.whdload = async (job) => {
+    const r = job.result || {};
+    if (job.status === "done") {
+      const n = (r.downloaded || []).length, bad = r.failed || [];
+      toast(`${nPlural(n, "WHDLoad install", "WHDLoad installs")} downloaded${bad.length ? `; ${bad.length} failed: ${bad.slice(0, 3).map((f) => `${f.title} (${f.error})`).join(", ")}` : ""}`,
+        bad.length ? "error" : "ok", bad.length ? 12000 : undefined);
+    }
+    await Whd.load();
+  };
+
   Jobs.handlers.retroarch = async (job) => {
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
@@ -4561,7 +4665,7 @@
   const TREE_STATES = { same: ["", "Unchanged"], renamed: ["move", "Renamed"], moved: ["move", "Moved"], new: ["ok", "New"],
     existing: ["", "Already archived"], ignored: ["skip", "Not looked at"], incoming: ["warn", "Set aside"], copy: ["info", "Copy"],
     saves: ["info", "Saves"], missing: ["missing", "Missing"], saveonly: ["info", "Saves only"],
-    converted: ["ok", "Convert"], deleted: ["warn", "Convert, deleted"] };
+    converted: ["ok", "Convert"], deleted: ["warn", "Convert, deleted"], whdload: ["info", "WHDLoad install"] };
   const FOLDER_STATES = ["converted", "deleted", "renamed", "moved", "new", "incoming", "copy"];       // (what the build does below a folder, shown on it)
   const FILES_SHOW = [["", "Everything"], ["have", "Games you have"], ["missing", "Missing"], ["bios", "BIOS and firmware"], ["unmatched", "Unmatched"], ["saves", "Saves"]];
   const FILES_STATES = ["renamed", "moved", "new", "converted", "deleted", "incoming", "copy", "saves", "existing", "ignored"];

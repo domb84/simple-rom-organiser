@@ -21,7 +21,7 @@ GROUP_OTHER = "Other"
 
 TOSEC_URL = "https://www.tosecdev.org/downloads"
 NOINTRO_URL = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
-WHDLOAD_URL = "https://github.com/MrV2K/WHDLoad-Database"
+WHDLOAD_INSTALLS = "https://www.whdload.de/games/all.html"
 REDUMP_URL = "http://redump.org/datfile/"
 REDUMP_SLUG = {"Sega - Dreamcast": "dc", "Sony - PlayStation": "psx", "Sony - PlayStation 2": "ps2"}
 REDUMP_MIRROR = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
@@ -57,7 +57,6 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows.append(_row(GROUP_DAT, "TOSEC", "Full DAT pack (all TOSEC systems)", TOSEC_URL, used.get("Commodore Amiga - Games - [ADF]", []), t,
                      note="about 100 MB; fetched only when its release date changes"))
     for key, label, url_of in (("nointro", "No-Intro", lambda n: (REDUMP_MIRROR if n in MIRRORED else NOINTRO_URL) + quote(n) + ".dat"),
-                               ("whdload", "WHDLoad", lambda n: WHDLOAD_URL),
                                ("redump", "Redump", lambda n: REDUMP_URL + REDUMP_SLUG.get(n, "") + "/" if n in REDUMP_SLUG else REDUMP_URL)):
         b = u.get(key) or {}
         for d in b.get("dats") or ():
@@ -77,6 +76,9 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
                      note="optional; fetched together with GameTDB's list"))
     rows.append(_row(GROUP_OTHER, "PCSX2", "PlayStation 2 game names by serial (GameIndex.yaml)", PCSX2_INDEX, ["Sony PlayStation 2"], gt,
                      note="names the PCSX2 saves that have no game file here; fetched together with GameTDB's lists"))
+    wi = u.get("whdinstalls") or {}
+    rows.append(_row(GROUP_OTHER, "WHDLoad", f"Game installs{' (%s)' % wi['titles'] if wi.get('titles') else ''}", WHDLOAD_INSTALLS,
+                     ["Commodore Amiga"], wi, note="the list of installs (titles, archives); an install is downloaded only when you ask for it"))
     r = u.get("ratings") or {}
     rows.append(_row(GROUP_OTHER, "LaunchBox", f"Community ratings{' (%s games)' % r['games'] if r.get('games') else ''}", LAUNCHBOX_URL,
                      [p.name for p in platforms.list_platforms()], r, note="optional: fetched when a rating filter needs it"))

@@ -48,7 +48,7 @@ def behaviour() -> list[dict]:
         row(["Nintendo GameCube", "Nintendo Wii"], "Dolphin, by game ID", "Not needed", "No", "No"),
         row(["Nintendo Wii U"], "Cemu, by title ID", "Not needed", "No", "No"),
         row(["Nintendo Switch"], "Eden or Ryujinx, by title ID", "Not needed", "No", "No"),
-        row(["Commodore Amiga", "Commodore Amiga - WHDLoad"], "RetroArch, named after the file", "Yes", "No", "No"),
+        row(["Commodore Amiga"], "RetroArch, named after the file", "Yes", "No", "No"),
     ]
 
 

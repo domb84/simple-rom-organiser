@@ -56,7 +56,6 @@ DEFAULT_MIN_VOTES = 5
 # our platform name -> LaunchBox ``<Platform>`` string (no entry = no ratings for that system)
 LB_PLATFORMS: dict[str, str] = {
     "Commodore Amiga": "Commodore Amiga",
-    "Commodore Amiga - WHDLoad": "Commodore Amiga",
     "Nintendo Game Boy Advance": "Nintendo Game Boy Advance",
     "Nintendo 64": "Nintendo 64",
     "Nintendo Entertainment System": "Nintendo Entertainment System",

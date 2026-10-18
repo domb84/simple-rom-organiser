@@ -48,19 +48,10 @@ def dats_dir() -> Path:
     return _ensure(data_dir() / "dats")
 
 
-def whdload_dir() -> Path:
-    """Directory holding the WHDLoad DAT (MrV2K's community database) + manifest.json.
-
-    Its own sibling of ``dats/`` and ``nointro/``: neither the TOSEC pack's atomic swap nor a
-    No-Intro update ever touches it (and it never touches them).
-    """
-    return _ensure(data_dir() / "whdload")
-
-
 def redump_dir() -> Path:
     """Directory holding the Redump DATs (Sega Dreamcast) + manifest.json.
 
-    Its own sibling of ``dats/``, ``nointro/`` and ``whdload/``: no other updater ever touches it.
+    Its own sibling of ``dats/`` and ``nointro/``: no other updater ever touches it.
     """
     return _ensure(data_dir() / "redump")
 
@@ -68,7 +59,7 @@ def redump_dir() -> Path:
 def ratings_dir() -> Path:
     """Directory holding the LaunchBox ratings index (``ratings.sqlite`` + manifest.json).
 
-    Its own sibling of ``dats/``, ``nointro/``, ``whdload/`` and ``redump/``: no DAT updater ever touches it.
+    Its own sibling of ``dats/``, ``nointro/`` and ``redump/``: no DAT updater ever touches it.
     """
     return _ensure(data_dir() / "ratings")
 

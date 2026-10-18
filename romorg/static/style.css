@@ -793,3 +793,9 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 .tree-saved-why { color: var(--save); }
 .chip.chip-saved { border-color: var(--save); color: var(--save); }
 .chip.chip-saved.active { background: rgba(229, 154, 91, 0.16); }
+
+/* WHDLoad installs card (Amiga) */
+.whd-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.whd-list .row { align-items: center; }
+.whd-list .table-wrap { max-height: 60vh; overflow: auto; }
+.whd-list td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

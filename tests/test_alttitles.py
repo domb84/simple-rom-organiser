@@ -110,7 +110,7 @@ class OneReleaseOfTheGame(AltTitlesCase):
 
     def test_the_rule_is_on_by_default_on_every_system(self) -> None:
         self.assertTrue(library.default_profile(GBA).combine_alt_titles)
-        for name in ("Nintendo Game Boy Advance", "Commodore Amiga", "Commodore Amiga - WHDLoad", "Sega Dreamcast"):
+        for name in ("Nintendo Game Boy Advance", "Commodore Amiga", "Sega Dreamcast"):
             self.assertIn("combine_alt_titles", library.applicable_fields(platforms.get_platform(name)))
 
     def test_without_the_dat_learnt_nothing_is_combined(self) -> None:

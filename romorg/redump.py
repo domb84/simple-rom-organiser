@@ -6,9 +6,9 @@ holding a single Logiqx ``.dat``) over plain **HTTP only** (the HTTPS port refus
 The newest version is read from the ``Content-Disposition`` filename of a HEAD request (a streamed GET
 that only reads the headers is the fallback), so a check costs one tiny request; the zip is downloaded
 only when that date is newer than the installed DAT's ``<version>``. The DAT lives in
-``paths.redump_dir()`` - its own folder, never touched by the TOSEC / No-Intro / WHDLoad updaters.
+``paths.redump_dir()`` - its own folder, never touched by the TOSEC / No-Intro updaters.
 
-The API mirrors :mod:`romorg.whdload` (``check_updates`` / ``download_dat`` / ``update_dats`` /
+The API mirrors :mod:`romorg.nointro` (``check_updates`` / ``download_dat`` / ``update_dats`` /
 ``list_dats`` / ``find_dat``), so :mod:`romorg.autoupdate` drives it the same way.
 """
 

@@ -218,22 +218,6 @@ class UserTests(unittest.TestCase):
 
 
 class OtherSystemsTests(unittest.TestCase):
-    def test_whdload_unit_is_the_game_and_the_newest_version_is_preferred(self) -> None:
-        whd = platforms.get_platform("Commodore Amiga - WHDLoad")
-        dat_name = platforms.WHDLOAD_DAT
-
-        def r(stem: str, game: str) -> Rom:
-            return Rom(stem + ".lha", 1, "0", "", "", game, dat_name, stem)
-
-        roms = [r("Gee_v1.0", "Gee"), r("Gee_v1.1", "Gee"), r("Haa_v1.0", "Haa")]
-        dat = DatFile(dat_name, dat_name, "1", roms, format="clrmamepro")
-        profile = library.default_profile(whd)
-        t = totals.compute_target(whd, [dat], profile)
-        self.assertEqual(t.count, 2)
-        items = [Item(key=0, dat=dat_name, rom=roms[0], style="whdload", path=Path("x"), member=None)]
-        res = totals.combine(t, totals.compute_user_items(items, whd, profile))
-        self.assertEqual((res["have_games"], res["not_preferred"], res["missing_games"]), (1, 1, 1))
-
     def test_redump_unit_is_the_game_not_the_disc(self) -> None:
         dc = platforms.get_platform("Sega Dreamcast")
         name = platforms.REDUMP_DC_DAT

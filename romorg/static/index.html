@@ -21,7 +21,7 @@
       <div class="menu" id="more-menu">
         <button class="btn btn-small btn-ghost" id="more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-pop">More</button>
         <div class="menu-pop hidden" id="more-pop" role="menu">
-          <button class="menu-item" role="menuitem" id="updates-btn" title="Check TOSEC, No-Intro, WHDLoad and Redump for newer DATs and install them">Check for updates</button>
+          <button class="menu-item" role="menuitem" id="updates-btn" title="Check TOSEC, No-Intro and Redump for newer DATs and install them">Check for updates</button>
           <button class="menu-item" role="menuitem" id="density-btn" aria-pressed="false" title="Smaller rows: more of a long list on screen">Compact rows</button>
           <button class="menu-item" role="menuitem" id="quit-btn" title="Stop the app">Quit</button>
         </div>
@@ -419,6 +419,11 @@
             <div class="tree" id="files-tree" role="tree" aria-label="Files"></div>
           </div>
         </div>
+
+        <details class="dat-details hidden" id="ov-whdload">
+          <summary id="ov-whdload-title">WHDLoad installs</summary>
+          <div id="ov-whdload-body"></div>
+        </details>
 
         <details class="dat-details hidden" id="saves-box">
           <summary id="saves-box-title">Saves in the emulator's folders</summary>

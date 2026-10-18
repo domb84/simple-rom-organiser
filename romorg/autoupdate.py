@@ -41,11 +41,9 @@ from . import tosec as _tosec
 from . import igdb as _igdb
 from . import ratings as _ratings
 from . import redump as _redump
-from . import whdload as _whdload
 from .nointro import NOINTRO_DATS, NoIntroError, all_dat_names
 from .ratings import RatingsError
 from .redump import REDUMP_DATS, RedumpError
-from .whdload import WHDLOAD_DATS, WhdloadError
 from .tosec import Cancelled, ReleaseInfo, TosecError
 
 CHECK_TIMEOUT = 10        # seconds, per network request while checking
@@ -92,7 +90,7 @@ def _is_network_error(exc: BaseException) -> bool:
     if isinstance(exc, TosecError):
         cause = exc.__cause__
         return cause is not None and _is_network_error(cause)
-    if isinstance(exc, (NoIntroError, WhdloadError, RedumpError, RatingsError)):
+    if isinstance(exc, (NoIntroError, RedumpError, RatingsError)):
         cause = exc.__cause__
         if cause is not None:
             return _is_network_error(cause)
@@ -116,15 +114,15 @@ def _day(iso: Optional[str]) -> str:
 class UpdateManager:
     def __init__(self, tosec: Any = _tosec, nointro: Any = _nointro, enabled: bool = True,
                  clock: Callable[[], float] = time.time,
-                 state_path: Optional[Path] = None, whdload: Any = _whdload,
+                 state_path: Optional[Path] = None,
                  redump: Any = _redump, ratings: Any = _ratings,
                  ratings_wanted: Optional[Callable[[], bool]] = None, switchdb: Any = None, gametdb: Any = None,
-                 igdb: Any = _igdb, igdb_creds: Optional[Callable[[], Any]] = None) -> None:
+                 whdinstalls: Any = None, igdb: Any = _igdb, igdb_creds: Optional[Callable[[], Any]] = None) -> None:
         self.tosec = tosec
         self.switchdb = switchdb  # the Nintendo Switch title database (blawar/titledb); None = not managed
         self.gametdb = gametdb    # GameTDB's name lists for Wii, GameCube and Wii U discs; None = not managed
+        self.whdinstalls = whdinstalls    # the list of WHDLoad installs (whdload.de) for the Amiga games; None = not managed
         self.nointro = nointro
-        self.whdload = whdload   # its own DAT source (WHDLoad); None = not managed
         self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
         # LaunchBox ratings (Amendment 18): kept current at every start (an index younger than a week is not even asked about);
         # None = not managed. The index lives in its own folder (paths.ratings_dir()).
@@ -155,8 +153,6 @@ class UpdateManager:
         self._tosec_error = False
         self._nointro_checked: Optional[str] = None
         self._nointro_rows: dict[str, dict[str, Any]] = {}
-        self._whdload_checked: Optional[str] = None
-        self._whdload_rows: dict[str, dict[str, Any]] = {}
         self._redump_checked: Optional[str] = None
         self._redump_rows: dict[str, dict[str, Any]] = {}
         self._ratings_checked: Optional[str] = None
@@ -170,6 +166,9 @@ class UpdateManager:
         self._gametdb_checked: Optional[str] = None
         self._gametdb_error: Optional[str] = None
         self._gametdb_offline = False
+        self._whdinstalls_checked: Optional[str] = None
+        self._whdinstalls_error: Optional[str] = None
+        self._whdinstalls_offline = False
         self._updating: Optional[str] = None   # source being downloaded right now
         self._load_state()
 
@@ -191,8 +190,6 @@ class UpdateManager:
         self._tosec_latest = tos.get("latest") if isinstance(tos.get("latest"), str) else None
         self._tosec_checked = tos.get("checked_at") if isinstance(tos.get("checked_at"), str) else None
         self._nointro_checked = noi.get("checked_at") if isinstance(noi.get("checked_at"), str) else None
-        whd = data.get("whdload") if isinstance(data.get("whdload"), dict) else {}
-        self._whdload_checked = whd.get("checked_at") if isinstance(whd.get("checked_at"), str) else None
         red = data.get("redump") if isinstance(data.get("redump"), dict) else {}
         self._redump_checked = red.get("checked_at") if isinstance(red.get("checked_at"), str) else None
         rat = data.get("ratings") if isinstance(data.get("ratings"), dict) else {}
@@ -201,15 +198,17 @@ class UpdateManager:
         self._switchdb_checked = sw.get("checked_at") if isinstance(sw.get("checked_at"), str) else None
         gt = data.get("gametdb") if isinstance(data.get("gametdb"), dict) else {}
         self._gametdb_checked = gt.get("checked_at") if isinstance(gt.get("checked_at"), str) else None
+        wi = data.get("whdinstalls") if isinstance(data.get("whdinstalls"), dict) else {}
+        self._whdinstalls_checked = wi.get("checked_at") if isinstance(wi.get("checked_at"), str) else None
 
     def _save_state(self) -> None:
         data = {"checked_at": self._last_checked,
                 "tosec": {"latest": self._tosec_latest, "checked_at": self._tosec_checked},
                 "nointro": {"checked_at": self._nointro_checked},
-                "whdload": {"checked_at": self._whdload_checked},
                 "redump": {"checked_at": self._redump_checked},
                 "ratings": {"checked_at": self._ratings_checked},
-                "switchdb": {"checked_at": self._switchdb_checked}, "gametdb": {"checked_at": self._gametdb_checked}}
+                "switchdb": {"checked_at": self._switchdb_checked}, "gametdb": {"checked_at": self._gametdb_checked},
+                "whdinstalls": {"checked_at": self._whdinstalls_checked}}
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -236,43 +235,6 @@ class UpdateManager:
             local = {}
         versions = [v for n, v in local.items() if n in all_dat_names() and v]
         return (max(versions) if versions else None), local
-
-    def _installed_whdload(self) -> tuple[Optional[str], dict[str, Optional[str]]]:
-        if self.whdload is None:
-            return None, {}
-        try:
-            local = {d.name: d.version or None for d in self.whdload.list_dats()}
-        except Exception:  # noqa: BLE001 - status must never fail
-            local = {}
-        versions = [v for n, v in local.items() if n in WHDLOAD_DATS and v]
-        return (max(versions) if versions else None), local
-
-    def _whdload_status(self, installed: Optional[str], local: dict[str, Optional[str]]) -> dict[str, Any]:
-        """(lock held) the ``whdload`` block of :meth:`status`."""
-        rows = []
-        for name in WHDLOAD_DATS:
-            row = self._whdload_rows.get(name, {})
-            st = row.get("status")
-            if self._updating == "whdload" and st in ("update_available", "unknown", "missing"):
-                st = "updating"
-            if not st:
-                st = "unknown" if name in local else "absent"
-            rows.append({"name": name, "version": local.get(name), "status": st})
-        statuses = [r["status"] for r in rows]
-        if self._updating == "whdload":
-            status = "updating"
-        elif any(x == "error" for x in statuses):
-            status = "error"
-        elif installed is None:
-            status = "absent"
-        elif any(x in ("update_available", "missing") for x in statuses):
-            status = "update_available"
-        elif all(x == "up_to_date" for x in statuses):
-            status = "up_to_date"
-        else:
-            status = "unknown"
-        return {"installed": installed, "latest": None, "status": status, "dats": rows,
-                "checked_at": self._whdload_checked}
 
     def _installed_redump(self) -> tuple[Optional[str], dict[str, Optional[str]]]:
         if self.redump is None:
@@ -380,7 +342,6 @@ class UpdateManager:
     def status(self) -> dict[str, Any]:
         """Thread-safe JSON snapshot (shape documented in docs/ARCHITECTURE.md, amendment 6)."""
         noi_installed, local = self._installed_nointro()
-        whd_installed, whd_local = self._installed_whdload()
         red_installed, red_local = self._installed_redump()
         tos_installed = self._installed_tosec()
         with self._lock:
@@ -421,11 +382,11 @@ class UpdateManager:
                           "status": tos_status, "checked_at": self._tosec_checked},
                 "nointro": {"installed": noi_installed, "latest": None, "status": noi_status,
                             "dats": rows, "checked_at": self._nointro_checked},
-                "whdload": self._whdload_status(whd_installed, whd_local),
                 "redump": self._redump_status(red_installed, red_local),
                 "ratings": self._ratings_status(),
                 "switchdb": self._extra_status("switchdb"),
                 "gametdb": self._extra_status("gametdb"),
+                "whdinstalls": self._extra_status("whdinstalls"),
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -447,18 +408,16 @@ class UpdateManager:
     # ------------------------------------------------------------------ control
 
     def missing(self) -> list[str]:
-        """The databases that are not installed: ``tosec``, ``nointro``, ``whdload``, ``redump``, ``switchdb``, ``gametdb`` (the optional
+        """The databases that are not installed: ``tosec``, ``nointro``, ``redump``, ``switchdb``, ``gametdb`` (the optional
         ratings are fetched when a rating filter needs them, not here)."""
         out: list[str] = []
         if self._installed_tosec() is None:
             out.append("tosec")
         if not set(all_dat_names()) <= {d.name for d in self.nointro.list_dats()}:
             out.append("nointro")
-        if self.whdload is not None and not set(WHDLOAD_DATS) <= {d.name for d in self.whdload.list_dats()}:
-            out.append("whdload")
         if self.redump is not None and not set(REDUMP_DATS) <= {d.name for d in self.redump.list_dats()}:
             out.append("redump")
-        for key in ("switchdb", "gametdb"):
+        for key in ("switchdb", "gametdb", "whdinstalls"):
             mod = getattr(self, key, None)
             if mod is not None and (not mod.db_info()["available"] or not self._made_dats_present(key)):
                 out.append(key)
@@ -591,13 +550,10 @@ class UpdateManager:
                 return False
             if src == "tosec":
                 return self._installed_tosec() is not None
-            if src == "whdload":
-                return self.whdload is not None and any(d.name in names for d in self.whdload.list_dats())
             if src == "redump":
                 return self.redump is not None and any(d.name in names for d in self.redump.list_dats())
             return any(d.name in names for d in self.nointro.list_dats())
         return (self._installed_tosec() is not None or bool(self.nointro.list_dats())
-                or (self.whdload is not None and bool(self.whdload.list_dats()))
                 or (self.redump is not None and bool(self.redump.list_dats())))
 
     def _set_offline(self) -> None:
@@ -624,8 +580,6 @@ class UpdateManager:
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
         names = (list(scope[1]) if scope is not None else list(all_dat_names())) if want_nointro else []
-        want_whd = self.whdload is not None and (scope is None or scope[0] == "whdload")
-        whd_names = (list(scope[1]) if scope is not None else list(WHDLOAD_DATS)) if want_whd else []
         want_red = self.redump is not None and (scope is None or scope[0] == "redump")
         red_names = (list(scope[1]) if scope is not None else list(REDUMP_DATS)) if want_red else []
 
@@ -634,12 +588,9 @@ class UpdateManager:
         info: Optional[ReleaseInfo] = None
         tosec_exc: Optional[BaseException] = None
         rows: list[dict[str, Any]] = []
-        whd_rows: list[dict[str, Any]] = []
         red_rows: list[dict[str, Any]] = []
         if want_nointro:
             rows = list(self.nointro.check_updates(names=names, timeout=CHECK_TIMEOUT))
-        if want_whd:
-            whd_rows = list(self.whdload.check_updates(names=whd_names, timeout=CHECK_TIMEOUT))
         if want_red:
             red_rows = list(self.redump.check_updates(names=red_names, timeout=CHECK_TIMEOUT))
         if token.is_set():
@@ -656,23 +607,17 @@ class UpdateManager:
 
         nointro_net = bool(rows) and all(r.get("status") == "error" for r in rows) and all(
             "HTTP" not in str(r.get("error", "")) for r in rows)
-        whd_net = bool(whd_rows) and all(r.get("status") == "error" for r in whd_rows) and all(
-            "HTTP" not in str(r.get("error", "")) for r in whd_rows)
         red_net = bool(red_rows) and all(r.get("status") == "error" for r in red_rows) and all(
             "HTTP" not in str(r.get("error", "")) for r in red_rows)
         tosec_net = tosec_exc is not None and _is_network_error(tosec_exc)
         checked_ok = ((info is not None) or any(r.get("status") != "error" for r in rows)
-                      or any(r.get("status") != "error" for r in whd_rows)
                       or any(r.get("status") != "error" for r in red_rows))
         failed_all = (not want_tosec or tosec_exc is not None) and \
                      (not want_nointro or all(r.get("status") == "error" for r in rows)) and \
-                     (not want_whd or all(r.get("status") == "error" for r in whd_rows)) and \
                      (not want_red or all(r.get("status") == "error" for r in red_rows))
         with self._lock:
             for r in rows:
                 self._nointro_rows[r["name"]] = dict(r)
-            for r in whd_rows:
-                self._whdload_rows[r["name"]] = dict(r)
             for r in red_rows:
                 self._redump_rows[r["name"]] = dict(r)
             self._tosec_error = False
@@ -686,22 +631,19 @@ class UpdateManager:
                 self._last_checked = now
                 if want_nointro and any(r.get("status") != "error" for r in rows):
                     self._nointro_checked = now
-                if want_whd and any(r.get("status") != "error" for r in whd_rows):
-                    self._whdload_checked = now
                 if want_red and any(r.get("status") != "error" for r in red_rows):
                     self._redump_checked = now
                 self._offline = False
                 self._notice = None
                 self._save_state()
         if failed_all and (tosec_net or not want_tosec) and (nointro_net or not want_nointro) \
-                and (whd_net or not want_whd) and (red_net or not want_red):
+                and (red_net or not want_red):
             with self._lock:
                 self._set_offline()
             return
         if failed_all:
             msgs = [str(tosec_exc)] if tosec_exc is not None else []
             msgs += [str(r.get("error")) for r in rows[:1]]
-            msgs += [str(r.get("error")) for r in whd_rows[:1]]
             msgs += [str(r.get("error")) for r in red_rows[:1]]
             raise UpdateError("failed", "; ".join(m for m in msgs if m) or "Update check failed")
 
@@ -743,45 +685,6 @@ class UpdateManager:
                             self._scan_stale = True
                     if res.get("failed"):
                         errors.extend(r.get("error", "") for r in res["dats"]
-                                      if r.get("status") == "error" and r.get("error"))
-        if token.is_set():
-            raise Cancelled()
-
-        # ---- the WHDLoad DAT (its own source: one small file, never mixed with the others)
-        whd_todo = [r["name"] for r in whd_rows
-                    if force or r.get("status") in ("update_available", "unknown", "missing")]
-        if whd_todo:
-            before_w = {d.name for d in self.whdload.list_dats()}
-            with self._lock:
-                self._state = "downloading"
-                self._updating = "whdload"
-            try:
-                res_w = self.whdload.update_dats(
-                    names=whd_todo, cancel=token, force=force, commit_lock=self.dat_lock,
-                    progress=lambda d, t, m: self._set_progress(d, t, m, "whdload", forward))
-            except WhdloadError as exc:
-                if _is_network_error(exc) and self._has_cache(scope):
-                    with self._lock:
-                        self._set_offline()
-                else:
-                    errors.append(f"WHDLoad: {exc}")
-                res_w = None
-            finally:
-                with self._lock:
-                    self._updating = None
-            if res_w is not None:
-                with self._lock:
-                    for row in res_w.get("dats", []):
-                        old = self._whdload_rows.setdefault(row["name"], {"name": row["name"]})
-                        if row.get("status") in ("downloaded", "unchanged"):
-                            old["status"] = "up_to_date"
-                        elif row.get("status") == "error":
-                            old["status"] = "error"
-                            old["error"] = row.get("error")
-                        if row.get("status") == "downloaded" and row["name"] in before_w:
-                            self._scan_stale = True
-                    if res_w.get("failed"):
-                        errors.extend(r.get("error", "") for r in res_w["dats"]
                                       if r.get("status") == "error" and r.get("error"))
         if token.is_set():
             raise Cancelled()
@@ -856,6 +759,7 @@ class UpdateManager:
             self._do_ratings(token, forward, explicit=False)      # its own errors never fail the DAT update
             self._do_extra("switchdb", token, forward, True)          # (a check the user asked for, or the first fetch: no age gate)
             self._do_extra("gametdb", token, forward, True)
+            self._do_extra("whdinstalls", token, forward, True)
         if errors:
             raise UpdateError("failed", "; ".join(errors))
 
@@ -950,7 +854,8 @@ class UpdateManager:
             with self._lock:
                 self._updating = None
 
-    _EXTRA_LABEL = {"switchdb": "Nintendo Switch title database", "gametdb": "GameTDB names (Wii, GameCube, Wii U)"}
+    _EXTRA_LABEL = {"switchdb": "Nintendo Switch title database", "gametdb": "GameTDB names (Wii, GameCube, Wii U)",
+                    "whdinstalls": "list of WHDLoad installs"}
 
     def _do_extra(self, key: str, token: _Token, forward: Optional[Progress], force: bool) -> None:
         """A name / title database that is not a DAT (the Switch's, GameTDB's): fetched when it is missing, or older than the module's

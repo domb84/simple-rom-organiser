@@ -187,7 +187,7 @@ def signature(platform: Any = None) -> str:
 
 # --------------------------------------------------------------------------- the titles of the DATs
 
-STYLES = ("nointro", "redump", "tosec", "whdload")
+STYLES = ("nointro", "redump", "tosec")
 _DATS: dict[str, tuple[str, dict[str, tuple[frozenset, int]]]] = {}    # DAT -> (system, {title (casefold): (its regions, releases)})
 _MAPS: dict[str, tuple[Any, dict[str, str]]] = {}
 _SIG: Optional[tuple[float, tuple]] = None
@@ -218,13 +218,11 @@ def learn(platform: Any, dats: Any) -> None:
 
 
 def _places(t: Any) -> frozenset:
-    """Where a release is for: its regions; an Amiga name (TOSEC, WHDLoad) its countries and languages (``NTSC`` for an American WHDLoad
-    build), and ``-`` for an untagged one (the English / European release), so two untagged titles stay two games."""
+    """Where a release is for: its regions; an Amiga (TOSEC) name its countries and languages, and ``-`` for an untagged one (the
+    English / European release, no known region)."""
     if t.style in ("nointro", "redump"):
         return frozenset(t.regions)
     out = set(t.regions) | set(() if t.languages_implied else t.languages)
-    if not out and "NTSC" in (t.video or ()):
-        out.add("NTSC")
     return frozenset(out or {"-"})
 
 

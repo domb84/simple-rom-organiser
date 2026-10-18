@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import alttitles, tags
-from .tags import STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC, STYLE_WHDLOAD
+from .tags import STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC
 
 if TYPE_CHECKING:
     from .datfile import Rom
@@ -310,7 +310,7 @@ RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "langu
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
 # decides its own rules. Your defaults keep the one list ``exclude``.
-AMIGA_STYLES = frozenset({STYLE_TOSEC, STYLE_WHDLOAD})
+AMIGA_STYLES = frozenset({STYLE_TOSEC})
 OVERRIDE_FIELDS = RULE_FIELDS + ("exclude_amiga",)
 GAME_FIELDS = ("overrides", "saved_overrides")          # per game: never global
 REGION_FIELDS = ("region_priority", "region_ties")      # the region order and which of its regions are equally good: one rule
@@ -318,7 +318,7 @@ REGION_FIELDS = ("region_priority", "region_ties")      # the region order and w
 
 @functools.lru_cache(maxsize=1)
 def amiga_exclusions() -> frozenset:
-    """The exclusion rules only the Amiga styles (TOSEC, WHDLoad) have."""
+    """The exclusion rules only the Amiga (TOSEC) has."""
     return frozenset(e["id"] for e in rule_catalog("tosec") if e["kind"] == "exclude" and e["applies_to"] and set(e["applies_to"]) <= AMIGA_STYLES)
 
 
@@ -702,23 +702,21 @@ def _rom_name(item: Item) -> str:
 
 
 def _style(item: Item) -> str:
-    return item.style if item.style in (STYLE_TOSEC, STYLE_NOINTRO, STYLE_WHDLOAD, STYLE_REDUMP) else STYLE_TOSEC
+    return item.style if item.style in (STYLE_TOSEC, STYLE_NOINTRO, STYLE_REDUMP) else STYLE_TOSEC
 
 
 def _tags_of(item: Item) -> tags.Tags:
     if _style(item) == STYLE_REDUMP:     # name + the DAT <category> (Demos, Coverdiscs, Preproduction)
         return tags.redump_tags(_rom_name(item), getattr(item.rom, "category", "") or "")
-    if _style(item) == STYLE_WHDLOAD:    # game name + archive stem (the stem alone lacks the status)
-        return tags.parse_whdload(_rom_name(item), getattr(item.rom, "game", "") or "")
     return tags.parse_name(_rom_name(item), _style(item))
 
 
 def game_key(item: Item, combine: bool = False) -> tuple:
-    """The identity of the GAME an item belongs to, exactly as :func:`select` groups variants: TOSEC / WHDLoad
+    """The identity of the GAME an item belongs to, exactly as :func:`select` groups variants: TOSEC
     ``tags.identity_key`` (title, country, publisher, edition and status tags), No-Intro / Redump ``tags.game_key``
     (title, status, product tags; regions, languages, versions and disc numbers are not part of it). ``combine``: the profile's
     "Combine alternate titles" (the titles of one game in other regions are one title)."""
-    return (item.dat, _gkey(item, combine))      # tags.game_key = identity_key for TOSEC / WHDLoad
+    return (item.dat, _gkey(item, combine))      # tags.game_key = identity_key for TOSEC
 
 
 def _gkey(item: Item, combine: bool) -> tuple:
@@ -742,12 +740,6 @@ KEEP_APART: dict[str, list[frozenset]] = {
 # New candidates: tools/keep_apart_candidates.py lists the titles LaunchBox knows as two Amiga games (a lead to check, never a rule).
 
 
-# WHDLoad product tags that are builds of the same game (with "Combine alternate titles": one game, the best variant is chosen)
-_WHD_BUILDS = frozenset({"cdtv", "files", "image", "mt32", "no intro", "one disk", "two disk", "1disk", "2disk", "nointro", "crunched",
-                         "no speech", "a1200", "a1200 version", "no aga", "cover disk", "amiga format", "kaiko", "a.u.d.i.o.s",
-                         "competition version"})
-
-
 def _apart(title: str, publisher: str) -> str:
     """The publisher part of a combined TOSEC key: "" (any publisher: one game), or which game of a :data:`KEEP_APART` title it is."""
     games = KEEP_APART.get(title.strip())
@@ -769,8 +761,6 @@ def combined_key(dat: str, key: tuple, combine: bool) -> tuple:
     if key[0] == STYLE_TOSEC and len(key) == 6:            # (style, title, countries, publisher, edition, statuses)
         edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language"))    # (PAL / NTSC, M3: a release, not a game)
         key = (key[0], key[1], (), _apart(key[1], key[3]), edition, key[5])
-    elif key[0] == STYLE_WHDLOAD and len(key) == 4:        # (style, title, status, product tags): the CDTV, Files / Image, MT32 ... builds
-        key = (key[0], key[1], key[2], tuple(f for f in key[3] if f not in _WHD_BUILDS))
     g = alttitles.group(dat, key[1])                        # (key[1]: the title, casefold)
     if g:
         key = (key[0], g) + key[2:]
@@ -808,7 +798,7 @@ def eligibility(rom_name: str, style: str, profile: LibraryProfile, languages: b
     Codes: the exclusion rules (``RULES``), ``flag_<x>`` (a flag type missing from
     ``profile.keep_flags``; text = the exact ``[cr FLT]``) and ``language`` (no selected language;
     text = the languages it has, e.g. ``(De)``). ``languages`` / ``flags`` switch those two filters off
-    (they only apply to some DATs). ``parsed``: the already parsed tags (WHDLoad needs the game name too)."""
+    (they only apply to some DATs). ``parsed``: the already parsed tags (Redump needs the DAT category too)."""
     t = parsed if parsed is not None else tags.parse_name(rom_name, style)
     info = [(r, x) for r, x in tags.exclusion_info(t) if r in profile.exclude]
     if flags and style == STYLE_TOSEC:
@@ -1144,7 +1134,7 @@ def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Pl
         if _style(it) not in OTHER_LANGUAGE_STYLES or it.dat not in scope.language:
             continue
         if not eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
-                           parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None):
+                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP else None):
             out.add(game_key(it, profile.combine_alt_titles))
     return frozenset(out)
 
@@ -1325,7 +1315,7 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     for it in items:
         info = eligibility(_rom_name(it), _style(it), profile, languages=it.dat in scope.language,
                            flags=scope.flags(it.dat),
-                           parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None)
+                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP else None)
         if info:
             excluded.append((it, info))
             if (profile.borrow_other_editions and it.dat in scope.best and _style(it) == STYLE_TOSEC
@@ -1387,14 +1377,6 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
             if dat in latest_dats and (profile.latest_only or (dat in scope.region and profile.one_per_game)):
                 _select_redump(dat, dat_items, profile, dat in scope.region and profile.one_per_game, sel,
                                decide, next_id, complete_only=profile.complete_only and getattr(platform, "layout", "") == "game_folder")
-            else:
-                for it in dat_items:
-                    decide(it, KEEP)
-        elif all(_style(i) == STYLE_WHDLOAD for i in dat_items):
-            best = dat in best_dats and profile.best_variant
-            latest = dat in latest_dats and profile.latest_only
-            if best or latest:
-                _select_whdload(dat_items, profile, best, sel, decide)
             else:
                 for it in dat_items:
                     decide(it, KEEP)
@@ -1611,87 +1593,6 @@ def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
                             detail=bd.detail if bd is not None and codes[0] in RATING_CODES else ""))
     out.sort(key=lambda v: (v.dat, v.title.casefold(), v.name))
     return out
-
-
-def _whd_vkeys(group: list[Item]) -> dict[int, tuple]:
-    """Version key per item, comparable inside one game (zero-padded ``v1.02`` read as a fraction)."""
-    versions = {it.key: _tags_of(it).version for it in group}
-    widths = tags._fraction_widths(versions.values())
-    if not widths:
-        return {it.key: _tags_of(it).version_key for it in group}
-    return {k: tags._version_key(v, widths) for k, v in versions.items()}
-
-
-def _whd_variant(t: tags.Tags) -> tuple:
-    """The variant signature of a WHDLoad archive: language set, chipset tags, memory tags, video mode."""
-    return (tuple(sorted(t.languages)), tuple(sorted(tags.chipset(t))),
-            tuple(sorted({tags._whd_memory(f) for f in t.flags if tags._whd_memory(f)})),
-            "NTSC" in t.video)
-
-
-def _select_whdload(dat_items: list[Item], profile: LibraryProfile, best: bool, sel: Selection,
-                    decide: Any) -> None:
-    """WHDLoad: games = ``tags.identity_key`` (title + status + product tags). ``best``: keep ONE variant per
-    game - best selected language, then platform (CD32 > AGA > OCS), then standard memory over low-memory
-    builds, then PAL / untagged over NTSC, then the newest version, then the highest build number, then the
-    name. Otherwise (latest only): keep the newest version of every variant (same language set, chipset,
-    memory tags and video mode); older ones are superseded. Nothing of the TOSEC Amiga rules is involved."""
-    groups: dict[tuple, list[Item]] = {}
-    for it in dat_items:
-        groups.setdefault(combined_key(it.dat, tags.identity_key(_tags_of(it)), profile.combine_alt_titles), []).append(it)
-    for group in groups.values():
-        vkeys = _whd_vkeys(group)
-        info = {}
-        for it in group:
-            t = _tags_of(it)
-            info[it.key] = (_lang_rank(tags.variant_languages(t), profile), tags.platform_rank(t),
-                            tags.whd_memory_rank(t), 1 if "NTSC" in t.video else 0)
-        if best:
-            pool = group
-            for idx in range(4):
-                low = min(info[i.key][idx] for i in pool)
-                pool = [i for i in pool if info[i.key][idx] == low]
-            newest = max(vkeys[i.key] for i in pool)
-            pool = [i for i in pool if vkeys[i.key] == newest]
-            top = max(_tags_of(i).build for i in pool)
-            pool = [i for i in pool if _tags_of(i).build == top]
-            winner = min(pool, key=lambda i: (_rom_name(i).casefold(), _rom_name(i), i.key))
-            wname = _rom_name(winner)
-            for it in group:
-                if it.key == winner.key or _rom_name(it) == wname:
-                    decide(it, KEEP)
-                else:
-                    decide(it, SUPERSEDED, superseded_by=wname,
-                           reason=f"one best variant per game: kept {wname} ({_whd_why(it, winner, info, vkeys)})")
-            continue
-        by_variant: dict[tuple, list[Item]] = {}
-        for it in group:
-            by_variant.setdefault(_whd_variant(_tags_of(it)), []).append(it)
-        for members in by_variant.values():
-            top = max((vkeys[i.key], _tags_of(i).build) for i in members)
-            cand = [i for i in members if (vkeys[i.key], _tags_of(i).build) == top]
-            winner = min(cand, key=lambda i: (_rom_name(i).casefold(), _rom_name(i), i.key))
-            wname = _rom_name(winner)
-            for it in members:
-                if it.key == winner.key or _rom_name(it) == wname:
-                    decide(it, KEEP)
-                else:
-                    decide(it, SUPERSEDED, superseded_by=wname,
-                           reason=f"superseded by {wname} (newer version of the same variant)")
-
-
-def _whd_why(it: Item, winner: Item, info: dict[int, tuple], vkeys: dict[int, tuple]) -> str:
-    """The first ranking criterion on which ``winner`` beats ``it`` (for the preview text)."""
-    a, b = info[it.key], info[winner.key]
-    for idx, text in enumerate(("preferred language", "better platform (CD32 > AGA > OCS)",
-                                "standard memory", "PAL instead of NTSC")):
-        if a[idx] != b[idx]:
-            return text
-    if vkeys[it.key] != vkeys[winner.key]:
-        return "newer version"
-    if _tags_of(it).build != _tags_of(winner).build:
-        return "higher build number"
-    return "name order"
 
 
 def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, one_per_game: bool,
@@ -2056,31 +1957,13 @@ def _missing_for(it: Item, partial: list[_Set], group: list[Item]) -> tuple[int,
 def _style_of_platform(platform: Any) -> str:
     src = getattr(platform, "source", "")
     src = getattr(src, "value", src)
-    if src == "whdload":
-        return STYLE_WHDLOAD
     if src == "redump":
         return STYLE_REDUMP
     return STYLE_NOINTRO if src == "nointro" else STYLE_TOSEC
 
 
 _BOTH = [STYLE_TOSEC, STYLE_NOINTRO]
-_ALL = [STYLE_TOSEC, STYLE_NOINTRO, STYLE_WHDLOAD, STYLE_REDUMP]
-# Descriptions that differ for the WHDLoad system (shown instead of the generic ones).
-_WHD_DESCRIPTIONS = {
-    "pre_release": "Beta, Pre Release and Preview builds (the database also marks many unfinished hacks and "
-                   "ports as (Beta)).",
-    "demo": "Game demos and demo-only releases: (Game Demo), (Demo), (Playable Demo).",
-    "unreleased": "Games that were never released: (Unreleased).",
-    "latest_only": "Keep only the newest version of every variant (same game, language, chipset, memory "
-                   "build and video mode); older versions go to _superseded.",
-    "best_variant": "Keep ONE archive per game: your language order first, then the platform "
-                    "(CD32 > AGA > OCS), then standard memory over 512KB / Low Mem builds, then PAL / untagged "
-                    "over NTSC, then the newest version (highest build number last). Different products "
-                    "(Two Disk / One Disk installs, Image / Files, Demos, Cover Disks, Hacks, CDTV) are never merged.",
-    "languages": "Keep only archives playable in the selected languages (first = preferred). An archive "
-                 "with no language tag counts as English; (German) / _De = German; a multi-language archive "
-                 "(En,Fr,De) counts for each of its languages.",
-}
+_ALL = [STYLE_TOSEC, STYLE_NOINTRO, STYLE_REDUMP]
 _REDUMP_DESCRIPTIONS = {
     "pre_release": "Betas ((Beta)). Redump files most of them under the Preproduction category.",
     "prototype": "Prototypes ((Proto)) and every disc Redump files under the Preproduction category.",
@@ -2132,7 +2015,6 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
     Only entries that apply to ``platform_style`` are returned (``applies_to`` lists the styles)."""
     out: list[dict[str, Any]] = []
     per_style = {st: tags.rule_tokens(st) for st in _ALL}
-    whd = platform_style == STYLE_WHDLOAD
     redump = platform_style == STYLE_REDUMP
     for rule in RULES:
         applies = [st for st in _ALL if per_style[st][rule]]
@@ -2140,8 +2022,7 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         toks = per_style.get(platform_style, per_style[STYLE_TOSEC])[rule]
         out.append({"id": rule, "field": "exclude", "label": tags.RULE_LABELS[rule], "kind": "exclude",
                     "default": True, "tokens": list(toks),
-                    "description": ((_WHD_DESCRIPTIONS.get(rule) if whd else None)
-                                    or (_REDUMP_DESCRIPTIONS.get(rule) if redump else None)
+                    "description": ((_REDUMP_DESCRIPTIONS.get(rule) if redump else None)
                                     or _RULE_DESCRIPTIONS[rule]),
                     "applies_to": applies})
     for code in tags.KEEP_FLAGS:
@@ -2158,7 +2039,6 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         out.append(d)
 
     opt("latest_only", "latest_only", "Latest versions only", True,
-        _WHD_DESCRIPTIONS["latest_only"] if whd else
         "Keep only the newest version of a release (older ones go to _superseded).", _ALL)
     opt("prefer_editions", "prefer_editions", "Prefer special and limited editions", True,
         "Of a game's releases, a special, limited, collector's or first-print edition, a premium box or another build of the game is kept "
@@ -2171,9 +2051,8 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "titles come from the ratings data (LaunchBox's alternate names) and GameTDB. Off: every title (on the Amiga every country and "
         "publisher) is a game of its own.", _ALL)
     opt("best_variant", "best_variant", "One best variant per game", True,
-        _WHD_DESCRIPTIONS["best_variant"] if whd else
         "Keep ONE variant per game: preferred language, then cracked, then best platform "
-        "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC, STYLE_WHDLOAD])
+        "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC])
     opt("one_per_game", "one_per_game", "One version per game", True,
         "Keep ONE version per game: preferred language, then the best region (see region priority), "
         "then the newest revision, then the fewest extra tags. Off: the latest version of every region. "
@@ -2211,7 +2090,6 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])
     opt("languages", "languages", "Languages", True,
-        _WHD_DESCRIPTIONS["languages"] if whd else
         "Keep only releases playable in the selected languages (first = preferred). A release with no "
         "language and no country tag counts as English; a country implies its language; "
         "(de-en) counts as both.", _ALL, default_value=["En"])

@@ -440,7 +440,7 @@ class SavesBehaviourTable(unittest.TestCase):
             self.assertEqual((by[name]["follows"], by[name]["copies"]), ("Yes", "Yes, in any region"), name)
         for name in savecarry.CONVERTIBLE:                                   # (the two systems whose saves are converted say so)
             self.assertTrue(by[name]["converts"].startswith("Yes"), name)
-        for name in ("Sega Dreamcast", "Nintendo GameCube", "Nintendo Wii", "Nintendo Wii U", "Nintendo Switch", "Commodore Amiga", "Commodore Amiga - WHDLoad"):
+        for name in ("Sega Dreamcast", "Nintendo GameCube", "Nintendo Wii", "Nintendo Wii U", "Nintendo Switch", "Commodore Amiga"):
             self.assertEqual((by[name]["copies"], by[name]["converts"]), ("No", "No"), name)
         for name in savecarry.SERIAL_SAVES:                                  # (a save named by the game's code needs no new name when the code is the same)
             self.assertIn("same code", by[name]["copies"])

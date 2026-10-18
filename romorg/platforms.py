@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 class DatSource(str, Enum):
     TOSEC = "tosec"
     NOINTRO = "nointro"
-    WHDLOAD = "whdload"      # MrV2K's WHDLoad database (its own source, folder and DAT)
     REDUMP = "redump"        # redump.org Logiqx DATs (Dreamcast, PlayStation, PlayStation 2), HTTP only, own folder
 
 
@@ -64,9 +63,6 @@ def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple
                     latest_dats=(dat,), language_dats=(dat,), region_dats=(dat,))
 
 
-WHDLOAD_DAT = "Commodore - Amiga - WHDLoad"   # == whdload.DAT_NAME == tags.WHDLOAD_DAT_NAME
-WHDLOAD_PLATFORM = "Commodore Amiga - WHDLoad"
-
 PLATFORMS: dict[str, Platform] = {
     "Commodore Amiga": Platform(
         name="Commodore Amiga",
@@ -87,23 +83,6 @@ PLATFORMS: dict[str, Platform] = {
         latest_dats=("Commodore Amiga - Games - [ADF]",),
         best_variant_dats=("Commodore Amiga - Games - [ADF]",),
         language_dats=("Commodore Amiga - Games - [ADF]",),
-    ),
-    # A SEPARATE system from "Commodore Amiga" (TOSEC ADF): own folder, own DAT source, own config keys,
-    # own library profile and Kickstart step; nothing is shared or cross-matched with it.
-    WHDLOAD_PLATFORM: Platform(
-        name=WHDLOAD_PLATFORM,
-        dats=(WHDLOAD_DAT,),
-        m3u_dats=(),
-        kickstart_dat=None,
-        source=DatSource.WHDLOAD.value,
-        layout=LAYOUT_FLAT,
-        extensions=(".lha", ".lzx"),
-        folder_hint="whdload",
-        latest_dats=(WHDLOAD_DAT,),
-        best_variant_dats=(WHDLOAD_DAT,),
-        language_dats=(WHDLOAD_DAT,),
-        kickstart_folder="Kickstarts",
-        protected_dirs=("Kickstarts",),
     ),
     "Nintendo Game Boy Advance": _nointro(
         "Nintendo Game Boy Advance", "Nintendo - Game Boy Advance",
@@ -310,7 +289,7 @@ def fetch_source(platform: Platform) -> str:
 
 
 def source_of(platform: Platform) -> str:
-    """The DAT source of a platform as a plain string ("tosec" | "nointro" | "whdload")."""
+    """The DAT source of a platform as a plain string ("tosec" | "nointro" | "redump")."""
     src = platform.source
     return src.value if isinstance(src, DatSource) else str(src)
 
@@ -320,7 +299,6 @@ _source = source_of
 
 def locate_dats(platform: Platform, directory: Optional[Union[str, Path]] = None,
                 nointro_directory: Optional[Union[str, Path]] = None,
-                whdload_directory: Optional[Union[str, Path]] = None,
                 redump_directory: Optional[Union[str, Path]] = None) -> dict[str, "DatInfo"]:
     """``{dat name: DatInfo}`` for the platform's DATs present locally (exact names)."""
     if _source(platform) == DatSource.REDUMP.value:
@@ -330,9 +308,6 @@ def locate_dats(platform: Platform, directory: Optional[Union[str, Path]] = None
     elif _source(platform) == DatSource.NOINTRO.value:
         from . import nointro
         local = {d.name: d for d in nointro.list_dats(nointro_directory)}
-    elif _source(platform) == DatSource.WHDLOAD.value:
-        from . import whdload
-        local = {d.name: d for d in whdload.list_dats(whdload_directory)}
     else:
         from . import tosec
         local = {d.name: d for d in tosec.list_dats(directory)}
@@ -371,7 +346,7 @@ def load_platform_dats(platform: Platform,
     from .datfile import parse_dat, parse_redump
 
     local = locate_dats(platform, directory, nointro_directory)
-    nointro_src = _source(platform) in (DatSource.NOINTRO.value, DatSource.WHDLOAD.value)   # set names
+    nointro_src = _source(platform) == DatSource.NOINTRO.value   # set names
     loaded: list["DatFile"] = []
     missing: list[str] = []
     for name in platform.dats:

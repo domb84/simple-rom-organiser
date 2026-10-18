@@ -510,7 +510,7 @@ class DatabasesPanelTests(UiTestCase):
         self.open()
         self.page.wait("document.getElementById('updates-line').textContent.includes('Redump')")
         line = self.page.eval("document.getElementById('updates-line').textContent")
-        for source in ("TOSEC", "No-Intro", "WHDLoad", "Redump"):
+        for source in ("TOSEC", "No-Intro", "Redump"):
             self.assertIn(source, line)
         self.assertFalse(self.page.eval("!!document.getElementById('databases-btn')"))               # (not in the More menu any more)
         self.assertEqual(self.page.eval("document.getElementById('databases-link').closest('aside') !== null"), True)
@@ -521,7 +521,7 @@ class DatabasesPanelTests(UiTestCase):
             url: r.cells[1].querySelector('a').href, used: r.cells[2].textContent.trim(), installed: r.cells[3].textContent.trim(),
             status: r.cells[5].textContent.trim()}))""")
         names = {r["name"]: r for r in rows}
-        for wanted in ("Sega - Dreamcast", "Sony - PlayStation 2", "Nintendo - Wii", "Nintendo - Game Boy Advance", "Commodore - Amiga - WHDLoad",
+        for wanted in ("Sega - Dreamcast", "Sony - PlayStation 2", "Nintendo - Wii", "Nintendo - Game Boy Advance",
                        "Nintendo Switch: games, every update version, add-ons", "Nintendo Wii U: the disc games, with region and languages"):
             self.assertIn(wanted, names)
         self.assertEqual(names["Nintendo - Game Boy Advance"]["installed"], "20250101-000000")     # the fixture's DAT version
@@ -529,7 +529,7 @@ class DatabasesPanelTests(UiTestCase):
         self.assertEqual(names["Nintendo - Wii"]["url"], "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Nintendo%20-%20Wii.dat")
         self.assertTrue(names["Nintendo - Game Boy Advance"]["url"].endswith("Nintendo%20-%20Game%20Boy%20Advance.dat"))
         self.assertIn("Nintendo Wii U", names["Nintendo Wii U: the disc games, with region and languages"]["used"])
-        self.assertEqual({r["source"] for r in rows} >= {"TOSEC", "No-Intro", "WHDLoad", "Redump", "titledb", "GameTDB", "PCSX2", "LaunchBox", "libretro"}, True)
+        self.assertEqual({r["source"] for r in rows} >= {"TOSEC", "No-Intro", "Redump", "titledb", "GameTDB", "PCSX2", "LaunchBox", "libretro", "WHDLoad"}, True)
         self.assertTrue(all(r["url"].startswith("http") for r in rows))
         self.assertEqual(next(r for r in rows if r["source"] == "libretro")["status"], "ships with the app")
         self.assertNotIn("no-intro.org", self.page.eval("document.getElementById('databases-body').textContent"))
@@ -1282,7 +1282,7 @@ class PlatformTests(UiTestCase):
         self.assertEqual(self.page.eval("document.getElementById('shell').dataset.side"), "closed")
         self.click("#side-toggle")
         self.page.wait("document.getElementById('shell').dataset.side === 'open'")
-        self.assertEqual(self.page.eval("document.querySelectorAll('.nav-item[data-platform]').length"), 21)
+        self.assertEqual(self.page.eval("document.querySelectorAll('.nav-item[data-platform]').length"), 20)
         last = "[...document.querySelectorAll('.nav-item[data-platform]')].pop()"
         self.assertTrue(self.page.eval(f"(() => {{ const r = {last}.getBoundingClientRect(); return r.width > 100 && r.right <= innerWidth; }})()"))
         self.page.eval(f"{last}.click()")                                # picking a system closes the list again
@@ -1550,5 +1550,38 @@ class SidebarProgressTests(UiTestCase):
         self.no_js_errors()
 
 
+
+
+class WhdloadInstallsTests(UiTestCase):
+    """The Amiga's WHDLoad installs: which of your games has one (a list of installs kept in the data folder), filtered and searched."""
+
+    def test_the_games_with_an_install_are_listed(self) -> None:
+        import json
+        import time
+        folder = self.fx.data / "whdinstalls"
+        folder.mkdir(parents=True, exist_ok=True)
+        installs = [{"archive": a, "title": t, "size": 30000, "date": "2020-01-01", "hol": "", "lemon": ""}
+                    for a, t in (("AlphaQuest.lha", "Alpha Quest"), ("BetaBlaster.lha", "Beta Blaster"), ("ZetaZone.lha", "Zeta Zone"))]
+        (folder / "installs.json").write_text(json.dumps({"fetched": "2026-10-18", "fetched_at": time.time(), "installs": installs}))
+        self.library_preview()
+        self.page.wait("!document.getElementById('ov-whdload').classList.contains('hidden')", timeout=30)
+        self.assertIn("3 of your 7 games have one", self.page.eval("document.getElementById('ov-whdload-title').textContent"))
+        self.page.eval("document.getElementById('ov-whdload').open = true")
+        rows = "[...document.querySelectorAll('#ov-whdload tbody tr')].map(r => r.cells[0].textContent)"
+        self.assertEqual(self.page.eval(rows), ["Alpha Quest", "Beta Blaster", "Zeta Zone"])
+        self.page.eval("(() => { const s = document.getElementById('whd-search'); s.value = 'beta'; s.dispatchEvent(new Event('input')); })()")
+        self.page.wait(f"{rows}.length === 1", timeout=10)
+        self.page.eval("(() => { const s = document.getElementById('whd-search'); s.value = ''; s.dispatchEvent(new Event('input')); })()")
+        self.page.wait(f"{rows}.length === 3", timeout=10)
+        self.page.eval("(() => { const s = document.querySelector('#ov-whdload select'); s.value = 'none'; s.dispatchEvent(new Event('change')); })()")
+        self.assertEqual(self.page.eval(rows), ["Delta Force", "Epsilon", "Eta Escape", "Gamma Run"])
+        self.no_js_errors()
+
+    def test_another_system_has_no_such_card(self) -> None:
+        self.open()
+        self.scan("Nintendo Game Boy Advance", str(self.fx.gba))
+        self.files_ready("nintendo-game-boy-advance")
+        self.assertTrue(self.page.eval("document.getElementById('ov-whdload').classList.contains('hidden')"))
+        self.no_js_errors()
 if __name__ == "__main__":
     unittest.main()

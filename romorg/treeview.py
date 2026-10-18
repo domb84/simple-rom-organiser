@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
-__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "SAVEONLY", "CONVERTED", "DELETED", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES"]
+__all__ = ["Index", "Entry", "build", "collect", "index", "final_files", "MISSING", "SAVEONLY", "CONVERTED", "DELETED", "LIBRARY", "ARCHIVE", "SAME", "RENAMED", "MOVED", "NEW", "IGNORED", "EXISTING", "INCOMING", "COPY", "SAVES", "WHDLOAD"]
 
 SAME, RENAMED, MOVED, NEW, IGNORED = "same", "renamed", "moved", "new", "ignored"
 EXISTING, INCOMING, COPY, SAVES = "existing", "incoming", "copy", "saves"
@@ -26,6 +26,7 @@ MISSING = "missing"            # (a game the folder lacks: no file, listed where
 CONVERTED = "converted"        # (the CHD a build makes of a raw disc: a new file, its size not known before)
 DELETED = "deleted"            # (an original the build deletes after converting it)
 SAVEONLY = "saveonly"          # (saves of a game that is not in the database's list: no file, listed by the title the saves are known by)
+WHDLOAD = "whdload"            # (a file of a WHDLoad install downloaded next to a game's disks: stays, belongs to no game)
 LIBRARY, ARCHIVE = "library", "archive"
 _MOVE = ("move", "rename")
 
@@ -148,6 +149,18 @@ class Entry(NamedTuple):
     op: int                     # the index of its op in the plan (-1: no op: an archived file, a hidden file, a copy)
 
 
+def _in_install(d: Path, root: Path, seen: Dict[str, bool]) -> bool:
+    """Whether folder ``d`` (under ``root``) is in a WHDLoad install folder (one with ``folders.WHDLOAD_MARKER``)."""
+    from .folders import WHDLOAD_MARKER
+    key = os.fspath(d)
+    if key not in seen:
+        if d == root or root not in d.parents:
+            seen[key] = False
+        else:
+            seen[key] = (d / WHDLOAD_MARKER).is_file() or _in_install(d.parent, root, seen)
+    return seen[key]
+
+
 def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
             playlists: Iterable[Any] = ()) -> List[Entry]:
     """Every file of the system's ROM folder and of its part of the archive as a build would leave them.
@@ -184,11 +197,12 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
         state = SAME if tuple(was) == tuple(parts) else RENAMED if was[:-1] == parts[:-1] else MOVED
         out.append(Entry(LIBRARY, tuple(parts), size, state, "/".join(was) if state != SAME else "", n))
     if root.is_dir():                                               # what the scan does not look at (hidden files, the app's own notes
-        for f in _files_under(root):                                # aside): it is in the folder all the same, and stays
+        whd: Dict[str, bool] = {}                                   # aside, WHDLoad installs): it is in the folder all the same, and stays
+        for f in _files_under(root):
             if os.fspath(f) not in known and os.fspath(f) not in moving:
                 parts = _rel(f, root)
                 if parts:
-                    out.append(Entry(LIBRARY, tuple(parts), _size(f), IGNORED, "", -1))
+                    out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if _in_install(f.parent, root, whd) else IGNORED, "", -1))
     for p in playlists:                                             # the playlists the build writes
         if getattr(p, "status", "") == "write":
             parts = _rel(Path(p.path), root)
