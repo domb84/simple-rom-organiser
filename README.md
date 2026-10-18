@@ -374,9 +374,15 @@ the newest `Rev` / version **per region** (regions are never compared with each 
 and the like are separate anyway). Amiga: see the next rule.
 
 **One best variant per game** (Amiga *Games - [ADF]* only). A game is identified by its title
-without version tokens plus country, publisher and edition flags; the year, the language and
-bare chipset tags (`AGA`, `OCS`, `ECS`, `CD32`) are not part of it, so an OCS and an AGA release
-of the same game compete. Among the *complete* sets of a game exactly one is kept, ranked:
+without version tokens plus its edition flags; the year, the language and bare chipset tags (`AGA`,
+`OCS`, `ECS`, `CD32`) are not part of it, so an OCS and an AGA release of the same game compete. With
+**Combine alternate titles** (on by default) the country, the publisher and the game's other titles
+(`Another World` / `Out of This World`, `Anstoss` / `On the Ball`) are not part of it either: the German
+release of another publisher competes too, and the language filter then sets aside a game that has no
+version in your languages (off: every country and publisher is a game of its own). `PAL` / `NTSC` and `(M3)` releases, and WHDLoad's CDTV,
+Files / Image, MT32, crunched and cover-disk builds, are the same game too. A few titles are two different games by different publishers
+(Overlord, Arena, Legend ...): `library.KEEP_APART` keeps them apart, and `tools/keep_apart_candidates.py` lists the titles LaunchBox knows
+as two Amiga games to check new ones by hand. The disks of a set still come from one release. Among the *complete* sets of a game exactly one is kept, ranked:
 1. your preferred language (the order you ticked / arranged in *Languages*),
 2. cracked (`[cr ...]` on any disk) over uncracked,
 3. platform: CD32 over AGA over OCS (untagged / OCS / ECS count as OCS),
@@ -765,8 +771,21 @@ and can be cancelled at any time.
 Japan > others, English by default, ONE release per game, discs of a multi-disc game always stay together, newest
 revision wins within a region; Redump categories *Demos* and *Coverdiscs* are demos, *Preproduction* is
 prototype / pre-release (plus the `(Beta)`, `(Proto)`, `(Sample)` and Japanese `(Taikenban)` tokens), while
-*Applications*, *Educational*, *Bonus Discs*, *Multimedia*, *Add-Ons* are kept on purpose. Budget re-releases
-(`(PlayStation the Best)`, `(Greatest Hits)`, `(Platinum)` ...), `(Unl)` and special editions are different products and are never merged;
+*Applications*, *Educational*, *Bonus Discs*, *Multimedia*, *Add-Ons* are kept on purpose. Of a game's releases ONE is kept:
+**Prefer special and limited editions** (on by default) puts `(Special Edition)`, `(Genteiban)`, `(Premium Box)`, first prints and other builds
+first (they can hold more than the original), then the plain release, then store editions and bundles (`(Toys R Us)`, `(Controller Set)`,
+`(EDC)` ...); **Budget re-releases** (`(PlayStation the Best)`, `(Greatest Hits)`, `(Platinum)`, `@barai` ...; on by default) are set aside
+when another release of the game is there, and **Online-only titles** (`(Shenmue Passport)`, browsers, network start-up discs, FFXI ...; on by
+default) are excluded. **Combine alternate titles** (on by default) makes the titles a game has in other regions one game (`Biohazard` /
+`Resident Evil`, `Eternal Arcadia` / `Skies of Arcadia`, `Probotector` / `Contra`): the ratings data (LaunchBox's alternate names) and
+GameTDB's Wii U IDs say which titles are one game, and so are titles spelt alike (`Rock 'n' Roll Racing` / `Rock n' Roll Racing`); two
+titles released for the very same regions stay two games. The same game also takes in its re-releases (`(Sega Channel)`, `(Mega Drive Mini)`,
+`(Virtual Console)`, the `... Collection` extracts: after the retail release), its console-feature releases (`(SGB Enhanced)`, `(Rumble
+Version)`), the label of a disc (`(Disc 1) (Leon-hen)`), the other discs of a GameCube / Wii game, and its pirate copies and the unlicensed
+copies of Taiwan, China, Korea, Asia, Russia and Brazil (after the licensed release); an unlicensed game of another region (Tengen's
+`Tetris (USA) (Unl)`) and homebrew (`(Aftermarket)`, whatever competition, publisher or board) stay games of their own. Bonus and extras
+discs stay too, but are not rated as the game. Store samples, previews, trials, kiosk downloads and trailers (`(Jitsuen-you Sample)`,
+`(Preview Disc)`, `(Otameshiban)`, `(Trade Demo)`, `(DS Download Station ...)`, `(Video)` ...) are demos;
 `(Rev N)` / `(vX.Y)` are revisions (newest wins); `(Disc A)` / `(Disc B)` count as discs 1 / 2.
 **Playlists:** PlayStation multi-disc games get an `.m3u` with relative paths in the game's folder, above the folders of the discs (RetroArch and DuckStation read it);
 **PlayStation 2 gets none** - PCSX2 does not use `.m3u` playlists (the policy is a per-system setting).

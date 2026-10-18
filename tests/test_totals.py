@@ -189,6 +189,17 @@ class UserTests(unittest.TestCase):
         full = numbers(pool, pool)                                # owning everything = every target game, no upgrades
         self.assertEqual((full["have_games"], full["not_preferred"]), (full["target_games"], 0))
 
+    def test_bios_and_firmware_are_no_games_on_any_system(self) -> None:
+        nes = [Rom(name=n + ".gba", size=1, crc="", md5="", sha1="", game=n, dat=GBA_DAT, set_name=n)
+               for n in ("Zap (USA)", "[BIOS] Game Boy Advance (World)")]
+        t = totals.compute_target(GBA, [DatFile(GBA_DAT, GBA_DAT, "1", nes, format="clrmamepro")], library.default_profile(GBA))
+        self.assertEqual(t.count, 1)                                                     # (a rom marked [BIOS] is no game)
+        fw = "Commodore Amiga - Firmware"
+        t = totals.compute_target(AMIGA, [dat_of(["Alpha (1990)(Pub)"]), dat_of(["Kickstart v1.3 (1987)(Commodore)"], fw)], EN)
+        self.assertEqual(t.count, 1)                                                     # (nor is a game of a "- Firmware" DAT)
+        u = totals.compute_user_items([*items_of(["Alpha (1990)(Pub)"]), *items_of(["Kickstart v1.3 (1987)(Commodore)"], fw)], AMIGA, EN)
+        self.assertEqual(totals.combine(t, u)["have_games"], 1)
+
     def test_no_intro_unit_is_the_game(self) -> None:
         def ni(names: list[str]) -> list[Item]:
             return [Item(key=i, dat=GBA_DAT, rom=Rom(name=n + ".gba", size=1, crc="", md5="", sha1="", game=n,

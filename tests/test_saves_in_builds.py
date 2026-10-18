@@ -39,6 +39,7 @@ class SavesCase(ServerCase):
         (ra_dir / "retroarch.cfg").write_text(f'savefile_directory = "{self.saves}"\nsavestate_directory = "{self.saves}"\n'
                                               'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
         self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
+        self.call("POST", "/api/library/defaults", {"prefer_saved": False})          # (these tests are about what happens to a game the rules replace)
 
     # ---- helpers
     def save(self, core: str, name: str, patterns: tuple[str, ...] = SAVE_NAMES) -> list[str]:
@@ -730,3 +731,94 @@ class DreamcastProductNumbers(unittest.TestCase):
             app._match_product_codes(state, report)
             self.assertEqual((card.match, card.game, card.title), (saveindex.ROM, "De La Jet Set Radio (Japan)", "De La Jet Set Radio"))
             self.assertEqual(other.match, saveindex.NONE)                                        # (a number no disc you have carries)
+
+
+class TreeCountsMatchTheTiles(SavesCase):
+    """The Files tree counts games as the tiles do (found comparing the two on real folders)."""
+
+    def tree(self) -> dict:
+        return self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=")
+
+    def test_a_zip_the_build_cannot_place_is_still_a_game_you_have(self) -> None:
+        import time
+        import zipfile
+        root = self.rom_folder("Solo (USA)")
+        with zipfile.ZipFile(root / "Zed pack.zip", "w") as zf:                     # (one member is a game, the other nothing: the build leaves it)
+            zf.writestr("Zed (USA).sfc", self.rom["Zed (USA)"])
+            zf.writestr("readme.txt", "hello")
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.lib_plan(root)
+        show = self.tree()["facets"]["show"]
+        self.assertEqual(show["have"], 2)                                                 # (the zip is a game you have)
+        t = {}
+        for _ in range(100):
+            t = self.call("GET", "/api/library/totals?platform=Super%20Nintendo%20Entertainment%20System")
+            if t.get("have_games") is not None and not t.get("calculating"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(t.get("have_games"), 2)                                          # (and the tile says the same)
+
+    def test_a_game_the_rules_keep_again_comes_back_from_excluded_not_to_the_archive(self) -> None:
+        root = self.rom_folder("Solo (USA)")
+        put(root / "_excluded" / "Zed (USA).sfc", self.rom["Zed (USA)"])              # (set aside by an earlier build, kept by the rules now)
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.lib_plan(root)
+        tree = self.tree()
+        names = {f["name"]: f["state"] for f in tree["files"]}
+        self.assertEqual(names.get("Zed (USA).sfc"), "moved")
+        self.assertEqual(tree["facets"]["show"]["have"], 2)
+        archive = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=&side=archive")
+        self.assertEqual(archive["sides"]["archive"], 0)
+
+    def test_a_release_you_lack_listed_for_its_saves_is_not_missing(self) -> None:
+        import time
+        root = self.rom_folder("Solo (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (USA)")                                                    # (you have the release the rules want, the saves are of another)
+        no = mock.patch("romorg.savecarry.works", return_value=False)                      # (... that does not work in yours)
+        no.start()
+        self.addCleanup(no.stop)
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.lib_plan(root)
+        t = {}
+        for _ in range(100):
+            t = self.call("GET", "/api/library/totals?platform=Super%20Nintendo%20Entertainment%20System")
+            if t.get("missing_games") is not None and not t.get("calculating"):
+                break
+            time.sleep(0.1)
+        tree = self.tree()
+        self.assertIn("Zed (USA)", [f["name"] for f in tree["files"]])                     # (listed, with its saves)
+        self.assertEqual(tree["facets"]["show"]["missing"], t["missing_games"])
+        missing = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=missing")
+        self.assertNotIn("Zed (USA)", [f["name"] for f in missing["files"]])
+
+
+class KeptForSavesCountOnTheirOwn(SavesCase):
+    def test_a_game_kept_only_for_its_saves_is_its_own_count_and_in_no_other_filter(self) -> None:
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (USA)")
+        self.mode("keep")                                                                  # (the rules prefer Europe; the saves keep the USA ROM)
+        plan = self.lib_plan(root)
+        self.assertEqual(plan["reasons"]["kept_saved"], 1)
+        tree = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=")
+        show = tree["facets"]["show"]
+        self.assertEqual((show["have"], show["kept_saves"]), (1, 1))
+        mine = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=have")
+        self.assertEqual(mine["facets"]["region"], {"Europe": 1})                         # (the kept-for-saves USA ROM counts in no other filter)
+        kept = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=kept_saves")
+        self.assertEqual([f["name"] for f in kept["files"]], ["Zed (USA).sfc"])
+        row = {f["name"]: f for f in tree["files"]}["Zed (USA).sfc"]
+        self.assertEqual((row["saved_keep"], row["saved_why"]), (True, "you keep Zed (Europe)"))          # (in place, with why)
+        hidden = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=&hide_saved=1")
+        self.assertNotIn("Zed (USA).sfc", [f["name"] for f in hidden["files"]])
+        self.assertEqual(hidden["facets"]["show"]["kept_saves"], 1)                         # (the switch still says how many)
+
+    def test_with_the_default_the_release_with_saves_is_kept_and_nothing_is_kept_for_saves(self) -> None:
+        self.call("POST", "/api/library/defaults", {"prefer_saved": True})
+        root = self.rom_folder("Zed (USA)", "Zed (Europe)")
+        self.save("bsnes", "Zed (USA)")
+        self.mode("keep")
+        plan = self.lib_plan(root)
+        rows = {r["from"]: r for r in plan["items"]}
+        self.assertEqual((rows["Zed (USA).sfc"]["status"], rows["Zed (Europe).sfc"]["dest"]), ("ok", "_superseded"))
+        show = self.call("GET", "/api/tree?platform=Super%20Nintendo%20Entertainment%20System&show=")["facets"]["show"]
+        self.assertEqual((show["have"], show["kept_saves"]), (1, 0))

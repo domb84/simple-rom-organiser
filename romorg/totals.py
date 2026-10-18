@@ -40,6 +40,8 @@ def profile_signature(profile: library.LibraryProfile) -> str:
     rules.pop("keep_extras", None)         # (nor the files that sit with a disc)
     rules.pop("convert_first", None)       # (nor what a build converts first)
     rules.pop("delete_converted", None)
+    rules.pop("prefer_saved", None)        # (nor which release of a game with saves is kept)
+    rules.pop("prefer_editions", None)     # (nor which release of a game: an edition or the plain one)
     blob = json.dumps(rules, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -50,6 +52,14 @@ def signature_text(parts: Iterable[Any]) -> str:
 
 
 # --------------------------------------------------------------------------- items
+
+def _no_bios(items: list[Item]) -> list[Item]:
+    """The items that are games: a BIOS / firmware file (a "- Firmware" DAT's, or a rom marked [BIOS]) is counted on its own, never as a
+    game you have or lack (the same on every system). Keys are renumbered."""
+    from . import bios
+    out = [it for it in items if not bios.is_firmware_dat(it.dat) and not getattr(library._tags_of(it), "bios", False)]
+    return [dataclasses.replace(it, key=n) for n, it in enumerate(out)] if len(out) != len(items) else items
+
 
 def target_items(platform: Any, dats: Iterable[Any]) -> list[Item]:
     """One :class:`library.Item` per game-unit of the platform's DATs: a rom (TOSEC / WHDLoad), a set
@@ -77,7 +87,7 @@ def target_items(platform: Any, dats: Iterable[Any]) -> list[Item]:
                     continue
                 seen.add(rom.set_name)
             items.append(Item(key=len(items), dat=name, rom=rom, style=style, path=Path(rom.name), member=None))
-    return items
+    return _no_bios(items)
 
 
 def user_items(result: Any) -> list[Item]:
@@ -92,22 +102,23 @@ def user_items(result: Any) -> list[Item]:
         index = result.index
         totals = index.disc_totals() if index else {}
         seen_games: set[str] = set()
-        for u in result.units:
-            if u.kind != "chd" or u.game is None or u.game.name in seen_games:
+        have_chd = {u.game.name for u in result.units if u.kind == "chd" and u.game is not None}
+        for u in result.units:                          # (a raw disc you have - an .iso, a zip of it, a cue / bin set - is a game you have too)
+            if u.game is None or u.game.name in seen_games or (u.kind != "chd" and u.game.name in have_chd):
                 continue
             seen_games.add(u.game.name)
             items.append(Item(key=len(items), dat=u.game.rep.dat, rom=u.game.rep, style=tags.STYLE_REDUMP,
                               path=Path(u.path), member=None, disc_total=totals.get(u.game.name, 0)))
-        return items
+        return _no_bios(items)
     seen: set[tuple[str, str, str]] = set()
-    for u in organiser.matched_units(result):
+    for u in [*organiser.matched_units(result), *organiser.partial_archives(result)]:     # (a game in a zip with a readme is one you have)
         sig = (u.dat, u.rom.name, u.form)
         if sig in seen:
             continue
         seen.add(sig)
         items.append(Item(key=len(items), dat=u.dat, rom=u.rom, style=u.style, path=u.path, member=u.member,
                           form=u.form, link=u.link))
-    return items
+    return _no_bios(items)
 
 
 # --------------------------------------------------------------------------- selection results
@@ -152,7 +163,7 @@ def _kept(items: list[Item], sel: library.Selection) -> dict[tuple, set[str]]:
             continue
         if library.BORROWED_CODE in d.codes and borrowed_by.get(it.key) == d.set_id:
             continue
-        out.setdefault(library.game_key(it), set()).add(library._rom_name(it))
+        out.setdefault(library.game_key(it, sel.combine_alt), set()).add(library._rom_name(it))
     return out
 
 
@@ -199,7 +210,7 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
     by_dat: dict[str, int] = {}
     for key in kept:
         by_dat[key[0]] = by_dat.get(key[0], 0) + 1
-    broken = {library.game_key(it) for it in items
+    broken = {library.game_key(it, profile.combine_alt_titles) for it in items
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
@@ -219,7 +230,7 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     games: dict[tuple, tuple[str, frozenset]] = {}
     problems: dict[tuple, tuple[str, list[str], str]] = {}
     for it in items:
-        key = library.game_key(it)
+        key = library.game_key(it, profile.combine_alt_titles)
         if key in kept:
             continue
         d = sel.decisions.get(it.key)

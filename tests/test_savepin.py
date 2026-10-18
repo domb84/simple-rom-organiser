@@ -148,7 +148,7 @@ class Trees(ServerCase):
         self.assertEqual((mine_row["from"], lib["dirs"], lib["totals"]["changed"], lib["totals"]["files"], lib["totals"]["missing"]), ("run.gba", [], 1, 1, 1))
         self.assertEqual((mine_row["row"]["category"], mine_row["row"]["game_ref"]["game"], mine_row["row"]["tags"]["regions"]), ("kept", "Run (USA)", ["USA"]))   # its row of the build
         self.assertEqual(lib["sides"], {"library": 1, "archive": 3})
-        self.assertEqual(lib["facets"]["show"], {"": 2, "have": 1, "missing": 1, "bios": 0, "unmatched": 0, "saves": 0})
+        self.assertEqual(lib["facets"]["show"], {"": 2, "have": 1, "missing": 1, "bios": 0, "unmatched": 0, "saves": 0, "kept_saves": 0})
         only = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library&show=missing")
         self.assertEqual([f["name"] for f in only["files"]], ["Bash (USA)"])
         found = self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&q=RUN")

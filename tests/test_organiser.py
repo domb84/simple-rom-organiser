@@ -1085,7 +1085,9 @@ class NoIntroOrganiseTests(unittest.TestCase):
         for old in ("Game v1.2 (1990)(Pub).adf", "Game (1989)(Pub).adf", "Game v1.0 (1990)(Pub)[cr X].adf"):
             self.assertEqual(by_rom[old].code, "superseded", old)
             self.assertTrue(by_rom[old].superseded_by, old)
-        for keep in ("Game v1.10 (1990)(Pub).adf", "Game v1.1 (1990)(Pub)[cr X].adf", "Game v1.0 (1990)(Other).adf"):
+        # ("Game v1.0 (1990)(Other)": another publisher of the same game, an older version: "Combine alternate titles" makes it one game)
+        self.assertEqual(by_rom["Game v1.0 (1990)(Other).adf"].code, "superseded")
+        for keep in ("Game v1.10 (1990)(Pub).adf", "Game v1.1 (1990)(Pub)[cr X].adf"):
             self.assertEqual(by_rom[keep].dst, self.root / GAMES / keep)
             self.assertEqual(by_rom[keep].superseded_by, "")
         # without the option nothing is superseded (Amiga behaviour unchanged)

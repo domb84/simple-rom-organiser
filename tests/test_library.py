@@ -295,7 +295,10 @@ class Ranking(unittest.TestCase):
     def test_publisher_and_edition_separate(self) -> None:
         names = ["K (1990)(P1)[cr A]", "K (1990)(P2)[cr A]", "K (1990)(P1)(M3)[cr A]", "K (1990)(P1)(US)[cr A]",
                  "K (1990)(P1)(DE)[cr A]"]
-        self.assertTrue(all(d.action == KEEP for d in run(names, ALL_LANGS)[2].values()))
+        self.assertTrue(all(d.action == KEEP for d in run(names, replace(ALL_LANGS, combine_alt_titles=False))[2].values()))
+        # "Combine alternate titles": another publisher, country or the multi-language (M3) release is the same game
+        kept = sorted(n for n, d in run(names, ALL_LANGS)[2].items() if d.action == KEEP)
+        self.assertEqual(len(kept), 1)
 
     def test_incomplete_prefers_older_complete(self) -> None:
         names = ["L v1.1 (1991)(P)(Disk 1 of 2)[cr A]", "L v1.0 (1990)(P)(Disk 1 of 2)[cr A]",
@@ -429,8 +432,9 @@ class NoIntro(unittest.TestCase):
         for n in ("Game (Japan) (Beta)", "Game (Japan) (Proto)", "Game (Japan) (Demo)", "Game (World) (Sample)",
                   "Game (USA) (Possible Proto)", "Game (USA) (Kiosk)", "Game (USA) (Debug)"):
             self.assertEqual(got[n], EXCLUDED, n)
-        for n in ("Game (USA) (Unl)", "Game (USA) (Aftermarket)", "Game (USA) (Virtual Console)"):
+        for n in ("Game (USA) (Unl)", "Game (USA) (Aftermarket)"):
             self.assertEqual(got[n], KEEP, n)
+        self.assertEqual(got["Game (USA) (Virtual Console)"], SUPERSEDED)        # (a re-release of the USA game: its newest revision wins)
 
 
 class Idempotence(unittest.TestCase):
@@ -532,7 +536,9 @@ class PlatformRanking(unittest.TestCase):
     def test_real_editions_stay_separate(self) -> None:
         names = ["E (1993)(P)(AGA)", "E (1993)(P)(AGA Data)", "E - World Cup Edition (1994)(P)(AGA)",
                  "E (1993)(P2)(AGA)", "E (1993)(P)(M3)(AGA)"]
-        self.assertEqual(self.kept(names), sorted(names))
+        # ("Combine alternate titles": another publisher, and the multi-language (M3) release, are the same game)
+        self.assertEqual(self.kept(names), sorted(n for n in names if n not in ("E (1993)(P2)(AGA)", "E (1993)(P)(M3)(AGA)")))
+        self.assertEqual(self.kept(names, replace(library.default_profile(AMIGA), combine_alt_titles=False)), sorted(names))
 
     def test_mixed_chipset_disk_sets_do_not_break(self) -> None:
         # SkidMarks / Coala: bare ECS-AGA tag before the disk token, chipset words in the disk labels
@@ -729,10 +735,11 @@ class CatalogTests(unittest.TestCase):
 
     def test_catalog_shape_and_defaults(self) -> None:
         cat = library.rule_catalog("tosec")
-        self.assertEqual([e["id"] for e in cat if e["kind"] == "exclude"], list(tags.RULES))
+        self.assertEqual([e["id"] for e in cat if e["kind"] == "exclude"], [r for r in tags.RULES if r not in ("budget", "online")])   # (No-Intro / Redump rules)
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
         opts = {e["id"]: e for e in cat if e["kind"] == "option" and e.get("group") != "ratings"}
-        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios", "convert_first"})
+        self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios", "convert_first",
+                                     "combine_alt_titles"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])
@@ -893,6 +900,69 @@ class ProfilePersistence(unittest.TestCase):
                          (("En",), True, ("Europe", "USA", "World", "Japan")))
 
 
+class EditionsBudgetAndOnline(unittest.TestCase):
+    """One release of a game in the library: a premium edition first (``prefer_editions``), budget re-releases set aside (rule
+    ``budget``) unless they are the only release, online-only titles excluded (rule ``online``)."""
+
+    @staticmethod
+    def decide(names, **changes):
+        items = ni_items(names, "Nintendo - Game Boy Advance")
+        prof = replace(library.default_profile(GBA), **changes)
+        sel = library.select(items, prof, GBA)
+        return {names[k - 1]: d for k, d in sel.decisions.items()}
+
+    def test_a_special_edition_is_kept_instead_of_the_plain_release_and_the_option_turns_it_round(self) -> None:
+        names = ["Zap (USA)", "Zap (USA) (Special Edition)"]
+        self.assertEqual([n for n, d in self.decide(names).items() if d.action == KEEP], ["Zap (USA) (Special Edition)"])
+        self.assertEqual([n for n, d in self.decide(names, prefer_editions=False).items() if d.action == KEEP], ["Zap (USA)"])
+
+    def test_a_budget_release_goes_when_another_release_is_there_and_stays_when_it_is_the_only_one(self) -> None:
+        by = self.decide(["Zap (USA)", "Zap (USA) (Greatest Hits)"])
+        self.assertEqual((by["Zap (USA)"].action, by["Zap (USA) (Greatest Hits)"].action), (KEEP, EXCLUDED))
+        self.assertEqual(by["Zap (USA) (Greatest Hits)"].codes, ("budget",))
+        only = self.decide(["Zap (USA) (Greatest Hits)"])
+        self.assertEqual(only["Zap (USA) (Greatest Hits)"].action, KEEP)
+        self.assertEqual(self.decide(["Zap (USA)", "Zap (USA) (Greatest Hits)"], exclude=frozenset())["Zap (USA) (Greatest Hits)"].action, SUPERSEDED)
+
+    def test_the_rules_are_on_by_default_and_an_older_saved_list_gets_them(self) -> None:
+        prof = library.default_profile(GBA)
+        self.assertTrue({"budget", "online"} <= prof.exclude and prof.prefer_editions)
+        cfg = {"library_defaults": {"exclude": ["demo"]}, "library_overrides": {"Sega Dreamcast": {"exclude": ["bad_dump"]}}}
+        self.assertTrue(library.migrate_config(cfg))
+        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo", "budget", "online"])
+        self.assertEqual(cfg["library_overrides"]["Sega Dreamcast"]["exclude"], ["bad_dump", "budget", "online"])
+        self.assertFalse(library.migrate_config(cfg))                                  # (once: turning one off afterwards sticks)
+
+
+class PreferTheReleaseWithSaves(unittest.TestCase):
+    """``prefer_saved`` (on by default): of the regions / versions of a game, the one you have saves for is kept."""
+
+    @staticmethod
+    def kept(names, saved, **changes):
+        from romorg.retroarch import fold_name
+        items = ni_items(names, "Nintendo - Game Boy Advance")
+        prof = replace(library.default_profile(GBA), **changes)
+        sel = library.select(items, prof, GBA, saved=frozenset(fold_name(n) for n in saved))
+        return sorted(names[k - 1] for k, d in sel.decisions.items() if d.action == KEEP), sel
+
+    def test_the_region_you_have_saves_for_is_kept(self) -> None:
+        names = ["Zed (USA)", "Zed (Europe)"]
+        self.assertEqual(self.kept(names, [])[0], ["Zed (Europe)"])                             # (the rules' choice without saves)
+        kept, sel = self.kept(names, ["Zed (USA)"])
+        self.assertEqual(kept, ["Zed (USA)"])
+        europe = sel.decisions[2]
+        self.assertEqual((europe.action, europe.superseded_by), (SUPERSEDED, "Zed (USA)"))
+        self.assertEqual(self.kept(names, ["Zed (USA)"], prefer_saved=False, saved_games="leave")[0], ["Zed (Europe)"])
+
+    def test_the_version_you_have_saves_for_is_kept_over_a_newer_one(self) -> None:
+        names = ["Run (USA)", "Run (USA) (Rev 1)"]
+        self.assertEqual(self.kept(names, [])[0], ["Run (USA) (Rev 1)"])
+        self.assertEqual(self.kept(names, ["Run (USA)"])[0], ["Run (USA)"])
+
+    def test_the_default_is_on(self) -> None:
+        self.assertTrue(LibraryProfile().prefer_saved)
+
+
 class SavedGames(unittest.TestCase):
     """"Games you have saves for" (Amendment 30): keep / archive / leave."""
 
@@ -906,7 +976,7 @@ class SavedGames(unittest.TestCase):
 
     def sel(self, saved, profile=None):
         items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
-        prof = profile or replace(library.default_profile(GBA), saved_games="keep")
+        prof = replace(profile or replace(library.default_profile(GBA), saved_games="keep"), prefer_saved=False)
         sel = library.select(items, prof, GBA, saved=saved)
         return {self.NAMES[k - 1]: d for k, d in sel.decisions.items()}, sel
 
@@ -962,7 +1032,7 @@ class SavedGames(unittest.TestCase):
             with mock.patch.object(savecarry, "SERIAL_SAVES", frozenset({GBA.name})), \
                     mock.patch.object(pcsx2, "read_serial", lambda path, psx=False: serials.get(Path(path).name[:-4], "")):
                 items = [replace(it, path=Path(it.path.name + ".iso")) for it in ni_items(self.NAMES, "Nintendo - Game Boy Advance")]
-                sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep"), GBA, saved=self.keys("Zed (USA)"))
+                sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep", prefer_saved=False), GBA, saved=self.keys("Zed (USA)"))
             by = {self.NAMES[k - 1]: d for k, d in sel.decisions.items()}
             self.assertEqual(by["Zed (USA)"].action, SUPERSEDED if gone else KEEP, serials)
 
@@ -983,7 +1053,7 @@ class SavedGames(unittest.TestCase):
     def test_the_archive_member_name_counts_too(self) -> None:
         items = ni_items(self.NAMES, "Nintendo - Game Boy Advance")
         items = [replace(it, path=Path("pack.zip"), member=it.path.name + ".gba") for it in items]
-        sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep"), GBA, saved=self.keys("Zed (USA)"))
+        sel = library.select(items, replace(library.default_profile(GBA), saved_games="keep", prefer_saved=False), GBA, saved=self.keys("Zed (USA)"))
         self.assertEqual(sel.decisions[1].codes, (library.SAVED_KEEP,))
 
     def test_totals_do_not_depend_on_it(self) -> None:
@@ -1073,9 +1143,13 @@ class BorrowTests(unittest.TestCase):
         self.assertEqual(by[de[0]].codes, ("language",))
         self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)"])
         # German selected too: the German set is complete on its own and kept; the English one still completes
-        _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De")))
+        _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De"), combine_alt_titles=False))
         self.assertEqual({d.action for d in by.values()}, {KEEP})
         self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)", "Foo (1991)(Pub)(DE)"])
+        # ... with "Combine alternate titles" the two are one game: the English set (first language) is kept, the German one goes
+        _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De")))
+        self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)"])
+        self.assertEqual([by[n].action for n in de], [SUPERSEDED, KEEP, SUPERSEDED])     # (disk 2 is borrowed by the English set)
 
     def test_own_edition_comes_first(self) -> None:
         d2 = "Foo (1991)(Pub)(Disk 2 of 3)"

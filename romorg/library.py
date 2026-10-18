@@ -10,12 +10,13 @@ running it on its own kept output changes nothing.
 from __future__ import annotations
 
 import re
+import dataclasses
 import functools
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
-from . import tags
+from . import alttitles, tags
 from .tags import STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC, STYLE_WHDLOAD
 
 if TYPE_CHECKING:
@@ -49,11 +50,12 @@ BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a
 SAVED_GAMES = ("keep", "archive", "leave", "carry", "convert")
 SAVED_KEEP = "saved_keep"       # Decision.codes of a game kept because you have saves or save states for it
 SAVED_KEEP_TEXT = "kept: you have saves or save states for it"
+SAVED_PREFER = "saved_prefer"   # Decision.codes of the release kept instead of the one the rules prefer, because you have saves for it
 
 _RULE_SHORT = {
     "bad_dump": "bad dump", "virus": "virus-infected", "bad_size": "over/under dump",
     "pre_release": "pre-release", "prototype": "prototype", "demo": "demo", "faked": "faked",
-    "unreleased": "unreleased", "modified": "modified",
+    "unreleased": "unreleased", "modified": "modified", "budget": "budget re-release", "online": "online only",
     "flag_cr": "crack flag", "flag_h": "hack flag", "flag_t": "trainer flag",
     "flag_a": "alternate flag", "flag_f": "fix flag", "flag_tr": "translation flag",
     "language": "not in the selected languages",
@@ -171,6 +173,9 @@ class LibraryProfile:
     keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
     convert_first: bool = False                  # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
     delete_converted: bool = False               # ... and deletes the originals after (off: they are kept in _converted_originals)
+    prefer_saved: bool = True                    # of the releases / versions of a game, the one you have saves for is kept (not a newer one, not another region)
+    prefer_editions: bool = True                 # of a game's releases a special / limited / premium edition beats the plain release (off: after it)
+    combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -204,7 +209,9 @@ class LibraryProfile:
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
                 "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
-                "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted}
+                "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
+                "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
+                "combine_alt_titles": self.combine_alt_titles}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -258,7 +265,10 @@ class LibraryProfile:
                    else base.saved_games,
                    saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides,
                    keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras),
-                   convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted))
+                   convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted),
+                   prefer_saved=flag("prefer_saved", base.prefer_saved),
+                   prefer_editions=flag("prefer_editions", base.prefer_editions),
+                   combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -295,7 +305,8 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
-               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted")
+               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
+               "combine_alt_titles")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
 # decides its own rules. Your defaults keep the one list ``exclude``.
@@ -330,7 +341,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
     has_langs = bool(_dats(platform, "language_dats"))
     has_regions = bool(_dats(platform, "region_dats"))
     tosec = bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC
-    out = {"exclude", "saved_games", "keep_bios"}
+    out = {"exclude", "saved_games", "keep_bios", "prefer_saved"}
     for field, ok in (("latest_only", bool(_dats(platform, "latest_dats"))), ("best_variant", bool(_dats(platform, "best_variant_dats"))),
                       ("complete_only", bool(_dats(platform, "m3u_dats"))), ("languages", has_langs), ("keep_other_language", has_langs),
                       ("keep_flags", tosec), ("rescue_only_dump", bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC),
@@ -347,6 +358,9 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
     if _style_of_platform(platform) in AMIGA_STYLES:
         out.add("exclude_amiga")
+    else:
+        out.add("prefer_editions")                                # (the release tags of No-Intro / Redump names: editions, budget lines)
+    out.add("combine_alt_titles")
     return frozenset(out)
 
 
@@ -507,10 +521,24 @@ def reset_overrides(cfg: dict, platform: "Platform") -> None:
     _put_overrides(cfg, platform, ov)
 
 
+RULES_VERSION = 2          # 2: the exclusion rules "budget" and "online" (tags.NEW_RULES), on by default
+
+
 def migrate_config(cfg: dict) -> bool:
     """Bring an older config to the layout above, in place; True when it changed anything. A Collection's shared rules (that page is
-    gone) become your defaults, each system's saved profile becomes its list of overrides (only where it differs from the defaults)."""
+    gone) become your defaults, each system's saved profile becomes its list of overrides (only where it differs from the defaults).
+    A saved list of exclusion rules from before a rule existed gets that rule (new rules are on by default)."""
     changed = False
+    if cfg.get("rules_version", 1) < RULES_VERSION:
+        lists = [cfg.get("library_defaults")] + list((cfg.get("library_overrides") or {}).values())
+        for entry in lists:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("exclude", "exclude_amiga"):
+                if isinstance(entry.get(key), list):
+                    entry[key] = list(dict.fromkeys([*entry[key], *tags.NEW_RULES]))
+        cfg["rules_version"] = RULES_VERSION
+        changed = True
     coll = cfg.get("collection")
     if isinstance(coll, dict):
         mine = coll.get("global") if isinstance(coll.get("global"), dict) else {}
@@ -619,6 +647,7 @@ class Selection:
     sets: list[ChosenSet] = field(default_factory=list)
     incomplete: list[IncompleteSet] = field(default_factory=list)
     vanished: list[Vanished] = field(default_factory=list)
+    combine_alt: bool = False                  # the profile's "Combine alternate titles" (what :func:`game_key` of its items needs)
 
     def exclusion_counts(self) -> dict[str, dict[str, int]]:
         """``{"exclusive": {code: files}, "any": {code: files}}``: excluded files per reason code.
@@ -684,11 +713,68 @@ def _tags_of(item: Item) -> tags.Tags:
     return tags.parse_name(_rom_name(item), _style(item))
 
 
-def game_key(item: Item) -> tuple:
+def game_key(item: Item, combine: bool = False) -> tuple:
     """The identity of the GAME an item belongs to, exactly as :func:`select` groups variants: TOSEC / WHDLoad
     ``tags.identity_key`` (title, country, publisher, edition and status tags), No-Intro / Redump ``tags.game_key``
-    (title, status, product tags; regions, languages, versions and disc numbers are not part of it)."""
-    return (item.dat, tags.game_key(_tags_of(item)))      # tags.game_key = identity_key for TOSEC / WHDLoad
+    (title, status, product tags; regions, languages, versions and disc numbers are not part of it). ``combine``: the profile's
+    "Combine alternate titles" (the titles of one game in other regions are one title)."""
+    return (item.dat, _gkey(item, combine))      # tags.game_key = identity_key for TOSEC / WHDLoad
+
+
+def _gkey(item: Item, combine: bool) -> tuple:
+    return combined_key(item.dat, tags.game_key(_tags_of(item)), combine)
+
+
+# Different games that share a TOSEC title (checked by hand: the DAT gives no other way to tell them apart, and LaunchBox knows only a
+# few of them). "Combine alternate titles" makes the releases of a title by other publishers one game; a title here is split by its
+# publishers instead: {title (casefold): [publishers of one game, publishers of another, ...]}. A publisher in no list is the first game.
+KEEP_APART: dict[str, list[frozenset]] = {
+    "overlord": [frozenset({"virgin mastertronic", "melbourne house"}), frozenset({"virgin"})],      # Probe's strategy game (Supremacy) / Rowan's flight sim
+    "arena": [frozenset({"psygnosis"}), frozenset({"defcom"})],                                    # athletics / puzzle game
+    "war zone": [frozenset({"prism leisure", "eidersoft"}), frozenset({"core"})],                   # Eidersoft's tank game / Core's shooter
+    "legend": [frozenset({"crl"}), frozenset({"mindscape"})],                                      # the wargame (The Black Orchid) / the RPG
+    "protector": [frozenset({"prism leisure", "paradox"}), frozenset({"virgin mastertronic"})],     # the arcade shooter / the helicopter game
+    "turbo trax": [frozenset({"microdeal"}), frozenset({"arcane"})],                               # the slot-car racer / Arcane's racer
+    "enforcer, the": [frozenset({"methodic solutions"}), frozenset({"trojan"})],                   # (Police Academy II) / the light-gun game
+    "monopoly": [frozenset({"leisure genius"}), frozenset({"supervision"})],                       # two different programs
+    "locomotion": [frozenset({"byte back"}), frozenset({"kingsoft"})],                             # Byte Back's / Prestige's switching puzzle
+}
+# New candidates: tools/keep_apart_candidates.py lists the titles LaunchBox knows as two Amiga games (a lead to check, never a rule).
+
+
+# WHDLoad product tags that are builds of the same game (with "Combine alternate titles": one game, the best variant is chosen)
+_WHD_BUILDS = frozenset({"cdtv", "files", "image", "mt32", "no intro", "one disk", "two disk", "1disk", "2disk", "nointro", "crunched",
+                         "no speech", "a1200", "a1200 version", "no aga", "cover disk", "amiga format", "kaiko", "a.u.d.i.o.s",
+                         "competition version"})
+
+
+def _apart(title: str, publisher: str) -> str:
+    """The publisher part of a combined TOSEC key: "" (any publisher: one game), or which game of a :data:`KEEP_APART` title it is."""
+    games = KEEP_APART.get(title.strip())
+    if not games:
+        return ""
+    parts = {publisher.strip(), *(x.strip() for x in publisher.split(" - "))}      # ("Mindscape - Future Publishing": a cover disk of Mindscape's)
+    for n, pubs in enumerate(games):
+        if parts & pubs:
+            return f"#{n}"
+    return "#0"
+
+
+def combined_key(dat: str, key: tuple, combine: bool) -> tuple:
+    """A game key of ``dat`` (``tags.game_key`` / ``identity_key``) as "Combine alternate titles" makes it: the title of a group of
+    alternate titles is the group's (``alttitles``) and, of a TOSEC name, the country and the publisher are no part of the game (the
+    German release of another publisher is the same game: the best variant is chosen by your languages)."""
+    if not combine or len(key) < 2:
+        return key
+    if key[0] == STYLE_TOSEC and len(key) == 6:            # (style, title, countries, publisher, edition, statuses)
+        edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language"))    # (PAL / NTSC, M3: a release, not a game)
+        key = (key[0], key[1], (), _apart(key[1], key[3]), edition, key[5])
+    elif key[0] == STYLE_WHDLOAD and len(key) == 4:        # (style, title, status, product tags): the CDTV, Files / Image, MT32 ... builds
+        key = (key[0], key[1], key[2], tuple(f for f in key[3] if f not in _WHD_BUILDS))
+    g = alttitles.group(dat, key[1])                        # (key[1]: the title, casefold)
+    if g:
+        key = (key[0], g) + key[2:]
+    return key
 
 
 def rom_title(rom: "Rom", dat: str = "") -> str:
@@ -1059,7 +1145,7 @@ def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Pl
             continue
         if not eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
                            parsed=_tags_of(it) if _style(it) in (STYLE_WHDLOAD, STYLE_REDUMP) else None):
-            out.add(game_key(it))
+            out.add(game_key(it, profile.combine_alt_titles))
     return frozenset(out)
 
 
@@ -1077,6 +1163,8 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     sel = _select_base(items, profile, platform, lang_games)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
+    if saved and profile.prefer_saved:
+        apply_prefer_saved(sel, items, saved)
     if saved:
         apply_saved(sel, items, saved, profile, platform.name)
     apply_overrides(sel, items, profile)
@@ -1091,6 +1179,40 @@ def content_names(item: Item) -> tuple[str, ...]:
     if item.member:
         names.append(Path(item.member).stem)
     return tuple(names)
+
+
+def apply_prefer_saved(sel: Selection, items: Sequence[Item], saved: frozenset) -> None:
+    """Of the releases / versions of a game, keep the one you have saves for: a release the rules set aside for another one (a newer
+    version, a release of a region higher in your list) that has saves, while the one they keep has none, is kept instead, and the other
+    is set aside for it. Discs of a multi-disc set are left to their rules (a set is kept whole)."""
+    from .retroarch import fold_name
+
+    def has(it: Item) -> bool:
+        return any(fold_name(n) in saved for n in content_names(it))
+
+    by_name: dict[str, list[Item]] = {}
+    for it in items:
+        by_name.setdefault(_rom_name(it), []).append(it)
+    losers: dict[str, list[Item]] = {}
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is not None and d.action == SUPERSEDED and d.superseded_by and d.set_id is None and not it.link and has(it):
+            losers.setdefault(d.superseded_by, []).append(it)
+    for win_name, cands in losers.items():
+        winners = [w for w in by_name.get(win_name, ()) if (wd := sel.decisions.get(w.key)) is not None and wd.action == KEEP and wd.set_id is None]
+        if not winners or any(has(w) for w in winners):
+            continue
+        pick = max(cands, key=lambda i: (_rom_name(i).casefold(), i.key))   # (of several with saves: the last by name, the newest revision)
+        pname = _rom_name(pick)
+        sel.decisions[pick.key] = Decision(key=pick.key, action=KEEP, codes=(SAVED_PREFER,),
+                                           reason=f"kept instead of {win_name}: you have saves for this one")
+        for w in winners:
+            sel.decisions[w.key] = Decision(key=w.key, action=SUPERSEDED, superseded_by=pname,
+                                            reason=f"superseded by {pname}, which you have saves for")
+        for other in cands:
+            if other is not pick:
+                d = sel.decisions[other.key]
+                sel.decisions[other.key] = dataclasses.replace(d, superseded_by=pname)
 
 
 def saved_choice(profile: LibraryProfile, dat: str, game: str) -> str:
@@ -1186,7 +1308,7 @@ def apply_overrides(sel: Selection, items: Sequence[Item], profile: LibraryProfi
 def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
                  lang_games: Optional[frozenset] = None) -> Selection:
     """Every rule except the rating filter. ``lang_games``: see :func:`language_games` (None = the items themselves)."""
-    sel = Selection()
+    sel = Selection(combine_alt=profile.combine_alt_titles)
     next_id = [1]
 
     def decide(item: Item, action: str, **kw: Any) -> None:
@@ -1218,13 +1340,24 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
                      if _style(it) in OTHER_LANGUAGE_STYLES and all(code == LANGUAGE_CODE for code, _x in info)]
         if only_lang:
             known = lang_games if lang_games is not None else language_games(items, profile, platform)
-            back = {it.key: info for it, info in only_lang if game_key(it) not in known}
+            back = {it.key: info for it, info in only_lang if game_key(it, profile.combine_alt_titles) not in known}
             if back:
                 excluded = [(it, info) for it, info in excluded if it.key not in back]
                 for it, info in only_lang:
                     if it.key in back:
                         alive.append(it)
                         rescued[it.key] = (f"kept although it only exists in {info[0][1]}: no version in your languages exists")
+    # a budget re-release is set aside only when another release of its game is there: the only release of a game stays
+    only_budget = [(it, info) for it, info in excluded if {code for code, _x in info} == {"budget"}]
+    if only_budget:
+        others = {game_key(it, profile.combine_alt_titles) for it in alive}
+        back = {it.key for it, _info in only_budget if game_key(it, profile.combine_alt_titles) not in others}
+        if back:
+            excluded = [(it, info) for it, info in excluded if it.key not in back]
+            for it, info in only_budget:
+                if it.key in back:
+                    alive.append(it)
+                    rescued[it.key] = f"kept although a budget re-release {info[0][1]}: no other release of the game is here"
     # keep-every-version DATs (opt-in): the only dump of a version is not excluded for [m] / [u]
     if profile.rescue_only_dump:
         kept_versions = {(it.dat, _release_key(it)) for it in alive
@@ -1340,11 +1473,11 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
         if d is None or d.action != KEEP or it.dat not in rdats:
             continue
         owner = owner_of.get(it.key, it)
-        key = game_key(owner)
+        key = game_key(owner, profile.combine_alt_titles)
         u = units.get(key)
         if u is None:
             title = _tags_of(owner).title
-            r = lookup(title)
+            r = None if tags.bonus_disc(_tags_of(owner)) else lookup(title)        # (a bonus disc is no game of its own: not rated as it)
             if r is not None and r[1] < profile.min_votes:
                 r = None
             u = units[key] = _Unit(key, owner, [], title, r, True)
@@ -1505,7 +1638,7 @@ def _select_whdload(dat_items: list[Item], profile: LibraryProfile, best: bool, 
     memory tags and video mode); older ones are superseded. Nothing of the TOSEC Amiga rules is involved."""
     groups: dict[tuple, list[Item]] = {}
     for it in dat_items:
-        groups.setdefault(tags.identity_key(_tags_of(it)), []).append(it)
+        groups.setdefault(combined_key(it.dat, tags.identity_key(_tags_of(it)), profile.combine_alt_titles), []).append(it)
     for group in groups.values():
         vkeys = _whd_vkeys(group)
         info = {}
@@ -1573,7 +1706,7 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
             _one_per_game(members, profile, order, decide)
             continue
         names = list(dict.fromkeys(_rom_name(i) for i in members))
-        older = tags.superseded(names, STYLE_NOINTRO)
+        older = tags.superseded(names, STYLE_NOINTRO, profile.prefer_editions)
         for it in members:
             newer = older.get(_rom_name(it))
             if newer:
@@ -1599,7 +1732,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
     order = tags.region_tiers(tags.region_order(profile.region_priority), profile.region_ties)
     games: dict[tuple, list[Item]] = {}
     for it in dat_items:
-        games.setdefault(tags.game_key(_tags_of(it)), []).append(it)
+        games.setdefault(_gkey(it, profile.combine_alt_titles), []).append(it)
     for group in games.values():
         names = list(dict.fromkeys(_rom_name(i) for i in group))
         vkeys = tags.group_version_keys(names, STYLE_REDUMP)
@@ -1619,7 +1752,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
             # discs), fewest extra tags, name
             def lr(members: list[Item]) -> tuple:
                 t = _tags_of(first_of(members))
-                return (_lang_rank(tags.variant_languages(t), profile), tags.region_rank(t.regions, order))
+                return (_lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t), tags.region_rank(t.regions, order))
 
             best = min(lr(m) for m in editions.values())
             pool = {k: m for k, m in editions.items() if lr(m) == best}
@@ -1640,7 +1773,8 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                 by_disc.setdefault(tags.disc_number(_tags_of(it)), []).append(it)
             chosen: dict[int, Item] = {}
             for disc, cands in by_disc.items():
-                chosen[disc] = max(cands, key=lambda i: (vkeys[_rom_name(i)],
+                chosen[disc] = max(cands, key=lambda i: (-tags.edition_rank(_tags_of(i), profile.prefer_editions),     # (premium / plain / store / budget)
+                                                         vkeys[_rom_name(i)], -tags.extra_tag_count(_tags_of(i)),
                                                          tuple(-ord(c) for c in _rom_name(i).casefold())))
             for disc, cands in by_disc.items():
                 win = chosen[disc]
@@ -1694,31 +1828,55 @@ def _disc_free_name(name: str) -> str:
     return _DISC_TOKEN_RE.sub("", name).strip()
 
 
+def _other_discs(winner: Item, group: list[Item], vkeys: Mapping[str, tuple]) -> set[int]:
+    """The keys of the other discs of ``winner``'s release (same regions, languages and tags but the disc and the version): the newest
+    of each disc number. Empty for a single-disc game."""
+    def release(t: tags.Tags) -> tuple:
+        return (t.regions, () if t.languages_implied else t.languages, t.status,
+                tuple(f for f in t.flags if tags.flag_kind(f) != "disk"), tuple(f for f in t.dump_flags if f != "!"))
+
+    wt = _tags_of(winner)
+    own = tags.disc_number(wt)
+    if not own:
+        return set()
+    best: dict[int, Item] = {}
+    for it in group:
+        t = _tags_of(it)
+        n = tags.disc_number(t)
+        if n and n != own and release(t) == release(wt):
+            if n not in best or vkeys[_rom_name(it)] > vkeys[_rom_name(best[n])]:
+                best[n] = it
+    return {it.key for it in best.values()}
+
+
 def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str], decide: Any) -> None:
     """Keep ONE variant per game: best selected language, best region (``order``), newest version of
     that region, fewest extra tags, then name."""
     games: dict[tuple, list[Item]] = {}
     for it in members:
-        games.setdefault(tags.game_key(_tags_of(it)), []).append(it)
+        games.setdefault(_gkey(it, profile.combine_alt_titles), []).append(it)
     for group in games.values():
         names = list(dict.fromkeys(_rom_name(i) for i in group))
         vkeys = tags.group_version_keys(names, STYLE_NOINTRO)
         info = {}
         for it in group:
             t = _tags_of(it)
-            info[it.key] = (_lang_rank(tags.variant_languages(t), profile),
+            info[it.key] = (_lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t),     # (a pirate copy after the licensed game)
                             tags.region_rank(t.regions, order))
         pool = group
-        for idx in (0, 1):
+        for idx in (0, 1, 2):
             best = min(info[i.key][idx] for i in pool)
             pool = [i for i in pool if info[i.key][idx] == best]
+        rank = min(tags.edition_rank(_tags_of(i), profile.prefer_editions) for i in pool)      # (a premium edition, the plain release, a store edition, a budget one)
+        pool = [i for i in pool if tags.edition_rank(_tags_of(i), profile.prefer_editions) == rank]
         newest = max(vkeys[_rom_name(i)] for i in pool)
         pool = [i for i in pool if vkeys[_rom_name(i)] == newest]
         winner = min(pool, key=lambda i: (tags.extra_tag_count(_tags_of(i)), _region_pos(_tags_of(i), profile), _rom_name(i).casefold(),
                                           _rom_name(i), i.key))
         wname = _rom_name(winner)
+        discs = _other_discs(winner, group, vkeys)          # (a game on several discs - GameCube, Wii: the chosen release's other discs stay)
         for it in group:
-            if it.key == winner.key or _rom_name(it) == wname:
+            if it.key == winner.key or _rom_name(it) == wname or it.key in discs:
                 decide(it, KEEP)
             else:
                 decide(it, SUPERSEDED, superseded_by=wname,
@@ -1733,7 +1891,7 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
     borrowed_uses: list[tuple[int, int, str, int, dict[str, Any]]] = []
     groups: dict[tuple, list[Item]] = {}
     for it in dat_items:
-        groups.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
+        groups.setdefault(combined_key(dat, tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), profile.combine_alt_titles), []).append(it)
     # disks of one title + publisher + disk total, whatever their country / language / edition
     # (only used to tell the user that a missing disk exists under another identity)
     pool: dict[tuple, dict[int, set[tuple]]] = {}
@@ -1745,7 +1903,7 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             d = _disk_info(t)
             if d is not None:
                 pool.setdefault((t.title.casefold(), t.publisher.casefold(), d[1]), {}) \
-                    .setdefault(d[0], set()).add(gkey)
+                    .setdefault(d[0], set()).add(tags.identity_key(t))
     if borrow is not None:        # files excluded only by the language filter are borrowable too
         for key, t in borrow.tags.items():
             if key not in seen_keys:
@@ -1755,7 +1913,16 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
     for gkey in sorted(groups, key=lambda k: sorted(i.rom.name for i in groups[k])[0]):
         group = groups[gkey]
         vkeys = tags.group_version_keys([i.rom.name for i in group], STYLE_TOSEC)
-        complete, partial = _build_sets(group, vkeys, profile, borrow)
+        # the disks of a set are of one edition (country, publisher ...: ``identity_key``), also when "Combine alternate titles" makes
+        # several editions one game: the best variant is then chosen among the complete sets of all of them
+        editions: dict[tuple, list[Item]] = {}
+        for it in group:
+            editions.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
+        complete, partial = [], []
+        for members in editions.values():
+            c, p = _build_sets(members, vkeys, profile, borrow)
+            complete += c
+            partial += p
         kept_sets: list[_Set]
         if not complete:
             kept_sets = []
@@ -1819,7 +1986,7 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
                 t = tags.parse_name(it.rom.name, STYLE_TOSEC)
                 total = (_disk_info(t) or (0, 0))[1]
                 other = pool.get((t.title.casefold(), t.publisher.casefold(), total), {})
-                elsewhere = tuple(m for m in missing if other.get(m, set()) - {gkey})
+                elsewhere = tuple(m for m in missing if other.get(m, set()) - {tags.identity_key(t)})
                 text = "incomplete set: missing disk " + ", ".join(str(m) for m in missing)
                 if elsewhere and borrow is not None:
                     text += (f" (disk {', '.join(str(m) for m in elsewhere)} exists under another edition but "
@@ -1930,6 +2097,10 @@ _RULE_DESCRIPTIONS = {
     "faked": "Fake releases (a release pretending to be something else).",
     "unreleased": "Games that were never released.",
     "modified": "Disks modified from the original dump (a common reason a Workbench disk is listed).",
+    "budget": "Budget re-releases (the Best, Greatest Hits, Platinum, @barai ...): set aside when another release of the game is there; "
+              "the only release of a game is kept.",
+    "online": "Titles that only ran online on servers that are gone: browsers, start-up and network discs, the Passport discs, "
+              "online-only games (Final Fantasy XI, EverQuest Online Adventures ...).",
 }
 _FLAG_DESCRIPTIONS = {
     "cr": "Cracked copies (trainer-free loaders, no copy protection). Cracked variants rank first. "
@@ -1989,6 +2160,16 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
     opt("latest_only", "latest_only", "Latest versions only", True,
         _WHD_DESCRIPTIONS["latest_only"] if whd else
         "Keep only the newest version of a release (older ones go to _superseded).", _ALL)
+    opt("prefer_editions", "prefer_editions", "Prefer special and limited editions", True,
+        "Of a game's releases, a special, limited, collector's or first-print edition, a premium box or another build of the game is kept "
+        "instead of the plain release (it can hold more: extra modes, characters, fixes). Off: the plain release first. Store editions and "
+        "bundles always come after the plain release, budget re-releases last.", [STYLE_NOINTRO, STYLE_REDUMP])
+    opt("combine_alt_titles", "combine_alt_titles", "Combine alternate titles", True,
+        "A game released under another title, by another publisher or in another country (Biohazard and Resident Evil, Eternal Arcadia "
+        "and Skies of Arcadia, Anstoss and On the Ball, the German release of an Amiga game) is one game: one release of it is kept, by your "
+        "languages and regions, and it counts once; the language filter then sets aside the games with no version in your languages. The "
+        "titles come from the ratings data (LaunchBox's alternate names) and GameTDB. Off: every title (on the Amiga every country and "
+        "publisher) is a game of its own.", _ALL)
     opt("best_variant", "best_variant", "One best variant per game", True,
         _WHD_DESCRIPTIONS["best_variant"] if whd else
         "Keep ONE variant per game: preferred language, then cracked, then best platform "

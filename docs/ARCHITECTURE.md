@@ -1579,7 +1579,7 @@ God of War II (USA) 194 s (8.5 GB, 44 MB/s), Gran Turismo 4 -> *Gran Turismo 4 (
 Pro BMX 2 (USA) 141 s, Tony Hawk's Pro Skater 4 -> *(USA) (v1.02)* 90 s; all `verified`. Three of the seven user names differ from Redump's (region list / version tag) and are renamed by Organise.
 
 ## Judgement calls / not verified
-Budget re-releases and special editions are separate games (never merged); a trial disc inside a Games entry stays; `needs chdman` CHDs are skipped, not moved. **Not verified
+Editions, budget re-releases, store editions and bundles are the same game as the plain release, which wins (Amendment 38); a trial disc inside a Games entry stays; `needs chdman` CHDs are skipped, not moved. **Not verified
 here:** the real chdman (createcd, createdvd, extractdvd: only a fake script), PCSX2 / DuckStation / RetroArch loading the CHDs or playlists, CHDs written by a real
 `chdman createdvd` (only the test writer's; the codecs there are lzma / zlib / none and the header SHA-1 claim follows the documented format), zstd decoding, exFAT.
 
@@ -2838,3 +2838,48 @@ extension. The Overview card says *found*, the Library card *kept*.
   same region is copied to that game's name - a multi-disc game's: its playlist's; a raw disc the build converts: its Redump name
   (`App._carry_to_owned`, `_final_stem`, `_playlist_of_op`). `convert` also converts a PlayStation save for the owned disc's code (`sp["convert"]`) and a
   PlayStation 2 save to its code (`sp["ps2"]`), in any region. The old save stays; the copies are journalled (RetroArch's Undo).
+
+
+**AMENDMENT 38 — Editions, demos, the release with saves, games kept for saves.**
+* `tags.is_edition` (``_EDITION_RE``): limited / first-print editions, boxes and packs, budget lines, store editions and bundles are no part of a
+  game key and lose to the plain release (`supersede_key` drops them; `superseded` and the Redump disc choice prefer fewer edition tags).
+  `(Special Edition)`, `(Disney Classic Games)`, `(Strictly Limited Games)` stay distinct (more content, other builds, translations).
+* `_REDUMP_DEMO_RE` also knows the store samples, previews and trials of the Nintendo disc DATs (no `<category>` there).
+* `LibraryProfile.prefer_saved` (default on): `library.apply_prefer_saved` keeps the release / version you have saves for instead of the one the
+  rules chose (not for a disc of a multi-disc set).
+* Files tree: an entry kept only for its saves (`saved_keep`, with `saved_why`) is shown in place, dimmed, counted in no filter; `hide_saved`
+  hides them. Totals: raw discs and archives with a ROM plus other files count as owned; BIOS / firmware never count as games.
+
+**AMENDMENT 39 — Edition ranks, budget and online-only rules, alternate titles.**
+* `tags.edition_kind` / `edition_rank` (premium / plain / store / budget): `LibraryProfile.prefer_editions` (default on) puts premium editions
+  first, else just after the plain release; store editions and bundles come after it, budget lines last. Rules `budget` (set aside when another
+  release of the game is alive; the only release stays) and `online` (`tags.online_only`) are on by default; `RULES_VERSION` 2 adds them once
+  to saved exclusion lists (`migrate_config`).
+* `romorg/alttitles.py`: `table(platform)` = `{normal title: group}` from the ratings index (every name of one LaunchBox id; a name of two ids
+  joins nothing; non-Latin titles join nothing) and GameTDB Wii U ids (an id minus its region letter). `platforms.load_platform_dats` calls
+  `learn` with the DATs' titles and regions; `dat_map(dat)` joins a title to the group's leading title (most releases) only when none of its
+  regions is already one of the group's (Amiga names: countries and explicit languages, `-` for an untagged one). `LibraryProfile.
+  combine_alt_titles` (default on, every system): `library.combined_key` / `game_key(item, combine)` / `_gkey` replace the title of the game
+  key with the group and, of a TOSEC key, drop the country and the publisher, so selection (`_one_per_game`, `_select_redump`,
+  `_select_tosec`, `_select_whdload`), totals (`Selection.combine_alt`) and the Files tree (`_game_unit`) count the group as one game.
+  `_select_tosec` still builds disk sets per original `identity_key` (a set never mixes countries or publishers) and picks the best among
+  all of them; the "exists under another edition" note compares original identities. A DAT not learnt combines no titles.
+* Same-title, different games (TOSEC Amiga): `library.KEEP_APART` {title: [publisher sets]} gives such a title's combined key the index of its
+  publisher's game (`_apart`); `tools/keep_apart_candidates.py <Metadata.zip>` lists LaunchBox's two-entry Amiga titles as leads (LaunchBox
+  misses most such pairs and lists some single games twice, so it is never a rule).
+
+**AMENDMENT 40 — One game per release family (from checking every system's top 250 for duplicates).**
+* `tags`: flag kind `feature` (SGB / GB / NDSi Enhanced, Rumble Version, 60 Hz, Joypad / Light Phaser) is no part of a game key; `_STORE_RE`
+  takes the re-releases (Sega Channel, Mega Drive Mini, Smash Pack, Sega Ages, Virtual Console, `... Collection`, Retro-Bit, iam8bit ...),
+  `_BUDGET_RE` "X the Best" / "X Best" / Mega Hits, `_PREMIUM_RE` more editions; `edition_kind` checks budget, store, premium in that order.
+  `_no_bootleg`: a pirate copy has no product tags, nor an unlicensed one of `_BOOTLEG_REGIONS` or of a re-release; homebrew keeps only its
+  licence tags (competition, publisher, board and store tags are versions of it); `unlicensed` ranks bootlegs after the licensed release in
+  `_one_per_game` and `_select_redump`. No-Intro keys drop `(Disc N)` (GameCube / Wii: `library._other_discs` keeps the chosen release's other
+  discs); Redump keys drop the label after `(Disc N)`. `_KIOSK_RE` / `_REDUMP_DEMO_RE` / `_DEMO_TITLE_RE` make demos of every disc and cartridge
+  style; `bonus_disc` releases are unrated (`library._units`); disc / title ids (`[ACPP52]`, Switch ids) and Sony serials are no part of a key;
+  `Dk` / `Se` read as `Da` / `Sv`.
+* `library.combined_key`: TOSEC editions lose video and language-count tags; WHDLoad product tags in `_WHD_BUILDS` are builds of one game.
+* `alttitles`: places are learnt from plain licensed releases per release kind; two titles are two games only with identical places for a
+  kind (`_two_games`); titles with the same normal form, or one the other plus a subtitle, always join; titles spelt alike join without
+  LaunchBox (`\x01` groups); `node` drops a bracketed gloss in another script.
+

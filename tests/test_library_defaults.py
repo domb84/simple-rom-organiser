@@ -176,7 +176,7 @@ class DefaultsServerTests(ServerCase):
         fields = {e["field"] for e in info["catalog"]}
         for rule in ("region_priority", "other_language", "keep_extras", "keep_bios", "one_per_game", "latest_only", "best_variant"):
             self.assertIn(rule, ids, rule)
-        missing = [f for f in library.RULE_FIELDS if f not in fields and f not in ("exclude", "keep_flags", "region_ties", "saved_games")]
+        missing = [f for f in library.RULE_FIELDS if f not in fields and f not in ("exclude", "keep_flags", "region_ties", "saved_games", "prefer_saved")]
         self.assertEqual(missing, [])                                    # a rule of the profile that Settings could not show
         out = self.call("POST", "/api/library/defaults", {"keep_extras": True})
         self.assertTrue(out["profile"]["keep_extras"])

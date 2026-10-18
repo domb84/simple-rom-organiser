@@ -2647,7 +2647,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
     convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
@@ -3207,7 +3207,7 @@
 
   /** The group of the rules panels: what happens to a game the rules would archive when RetroArch has saves for it, and the
    *  switch that renames saves with their ROMs (the same stored setting as on the RetroArch page). */
-  function savesGroup(current, onChange, where) {
+  function savesGroup(current, onChange, where, prefer, onPrefer) {
     const choice = SAVED_CHOICES.find((c) => c.value === current) || SAVED_CHOICES.find((c) => c.value === "convert");
     const select = el("select", { class: "input select", id: `${where}-saved-games`, "data-field": "saved_games", "aria-label": "When a rule replaces or archives a game you have saves for",
       on: { change: (ev) => onChange(ev.target.value) } },
@@ -3231,6 +3231,10 @@
       head,
       el("label", { class: "rating-label" }, el("span", { class: "rule-label", text: "When a rule replaces or archives a game you have saves for: " }), select),
       el("div", { class: "sub note", id: `${where}-saved-games-note`, text: choice.text }),
+      onPrefer ? el("label", { class: "check rule-check" },
+        el("input", { type: "checkbox", id: `${where}-prefer-saved`, "data-field": "prefer_saved", checked: prefer !== false, on: { change: (ev) => onPrefer(ev.target.checked) } }),
+        el("span", { class: "rule-text" }, el("span", { class: "rule-line" }, el("span", { class: "rule-label", text: "Prefer the release you have saves for" })),
+          el("span", { class: "sub", text: "Of the regions and versions of a game, the one you have saves for is the one kept: a newer version or another region does not replace it (the other one is set aside). Discs of a multi-disc set follow their set." }))) : null,
       renames ? el("label", { class: "check rule-check", title: "The same setting as on the RetroArch page" }, follow,
         el("span", { class: "rule-text" }, el("span", { class: "rule-line" }, el("span", { class: "rule-label", text: "Rename saves with their ROMs" })),
           el("span", { class: "sub", text: "When a build gives a ROM its database name, its saves and save states get the new name too (a build in another folder copies them). Each core's folder stays separate; nothing is overwritten." }))) : null,
@@ -3391,7 +3395,8 @@
       el("div", { class: "rules-head rules-section-head", text: "Amiga only (TOSEC and WHDLoad)" }),
       el("div", { class: "sub note", text: "These rules only have an effect on the Amiga systems: their databases carry the variants, dump types and disk sets they read." }),
       ...amiga.filter(Boolean)));
-    if (prof.saved_games !== undefined && rctx.overrides) groups.push(unit(["saved_games"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set"), "Saves"));
+    if (prof.saved_games !== undefined && rctx.overrides) groups.push(unit(["saved_games", "prefer_saved"], savesGroup(prof.saved_games, (v) => rctx.save({ saved_games: v }), rctx.overrides ? "lib" : "set",
+      prof.prefer_saved, (v) => rctx.save({ prefer_saved: v })), "Saves"));
     const drawn = groups.filter(Boolean);
     if (!drawn.length) drawn.push(el("div", { class: "muted", text: "No library rules apply to this system." }));
     rctx.host().replaceChildren(...drawn);
@@ -4636,7 +4641,7 @@
       else if (!doc.upgrades_pending) this.upTries = 0;
     },
 
-    filtered() { return Object.entries(this.f).some(([k, v]) => v && !(k === "show" && v === "have")); },
+    filtered() { return Object.entries(this.f).some(([k, v]) => v && !(k === "show" && v === "have") && k !== "hide_saved"); },
 
     set(key, value) {
       this.f[key] = this.f[key] === value ? "" : value;
@@ -4688,7 +4693,12 @@
       const langRow = row("Language", "language", langs, "Any");
       if (regionRow && moreR) regionRow.lastChild.append(moreR);
       if (langRow && moreL) langRow.lastChild.append(moreL);
-      $("files-chips").replaceChildren(...[el("div", { class: "muted small", text: "The numbers count games: the discs of a multi-disc game are one, and its playlist is none." }), showRow, row("The build", "state", states, "Anything"), regionRow, langRow,
+      const held = show.kept_saves || 0;
+      const savedRow = held ? el("div", { class: "tag-filter-row" }, el("span", { class: "tag-filter-label", text: "Saves" }), el("div", { class: "chips" },
+        el("button", { class: `chip chip-sm chip-saved ${this.f.hide_saved ? "" : "active"}`, type: "button", "data-filter": "hide_saved",
+          text: `Show the ${fmt(held)} kept for their saves`, on: { click: () => { this.f.hide_saved = this.f.hide_saved ? "" : "1"; this.reload(); } } }),
+        el("span", { class: "muted small", text: "dimmed in the list, never counted" }))) : null;
+      $("files-chips").replaceChildren(...[el("div", { class: "muted small", text: "The numbers count games: the discs of a multi-disc game are one, and its playlist is none." }), showRow, savedRow, row("The build", "state", states, "Anything"), regionRow, langRow,
         ratingsAvailable() && (rated["1"] || rated["0"]) ? row("Rating", "rated", [["1", "Rated", rated["1"] || 0], ["0", "Unrated", rated["0"] || 0]], "Rated or not") : null,
       ].filter(Boolean));
       $("files-clear").classList.toggle("hidden", !this.filtered());
@@ -4759,18 +4769,20 @@
       const tags = i && i.tags ? tagChips(i.tags) : null;
       const caret = el("span", { class: "tree-caret", "aria-hidden": "true", text: i ? "▸" : "" });
       const cells = [caret, el("span", { class: `tree-name ${f.state === "missing" ? "" : "mono-path"}`, text: f.name }), tags,
+        f.saved_keep ? el("span", { class: "badge saved", text: "Kept for saves", title: "The rules would set this game aside; your saves keep it. It is not counted." }) : null,
+        f.saved_keep ? el("span", { class: "tree-saved-why small", text: `${f.saved_why || ""}${i && i.saves && i.saves.total ? ` \u00b7 ${savesText(i.saves)}` : ""}` }) : null,
         i && i.bios ? badge("info", "BIOS") : null,
         f.upgrade ? el("span", { class: "tree-upgrade", title: "A better version of this game exists (open the file to see it)", "aria-label": "A better version exists", text: "⬆" }) : null,
         plain ? null : badge(cls || "skip", label),
-        i && i.saves && i.saves.total ? el("span", { class: "tree-saves small", title: "Saves and save states in the emulator's folders", text: savesText(i.saves) }) : null,
+        i && i.saves && i.saves.total && !f.saved_keep ? el("span", { class: "tree-saves small", title: "Saves and save states in the emulator's folders", text: savesText(i.saves) }) : null,
         i && i.saves ? saveEffectTag(i.saves.convert ? "convert" : i.saves.effect) : null,
         i && saveNotCopied(i) ? el("span", { class: "badge skip", text: "Saves not copied", title: saveNotCopied(i) }) : null,
         f.state === "missing" || f.state === "saveonly" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
       if (!i) {
-        return el("div", { class: `tree-row tree-file state-${f.state}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
+        return el("div", { class: `tree-row tree-file state-${f.state}${f.saved_keep ? " saved-keep" : ""}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
       }
       const panel = el("div", { class: "tree-detail hidden" });
-      const head = el("button", { class: `tree-row tree-file state-${f.state}`, type: "button", role: "treeitem", "aria-expanded": "false", "data-state": f.state,
+      const head = el("button", { class: `tree-row tree-file state-${f.state}${f.saved_keep ? " saved-keep" : ""}`, type: "button", role: "treeitem", "aria-expanded": "false", "data-state": f.state,
         title: f.from ? `from ${f.from}` : "" }, ...cells);
       head.addEventListener("click", () => {
         const on = panel.classList.contains("hidden");
@@ -4862,7 +4874,8 @@
       const choice = state.libDefaults.profile.saved_games;
       const prev = rctx;
       rctx = defaultsRules;
-      host.replaceChildren(savesGroup(choice, (v) => saveDefaults({ saved_games: v }), "set"));
+      host.replaceChildren(savesGroup(choice, (v) => saveDefaults({ saved_games: v }), "set",
+        state.libDefaults.profile.prefer_saved, (v) => saveDefaults({ prefer_saved: v })));
       rctx = prev;
       const copies = choice === "convert" || choice === "carry", converts = choice === "convert";
       const now = (SAVED_CHOICES.find((c) => c.value === choice) || { label: choice }).label;

@@ -299,7 +299,7 @@ LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "dupl
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
-                "keep_extras", "convert_first", "delete_converted")
+                "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -857,7 +857,7 @@ class App:
         """An older config: the rules of a Collection become your defaults, each system's saved profile its list of overrides (never raises)."""
         try:
             cfg = self._config()
-            if "collection" in cfg or "library" in cfg or "convert_on_build" in cfg:
+            if "collection" in cfg or "library" in cfg or "convert_on_build" in cfg or cfg.get("rules_version", 1) < self._library_mod().RULES_VERSION:
                 _mod("paths").update_config(lambda c: self._library_mod().migrate_config(c))
         except Exception:  # noqa: BLE001 - a convenience only
             traceback.print_exc()
@@ -2576,7 +2576,8 @@ class App:
                 body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted"):
+                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
+                    "combine_alt_titles"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -4767,6 +4768,34 @@ class App:
         _mod("paths").update_config(lambda cfg: cfg.__setitem__("page_tiles", chosen))
         return self._tiles_info()
 
+    def _saved_keep_why(self, state: ScanState, entries: list[dict[str, Any]]) -> None:
+        """``saved_why`` of every entry kept only for its saves: "you keep <the other release>" when you keep another release of the game,
+        else what the rules would have done ("outside the top 50", "rated below 7.0", "the rules set it aside")."""
+        held = [e for e in entries if e.get("saved_keep")]
+        if not held:
+            return
+        platform = state.platform
+        keys = self._totals().name_keys(platform.name)
+        combine = self._profile(platform).combine_alt_titles
+        kept: dict[Any, str] = {}
+        for e in entries:
+            if e["side"] == "library" and not e.get("saved_keep") and self._tree_pass(e, {"show": "have"}):
+                unit = self._game_unit(e, platform, keys, combine)
+                if unit is not None:
+                    row = e["row"] or {}
+                    name = (row.get("game_ref") or {}).get("game") or os.path.splitext(row.get("rom_name") or e["parts"][-1])[0]
+                    kept.setdefault(unit, name)
+        prof = self._profile(platform)
+        if prof.top_n:
+            rule = f"outside the top {prof.top_n}"
+        elif prof.min_rating:
+            rule = f"rated below {prof.min_rating:g}"
+        else:
+            rule = "the rules set it aside"
+        for e in held:
+            other = kept.get(self._game_unit(e, platform, keys, combine))
+            e["saved_why"] = f"you keep {other}" if other else rule
+
     def _target_names(self, platform: Any) -> frozenset | None:
         """The games the rules want for the system (what "missing" is measured against); None when that cannot be told (no database, a
         rating filter without its data, or the numbers are not ready after a short wait): then every game of the database counts."""
@@ -4848,7 +4877,11 @@ class App:
         if aside is not None:
             base = aside / state.root.name
             _keep, arch = self._archive_pass(state.root, plan, aside)
-            moves = list(arch) + list(sortroot.plan_sweep({state.platform.name: state.root}, aside))
+            planned = {os.path.normcase(str(s)) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
+                       for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])}
+            # (what earlier builds set aside goes to the archive, except a file the plan takes back into the library: a game the rules keep now)
+            moves = list(arch) + [m for m in sortroot.plan_sweep({state.platform.name: state.root}, aside)
+                                  if os.path.normcase(str(m.src)) not in planned]
             try:
                 moves += self._saves_moves(plan, state.root, aside)[0]
             except Exception:  # noqa: BLE001 - the saves are a courtesy
@@ -4877,9 +4910,18 @@ class App:
                 self._place_saves(state, entries, games, report)
             except Exception:  # noqa: BLE001 - the saves are a courtesy of the tree
                 traceback.print_exc()
+        keep_text = self._library_mod().SAVED_KEEP_TEXT
+        for e in entries:              # a game the rules set aside but its saves keep: a count of its own, not one of the rules' games
+            row = e["row"] or {}
+            name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
+            e["saved_keep"] = keep_text in str(row.get("reason") or "") and (wanted is None or name not in wanted)
+        self._saved_keep_why(state, entries)
         if wanted is not None:        # a game you lack is "missing" only when the rules want it (and a game of yours that has saves is listed with them)
             entries = [e for e in entries if not (e["state"] == treeview.MISSING and e["row"].get("name") not in wanted
                                                   and not (e["row"].get("saves") or {}).get("total"))]
+            for e in entries:         # (one the rules do not want, listed for its saves: under Saves, no game the rules miss)
+                if e["state"] == treeview.MISSING and e["row"] and e["row"].get("name") not in wanted:
+                    e["saves_only"] = True
         state.items[("library", "tree")] = (ident, entries, base)
         state.items.pop(("library", "treeidx"), None)
         return entries, base, ident
@@ -5193,7 +5235,7 @@ class App:
                             "from": "/".join(parts(op.src)), "row": row,
                             "text": "/".join(parts(op.dst) + parts(op.src)).casefold()})
 
-    TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves")
+    TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves", "kept_saves")
 
     @staticmethod
     def _tree_pass(entry: dict[str, Any], f: dict[str, str], skip: str = "") -> bool:
@@ -5202,11 +5244,18 @@ class App:
         row = entry["row"] or {}
         cat = row.get("category", "")
         show = "" if skip == "show" else f.get("show", "")
-        if show == "have" and cat != "kept" and entry["side"] == "library":          # (what is in the archive is not looked at by this one)
+        is_bios = cat == "bios" or bool(row.get("bios")) or bool((row.get("tags") or {}).get("bios"))      # (BIOS and firmware are no games)
+        if show == "have" and (cat != "kept" or is_bios or entry.get("saved_keep")) and entry["side"] == "library":   # (the archive is not looked at by this one)
             return False
-        if show == "bios" and cat != "bios":
+        if show == "kept_saves" and not entry.get("saved_keep"):
             return False
-        if show == "missing" and entry["state"] != "missing":
+        if f.get("hide_saved") and entry.get("saved_keep"):
+            return False
+        if show == "bios" and not is_bios:
+            return False
+        if show == "missing" and is_bios:
+            return False
+        if show == "missing" and (entry["state"] != "missing" or entry.get("saves_only")):
             return False
         if show == "unmatched" and cat != "unmatched" and entry["state"] != "ignored":
             return False
@@ -5248,7 +5297,8 @@ class App:
         one, and its playlist is no game), as the tiles do; a file that belongs to no game counts as itself."""
         mine = [e for e in entries if e["side"] == side]
         keys = self._totals().name_keys(platform.name) if platform is not None else {}      # (the tiles' own key of every game the rules keep)
-        units: dict[int, Any] = {id(e): self._game_unit(e, platform, keys) for e in mine}
+        combine = platform is not None and self._profile(platform).combine_alt_titles
+        units: dict[int, Any] = {id(e): self._game_unit(e, platform, keys, combine) for e in mine}
         show: dict[str, set] = {k: set() for k in self.TREE_SHOW}
         states: dict[str, set] = {}
         regions: dict[str, set] = {}
@@ -5258,6 +5308,10 @@ class App:
             row = e["row"] or {}
             u = units[id(e)]
             if u is None:
+                continue
+            if e.get("saved_keep"):                         # (kept only for its saves: counted on its own, in no other filter)
+                if self._tree_pass(e, {k: v for k, v in f.items() if k != "hide_saved"}, "show"):
+                    show["kept_saves"].add(u)
                 continue
             if self._tree_pass(e, f, "show"):
                 for k in self.TREE_SHOW:
@@ -5279,7 +5333,7 @@ class App:
                 "unit": "games"}
 
     @staticmethod
-    def _game_unit(entry: dict[str, Any], platform: Any, keys: dict[str, Any] | None = None) -> Any:
+    def _game_unit(entry: dict[str, Any], platform: Any, keys: dict[str, Any] | None = None, combine: bool = False) -> Any:
         """What one entry of the tree counts as: its game (as the tiles count them: the discs of a game, and its regions and revisions, are one), the file
         itself for one that is no game's, nothing for a playlist."""
         parts = entry["parts"]
@@ -5287,7 +5341,9 @@ class App:
         if str(parts[-1]).lower().endswith(".m3u"):
             return None
         name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
-        if not name or row.get("bios"):
+        if "borrowed as disk " in str(row.get("reason") or ""):
+            return None                                     # (a disk of another edition that completes a set: part of that game, counted there)
+        if not name or row.get("bios") or (row.get("tags") or {}).get("bios"):
             return ("file", entry["side"], tuple(parts))
         if keys and name in keys:
             return ("game", keys[name])
@@ -5298,7 +5354,7 @@ class App:
             t = (tags_mod.redump_tags(name, category) if style == "redump" else tags_mod.parse_whdload(name, "") if style == "whdload"
                  else tags_mod.parse_name(name, style))
             dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
-            return ("game", (dat, tags_mod.game_key(t)))                            # (the tiles' key: no region, no disc number)
+            return ("game", (dat, _mod("library").combined_key(dat, tags_mod.game_key(t), combine)))     # (the tiles' key: no region, no disc number)
         except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
             return ("name", name)
 
@@ -5333,7 +5389,7 @@ class App:
         if state is None:
             return {"platform": platform.name, "side": side, "ready": False,
                     "reason": "Scan this system first: the tree is made from its scan."}
-        f = {k: v for k in ("show", "state", "region", "language", "rated") if (v := _str_arg(query.get(k)))}
+        f = {k: v for k in ("show", "state", "region", "language", "rated", "hide_saved") if (v := _str_arg(query.get(k)))}
         if f.get("show") and f["show"] not in self.TREE_SHOW:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown choice: {f['show']}")
         q = _str_arg(query.get("q")).strip().casefold()
@@ -5354,6 +5410,8 @@ class App:
         for item in page["files"]:                                        # the row each file belongs to (its game, its reason, its saves)
             ref = item.pop("ref", None)
             item["row"] = entries[ref]["row"] if isinstance(ref, int) else None
+            if isinstance(ref, int) and entries[ref].get("saved_keep"):
+                item["saved_keep"], item["saved_why"] = True, entries[ref].get("saved_why", "")
             if owned and item["row"] and item["row"].get("category") == "kept" and self._has_upgrade(item["row"], owned):
                 item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
         if page["dirs"]:

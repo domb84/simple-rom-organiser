@@ -388,4 +388,9 @@ def load_platform_dats(platform: Platform,
             dat.name = name
             dat.roms = [replace(r, dat=name) if r.dat != name else r for r in dat.roms]
         loaded.append(dat)
+    try:                                        # (the titles a game was released under in other regions: "Combine alternate titles")
+        from . import alttitles
+        alttitles.learn(platform, loaded)
+    except Exception:  # noqa: BLE001 - without them every title is a game of its own
+        pass
     return loaded, missing

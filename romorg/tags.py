@@ -252,12 +252,15 @@ def is_bad(flag: str) -> bool:
 _is_bad = is_bad
 
 
+_LANG_ALIASES = {"Dk": "Da", "Se": "Sv"}        # (GameTDB's Wii U names spell Danish and Swedish so)
+
+
 def _parse_language_group(text: str) -> tuple[Optional[tuple[str, ...]], list[str]]:
     """``(codes, variants)``: "En,Pt-BR" -> (("En", "Pt"), ["Pt-BR"]); not a language group -> (None, [])."""
     out: list[str] = []
     variants: list[str] = []
     for raw in re.split(r"[,+]", text):
-        p = raw.strip()
+        p = _LANG_ALIASES.get(raw.strip(), raw.strip())
         if p not in LANGUAGES:
             m = _LANG_VARIANT_RE.match(p)
             if not m or m.group(1) not in LANGUAGES:
@@ -656,7 +659,7 @@ def _clean_dump_flags(t: Tags) -> tuple[str, ...]:
 def supersede_key(t: Tags) -> tuple:
     """Group key for "latest version only": everything except the version (and TOSEC date)."""
     return (t.style, t.title.casefold(), t.regions, () if t.languages_implied else t.languages,
-            t.status, t.flags, _clean_dump_flags(t))
+            t.status, tuple(f for f in t.flags if not is_edition(f)), _clean_dump_flags(t))     # (an edition competes with its game)
 
 
 def _disk(t: Tags) -> Optional[tuple[int, int, int]]:
@@ -714,7 +717,7 @@ def _group_keys(names: list[str], style: str) -> dict[str, tuple]:
     return {n: _version_key(v, widths) for n, v in versions.items()}
 
 
-def superseded(names: Iterable[str], style: str = STYLE_NOINTRO) -> dict[str, str]:
+def superseded(names: Iterable[str], style: str = STYLE_NOINTRO, prefer_premium: bool = True) -> dict[str, str]:
     """``{older name: newest name superseding it}`` among ``names``.
 
     Names are grouped by :func:`supersede_key`; in a group the highest
@@ -737,7 +740,8 @@ def superseded(names: Iterable[str], style: str = STYLE_NOINTRO) -> dict[str, st
         if len(members) < 2:
             continue
         keys = _group_keys([n for _vk, n in members], style)
-        members = [(keys[n], n) for _vk, n in members]
+        # (the newest version; of the same version the plain release before an edition, a budget re-release or a bundle)
+        members = [((keys[n], -edition_rank(parse_name(n, style), prefer_premium)), n) for _vk, n in members]
         best_key, best_name = max(members)
         for vk, n in members:
             if vk < best_key:
@@ -771,7 +775,7 @@ _FLAG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("video", re.compile(r"^(?:PAL|NTSC|PAL-NTSC|NTSC-PAL|PAL60|MPAL|SECAM)$")),
     ("disk", re.compile(r"^(?:Dis[kc] (?:\d+|[A-Z])(?: of (?:\d+|[A-Z]))?|Side [A-Z])$")),
     ("language", re.compile(r"^(?:[A-Z][a-z]-[A-Za-z]{2,4}|M\d+)$")),
-    ("serial", re.compile(r"^\d{5,}$")),
+    ("serial", re.compile(r"^\d{5,}$|^[A-Z]{4}-\d{5}$")),
     # re-releases / compilations / digital stores the dump was taken from
     ("distribution", re.compile(
         r"Virtual Console|Switch Online|Classic Mini|Collection|Museum|Classics|Anniversary|"
@@ -784,12 +788,12 @@ _FLAG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
         r"Possible|Unknown", re.IGNORECASE)),
     # homebrew competitions
     ("event", re.compile(r"Jam|Compo|Byte-Off|NESDev|SNESDEV|Contest|Competition", re.IGNORECASE)),
-    # cartridge boards / mappers / hardware. Also the console-feature flags of the Game Boy, DS and Mega Drive DATs
-    # ("SGB Enhanced", "GB Compatible", "NDSi Enhanced", "Rumble Version", "DS Broadcast", "Sega Channel", Mega Drive
-    # Mini / 4 compilations). They stay "hardware", not "distribution": the latter is skipped when variants are grouped,
-    # and "Foo (SGB Enhanced)" must remain a different game key from "Foo".
-    ("hardware", re.compile(r"ROM$|^72 pin|^(?:CGB\+)?(?:SGB|GB|NDSi|DSi)(?:, (?:SGB|GB))?.*(?:Enhanced|Compatible)|"
-                            r"^CGB\+SGB|^Rumble Version$|^DS Broadcast$|^Sega Channel$|^Mega Drive (?:Mini|4)|Genesis Mini|"
+    # the console features a release of a game has ("SGB Enhanced", "GB Compatible", "NDSi Enhanced", "Rumble Version", "60 Hz"):
+    # the same game ("Foo" and "Foo (SGB Enhanced)" are one), no part of a game key
+    ("feature", re.compile(r"^(?:CGB\+)?(?:SGB|GB|GBA|NDSi|DSi)(?:, (?:SGB|GB))?.*(?:Enhanced|Compatible)|^CGB\+SGB|^Rumble Version$|"
+                           r"^60 Hz$|^dmaSafe$|^Joypad$|^Light Phaser$", re.IGNORECASE)),
+    # cartridge boards / mappers / hardware
+    ("hardware", re.compile(r"ROM$|^72 pin|^DS Broadcast$|^Sega Channel$|^Mega Drive (?:Mini|4)|Genesis Mini|"
                             r"ModRetro|^NINA|^Rainbow$|^AGA$|^OCS$|^ECS$|^A\d{3,4}|"
                             r"Mapper|pin cart|^Dev$|^CD32$|^CDTV$|^MT32$|"
                             r"^\d+(?:\.\d+)?\s?(?:KB|MB|k)(?: Chip)?$|^(?:Low|Fast|Slow|Chip) Mem$",
@@ -814,7 +818,8 @@ def flag_kind(flag: str) -> str:
 # --------------------------------------------------------------------------- library rules
 # Exclusion rule keys (see library.LibraryProfile.exclude), in report priority order.
 RULES = ("bad_dump", "virus", "bad_size", "pre_release", "prototype", "demo", "faked",
-         "unreleased", "modified")
+         "unreleased", "modified", "budget", "online")
+NEW_RULES = ("budget", "online")      # rules added after configs were first written: on for an older saved list too (library.migrate_config)
 RULE_LABELS: dict[str, str] = {
     "bad_dump": "Bad dumps [b]",
     "virus": "Virus-infected [v]",
@@ -825,6 +830,8 @@ RULE_LABELS: dict[str, str] = {
     "faked": "Faked [faked]",
     "unreleased": "Unreleased",
     "modified": "Modified [m]",
+    "budget": "Budget re-releases",
+    "online": "Online-only titles",
 }
 
 # The classification tables below are the single source of truth: the rule catalog shown in the UI
@@ -867,9 +874,15 @@ _MOD_RE = re.compile(r"^(?:t|h|tr|f|a)\d*(?:\s.*)?$")
 # category is missing.
 _REDUMP_DEMO_RE = re.compile(
     r"^(?:(?:Tentou(?:-you)?|Tokubetsu)\s+)?Taikenban(?:\s+(?:\d+|Disc))?$"
-    r"|^Tentou-you Demo(?:nstration)?(?:\s+Movie)?$|^Trial\b", re.IGNORECASE)
+    r"|^Tentou-you Demo(?:nstration)?(?:\s+Movie)?$|^Trial\b"
+    r"|^Trade Demo$|^Jitsuen-you Sample$|^Demo Eizou$|^(?:Limited Edition\s+)?Preview Disc$|^Otameshiban$"
+    r"|^Special Taiken Disc$|^Movie Demo Disc$|^Cheheompan$|^Taikai Sen'?you Disc$", re.IGNORECASE)
+# The DS kiosk downloads, trailers and download-play clients (DS Download Station, DS Broadcast, "(Video)", "(Multiplayer)"): no game
+_KIOSK_RE = re.compile(r"^(?:Video|Multiplayer|DS Broadcast|(?:DS )?Download Station\b.*)$", re.IGNORECASE)
+_DEMO_TITLE_RE = re.compile(r"(?:^|[\s-])(?:Tentou\s+)?(?:Taikenban|Otameshiban)$", re.IGNORECASE)
 _REDUMP_DEMO_TOKENS = ("(Taikenban)", "(Tentou Taikenban)", "(Tentou-you Taikenban)",
-                       "(Tokubetsu Taikenban)", "(Tentou-you Demo)", "(Tentou-you Demo Movie)", "(Trial Disk)")
+                       "(Tokubetsu Taikenban)", "(Tentou-you Demo)", "(Tentou-you Demo Movie)", "(Trial Disk)",
+                       "(Trade Demo)", "(Jitsuen-you Sample)", "(Demo Eizou)", "(Preview Disc)", "(Otameshiban)", "(Cheheompan)")
 # <category> -> rule (Games, Applications, Multimedia, Bonus Discs, Video and Add-Ons are kept)
 CATEGORY_RULES: dict[str, str] = {"Demos": "demo", "Coverdiscs": "demo", "Preproduction": "prototype"}
 
@@ -878,7 +891,7 @@ def _paren_rule(part: str, style: str = STYLE_TOSEC) -> Optional[str]:
     p = _TRAILING_NUM_RE.sub("", part.strip().casefold())
     if style == STYLE_WHDLOAD:       # its own vocabulary; nothing of the TOSEC / No-Intro table applies
         return _WHD_PAREN_RULE_OF.get(p)
-    if style == STYLE_REDUMP and _REDUMP_DEMO_RE.match(part.strip()):
+    if style in (STYLE_REDUMP, STYLE_NOINTRO) and (_REDUMP_DEMO_RE.match(part.strip()) or _KIOSK_RE.match(part.strip())):
         return "demo"
     if p in _PAREN_RULE_OF:
         return _PAREN_RULE_OF[p]
@@ -935,6 +948,16 @@ def exclusion_info(t: Tags) -> list[tuple[str, str]]:
             add(rule, f"[{text}]")
     if t.category and CATEGORY_RULES.get(t.category):
         add(CATEGORY_RULES[t.category], f"(category: {t.category})")
+    if t.style in (STYLE_REDUMP, STYLE_NOINTRO):
+        m = _DEMO_TITLE_RE.search(t.title or "")
+        if m:                                   # ("Super Bomberman 2 - Caravan You Taikenban": the trial in the title)
+            add("demo", m.group(0).strip(" -"))
+        for f in t.flags:
+            if edition_kind(f) == "budget":
+                add("budget", f"({f})")
+        online = online_only(t)
+        if online:
+            add("online", online)
     return out
 
 
@@ -1052,7 +1075,7 @@ def partition_key(t: Tags) -> tuple:
     return (() if t.languages_implied else t.languages, chipset(t))
 
 
-_GAME_KEY_SKIP_KINDS = frozenset({"date", "video", "serial", "alt", "distribution", "language"})
+_GAME_KEY_SKIP_KINDS = frozenset({"date", "video", "serial", "alt", "distribution", "language", "feature"})
 
 
 def game_key(t: Tags) -> tuple:
@@ -1066,13 +1089,141 @@ def game_key(t: Tags) -> tuple:
         return identity_key(t)
     if t.style == STYLE_REDUMP:
         return redump_game_key(t)
-    flags = tuple(sorted(f.casefold() for f in t.flags if flag_kind(f) not in _GAME_KEY_SKIP_KINDS))
-    return (t.style, t.title.casefold(), t.status.casefold(), flags,
-            tuple(sorted(f for f in t.dump_flags if f != "!")))
+    flags = [f for f in t.flags if flag_kind(f) not in _GAME_KEY_SKIP_KINDS and flag_kind(f) != "disk" and not is_edition(f)]
+    return (t.style, t.title.casefold(), t.status.casefold(), _no_bootleg(flags, t),
+            _key_dump_flags(t))
+
+
+# Where unlicensed copies of other games were made (the Taiwanese Master System carts, the Chinese and Korean ones): an "(Unl)" release
+# of these regions alone is a copy of the game of its title. Elsewhere an unlicensed release is a game of its own ("Tetris (USA) (Unl)"
+# is Tengen's Tetris, not Nintendo's).
+_BOOTLEG_REGIONS = frozenset({"Taiwan", "China", "Hong Kong", "Korea", "Asia", "Russia", "Brazil"})
+
+
+def _no_bootleg(flags: list, t: "Tags") -> tuple:
+    """The product tags of a game key (casefold, sorted). Of a copy of a game they are none: a pirate copy (the maker, the board), an
+    unlicensed one of the bootleg regions or of a re-release (``(Atari Lynx Collection 1) (Unl)``) is the game of its title
+    (:func:`unlicensed` ranks them last). Homebrew (``Aftermarket``) is a game of its own, whatever competition, publisher, board or store
+    it came from (``(NESDev 2018)``, ``(Sly Dog Studios)``, ``(UxROM)``, ``(itch.io)``: versions of it)."""
+    low = [f.casefold() for f in flags]
+    if "pirate" in low:
+        return ()
+    if "aftermarket" in low:
+        return tuple(sorted(f for f, raw in zip(low, flags) if flag_kind(raw) == "license"))
+    if "unl" in low and ((t.regions and set(t.regions) <= _BOOTLEG_REGIONS) or any(is_edition(f) for f in t.flags)):
+        return tuple(sorted(f for f, raw in zip(low, flags) if flag_kind(raw) not in ("license", "other", "hardware")))
+    return tuple(sorted(f for f in low if flag_kind(f) != "event"))
+
+
+def _key_dump_flags(t: "Tags") -> tuple:
+    """The ``[..]`` flags that are part of a game key: not ``[!]``, not a disc id (``[ACPP52]``, GameTDB's Wii U names)."""
+    return tuple(sorted(f for f in t.dump_flags if f != "!" and not _DISC_ID_RE.match(f)))
+
+
+_DISC_ID_RE = re.compile(r"^[A-Z0-9]{6}$|^[0-9A-F]{16}$")          # (a GameTDB disc id, a Switch title id)
+
+
+_BONUS_RE = re.compile(r"^(?:.*\bbonus disc\b.*|the making of|un cd bonus|making of)$", re.IGNORECASE)
+_BONUS_TITLE_RE = re.compile(r"\bbonus\b.*\bdisc\b", re.IGNORECASE)
+
+
+def bonus_disc(t: "Tags") -> bool:
+    """A bonus or making-of disc of a game (Redump category "Bonus Discs"): kept, but not rated as the game."""
+    return (t.category == "Bonus Discs" or any(_BONUS_RE.match(f.strip()) for f in t.flags)
+            or bool(_BONUS_TITLE_RE.search(t.title or "")))
+
+
+def unlicensed(t: "Tags") -> bool:
+    """A pirate or unlicensed release (not homebrew): of a game's releases the licensed one is kept first."""
+    fl = {f.casefold() for f in t.flags}
+    return bool(fl & {"pirate", "unl"}) and "aftermarket" not in fl
 
 
 _REDUMP_KEY_SKIP_KINDS = _GAME_KEY_SKIP_KINDS | {"disk"}
 _DISC_RE = re.compile(r"^Dis[ck] (\d+|[A-Z])$")
+# The releases of a game that are no game of their own (Redump and No-Intro names). Of a game's releases one is kept, by rank:
+#   premium  special, limited, collector's, first-print editions, boxes and packs, other builds (can hold more than the original):
+#            the best when "Prefer special and limited editions" is on, else just after the plain release;
+#   plain    the standard release;
+#   store    store editions, bundles, re-releases of the same content (Toys R Us, Controller Set, EDC, Reprint ...);
+#   budget   budget lines ("the Best", Greatest Hits, Platinum, @barai ...): last, and set aside by the rule "Budget re-releases"
+#            when another release of the game is there.
+_PREMIUM_RE = re.compile(
+    r"^(?:special edition|limited (?:edition|box)|collector'?s edition|kickstarter edition|director'?s cut|(?:super )?premium (?:box|pack|package)|"
+    r"deluxe pack|dx pack|super value set|(?:shokai |tokubetsu |club nintendo )?genteiban|shokai seisan-?ban|tokubetsu-?ban|"
+    r"disney classic games|strictly limited games|final cut|premium edition|extra edition|gentei box|special limited pack|"
+    r"platinum limited|.+ box(?: saishuu-ban)?|ebkore plus|append-ban|premium-ban|tsutaya original version|kabunushi goyuutai-ban|"
+    r".+ hakkou kinen|shindou edition)$", re.IGNORECASE)
+_BUDGET_RE = re.compile(
+    r"^(?:dorikore|satakore|sega the best|playstation(?: 2)? the best(?: for family)?|psone books|greatest hits|platinum|player'?s choice|"
+    r"major wave|the best|best|artdink best choice|gust best price|honkakuha de 1300|konami collector'?s series|@barai|fukyuu-?ban|renkaban|"
+    r"[\w'.-]+(?: [\w'.-]+)? the best|[\w'.-]+ best|eternal hits|best collection|superlite 1500|mega hits!?)$",
+    re.IGNORECASE)
+_STORE_RE = re.compile(
+    r"^(?:rerelease|reprint(?: [a-z])?|ratalaika games|edc|keihin ban|toys ?'?r'? ?us(?: exclusive)?|walmart(?: edition)?|"
+    r"best buy(?: edition)?|target(?: limited edition)?|controller set|with guncon2?|(?:eyetoy camera )?doukonban|tatacon doukon set|"
+    r"shotenban|launch cart|"
+    # re-releases of the same game: TV / download services, mini consoles, compilations and collections, re-issues
+    r"sega channel|mega drive (?:mini(?: 2)?|4)(?:, genesis mini(?: 2)?)?|genesis mini(?: 2)?|sega smash pack(?: \d)?|sega ages|lock-on|"
+    r"mega drive playtv|iam8bit|master system evolution|sega 3d fukkoku akaibusu|piepacker|heartbeat catalyst|switch, ps vita|"
+    r"modretro chromatic|atari lynx 30th birthday|pokemon box|nhl 0\d|retro-bit|limited run games|evercade|(?:.+ )?virtual console|"
+    r"(?:nintendo )?switch online|.*\bcollection\b.*|.*\banniversary\b.*|capcom town|steam|gog|modem pack|recalled|"
+    r".*\+ (?:guncon|jogcon|.*controller).*|front mission history|sega classic|blockbuster flash rom|itch\.io|amiga format)$", re.IGNORECASE)
+
+
+def edition_kind(flag: str) -> str:
+    """``premium`` | ``budget`` | ``store`` for a release tag of the same game, else ""."""
+    f = flag.strip()
+    if _BUDGET_RE.match(f):
+        return "budget"
+    if _STORE_RE.match(f):
+        return "store"
+    if _PREMIUM_RE.match(f):
+        return "premium"
+    return ""
+
+
+def is_edition(flag: str) -> bool:
+    """True for a tag that marks a release of the same game (an edition, a budget line, a store edition, a bundle)."""
+    return bool(edition_kind(flag))
+
+
+def edition_rank(t: "Tags", prefer_premium: bool = True) -> int:
+    """How a release of a game ranks among its others (lower = kept first): a premium edition (0 when preferred, else 2), the plain
+    release 1, a store edition or bundle 3, a budget release 4."""
+    kinds = {edition_kind(f) for f in t.flags} - {""}
+    if "budget" in kinds:
+        return 4
+    if "store" in kinds:
+        return 3
+    if "premium" in kinds:
+        return 0 if prefer_premium else 2
+    return 1
+
+
+# Online-only titles: the network discs (browsers, start-up and access discs, the Passport discs) and games that only ran on servers that
+# are gone. Excluded by the rule "Online-only titles".
+_ONLINE_FLAG_RE = re.compile(r"^(?:Shenmue |Dream |Broadband )?Passport$", re.IGNORECASE)
+_ONLINE_TITLE_RE = re.compile(
+    r"^(?:Dream Passport|Broadband Passport|(?:Internet |Web )Browser|EGBrowser|Network Access Disc|Online Start-Up Disc|"
+    r"Network Adaptor Start-Up Disc|PlayOnline Viewer|Final Fantasy XI|EverQuest - Online Adventures|Sakura Taisen Online|"
+    r"Twisted Metal - Black Online|Hardware - Online Arena|Speed Devils - Online Racing|Nobunaga no Yabou Online|Gundam Battle Online|"
+    r"Gangcheol Gigap Sadan - Online Battlefield|Chou! Tanoshii Internet|Yume Baken '99 - Internet)\b", re.IGNORECASE)
+_ONLINE_TOKENS = ("(Shenmue Passport)", "Dream Passport", "Web Browser", "Online Start-Up Disc", "Network Access Disc",
+                  "Final Fantasy XI", "EverQuest - Online Adventures", "Sakura Taisen Online")
+_BUDGET_TOKENS = ("(Greatest Hits)", "(Platinum)", "(Player's Choice)", "(PlayStation the Best)", "(Sega the Best)", "(Dorikore)",
+                  "(Major Wave)", "(@barai)", "(Best)")
+
+
+def online_only(t: "Tags") -> str:
+    """The text that makes a name an online-only title, else ""."""
+    for f in t.flags:
+        if _ONLINE_FLAG_RE.match(f.strip()):
+            return f"({f})"
+    if t.style in (STYLE_REDUMP, STYLE_NOINTRO) and _ONLINE_TITLE_RE.match(t.title or ""):
+        return "(online only)"
+    return ""
+
 
 
 def disc_number(t: Tags) -> int:
@@ -1089,10 +1240,18 @@ def redump_game_key(t: Tags) -> tuple:
     """Identity of a Redump *game* across regions, languages, revisions, re-releases and DISCS: title + status
     + the tags that make a distinct product (``Unl``, editions, publishers, trial discs...). ``(Disc N)``,
     dates, video tags, ``Alt`` and ``Rerelease`` are not part of it."""
-    flags = tuple(sorted(f.casefold() for f in t.flags
-                         if flag_kind(f) not in _REDUMP_KEY_SKIP_KINDS and f.casefold() != "rerelease"))
-    return (t.style, t.title.casefold(), t.status.casefold(), flags,
-            tuple(sorted(f for f in t.dump_flags if f != "!")))
+    keep: list[str] = []
+    after_disc = False
+    for f in t.flags:
+        kind = flag_kind(f)
+        if kind == "disk":
+            after_disc = True               # (what follows "(Disc N)" names that disc: "(Leon-hen)", "(Ichi)", "(English Voice Over)")
+            continue
+        if kind in _REDUMP_KEY_SKIP_KINDS or is_edition(f) or (after_disc and kind == "other"):
+            continue
+        keep.append(f)
+    return (t.style, t.title.casefold(), t.status.casefold(), _no_bootleg(keep, t),
+            _key_dump_flags(t))
 
 
 def redump_tags(name: str, category: str = "") -> Tags:
@@ -1238,6 +1397,8 @@ def rule_tokens(style: str) -> dict[str, list[str]]:
         out["demo"].extend(_REDUMP_DEMO_TOKENS)
         for cat, rule in CATEGORY_RULES.items():
             out[rule].append(f"category {cat}")
+        out["budget"].extend(_BUDGET_TOKENS)
+        out["online"].extend(_ONLINE_TOKENS)
         return out
     if style == STYLE_WHDLOAD:
         for rule, words in _WHD_PAREN_WORDS.items():
@@ -1255,11 +1416,17 @@ def rule_tokens(style: str) -> dict[str, list[str]]:
         if style == STYLE_NOINTRO and rule != "bad_dump":
             continue
         out[rule].extend(tokens)
+    if style == STYLE_NOINTRO:
+        out["budget"].extend(_BUDGET_TOKENS)
     return out
 
 
 def token_rule(token: str, style: str = STYLE_TOSEC) -> Optional[str]:
     """Classify a catalog token (``"(beta)"``, ``"[b ...]"``, ``"(demo-*)"``) with :func:`classify_token`."""
+    if token in _ONLINE_TOKENS:
+        return "online"
+    if token in _BUDGET_TOKENS:
+        return "budget"
     if token.startswith("category "):
         return CATEGORY_RULES.get(token[len("category "):])
     kind, body = token[0], token[1:-1].replace(" ...", " x").replace("*", "x")

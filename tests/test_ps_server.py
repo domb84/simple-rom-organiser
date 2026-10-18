@@ -319,7 +319,7 @@ class DiscSavesTests(PsServerCase):
 
     def test_a_disc_you_have_is_offered_the_save_of_its_other_region(self) -> None:
         import shutil
-        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep"})
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep", "prefer_saved": False})
         card = self.pcsx2 / "memcards" / "Mcd001.ps2"
         shutil.rmtree(card / "BESLES-50012OTHER")                                        # (the European disc has no save of its own)
         self.scan_ps2()
@@ -353,7 +353,7 @@ class DiscSavesTests(PsServerCase):
         self.assertNotIn("saved_games", self.call("/api/library/profile?platform=" + PS2.replace(" ", "%20"))["profile"])
 
     def test_with_keep_the_disc_game_stays(self) -> None:
-        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep"})
+        self.call("/api/library/profile", {"platform": PS2, "saved_games": "keep", "prefer_saved": False})
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["kept"]), (1, 1))
         self.assertEqual((plan["reasons"]["superseded"], plan["reasons"]["excluded"]), (0, 0))
@@ -532,6 +532,18 @@ class RawDiscTests(PsServerCase):
         self.assertEqual(self.row(plan, "notes.zip")["category"], "unmatched")
         self.build()
         self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).zip").is_file())
+
+    def test_a_raw_disc_you_have_is_a_game_you_have_in_the_totals(self) -> None:
+        import time
+        self.zip_of("a.zip", "Alpha (USA)")
+        self.scan_ps2()
+        t = {}
+        for _ in range(100):
+            t = self.call("/api/library/totals?platform=Sony%20PlayStation%202")
+            if t.get("have_games") is not None and not t.get("calculating"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(t.get("have_games"), 1)                                            # (not missing until it is a CHD)
 
     def test_a_zip_of_another_dump_is_not_matched(self) -> None:
         import zipfile

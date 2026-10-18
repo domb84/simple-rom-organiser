@@ -126,7 +126,7 @@ class NoIntroParseTest(unittest.TestCase):
         self.assertEqual(tags.flag_kind("Wii Virtual Console"), "distribution")
         self.assertEqual(tags.flag_kind("Alt 2"), "alt")
         self.assertEqual(tags.flag_kind("Tengen"), "other")
-        self.assertEqual(tags.flag_kind("Rumble Version"), "hardware")
+        self.assertEqual(tags.flag_kind("Rumble Version"), "feature")             # (a release of the same game)
         self.assertEqual(tags.flag_kind("Rumble, Frank"), "other")        # a TOSEC author, not a feature
 
 
@@ -187,13 +187,14 @@ class SupersededTest(unittest.TestCase):
             "Zelda (Europe).nes",                      # other region: never mixed
             "Zelda (USA) (Beta).nes",                  # beta: own group
             "Zelda (USA) (Beta) (Rev 1).nes",
-            "Zelda (USA) (Virtual Console).nes",       # other flag: own group
+            "Zelda (USA) (Virtual Console).nes",       # a re-release of the same game: the newest revision of the region wins
             "Mario (USA) (v1.9).gba", "Mario (USA) (v1.10).gba",
             "Solo (Japan) (Rev A).sfc", "Solo (Japan) (Rev B).sfc",
         ]
         self.assertEqual(superseded(names), {
             "Zelda (USA).nes": "Zelda (USA) (Rev 2).nes",
             "Zelda (USA) (Rev 1).nes": "Zelda (USA) (Rev 2).nes",
+            "Zelda (USA) (Virtual Console).nes": "Zelda (USA) (Rev 2).nes",
             "Zelda (USA) (Beta).nes": "Zelda (USA) (Beta) (Rev 1).nes",
             "Mario (USA) (v1.9).gba": "Mario (USA) (v1.10).gba",
             "Solo (Japan) (Rev A).sfc": "Solo (Japan) (Rev B).sfc",
@@ -289,3 +290,89 @@ class RealDatCoverageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditionsAndDemosTest(unittest.TestCase):
+    """Editions, budget re-releases, store editions and bundles are the same game as the plain release, which they never beat;
+    the demo, preview and trial discs every disc system has are demos."""
+
+    def test_an_edition_is_the_same_game_and_the_plain_release_wins(self) -> None:
+        for edition in ("Genteiban", "@barai", "Premium Box", "PlayStation 2 the Best", "Toys R Us", "With GunCon2", "Controller Set", "EDC"):
+            plain, other = tags.redump_tags("Game (Japan)"), tags.redump_tags(f"Game (Japan) ({edition})")
+            self.assertEqual(tags.game_key(plain), tags.game_key(other), edition)
+        self.assertEqual(tags.superseded(["Jackal (World)", "Jackal (World) (Konami Collector's Series)"]),
+                         {"Jackal (World) (Konami Collector's Series)": "Jackal (World)"})
+        self.assertEqual(tags.superseded(["Zap (USA) (Walmart Edition)", "Zap (USA) (Rev 1)"]), {"Zap (USA) (Walmart Edition)": "Zap (USA) (Rev 1)"})
+
+    def test_a_premium_edition_is_preferred_a_budget_release_comes_last(self) -> None:
+        for premium in ("Special Edition", "Limited Edition", "Collector's Edition", "Premium Box", "Genteiban", "Disney Classic Games"):
+            self.assertEqual(tags.edition_kind(premium), "premium", premium)
+        for budget in ("Greatest Hits", "Platinum", "PlayStation 2 the Best", "@barai", "Major Wave"):
+            self.assertEqual(tags.edition_kind(budget), "budget", budget)
+        for other in ("Bonus Disc", "Shenmue Passport", "Simulation Mode"):            # (other discs, other products: no release of the same game)
+            self.assertEqual(tags.edition_kind(other), "", other)
+        ranks = {n: tags.edition_rank(tags.redump_tags(f"Game (USA){n}")) for n in ("", " (Special Edition)", " (Toys R Us)", " (Greatest Hits)")}
+        self.assertEqual(sorted(ranks, key=ranks.get), [" (Special Edition)", "", " (Toys R Us)", " (Greatest Hits)"])
+        self.assertEqual(tags.edition_rank(tags.redump_tags("Game (USA) (Special Edition)"), prefer_premium=False), 2)   # (off: after the plain one)
+        self.assertEqual(tags.superseded(["Zap (USA)", "Zap (USA) (Limited Edition)", "Zap (USA) (Greatest Hits)"]),
+                         {"Zap (USA)": "Zap (USA) (Limited Edition)", "Zap (USA) (Greatest Hits)": "Zap (USA) (Limited Edition)"})
+
+    def test_budget_releases_and_online_only_titles_are_rules(self) -> None:
+        rules = lambda n: {r for r, _x in tags.exclusion_info(tags.redump_tags(n, ""))}     # noqa: E731
+        self.assertEqual(rules("Naruto (Japan) (PlayStation 2 the Best)"), {"budget"})
+        self.assertEqual(rules("Shenmue (USA) (Shenmue Passport)"), {"online"})
+        self.assertEqual(rules("Final Fantasy XI - Online (USA, Canada)"), {"online"})
+        self.assertEqual(rules("Phantasy Star Online (USA) (En,Ja,Fr,De,Es)"), set())      # (it has an offline mode: not online only)
+
+    def test_previews_samples_and_trials_are_demos_without_a_category(self) -> None:
+        for name in ("Pikmin (Japan) (Jitsuen-you Sample)", "Resident Evil 4 (USA) (Preview Disc)", "P.N. 03 (Japan) (Demo Eizou)",
+                     "Kororinpa 2 (Japan) (Otameshiban)", "Akuji the Heartless (USA) (Trade Demo)", "SSX 3 (Korea) (Cheheompan)",
+                     "Star Wars - Rogue Squadron III - Rebel Strike (USA) (Limited Edition Preview Disc)"):
+            rules = [e["rule"] for e in tags.to_json(tags.redump_tags(name, "")).get("excluded_by", [])]
+            self.assertIn("demo", rules, name)
+
+
+class OneGameManyReleases(unittest.TestCase):
+    """Releases of one game that are no game of their own (found checking every system's top 250 for duplicates)."""
+
+    @staticmethod
+    def key(name: str, style: str = "nointro") -> tuple:
+        return tags.game_key(tags.redump_tags(name) if style == "redump" else parse_name(name, style))
+
+    def test_console_features_and_re_releases_are_the_same_game(self) -> None:
+        for other in ("Foo (USA) (SGB Enhanced) (GB Compatible)", "Foo (USA) (Sega Channel)", "Foo (USA) (Mega Drive Mini, Genesis Mini)",
+                      "Foo (World) (Contra Anniversary Collection)", "Foo (USA) (Sega Smash Pack 2)", "Foo (USA) (Rumble Version)",
+                      "Foo (Europe) (Joypad)"):
+            self.assertEqual(self.key(other), self.key("Foo (USA)"), other)
+        self.assertEqual(tags.edition_kind("Sega Channel"), "store")
+        self.assertEqual(tags.edition_kind("Koei the Best"), "budget")
+        self.assertEqual(tags.edition_kind("Shindou Edition"), "premium")
+
+    def test_pirate_and_bootleg_copies_are_the_game_but_other_unlicensed_games_are_not(self) -> None:
+        plain = self.key("Contra (USA)")
+        self.assertEqual(self.key("Contra (Asia) (En) (Kaiser) (Pirate)"), plain)
+        self.assertEqual(self.key("Contra (Taiwan) (En) (Unl)"), plain)
+        self.assertNotEqual(self.key("Tetris (USA) (Unl)"), self.key("Tetris (USA)"))                # (Tengen's Tetris)
+        self.assertTrue(tags.unlicensed(parse_name("Contra (Taiwan) (En) (Unl)", "nointro")))
+
+    def test_homebrew_versions_are_one_game_and_not_the_licensed_one(self) -> None:
+        a = self.key("Block Dude (World) (v1.01) (NESDev 2018) (Aftermarket) (Unl)")
+        self.assertEqual(a, self.key("Block Dude (World) (v1.02) (Sly Dog Studios) (UxROM) (Aftermarket) (Unl)"))
+        self.assertNotEqual(self.key("Pac-Man (World) (Aftermarket) (Unl)"), self.key("Pac-Man (USA)"))
+
+    def test_discs_and_their_labels_are_one_game(self) -> None:
+        self.assertEqual(self.key("Biohazard 2 (Japan) (Disc 1) (Leon-hen)", "redump"), self.key("Biohazard 2 (Japan) (Disc 2)", "redump"))
+        self.assertEqual(self.key("Resident Evil 4 (USA) (Disc 1)"), self.key("Resident Evil 4 (USA) (Disc 2)"))   # (GameCube, Wii)
+
+    def test_trials_kiosk_downloads_and_trailers_are_demos(self) -> None:
+        for n in ("Biohazard 4 (Japan) (En,Ja) (Taikenban)", "Mario Party DS (USA) (Video)", "Sonic Rush (USA, Europe) (Multiplayer) (DS Broadcast)",
+                  "Professor Layton (USA) (Video) (DS Download Station Vol. 8)", "Super Bomberman 2 - Caravan You Taikenban (Japan)",
+                  "Naruto (Japan) (Taikai Sen'you Disc)"):
+            self.assertIn("demo", tags.exclusion_rules(parse_name(n, "nointro")), n)
+
+    def test_bonus_discs_disc_ids_and_language_spellings(self) -> None:
+        self.assertTrue(tags.bonus_disc(tags.redump_tags("Lunar 2 - Eternal Blue Complete (USA) (The Making of)")))
+        self.assertTrue(tags.bonus_disc(parse_name("Pokemon Colosseum (USA) (Bonus Disc)", "nointro")))
+        self.assertFalse(tags.bonus_disc(parse_name("Pokemon Colosseum (USA)", "nointro")))
+        self.assertEqual(self.key("Call of Duty - Ghosts (Europe) [ACPP52]"), self.key("Call of Duty - Ghosts (USA)"))
+        self.assertEqual(parse_name("LEGO Dimensions (Europe) (En,Fr,De,Nl,Dk)", "nointro").languages, ("En", "Fr", "De", "Nl", "Da"))

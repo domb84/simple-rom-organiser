@@ -784,3 +784,12 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 .saves-table .ok-text { color: var(--ok); }
 .table-wrap { overflow-x: auto; }
 .saves-table .dim { opacity: 0.45; }
+
+/* ---------- games kept only for their saves: in place, dimmed, an edge and a reason ---------- */
+:root { --save: #e59a5b; }
+.tree-row.saved-keep { opacity: .62; box-shadow: inset 3px 0 0 var(--save); }
+.tree-row.saved-keep:hover, .tree-row.saved-keep:focus-visible { opacity: 1; }
+.badge.saved { color: var(--save); border-color: var(--save); }
+.tree-saved-why { color: var(--save); }
+.chip.chip-saved { border-color: var(--save); color: var(--save); }
+.chip.chip-saved.active { background: rgba(229, 154, 91, 0.16); }

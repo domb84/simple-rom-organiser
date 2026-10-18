@@ -108,6 +108,7 @@ class GameCubeTests(DolphinCase):
 
     def test_the_game_with_a_save_is_kept_and_its_save_can_go_with_it(self) -> None:
         self.call("/api/emulators/config", {"source": "dolphin", "folder": str(self.dolphin)})
+        self.call("/api/library/profile", {"platform": GC, "prefer_saved": False})   # (the rule that prefers it would keep it as the edition anyway)
         self.scan(GC, self.gc)
         plan = self.call("/api/library/plan", {"platform": GC})
         self.assertEqual(plan["saves"]["kept"], 1)                          # (the rules would keep one edition; this one has a save)

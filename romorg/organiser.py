@@ -719,6 +719,32 @@ def _build_units(result: "ScanResult", layout: str) -> tuple[list[MatchedUnit], 
     return units, others, unmatched_loose, unmatched_archives
 
 
+def partial_archives(result: "ScanResult") -> list[MatchedUnit]:
+    """The archives that hold one game's ROM(s) next to other files (a readme, a picture): the build leaves them as they are (it cannot
+    rename the archive of only part of it), but the game is one you have. One unit each, for the counts (the totals)."""
+    root = result.root
+    _lm, _lu, archives = _collect(result, root)
+    out: list[MatchedUnit] = []
+    for p, members in archives.items():
+        matches = [m for _, m in members if m is not None]
+        if not matches or len(matches) == len(members) or _is_converted_original(p, root):
+            continue
+        dat = matches[0].dat
+        games: Optional[set[str]] = None
+        for m in matches:
+            g = {_archive_stem(r) for r in m.primary} if m.dat == dat else set()
+            games = g if games is None else games & g
+        if not games:
+            continue
+        roms = [r for r in matches[0].primary if _archive_stem(r) in games]
+        via = getattr(matches[0], "matched_via", "raw") or "raw"
+        from .tags import style_of_rom
+        op = RenameOp(p, p, "skip", "", roms[0].name)
+        out.append(MatchedUnit(p, op, roms[0], frozenset(), _header_form(roms[0], via), roms[0].dat, via == "raw", True,
+                               os.path.islink(p), members[0][0].member, len(members), style_of_rom(roms[0])))
+    return out
+
+
 def matched_units(result: "ScanResult", layout: Optional[str] = None) -> list[MatchedUnit]:
     """The matched files the organiser treats as one game each (originals kept by Convert excluded).
     :func:`scanner.duplicate_groups` groups these."""
