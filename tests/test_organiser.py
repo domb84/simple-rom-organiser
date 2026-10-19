@@ -25,6 +25,22 @@ from romorg.organiser import (
     list_undo_logs, plan_counts, plan_renames, safe_filename, target_filename, undo,
 )
 
+
+_NO_SHIPPED_LIST = None
+
+
+def setUpModule() -> None:
+    """Real TOSEC names are used here to check the library plan's rules: the shipped list of what WHDLoad does with them is not
+    what these tests are about (``tests/test_amigainstall.py`` tests that rule)."""
+    global _NO_SHIPPED_LIST
+    from romorg import whdready
+    _NO_SHIPPED_LIST = mock.patch.object(whdready, "known", return_value={})
+    _NO_SHIPPED_LIST.start()
+
+
+def tearDownModule() -> None:
+    _NO_SHIPPED_LIST.stop()
+
 GAMES = "Commodore Amiga - Games - [ADF]"
 WB = "Commodore Amiga - Operating Systems - Workbench"
 FW = "Commodore Amiga - Firmware"

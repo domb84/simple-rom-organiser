@@ -197,37 +197,52 @@ class Matcher:
         low = title.casefold()
         return min(cands, key=lambda i: (_plain(i["title"]) != i["title"], i["title"].casefold() != low, len(i["title"]), i["archive"]))
 
-    def match(self, title: str) -> Optional[tuple[dict[str, Any], str]]:
-        """``(install, how)`` (``title`` | ``spelling`` | ``other title`` | ``subtitle`` | ``main title``), or None."""
+    def _find(self, title: str, strict: bool, others: Optional[set[str]] = None) -> Optional[tuple[list[dict[str, Any]], str, str]]:
+        """``(every install of it, how, the title it was found by)``. ``strict``: the main title of a longer one only when that main
+        title is no game of its own (``others``: the nodes of every game's title): "Alien Breed II - The Horror Continues" is the
+        game "Alien Breed II", "Kick Off 2 - KOA Competition" is an edition of the game "Kick Off 2"."""
         t = _plain(title or "")
         k = self._node(t)
         if not k:
             return None
         if k in self.by:
-            return self._best(self.by[k], t), "title"
+            return self.by[k], "title", t
         if k.replace(" ", "") in self.squashed:
-            return self._best(self.squashed[k.replace(" ", "")], t), "spelling"
+            return self.squashed[k.replace(" ", "")], "spelling", t
         g = self.table.get(k)
         if g and g in self.groups:
-            return self._best(self.groups[g], t), "other title"
+            return self.groups[g], "other title", t
         if " - " in t:
             head, sub = t.split(" - ", 1)
             if _ADDON_RE.search(sub):
                 return None                               # (a data / course / scenario disk: not the game's install)
             ks = self._node(sub)
             if len(ks) > 3 and ks in self.by:
-                return self._best(self.by[ks], sub), "subtitle"
+                return self.by[ks], "subtitle", sub
             kh = self._node(head)
-            if len(kh) > 3 and kh in self.by:
-                return self._best(self.by[kh], head), "main title"
+            if len(kh) > 3 and kh in self.by and (not strict or (others is not None and kh not in others)):
+                return self.by[kh], "main title", head
         words = [] if " & " in t else k.split(" ")             # ("Captain Fizz Meets the Blaster-Trons": the install "Captain Fizz";
-        for n in range(len(words) - 1, 1, -1):              #  not "Classic Arcadia & Baby Arcadia", two games on one disk)              # (a short title of two words at least)
-            if words[n] in _JOIN_WORDS:
+        for n in range(len(words) - 1, 1, -1):              #  not "Classic Arcadia & Baby Arcadia", two games on one disk)
+            if words[n] in _JOIN_WORDS:                     # (a short title of two words at least)
                 head = " ".join(words[:n])
                 for key, table in ((head, self.by), (head.replace(" ", ""), self.squashed)):
                     if len(key) > 3 and key in table:
-                        return self._best(table[key], t), "short title"
+                        return table[key], "short title", t
         return None
+
+    def match(self, title: str, strict: bool = False, others: Optional[set[str]] = None) -> Optional[tuple[dict[str, Any], str]]:
+        """``(install, how)`` (``title`` | ``spelling`` | ``other title`` | ``subtitle`` | ``short title`` | ``main title``), or None.
+        ``strict``: "Kick Off 2 - KOA Competition" is not the game "Kick Off 2" (what a result recorded for a game must go by; a
+        suggestion to download may be looser): the main title counts only when it is no game of its own (``others``)."""
+        hit = self._find(title, strict, others)
+        return None if hit is None else (self._best(hit[0], hit[2]), hit[1])
+
+    def exact(self, title: str, others: Optional[set[str]] = None) -> list[dict[str, Any]]:
+        """Every install of exactly this game (its variants too: the CD32 / AGA install of the same title), never of a longer title
+        that starts with it - unless that is only the game's full title (``others``, see :meth:`match`)."""
+        hit = self._find(title, True, others)
+        return [] if hit is None else list(hit[0])
 
 
 # --------------------------------------------------------------------------- download

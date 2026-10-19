@@ -220,6 +220,8 @@ class _Fs:
             key = d.label.casefold() if d.label.strip() and d.label.casefold() not in self.disks else f"\0disk{n + 1}"
             self.disks[key] = d
         self.current: Optional[str] = None
+        self.asked: list[Any] = []                    # the disks the script has asked for, in that order ("the k-th disk asked is disk k")
+        self.guessed: set[str] = set()                # volumes matched only by that order
         self.work: dict[str, bytes] = {}                 # "Game/data/file" -> bytes (no volume, "/" separated)
         self.work_dirs: set[str] = set()
 
@@ -238,8 +240,43 @@ class _Fs:
                 return (self.current if self.current is not None else "\0none"), rest
             if v in self.disks and v != "romorghd":   # (a disk named like the hard disk - "Work:" - is that disk)
                 return v, rest
+            if v not in _HD_NAMES and self.resolve(v, rest) is not None:
+                return v, rest                           # (a disk the script knows by another name than its label)
             return ("hd" if v in _HD_NAMES else v), rest
         return "", path.strip("/")
+
+    def resolve(self, vol: str, rest: str = "", asking: bool = False) -> Optional[Any]:
+        """The disk of ours a script means by the volume name ``vol`` when no disk is labelled so (and remember it): the label ignoring
+        case / spaces / punctuation, a label that holds or is held by the name, the disk that has the file ``rest`` the script looks
+        for, the disk's number (``... 2``, ``... II``), a save disk (none: empty) and - when the script ``asking`` for it - the next disk
+        not asked for yet, in order (TOSEC's "Disk k of n" are in the order the original asks): a guess, noted in ``guessed``."""
+        key = vol.casefold()
+        if key in self.disks:
+            return self.disks[key]
+        if not key or key in _DRIVES or (key in _HD_NAMES and not asking):
+            return None                                   # (asked for as a disk, though named like the hard disk: "Work")
+        norm = _norm(vol)
+        disks = [d for d in self.order if not isinstance(d, RawDisk)]
+        hit = next((d for d in disks if norm and _norm(d.label) == norm), None)
+        if hit is None and len(norm) >= 4:
+            hit = next((d for d in disks if len(_norm(d.label)) >= 4 and (_norm(d.label) in norm or norm in _norm(d.label))), None)
+        if hit is None and rest:
+            hit = next((d for d in disks if d not in self.asked and _has(d, rest)), None) or next((d for d in disks if _has(d, rest)), None)
+        if hit is None:
+            n = _disk_number(vol)
+            if n is not None and 1 <= n <= len(self.order):
+                hit = self.order[n - 1]
+        if hit is None and _SAVE_RE.search(vol):
+            hit = MemDisk(vol, {})                       # (a disk for saved games: a blank one)
+        if hit is None and len(self.order) == 1:
+            hit = self.order[0]                          # (the only disk: nothing else it can be)
+        if hit is None and asking:
+            hit = next((d for d in self.order if d not in self.asked), None)
+            if hit is not None:
+                self.guessed.add(key)
+        if hit is not None:
+            self.disks[key] = hit
+        return hit
 
     def _disk(self, vol: str) -> AdfDisk:
         d = self.disks.get(vol)
@@ -362,6 +399,23 @@ class _Fs:
 _DRIVES = frozenset({"df0", "df1", "df2", "df3", "rad", "ff0", "pc0", "pc1"})
 
 
+_SAVE_RE = re.compile(r"\bsav(e|ed|es|egame|ing)?\b|save ?(game|disk)|saved ?games?|gamesave|lotsave", re.IGNORECASE)
+_ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10, "xi": 11, "xii": 12}
+
+
+def _norm(x: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", x.casefold())
+
+
+def _disk_number(vol: str) -> Optional[int]:
+    """The disk a volume name counts: its trailing number (``NAM_DISK_2``, ``WS1``), a trailing Roman numeral (``ABRA II``)."""
+    m = re.search(r"(\d+)\D*$", vol)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(?:^|[\s_\-#.])(xii|xi|x|ix|viii|vii|vi|v|iv|iii|ii|i)\s*$", vol, re.IGNORECASE)
+    return _ROMAN[m.group(1).casefold()] if m else None
+
+
 def _has(d: AdfDisk, rest: str) -> bool:
     low = rest.casefold()
     return any(f.casefold() == low or f.casefold().startswith(low + "/") for f, _s in d.files())
@@ -387,6 +441,7 @@ class InstallResult:
     log: list[str] = field(default_factory=list)
     version: int = 0
     choices: list[str] = field(default_factory=list)
+    guessed: int = 0                                   # disks matched only by the order they were asked for (a guess)
 
 
 class _Interp:
@@ -682,10 +737,12 @@ class _Interp:
         _p, o = self.opts(a)
         vol = str((o.get("dest") or [""])[0]).rstrip(":")
         if vol.casefold() not in self.fs.disks:          # (asked for a floppy: never the hard disk, though one is named "Work")
-            alias = self._by_number(vol)
+            alias = self.fs.resolve(vol, "", asking=True)   # (a disk a cracker gave another name: by its label, number or order)
             if alias is None:
                 raise InstallError(f"the install asks for the disk \"{vol}\": no ADF of yours has that label")
-            self.fs.disks[vol.casefold()] = alias             # (a disk a cracker gave another name: the one of that number)
+        disk = self.fs.disks.get(vol.casefold())
+        if disk is not None and not any(disk is d for d in self.fs.asked):
+            self.fs.asked.append(disk)
         if vol.casefold() in self.fs.disks:
             self.fs.current = vol.casefold()              # (the disk asked for is the one in the drive now: "DF0:" is it)
         self.log.append(f"disk {vol}")
@@ -1097,7 +1154,7 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
     if not any(k.casefold().endswith(".slave") for k in fs.work):
         raise InstallError("the install script made no game (no .slave was installed)")
     return InstallResult(files=dict(fs.work), dirs=set(fs.work_dirs), log=it.log, version=int(it.vars.get("#version", 0) or 0),
-                         choices=it.choices)
+                         choices=it.choices, guessed=len(fs.guessed))
 
 
 # --------------------------------------------------------------------------- icons

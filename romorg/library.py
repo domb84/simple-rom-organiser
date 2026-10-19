@@ -1095,13 +1095,13 @@ def _newer(s: _Set) -> tuple:
 
 
 def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
-    """Best language, then (``prefer_whdload``) a version a WHDLoad install was made from, then cracked, then best platform
+    """Best language, then (``prefer_whdload``) the version WHDLoad works best from (``whdready.level``), then cracked, then best platform
     (CD32 > AGA > OCS), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]), then name."""
     from . import whdready
     pool = sets
 
-    def whd(s: _Set) -> int:
-        return 0 if prefer_whdload and whdready.is_ready(it.rom.name for it in s.slots.values()) else 1
+    def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
+        return -(whdready.level(it.rom.name for it in s.slots.values()) or 0) if prefer_whdload else 0
 
     for key in (lambda s: s.lang_rank, whd, lambda s: not s.cracked, lambda s: s.platform_rank):
         best = min(key(s) for s in pool)
@@ -2086,9 +2086,10 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "titles come from the ratings data (LaunchBox's alternate names) and GameTDB. Off: every title (on the Amiga every country and "
         "publisher) is a game of its own.", _ALL)
     opt("prefer_whdload", "prefer_whdload", "Prefer versions WHDLoad can install", True,
-        "Of a game's versions, keep one that its WHDLoad install can be made from (its disks are AmigaDOS disks holding what the install "
-        "copies) - after your language order, before cracked / chipset / newest. Which versions can is found by \"Check which versions "
-        "WHDLoad can install\" (WHDLoad installs, on the Files page); a version not checked is no WHDLoad version.", [STYLE_TOSEC])
+        "Of a game's versions, keep the one its WHDLoad install works best from: one known to boot, then one the install copies the "
+        "game's files from, then one it makes disk images of - after your language order, before cracked / chipset / newest. The app "
+        "knows this for many TOSEC versions already (installs run on them and booted in PUAE); \"Check which versions WHDLoad can "
+        "install\" (WHDLoad installs, on the Files page) finds it for yours.", [STYLE_TOSEC])
     opt("best_variant", "best_variant", "One best variant per game", True,
         "Keep ONE variant per game: preferred language, then cracked, then best platform "
         "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC])

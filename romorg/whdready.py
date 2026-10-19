@@ -5,6 +5,11 @@ install, run here on those disks (``romorg.amigainstall``), installs the game: i
 That takes the install package from whdload.de, so it is found by a check you start (``POST /api/whdload/check``) and kept here,
 ``whdinstalls/ready.json``: ``{"sets": {"<disk names, one per line>": {"ok": bool, "archive": "...", "reason": "...", "at": time}}}``.
 The library only reads it (:func:`is_ready`): a version never checked is no WHDLoad version.
+
+What is known already ships with the app (``whdknown.json.gz``, made from TOSEC-named ADFs: an install run on every copy, and the
+builds booted headless in PUAE): :func:`level` of a version - 3 boots, 2 installs the game's files, 1 installs disk images, 0 does not
+install, -1 installs but does not boot. The user's own check counts first for whether it installs; whether it boots only the shipped
+list knows.
 """
 
 from __future__ import annotations
@@ -17,7 +22,9 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-__all__ = ["path", "key_of", "is_ready", "record", "load", "clear_cache"]
+__all__ = ["path", "key_of", "is_ready", "level", "known", "record", "load", "clear_cache"]
+
+BOOTS, FILES, IMAGES, NONE, NO_BOOT = 3, 2, 1, 0, -1
 
 _LOCK = threading.Lock()
 _CACHE: dict[str, tuple[Any, dict[str, Any]]] = {}
@@ -53,10 +60,42 @@ def load() -> dict[str, Any]:
     return data
 
 
+_KNOWN: Optional[dict[str, Any]] = None
+
+
+def known() -> dict[str, Any]:
+    """The shipped list: ``{disk names: [level, install archive]}`` (empty when it is missing)."""
+    global _KNOWN
+    if _KNOWN is None:
+        import gzip
+        import importlib.resources
+        try:
+            raw = importlib.resources.files(__package__).joinpath("whdknown.json.gz").read_bytes()
+            _KNOWN = json.loads(gzip.decompress(raw)).get("sets") or {}
+        except (OSError, ValueError, AttributeError):
+            _KNOWN = {}
+    return _KNOWN
+
+
+def level(names: Iterable[str]) -> Optional[int]:
+    """How well a WHDLoad install works from these disks (``BOOTS`` .. ``NO_BOOT``), None: nothing known."""
+    key = key_of(names)
+    ship = known().get(key)
+    shipped = ship[0] if isinstance(ship, list) and ship else None
+    if shipped in (BOOTS, NO_BOOT):
+        return shipped                                     # (booted - or not - in PUAE: what a check here cannot tell)
+    row = load().get(key)
+    if row is not None:
+        if not row.get("ok"):
+            return NONE
+        return shipped if shipped in (FILES, IMAGES) else FILES
+    return shipped
+
+
 def is_ready(names: Iterable[str]) -> Optional[bool]:
-    """True: a WHDLoad install was made from these disks; False: it could not be; None: never checked."""
-    row = load().get(key_of(names))
-    return None if row is None else bool(row.get("ok"))
+    """True: a WHDLoad install can be made from these disks; False: it cannot; None: never checked."""
+    lv = level(names)
+    return None if lv is None else lv > NONE
 
 
 def record(rows: dict[str, dict[str, Any]]) -> None:

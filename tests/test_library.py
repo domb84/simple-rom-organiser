@@ -11,6 +11,23 @@ from romorg import library, platforms, tags
 from romorg.datfile import Rom
 from romorg.library import EXCLUDED, INCOMPLETE, KEEP, SUPERSEDED, Item, LibraryProfile
 
+
+_NO_SHIPPED_LIST = None
+
+
+def setUpModule() -> None:
+    """These tests use real TOSEC names to check the library's basic rules: the shipped list of what WHDLoad does with them is not
+    what they are about (``tests/test_amigainstall.py`` tests that rule)."""
+    global _NO_SHIPPED_LIST
+    from unittest import mock
+    from romorg import whdready
+    _NO_SHIPPED_LIST = mock.patch.object(whdready, "known", return_value={})
+    _NO_SHIPPED_LIST.start()
+
+
+def tearDownModule() -> None:
+    _NO_SHIPPED_LIST.stop()
+
 GAMES = "Commodore Amiga - Games - [ADF]"
 WB = "Commodore Amiga - Operating Systems - Workbench"
 KSD = "Commodore Amiga - Kickstart-Disks"

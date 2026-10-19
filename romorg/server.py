@@ -2603,8 +2603,11 @@ class App:
                            "whdinstalls_missing")
         profile = self._profile(platform)
         items = _mod("totals").user_items(state.result)
-        games = [(title, sets, hit[0]) for title, sets in library.variant_sets(items, profile, platform)
-                 if len(sets) > 1 and (hit := matcher.match(title))]
+        from .alttitles import node
+        variants = library.variant_sets(items, profile, platform)
+        others = {node(t) for t, _s in variants}               # (a game of its own: "Kick Off 2", for "Kick Off 2 - KOA Competition")
+        games = [(title, sets, hit[0]) for title, sets in variants
+                 if len(sets) > 1 and (hit := matcher.match(title, strict=True, others=others))]
         force = _bool_arg(body.get("force"), False)
 
         def disk_bytes(it: Any) -> bytes:

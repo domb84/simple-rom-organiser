@@ -217,6 +217,33 @@ class InstallTests(unittest.TestCase):
             res = ai.install(self.pkg, [make_adf(label, {"game": b"exe", "game.info": b"i"})])
             self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/game"])
 
+    def _ask(self, volumes: list[str], disks: list[bytes]) -> "ai.InstallResult":
+        """An install that asks for ``volumes`` in turn and copies each disk's ``f`` to a file of its own."""
+        body = "".join(f'(askdisk (dest "{v}")) (copyfiles (source "{v}:f") (dest #dest) (newname "from{n}"))' for n, v in enumerate(volumes, 1))
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) ' + body)
+        return ai.install(self.pkg, disks)
+
+    def test_disks_a_script_knows_by_another_name(self) -> None:
+        d = [make_adf("x1", {"f": b"one"}), make_adf("x2", {"f": b"two"}), make_adf("x3", {"f": b"three"})]
+        got = lambda r: [r.files[f"Game/from{n}"] for n in (1, 2, 3)]
+        r = self._ask(["X 1", "x-2", "X3"], d)                                          # (the label, ignoring spaces and punctuation)
+        self.assertEqual((got(r), r.guessed), ([b"one", b"two", b"three"], 0))
+        r = self._ask(["ABRA III", "ABRA I", "ABRA II"], d)                             # (a Roman numeral is the disk's number)
+        self.assertEqual((got(r), r.guessed), ([b"three", b"one", b"two"], 0))
+        r = self._ask(["Alpha", "Beta", "Gamma"], d)                                    # (no label, no number: the order they are asked for)
+        self.assertEqual((got(r), r.guessed), ([b"one", b"two", b"three"], 3))
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(askdisk (dest "My Saved Games")) (askdisk (dest "Game Disk 2")) '
+                                          '(copyfiles (source "Game Disk 2:f") (dest #dest) (newname "got"))')
+        r = ai.install(self.pkg, d[:2])                                                  # (a disk for saved games is a blank one)
+        self.assertEqual((r.files["Game/got"], r.guessed), (b"two", 0))
+
+    def test_a_script_waiting_for_a_file_finds_the_disk_that_has_it(self) -> None:
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(until (exists "PROGDISK:main") (message "Insert it")) (copyfiles (source "PROGDISK:main") (dest #dest))')
+        res = ai.install(self.pkg, [make_adf("a", {"data": b"d"}), make_adf("b", {"main": b"M"})])
+        self.assertEqual((res.files["Game/main"], res.guessed), (b"M", 0))               # (found by its content, not guessed)
+
     def test_dic_images_the_disks_in_their_order(self) -> None:
         (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
                                           '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=2 SIZE=901120" #dest))')
@@ -292,6 +319,24 @@ class PreferWhdloadVersions(unittest.TestCase):
         whdready.record({whdready.key_of(["Zap (1993)(Acme)[cr PDX].adf"]): {"ok": True, "archive": "Zap.lha", "reason": ""}})
         self.assertEqual(self.kept(names), ["Zap (1993)(Acme)[cr PDX]"])
         self.assertEqual(self.kept(names, prefer_whdload=False), ["Zap (1993)(Acme)[cr FLT]"])
+
+    def test_the_shipped_list_knows_which_versions_boot(self) -> None:
+        names = ["Zap (1993)(Acme)[cr FLT]", "Zap (1993)(Acme)[cr PDX]", "Zap (1993)(Acme)[cr QTX]"]
+        key = lambda n: whdready.key_of([n + ".adf"])
+        shipped = {key(names[0]): [whdready.FILES, "Zap.lha"], key(names[1]): [whdready.BOOTS, "Zap.lha"],
+                   key(names[2]): [whdready.NO_BOOT, "Zap.lha"]}
+        with mock.patch.object(whdready, "known", return_value=shipped):
+            self.assertEqual(self.kept(names), ["Zap (1993)(Acme)[cr PDX]"])               # (the one that boots)
+            whdready.record({key(names[0]): {"ok": False, "archive": "Zap.lha", "reason": "RawDIC"}})
+            self.assertEqual(whdready.level([names[0] + ".adf"]), whdready.NONE)        # (your own check: it does not install)
+            self.assertEqual(whdready.level([names[1] + ".adf"]), whdready.BOOTS)
+            self.assertFalse(whdready.is_ready([names[2] + ".adf"]))                    # (installs, but does not boot)
+            self.assertIsNone(whdready.level(["Other (1990)(X).adf"]))
+
+    def test_the_shipped_list_is_in_the_package(self) -> None:
+        sets = whdready.known()
+        self.assertGreater(len(sets), 1000)
+        self.assertTrue(all(isinstance(v, list) and v[0] in (-1, 0, 1, 2, 3) for v in list(sets.values())[:200]))
 
     def test_the_rule_is_on_by_default_for_the_amiga_only(self) -> None:
         self.assertTrue(library.default_profile(AMIGA).prefer_whdload)

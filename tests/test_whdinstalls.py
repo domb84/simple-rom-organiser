@@ -21,7 +21,8 @@ INSTALLS = [("Turrican.lha", "Turrican"), ("Pushover.lha", "Pushover"), ("Sensib
             ("SensibleSoccerCD32.lha", "Sensible Soccer CD&sup3;&sup2;"), ("Exile.lha", "Exile"), ("Cadaver.lha", "Cadaver"),
             ("ReturnOfTheJedi.lha", "Return of the Jedi"), ("StarWars.lha", "Star Wars"),
             ("PrinceOfPersia.lha", "Prince of Persia / Prince de Perse"), ("CaptainFizz.lha", "Captain Fizz"), ("Lemmings.lha", "Lemmings"),
-            ("ClassicArcadia.lha", "Classic Arcadia")]
+            ("ClassicArcadia.lha", "Classic Arcadia"), ("KickOff2.lha", "Kick Off 2"), ("KickOff2FinalWhistle.lha", "Kick Off 2 - The Final Whistle"),
+            ("AlienBreed2.lha", "Alien Breed II")]
 PAGE = "<TABLE>" + "".join(ROW.format(arc=a, title=t, size=90000 + n, hol=100 + n) for n, (a, t) in enumerate(INSTALLS)) + "</TABLE>"
 
 
@@ -57,6 +58,17 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertEqual(self.match("Captain Fizz Meets the Blaster-Trons"), ("CaptainFizz.lha", "short title"))
         self.assertIsNone(self.match("Lemmings and Friends"))                                     # (one word: too short to tell)
         self.assertIsNone(self.match("Classic Arcadia & Baby Arcadia"))                          # (two games on one disk)
+
+    def test_a_result_goes_by_the_exact_game_not_its_main_title(self) -> None:
+        self.assertEqual(self.match("Kick Off 2 - KOA Competition"), ("KickOff2.lha", "main title"))     # (a suggestion to download)
+        self.assertIsNone(self.m.match("Kick Off 2 - KOA Competition", strict=True))                   # (but no result is its)
+        others = {"kick off 2", "kick off 2 koa competition"}                                           # (the games there are)
+        self.assertIsNone(self.m.match("Kick Off 2 - KOA Competition", strict=True, others=others))    # (Kick Off 2 is a game alone)
+        full = self.m.match("Alien Breed II - The Horror Continues", strict=True, others=others)       # (Alien Breed II is not)
+        self.assertEqual((full[0]["archive"], full[1]), ("AlienBreed2.lha", "main title"))
+        self.assertEqual([i["archive"] for i in self.m.exact("Kick Off 2")], ["KickOff2.lha"])         # (not the Final Whistle's)
+        self.assertEqual([i["archive"] for i in self.m.exact("Kick Off 2 - The Final Whistle")], ["KickOff2FinalWhistle.lha"])
+        self.assertEqual([i["archive"] for i in self.m.exact("Captain Fizz Meets the Blaster-Trons")], ["CaptainFizz.lha"])
 
     def test_an_add_on_disk_and_an_unknown_game_have_none(self) -> None:
         self.assertIsNone(self.match("Exile - Discovery Disk"))

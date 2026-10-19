@@ -2918,6 +2918,19 @@ extension. The Overview card says *found*, the Library card *kept*.
   before any `askdisk` is the first disk. Versions are tried in order: those whose text names the number of disks ("AGA version (5
   disks)"), the default, the others; the CD versions only for a CD's files (`Package.install(cd=...)`; the check passes it from the
   disk names), as floppies made into the CD version install a game that is not theirs.
+* `romorg/whdknown.json.gz` (shipped, ~210 KB): what is known of TOSEC sets already - `{disk names: [level, install]}`, level 3
+  boots in PUAE, 2 installs the game's files, 1 installs disk images, 0 does not install, -1 installs but does not boot. Made from
+  every complete copy of a TOSEC collection run against its installs, and builds booted headless in PUAE (A1200, the file named
+  without the words PUAE takes the machine from: AGA, OCS, ECS, CD32 ...), boot verdicts checked by eye. `whdready.level` joins it
+  with the user's own check (that counts first for whether it installs); `_pick_best` ranks by it. No game data in it: names only.
+* Disks a script knows by another name than their label (`_Fs.resolve`): the label ignoring case / spaces / punctuation, a label that
+  holds or is held by the name, the disk that has the file a script waits for (`until (exists "VOL:file")`), the disk's number
+  (`... 2`, `... II`), a save disk (blank), the only disk, and - for an `askdisk` - the next disk not asked for yet, in order (TOSEC's
+  "Disk k of n" are in the order the original asks): a guess, counted in `InstallResult.guessed`. The shipped list counts a guessed
+  build only by its boot verdict (those booted about as often as the solid matches: 40% against 43% of the hard cases).
+* A result is recorded for a game only against the installs of exactly that game: `Matcher.match(strict=True)` / `exact()` never use
+  the main title of a longer one, unless that main title is no game of its own ("Alien Breed II - The Horror Continues" is "Alien
+  Breed II"; "Kick Off 2 - KOA Competition" is an edition of "Kick Off 2"). The app's check goes by it too.
 * `Matcher`: an install title with alternatives ("Prince of Persia / Prince de Perse") is each of them; a short title of two words
   or more matches a long one joined by meets / in / and / versus ("Captain Fizz Meets the Blaster-Trons"), not a compilation ("&").
 
