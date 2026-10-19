@@ -44,6 +44,7 @@ from romorg import library as _library  # noqa: E402,F401
 GAMES = "Commodore Amiga - Games - [ADF]"
 WB = "Commodore Amiga - Operating Systems - Workbench"
 KICKDISKS = "Commodore Amiga - Kickstart-Disks"
+IPF_SETS = ["Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]"]     # (not in these folders' DATs)
 FIRMWARE = "Commodore Amiga - Firmware"
 
 
@@ -980,10 +981,10 @@ class RealModulesIntegrationTests(unittest.TestCase):
     def test_full_workflow(self) -> None:
         plats = self.call("GET", "/api/platforms")
         amiga = next(p for p in plats if p["name"] == "Commodore Amiga")
-        self.assertEqual([d["present"] for d in amiga["dats"]], [True, True, False, True])
+        self.assertEqual([d["present"] for d in amiga["dats"]], [True, True, False, True, False, False])
 
         summary = self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})["result"]
-        self.assertEqual(summary["missing_dats"], [KICKDISKS])
+        self.assertEqual(summary["missing_dats"], [KICKDISKS, *IPF_SETS])
         self.assertEqual(summary["matched_files"], 4)
         self.assertEqual(summary["per_dat"][GAMES]["have"], 2)
         self.assertEqual(summary["per_dat"][GAMES]["missing"], 1)

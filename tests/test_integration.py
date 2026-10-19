@@ -31,6 +31,8 @@ WB = "Commodore Amiga - Operating Systems - Workbench"
 KSD = "Commodore Amiga - Kickstart-Disks"
 FW = "Commodore Amiga - Firmware"
 AMIX = "Commodore Amiga - Operating Systems - AMIX"
+SPS = "Commodore Amiga - Games - SPS"
+UIPF = "Commodore Amiga - Games - [Unofficial IPF]"
 
 DAT_FILES = {
     GAMES: "2025-01-30",
@@ -38,6 +40,8 @@ DAT_FILES = {
     KSD: "2025-01-03",
     FW: "2025-01-03",
     AMIX: "2023-01-01",
+    SPS: "2025-01-13",
+    UIPF: "2025-01-29",
 }
 
 _rng = random.Random(1234)
@@ -133,6 +137,8 @@ class IntegrationTest(unittest.TestCase):
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {self.fw_name[:-4]: [(self.fw_name, d["fw"])]})
         write_dat(self.dats_dir, AMIX, DAT_FILES[AMIX],
                   {"AMIX (1990)(Commodore)": [("AMIX (1990)(Commodore).adf", d["amix"])]})
+        for dat in (SPS, UIPF):                                              # (the image sets: no IPF in these folders)
+            write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
 
     def _put(self, rel: str, data: bytes) -> None:
         p = self.root / rel
@@ -668,6 +674,51 @@ class NoIntroIntegrationTest(unittest.TestCase):
         self.assertEqual(snapshot(self.root), original)
 
 
+class IpfSetsTest(unittest.TestCase):
+    """The SPS images: a DAT whose file names repeat from game to game (two releases of "Zap" both have ``Zap_DiskA.ipf``) and which lists
+    box art too: each image is found by its checksums and organised under "<game> - <file>", so nothing collides."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(base / "data")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.dats_dir, self.root = base / "dats", base / "amiga"
+        self.dats_dir.mkdir()
+        self.root.mkdir()
+        self.a1, self.a2, self.b1, self.jpg = blob(2048), blob(2048), blob(2048), blob(300)
+        self.game_a, self.game_b = "Zap (1992)(Acme)[1001]", "Zap (1993)(Acme)(DE)[1002]"
+        write_dat(self.dats_dir, SPS, DAT_FILES[SPS], {
+            self.game_a: [("Zap_DiskA.ipf", self.a1), ("Zap_DiskB.ipf", self.a2), ("Zap.jpg", self.jpg)],
+            self.game_b: [("Zap_DiskA.ipf", self.b1)]})
+        for rel, data in (("incoming/first.ipf", self.a1), ("incoming/deep/second.ipf", self.a2), ("other/zap de.ipf", self.b1),
+                          ("incoming/junk.ipf", blob(500))):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_bytes(data)
+
+    def test_images_with_repeated_names_are_found_and_organised_apart(self) -> None:
+        platform = platforms.get_platform("Commodore Amiga")
+        dats, _missing = platforms.load_platform_dats(platform, self.dats_dir)
+        self.assertEqual([d.name for d in dats], [SPS])
+        res = scanner.scan(self.root, dats, use_cache=False)
+        s = res.summary()
+        self.assertEqual((s["dat_total"], s["have"], s["missing"], s["matched_files"], s["unmatched_files"]), (3, 3, 0, 3, 1))   # (the picture is no image)
+        ops = organiser.plan_renames(res)
+        dst = {op.src.relative_to(self.root).as_posix(): op.dst.relative_to(self.root).as_posix() for op in ops}
+        folder = f"{SPS}/"
+        self.assertEqual(dst["incoming/first.ipf"], folder + f"{self.game_a} - Zap_DiskA.ipf")
+        self.assertEqual(dst["incoming/deep/second.ipf"], folder + f"{self.game_a} - Zap_DiskB.ipf")
+        self.assertEqual(dst["other/zap de.ipf"], folder + f"{self.game_b} - Zap_DiskA.ipf")
+        self.assertEqual(dst["incoming/junk.ipf"], "_unmatched/incoming/junk.ipf")
+        self.assertEqual(len({v for v in dst.values()}), 4)                                  # (no two files to one place)
+        out = organiser.apply_renames(ops, self.root, dat_names=platform.dats)
+        self.assertEqual(out["failed"], [])
+        self.assertEqual((self.root / folder / f"{self.game_b} - Zap_DiskA.ipf").read_bytes(), self.b1)
+        self.assertEqual((self.root / folder / f"{self.game_a} - Zap_DiskA.ipf").read_bytes(), self.a1)
+
+
 class LibraryIntegrationTest(unittest.TestCase):
     """End-to-end "Build library" (Amendment 6) on a synthetic Amiga folder with real modules."""
 
@@ -706,6 +757,8 @@ class LibraryIntegrationTest(unittest.TestCase):
         write_dat(self.dats_dir, KSD, DAT_FILES[KSD], {n[:-4]: [(n, data(n))] for n in ks})
         fw = "Kickstart v1.3 rev 34.5 (1987)(Commodore)(A500)[!].rom"
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {fw[:-4]: [(fw, data(fw))]})
+        for dat in (SPS, UIPF):
+            write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         self.names = {"abc": self.ABC, "pre": [self.ABC_PRE], "hero": self.HERO, "wb": self.WB, "ks": ks, "fw": [fw]}
         for i, n in enumerate(self.ABC):
             self._put(f"abc/disk{i + 1}.adf", self.blobs[n])
@@ -833,7 +886,7 @@ class BorrowIntegrationTest(unittest.TestCase):
         self.platform = platforms.get_platform("Commodore Amiga")
         self.blobs = {n: blob(1024) for n in [*self.D, self.OTHER]}
         write_dat(self.dats_dir, GAMES, DAT_FILES[GAMES], {n[:-4]: [(n, self.blobs[n])] for n in self.blobs})
-        for dat in (WB, KSD, FW):
+        for dat in (WB, KSD, FW, SPS, UIPF):
             write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         for i, n in enumerate([*self.D, self.OTHER]):
             (self.root / f"d{i}.adf").write_bytes(self.blobs[n])
@@ -937,6 +990,8 @@ class LibraryScenarioTest(unittest.TestCase):
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {n[:-4]: [(n, self._data(n))] for n in self.KS})
         write_dat(self.dats_dir, WB, DAT_FILES[WB], {})
         write_dat(self.dats_dir, KSD, DAT_FILES[KSD], {})
+        for dat in (SPS, UIPF):
+            write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         d = self._data
         # Saga: v1.0 complete, v1.1 [cr] has only disk 1 locally (disks 2/3 come from the 1990 release)
         for i, n in enumerate(self.SAGA):

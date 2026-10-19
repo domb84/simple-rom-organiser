@@ -97,7 +97,8 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual([x.name for x in loaded], [
                 "Commodore Amiga - Games - [ADF]", "Commodore Amiga - Operating Systems - Workbench",
                 "Commodore Amiga - Firmware"])
-            self.assertEqual(missing, ["Commodore Amiga - Kickstart-Disks"])
+            self.assertEqual(missing, ["Commodore Amiga - Kickstart-Disks", "Commodore Amiga - Games - SPS",
+                                       "Commodore Amiga - Games - [Unofficial IPF]"])
             self.assertEqual([r.name for r in loaded[2].roms], ["K.rom"])  # newest version
             self.assertEqual(loaded[1].roms[0].dat, "Commodore Amiga - Operating Systems - Workbench")
             status = platform_dat_status(amiga, folder)
@@ -106,7 +107,24 @@ class PlatformTests(unittest.TestCase):
                 ("Commodore Amiga - Operating Systems - Workbench", "2023-05-21", True),
                 ("Commodore Amiga - Kickstart-Disks", None, False),
                 ("Commodore Amiga - Firmware", "2025-01-03", True),
+                ("Commodore Amiga - Games - SPS", None, False),
+                ("Commodore Amiga - Games - [Unofficial IPF]", None, False),
             ])
+
+    def test_the_sps_images_are_named_by_game_and_only_the_images_count(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            sps = ('<?xml version="1.0"?><datafile><header><name>Commodore Amiga - Games - SPS</name><version>2025-01-13</version></header>'
+                   '<game name="1869 (1992)(Flair)(AGA)(DE)[1653]"><rom name="1869_DiskA.ipf" size="9" crc="00000001"/>'
+                   '<rom name="1869_DiskB.ipf" size="9" crc="00000002"/><rom name="1869.jpg" size="3" crc="00000003"/></game>'
+                   '<game name="1869 - Erlebte Geschichte Teil I (1992)(Flair)(DE)[0417]"><rom name="1869_DiskA.ipf" size="9" crc="00000004"/>'
+                   '<rom name="info.xml" size="3" crc="00000005"/></game></datafile>')
+            (Path(d) / "Commodore Amiga - Games - SPS (TOSEC-v2025-01-13_CM).dat").write_text(sps)
+            loaded, _missing = load_platform_dats(get_platform("Commodore Amiga"), d)
+            names = [r.name for r in loaded[0].roms]
+            self.assertEqual(names, ["1869 (1992)(Flair)(AGA)(DE)[1653] - 1869_DiskA.ipf", "1869 (1992)(Flair)(AGA)(DE)[1653] - 1869_DiskB.ipf",
+                                     "1869 - Erlebte Geschichte Teil I (1992)(Flair)(DE)[0417] - 1869_DiskA.ipf"])      # (pictures and info files left out)
+            self.assertEqual(len(set(names)), 3)                                                                    # (the shared 1869_DiskA.ipf: two files)
+            self.assertIn(".ipf", get_platform("Commodore Amiga").extensions)
 
     def test_console_registry(self) -> None:
         amiga = get_platform("Commodore Amiga")

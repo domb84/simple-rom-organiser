@@ -2931,6 +2931,11 @@ extension. The Overview card says *found*, the Library card *kept*.
 * A result is recorded for a game only against the installs of exactly that game: `Matcher.match(strict=True)` / `exact()` never use
   the main title of a longer one, unless that main title is no game of its own ("Alien Breed II - The Horror Continues" is "Alien
   Breed II"; "Kick Off 2 - KOA Competition" is an edition of "Kick Off 2"). The app's check goes by it too.
+* The Amiga system also knows the original disks as IPF: `Commodore Amiga - Games - SPS` (TOSEC's catalogue of the Software Preservation
+  Society's releases: 3,018 games, every image with CRC32 / MD5 / SHA-1, the SPS id in the game name) and `... - [Unofficial IPF]`
+  (`Platform.image_set_dats`). Their file names repeat from game to game (`1869_DiskA.ipf` is in two releases), so on loading each
+  image is named "<game> - <file>" and only the `.ipf` entries count (the DATs list box art and info files too). Matching is by the
+  checksums as for every DAT; the library's ADF rules (best variant, language) do not touch them.
 * `Matcher`: an install title with alternatives ("Prince of Persia / Prince de Perse") is each of them; a short title of two words
   or more matches a long one joined by meets / in / and / versus ("Captain Fizz Meets the Blaster-Trons"), not a compilation ("&").
 

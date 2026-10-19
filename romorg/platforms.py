@@ -53,6 +53,9 @@ class Platform:
     protected_dirs: tuple[str, ...] = ()
     # Compressed disc-image formats read through (hashed as the ISO they stand for): "rvz"
     containers: tuple[str, ...] = ()
+    # DATs of floppy images whose file names repeat from game to game (SPS: ``1869_DiskA.ipf`` is in two releases of 1869) and that list
+    # pictures and info files as well: only the ``.ipf`` entries count, each named "<game> - <file>" so no two files can collide.
+    image_set_dats: tuple[str, ...] = ()
 
 
 def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple[str, ...],
@@ -71,6 +74,8 @@ PLATFORMS: dict[str, Platform] = {
             "Commodore Amiga - Operating Systems - Workbench",
             "Commodore Amiga - Kickstart-Disks",
             "Commodore Amiga - Firmware",
+            "Commodore Amiga - Games - SPS",                   # the original disks as IPF (Software Preservation Society)
+            "Commodore Amiga - Games - [Unofficial IPF]",
         ),
         m3u_dats=(
             "Commodore Amiga - Games - [ADF]",
@@ -78,7 +83,8 @@ PLATFORMS: dict[str, Platform] = {
             "Commodore Amiga - Kickstart-Disks",
         ),
         kickstart_dat="Commodore Amiga - Firmware",
-        extensions=(".adf", ".zip", ".7z"),
+        extensions=(".adf", ".ipf", ".zip", ".7z"),
+        image_set_dats=("Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]"),
         folder_hint="amiga",
         latest_dats=("Commodore Amiga - Games - [ADF]",),
         best_variant_dats=("Commodore Amiga - Games - [ADF]",),
@@ -362,6 +368,9 @@ def load_platform_dats(platform: Platform,
             # Header names normally equal the filename part; keep the platform's name canonical.
             dat.name = name
             dat.roms = [replace(r, dat=name) if r.dat != name else r for r in dat.roms]
+        if name in platform.image_set_dats:                  # (the images only, each with a name of its own)
+            dat.roms = [r if r.name.startswith(r.game) else replace(r, name=f"{r.game} - {r.name}")
+                        for r in dat.roms if r.name.lower().endswith(".ipf")]
         loaded.append(dat)
     try:                                        # (the titles a game was released under in other regions: "Combine alternate titles")
         from . import alttitles
