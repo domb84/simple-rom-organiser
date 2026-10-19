@@ -176,6 +176,7 @@ class LibraryProfile:
     prefer_saved: bool = True                    # of the releases / versions of a game, the one you have saves for is kept (not a newer one, not another region)
     prefer_editions: bool = True                 # of a game's releases a special / limited / premium edition beats the plain release (off: after it)
     combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
+    prefer_whdload: bool = True                  # Amiga: of a game's versions, one a WHDLoad install can be made from first (``whdready``)
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -211,7 +212,7 @@ class LibraryProfile:
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
                 "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
                 "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
-                "combine_alt_titles": self.combine_alt_titles}
+                "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -268,7 +269,8 @@ class LibraryProfile:
                    convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted),
                    prefer_saved=flag("prefer_saved", base.prefer_saved),
                    prefer_editions=flag("prefer_editions", base.prefer_editions),
-                   combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles))
+                   combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles),
+                   prefer_whdload=flag("prefer_whdload", base.prefer_whdload))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -306,7 +308,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
                "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-               "combine_alt_titles")
+               "combine_alt_titles", "prefer_whdload")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
 # decides its own rules. Your defaults keep the one list ``exclude``.
@@ -358,6 +360,8 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
     if _style_of_platform(platform) in AMIGA_STYLES:
         out.add("exclude_amiga")
+        if _dats(platform, "best_variant_dats"):
+            out.add("prefer_whdload")
     else:
         out.add("prefer_editions")                                # (the release tags of No-Intro / Redump names: editions, budget lines)
     out.add("combine_alt_titles")
@@ -1090,11 +1094,16 @@ def _newer(s: _Set) -> tuple:
     return (s.vkey, s.date)
 
 
-def _pick_best(sets: list[_Set]) -> _Set:
-    """Best language, then cracked, then best platform (CD32 > AGA > OCS), then newest, then fewest
-    modification flags ([t] [h] [tr] [f] [a]), then name."""
+def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
+    """Best language, then (``prefer_whdload``) a version a WHDLoad install was made from, then cracked, then best platform
+    (CD32 > AGA > OCS), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]), then name."""
+    from . import whdready
     pool = sets
-    for key in (lambda s: s.lang_rank, lambda s: not s.cracked, lambda s: s.platform_rank):
+
+    def whd(s: _Set) -> int:
+        return 0 if prefer_whdload and whdready.is_ready(it.rom.name for it in s.slots.values()) else 1
+
+    for key in (lambda s: s.lang_rank, whd, lambda s: not s.cracked, lambda s: s.platform_rank):
         best = min(key(s) for s in pool)
         pool = [s for s in pool if key(s) == best]
     newest = max(_newer(s) for s in pool)
@@ -1828,7 +1837,7 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
         if not complete:
             kept_sets = []
         elif best:
-            kept_sets = [_pick_best(complete)]
+            kept_sets = [_pick_best(complete, profile.prefer_whdload)]
         elif latest:
             by_sig: dict[tuple, list[_Set]] = {}
             for s in complete:
@@ -1918,6 +1927,32 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             if d.set_id is None:
                 d.set_id = sid
             d.reason = (d.reason + "; " if d.reason else "") + text
+
+
+def variant_sets(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> list[tuple[str, list[list[Item]]]]:
+    """``[(title, [the disks of each complete version])]`` of the games of the best-variant DATs (Amiga Games): the versions the rule
+    "one best variant per game" chooses among, after the exclusions (what "Prefer versions WHDLoad can install" looks at)."""
+    sel = select(items, replace(profile, prefer_whdload=False), platform)
+    best = _Scope(platform).best
+    alive = [it for it in items if it.dat in best and _style(it) == STYLE_TOSEC
+             and (d := sel.decisions.get(it.key)) is not None and d.action in (KEEP, SUPERSEDED)]
+    groups: dict[tuple, list[Item]] = {}
+    for it in sorted(alive, key=lambda i: (i.rom.name, i.key)):
+        groups.setdefault((it.dat, combined_key(it.dat, tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)),
+                                                profile.combine_alt_titles)), []).append(it)
+    out: list[tuple[str, list[list[Item]]]] = []
+    for group in groups.values():
+        vkeys = tags.group_version_keys([i.rom.name for i in group], STYLE_TOSEC)
+        editions: dict[tuple, list[Item]] = {}
+        for it in group:
+            editions.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
+        sets: list[list[Item]] = []
+        for members in editions.values():
+            complete, _partial = _build_sets(members, vkeys, profile, None)
+            sets += [[s.slots[n] for n in sorted(s.slots)] for s in complete]
+        if sets:
+            out.append((tags.parse_name(group[0].rom.name, STYLE_TOSEC).title, sets))
+    return out
 
 
 def _pick_best_latest(sets: list[_Set]) -> _Set:
@@ -2050,6 +2085,10 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "languages and regions, and it counts once; the language filter then sets aside the games with no version in your languages. The "
         "titles come from the ratings data (LaunchBox's alternate names) and GameTDB. Off: every title (on the Amiga every country and "
         "publisher) is a game of its own.", _ALL)
+    opt("prefer_whdload", "prefer_whdload", "Prefer versions WHDLoad can install", True,
+        "Of a game's versions, keep one that its WHDLoad install can be made from (its disks are AmigaDOS disks holding what the install "
+        "copies) - after your language order, before cracked / chipset / newest. Which versions can is found by \"Check which versions "
+        "WHDLoad can install\" (WHDLoad installs, on the Files page); a version not checked is no WHDLoad version.", [STYLE_TOSEC])
     opt("best_variant", "best_variant", "One best variant per game", True,
         "Keep ONE variant per game: preferred language, then cracked, then best platform "
         "(CD32 > AGA > OCS), then newest, then fewest modifications.", [STYLE_TOSEC])

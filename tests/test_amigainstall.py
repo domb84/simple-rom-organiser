@@ -1,0 +1,313 @@
+"""Installing a WHDLoad game from ADFs without an Amiga: ``romorg.adf`` (AmigaDOS disks), ``romorg.amigainstall`` (the install
+script run here, the .lha), and the rule "Prefer versions WHDLoad can install" (``romorg.whdready``)."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import struct
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest import mock
+
+from romorg import amigainstall as ai, library, platforms, whdready
+from romorg.adf import AdfDisk, AdfError
+from romorg.datfile import Rom
+from romorg.lha import LhaFile
+from romorg.library import KEEP, Item
+
+BLOCK = 512
+
+
+def _hash(name: str) -> int:
+    h = len(name)
+    for c in name.upper():
+        h = (h * 13 + ord(c)) & 0x7FF
+    return h % 72
+
+
+def make_adf(label: str, files: dict[str, bytes]) -> bytes:
+    """An OFS floppy (``DOS\\0``) with ``files`` ("name" or "dir/name") - enough of AmigaDOS for the reader."""
+    img = bytearray(901120)
+    img[0:4] = b"DOS\x00"
+    nxt = [882]
+
+    def alloc() -> int:
+        n = nxt[0]
+        nxt[0] += 1
+        return n
+
+    def put(n: int, off: int, v: int) -> None:
+        struct.pack_into(">I", img, n * BLOCK + off, v & 0xFFFFFFFF)
+
+    def name(n: int, text: str) -> None:
+        b = text.encode("latin-1")
+        img[n * BLOCK + BLOCK - 80] = len(b)
+        img[n * BLOCK + BLOCK - 79:n * BLOCK + BLOCK - 79 + len(b)] = b
+
+    def link(parent: int, n: int, nm: str) -> None:
+        slot = parent * BLOCK + 24 + 4 * _hash(nm)
+        old = struct.unpack_from(">I", img, slot)[0]
+        put(n, BLOCK - 16, old)                       # (the chain of names that hash alike)
+        struct.pack_into(">I", img, slot, n)
+
+    root = 880
+    put(root, 0, 2)
+    put(root, 12, 72)
+    put(root, BLOCK - 4, 1)
+    name(root, label)
+    dirs = {"": root}
+    for path, data in files.items():
+        parts = path.split("/")
+        parent = root
+        for i, d in enumerate(parts[:-1]):
+            key = "/".join(parts[:i + 1])
+            if key not in dirs:
+                b = alloc()
+                put(b, 0, 2)
+                put(b, 4, b)
+                put(b, BLOCK - 4, 2)
+                name(b, d)
+                link(parent, b, d)
+                dirs[key] = b
+            parent = dirs[key]
+        h = alloc()
+        put(h, 0, 2)
+        put(h, 4, h)
+        put(h, BLOCK - 4, (1 << 32) - 3)
+        put(h, BLOCK - 188, len(data))
+        name(h, parts[-1])
+        chunks = [data[i:i + 488] for i in range(0, len(data), 488)] or [b""]
+        blocks = [alloc() for _ in chunks]
+        put(h, 8, len(blocks))
+        for i, (b, c) in enumerate(zip(blocks, chunks)):
+            put(h, BLOCK - 204 - 4 * i, b)
+            put(b, 0, 8)
+            put(b, 4, h)
+            put(b, 8, i + 1)
+            put(b, 12, len(c))
+            put(b, 16, blocks[i + 1] if i + 1 < len(blocks) else 0)
+            img[b * BLOCK + 24:b * BLOCK + 24 + len(c)] = c
+        link(parent, h, parts[-1])
+    return bytes(img)
+
+
+def make_icon(tooltypes: list[str], tool: str = "") -> bytes:
+    """A project icon (a DiskObject) with a 16x1 image, ``tooltypes`` and an optional default tool, then trailing data."""
+    head = bytearray(78)
+    head[0:4] = b"\xe3\x10\x00\x01"
+    struct.pack_into(">I", head, 22, 1)                                   # (an image)
+    head[48] = 4                                                          # (a project)
+    struct.pack_into(">I", head, 50, 1 if tool else 0)
+    struct.pack_into(">I", head, 54, 1)
+    image = struct.pack(">hhhhhI", 0, 0, 16, 1, 1, 1) + b"\x00" * 6 + b"\xff\xff"
+
+    def text(t: str) -> bytes:
+        b = t.encode() + b"\0"
+        return struct.pack(">I", len(b)) + b
+    body = (text(tool) if tool else b"") + struct.pack(">I", (len(tooltypes) + 1) * 4) + b"".join(text(t) for t in tooltypes)
+    return bytes(head) + image + body + b"TRAILER"
+
+
+class AdfTests(unittest.TestCase):
+    def test_files_of_an_ofs_disk(self) -> None:
+        big = bytes(range(256)) * 9
+        d = AdfDisk(make_adf("Game1", {"game": b"exe", "data/level1": big, "data/level1.info": b"i"}))
+        self.assertEqual(d.label, "Game1")
+        self.assertEqual(sorted(p for p, _s in d.files()), ["data/level1", "data/level1.info", "game"])
+        self.assertEqual(d.read("DATA/Level1"), big)                     # (names compare without case, as on the Amiga)
+
+    def test_a_disk_of_another_format_is_no_amigados_disk(self) -> None:
+        with self.assertRaises(AdfError):
+            AdfDisk(b"\x00" * 901120)
+
+
+SCRIPT = """
+(set #sub-dir "data")
+(procedure P_AskDisk
+  (askdisk (dest #AD_disk) (prompt "insert"))
+)
+(set #dest (askdir (prompt "Where?") (default @default-dest)))
+(set #dest (tackon #dest @app-name))
+(makedir #dest)
+(copyfiles (source ("%s.slave" @app-name)) (dest #dest))
+(set #dest (tackon #dest #sub-dir))
+(makedir #dest)
+(set #AD_disk "Game1")
+(P_AskDisk)
+(copyfiles (source ("%s:" #AD_disk)) (dest #dest) (pattern "~(#?.info)"))
+(until (exists "DF0:level2") (message "Insert disk 2"))
+(copyfiles (source "DF0:level2") (dest #dest))
+(if (= (askbool (prompt "Run Game now?") (default 1)) 1) (run "WHDLoad Game.slave"))
+(exit)
+"""
+
+
+class InstallTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.pkg = self.tmp / "GameInstall"
+        self.pkg.mkdir()
+        (self.pkg / "Game.slave").write_bytes(b"SLAVE")
+        (self.pkg / "Install").write_text(SCRIPT)
+        (self.pkg / "Install.info").write_bytes(b"\x00\x00APPNAME=Game\x00")
+        self.disk1 = make_adf("Game1", {"game": b"exe", "game.info": b"icon", "level1": b"L1"})
+        self.disk2 = make_adf("", {"level2": b"L2"})                      # (no label: found by its file)
+
+    def test_the_script_installs_the_game_from_the_disks(self) -> None:
+        res = ai.install(self.pkg, [self.disk1, self.disk2])
+        self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/data/game", "Game/data/level1", "Game/data/level2"])
+        self.assertEqual(res.files["Game/data/level2"], b"L2")
+        out = self.tmp / "Game.lha"
+        ai.write_lha(out, res.files)
+        a = LhaFile(out)
+        self.assertEqual({e.name: a.read(e) for e in a.entries}, res.files)
+        self.assertEqual({e.level for e in a.entries}, {1})                  # (as WHDLoad's own archives)
+
+    def test_a_disk_that_is_not_there_stops_it(self) -> None:
+        with self.assertRaisesRegex(ai.InstallError, "waits for a disk"):
+            ai.install(self.pkg, [self.disk1])                            # (disk 2 is missing)
+
+    def test_an_empty_drawer_the_install_makes_is_in_the_archive(self) -> None:
+        out = self.tmp / "g.lha"
+        ai.write_lha(out, {"Game/Game.slave": b"S"}, {"Game", "Game/save"})       # (a save drawer the game expects)
+        self.assertEqual([(e.name, e.is_dir) for e in LhaFile(out).entries], [("Game/Game.slave", False), ("Game/save", True)])
+
+    def test_dic_leaves_skipped_tracks_empty(self) -> None:
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=1 SIZE=$b2c00 SKIPTRACK=1" #dest))')
+        img = ai.install(self.pkg, [self.disk1]).files["Game/Disk.1"]
+        self.assertEqual(len(img), 0xb2c00)
+        self.assertEqual(img[0x1600:0x2c00], bytes(0x1600))
+        self.assertEqual(img[:4], b"DOS\x00")
+
+    def test_dic_images_a_disk_that_is_no_amigados_disk(self) -> None:
+        own = b"\x00" * 901120                                              # (a game's own format: no DOS boot block)
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=2" #dest))')
+        res = ai.install(self.pkg, [self.disk1, own])
+        self.assertEqual(res.files["Game/Disk.2"], own)
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (copyfiles (source "DF0:game") (dest #dest))')
+        with self.assertRaisesRegex(ai.InstallError, "not an AmigaDOS disk"):                # (files from it: why not)
+            ai.install(self.pkg, [own])
+
+    def test_floppies_are_not_made_into_the_cd_version(self) -> None:
+        script = ('(set #multiple-versions "yes")\n(procedure P_SelectVersion (set #version (askchoice (prompt "Which version?") '
+                  '(default 0) (choices "Floppy release" "CD³² release"))))\n(P_SelectVersion)\n'
+                  '(if (= #version 1) (copyfiles (source "Game.slave") (dest "WORK:Game")) (abort "RawDIC needed"))\n')
+        (self.pkg / "Install").write_text(script, encoding="latin-1")                # (as the Amiga's scripts are)
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            with self.assertRaisesRegex(ai.InstallError, "RawDIC"):
+                pkg.install([self.disk1])                                      # (floppies: not the CD version)
+            self.assertEqual(pkg.install([self.disk1], cd=True).version, 1)    # (a CD's files: that one)
+
+    def test_a_disk_a_cracker_renamed_is_found_by_its_number(self) -> None:
+        renamed = make_adf("Crack Disk", {"game": b"exe", "level1": b"L1"})
+        res = ai.install(self.pkg, [renamed, self.disk2])
+        self.assertEqual(res.files["Game/data/level1"], b"L1")
+
+    def test_a_disk_named_like_the_hard_disk_is_that_disk(self) -> None:
+        (self.pkg / "Install").write_text('(set #dest (tackon @default-dest "Game")) (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(askdisk (dest "Work")) (copyfiles (source "Work:") (dest #dest) (pattern "~(#?.info)"))')
+        for label in ("Work", "Ninja"):                                    # (labelled "Work", or the only disk)
+            res = ai.install(self.pkg, [make_adf(label, {"game": b"exe", "game.info": b"i"})])
+            self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/game"])
+
+    def test_dic_images_the_disks_in_their_order(self) -> None:
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=2 SIZE=901120" #dest))')
+        res = ai.install(self.pkg, [self.disk1, self.disk2])
+        self.assertEqual((res.files["Game/Disk.1"], res.files["Game/Disk.2"]), (self.disk1, self.disk2))
+
+    def test_rawdic_cannot_be_done_here(self) -> None:
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (run ("CD \\"%s\\"\\nRawDIC SLAVE=Game.islave" #dest))')
+        with self.assertRaisesRegex(ai.InstallError, "RawDIC"):
+            ai.install(self.pkg, [self.disk1])
+
+    def test_a_script_that_asks_for_the_version_is_tried_with_each(self) -> None:
+        script = ('(set #multiple-versions "yes")\n(procedure P_SelectVersion (set #version (askchoice (prompt "Which version?") '
+                  '(default 0) (choices "" "Disk version"))))\n(P_SelectVersion)\n'
+                  '(if (= #version 1) ((askdisk (dest "Game1")) (copyfiles (source "Game.slave") (dest "WORK:Game"))) '
+                  '(abort "no such version"))\n')
+        (self.pkg / "Install").write_text(script)
+        self.assertEqual(ai.version_choices(script), [1])
+        self.assertEqual(ai.version_choices('(set #multiple-versions "<")\n(procedure P_SelectVersion (askchoice (choices "" ; x)\n'
+                                            ' "" "ECS version (4 disks)" "AGA version (5 disks)")))'), [2, 3])
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        res = ai.install_archive((self.tmp / "pkg.lha").read_bytes(), [self.disk1])
+        self.assertEqual(res.version, 1)
+        self.assertIn("Game/Game.slave", res.files)
+
+    def test_the_icon_gets_the_slave_and_whdload(self) -> None:
+        # (an install's icon template names another slave and has no default tool: WHDLoad would not start it)
+        (self.pkg / "Game.inf").write_bytes(make_icon(["(icon by x)", "Slave=old.Slave", "PreLoad"]))
+        (self.pkg / "Install").write_text(
+            '(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+            '(copyfiles (source "Game.inf") (newname "Game.info") (dest #dest)) '
+            '(tooltype (dest (tackon #dest "Game")) (settooltype "Slave") (settooltype "PreLoad")) '
+            '(tooltype (dest (tackon #dest "Game")) (settooltype "PreLoad" "") (settooltype "Slave" "Game.Slave")) '
+            '(tooltype (dest (tackon #dest "Game")) (setdefaulttool "WHDLoad") (setstack 10240) (noposition))')
+        res = ai.install(self.pkg, [self.disk1])
+        icon = res.files["Game/Game.info"]
+        tool, tts, _s, _e = ai.icon_info(icon)
+        self.assertEqual((tool, tts), ("WHDLoad", ["(icon by x)", "PreLoad", "Slave=Game.Slave"]))
+        self.assertEqual(struct.unpack_from(">I", icon, 74)[0], 10240)
+        self.assertTrue(icon.endswith(b"TRAILER"))                         # (what follows - an OS3.5 image - is kept)
+
+    def test_amigados_patterns(self) -> None:
+        rx = ai.pattern_regex("~(#?.info|l)")
+        self.assertTrue(rx.fullmatch("level1"))
+        self.assertFalse(rx.fullmatch("game.INFO"))
+        self.assertTrue(ai.pattern_regex("(intro|main)").fullmatch("Main"))
+        self.assertTrue(ai.pattern_regex("BB.#?").fullmatch("bb.ani"))
+
+
+AMIGA = platforms.get_platform("Commodore Amiga")
+GAMES = "Commodore Amiga - Games - [ADF]"
+
+
+class PreferWhdloadVersions(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(self.tmp)})
+        env.start()
+        self.addCleanup(env.stop)
+        whdready.clear_cache()
+        self.addCleanup(whdready.clear_cache)
+
+    def kept(self, names: list[str], **changes) -> list[str]:
+        items = [Item(key=i, dat=GAMES, rom=Rom(name=n + ".adf", size=1, crc="", md5="", sha1="", game=n, dat=GAMES), style="tosec",
+                      path=Path(n), member=None) for i, n in enumerate(names, 1)]
+        sel = library.select(items, replace(library.default_profile(AMIGA), languages=(), **changes), AMIGA)
+        return [n for k, n in enumerate(names, 1) if sel.decisions[k].action == KEEP]
+
+    def test_the_version_whdload_can_install_is_kept(self) -> None:
+        names = ["Zap (1993)(Acme)[cr FLT]", "Zap (1993)(Acme)[cr PDX]"]
+        self.assertEqual(self.kept(names), ["Zap (1993)(Acme)[cr FLT]"])                 # (the usual order: the name)
+        whdready.record({whdready.key_of(["Zap (1993)(Acme)[cr PDX].adf"]): {"ok": True, "archive": "Zap.lha", "reason": ""}})
+        self.assertEqual(self.kept(names), ["Zap (1993)(Acme)[cr PDX]"])
+        self.assertEqual(self.kept(names, prefer_whdload=False), ["Zap (1993)(Acme)[cr FLT]"])
+
+    def test_the_rule_is_on_by_default_for_the_amiga_only(self) -> None:
+        self.assertTrue(library.default_profile(AMIGA).prefer_whdload)
+        self.assertIn("prefer_whdload", library.applicable_fields(AMIGA))
+        self.assertNotIn("prefer_whdload", library.applicable_fields(platforms.get_platform("Nintendo Game Boy Advance")))
+
+    def test_the_versions_of_a_game_are_listed_for_the_check(self) -> None:
+        names = ["Zap (1993)(Acme)(Disk 1 of 2)[cr FLT]", "Zap (1993)(Acme)(Disk 2 of 2)[cr FLT]", "Zap (1993)(Acme)[cr PDX]"]
+        items = [Item(key=i, dat=GAMES, rom=Rom(name=n + ".adf", size=1, crc="", md5="", sha1="", game=n, dat=GAMES), style="tosec",
+                      path=Path(n), member=None) for i, n in enumerate(names, 1)]
+        out = library.variant_sets(items, replace(library.default_profile(AMIGA), languages=()), AMIGA)
+        self.assertEqual(len(out), 1)
+        title, sets = out[0]
+        self.assertEqual(title, "Zap")
+        self.assertEqual(sorted(len(s) for s in sets), [1, 2])
+
+
+if __name__ == "__main__":
+    unittest.main()

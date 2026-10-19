@@ -2897,3 +2897,27 @@ extension. The Overview card says *found*, the Library card *kept*.
   downloaded), `POST /api/whdload/download` (`titles` or `all`; a job, one download at a time, 0.3 s apart). UI: the *WHDLoad installs*
   section of the Amiga Files page (`Whd` in app.js).
 
+**AMENDMENT 42 (v0.3) — WHDLoad installs made here; prefer the version WHDLoad can install.**
+* `romorg/adf.py`: AmigaDOS (OFS / FFS) disks in ADF images: label, files, read.
+* `romorg/amigainstall.py`: the Amiga Installer language (S-expressions; `set`, `procedure`, `if`/`select`/`while`/`until`,
+  `copyfiles` with AmigaDOS patterns, `askdisk`, `exists`, `tackon`, `run` ...). Volumes: the ADFs by disk label, `":file"` / `DF0:`
+  = the disk that has the file (an `askdisk` "inserts" its disk), `MemDisk` for files of a CD; `WORK:` = the result in memory; the
+  package = the current drawer; `@app-name` from the Install icon's `APPNAME`. Questions get their defaults (a "which version"
+  question: each version is tried, `Package.install`); `run` knows the harmless commands, does `DIC` from the ADF and refuses
+  RawDIC / Patcher / xfdDecrunch (`InstallError` with the reason). `write_lha`: level 1, stored, as WHDLoad archives.
+* `whdinstalls.package`: install packages kept in `whdinstalls/packages/`. `romorg/whdready.py`: `{disk names: ok, reason}` in
+  `whdinstalls/ready.json`. `library.variant_sets`: the complete versions of each game (what the best-variant rule chooses among);
+  `LibraryProfile.prefer_whdload` (default on, Amiga best-variant DATs): `_pick_best` puts a ready version after the language rank.
+  Not in `totals.profile_signature` (which version, not how many games). `POST /api/whdload/check` (job `whdcheck`).
+* What makes an install boot in PUAE, found by booting builds headless (RetroArch `--max-frames-ss`): PUAE's WHDLoad helper starts
+  the icon `<slave name>.info`, and WHDLoad takes `Slave=` and the default tool from it, so `tooltype` is done for real
+  (`edit_icon` / `icon_info`: an Amiga DiskObject's default tool, tooltypes, stack, position). Empty drawers the install makes (save
+  drawers) are written to the .lha; `DIC` takes `SIZE=$hex` and leaves `SKIPTRACK` tracks empty.
+* The install's hard disk is `RomorgHD:` (`WORK:`, `SYS:` ... are it unless a floppy has that label: Ninja Mission's disk is "Work").
+  A disk that is no AmigaDOS disk is a `RawDisk`: DIC images it, a script that reads files from it is told why it cannot. `DF0:`
+  before any `askdisk` is the first disk. Versions are tried in order: those whose text names the number of disks ("AGA version (5
+  disks)"), the default, the others; the CD versions only for a CD's files (`Package.install(cd=...)`; the check passes it from the
+  disk names), as floppies made into the CD version install a game that is not theirs.
+* `Matcher`: an install title with alternatives ("Prince of Persia / Prince de Perse") is each of them; a short title of two words
+  or more matches a long one joined by meets / in / and / versus ("Captain Fizz Meets the Blaster-Trons"), not a compilation ("&").
+

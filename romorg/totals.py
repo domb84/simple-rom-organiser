@@ -42,6 +42,7 @@ def profile_signature(profile: library.LibraryProfile) -> str:
     rules.pop("delete_converted", None)
     rules.pop("prefer_saved", None)        # (nor which release of a game with saves is kept)
     rules.pop("prefer_editions", None)     # (nor which release of a game: an edition or the plain one)
+    rules.pop("prefer_whdload", None)      # (nor which version of an Amiga game: one WHDLoad can install)
     blob = json.dumps(rules, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 

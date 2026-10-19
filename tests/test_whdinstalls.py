@@ -19,7 +19,9 @@ ROW = ('<TR><TD ALIGN=CENTER><A HREF="{arc}">{title}</A></TD><TD><A HREF="x.html
        '<TD ALIGN=CENTER><A HREF="http://hol.abime.net/{hol}">{hol}</A></TD><TD></TD><TD></TD><TD></TD></TR>')
 INSTALLS = [("Turrican.lha", "Turrican"), ("Pushover.lha", "Pushover"), ("SensibleSoccer.lha", "Sensible Soccer"),
             ("SensibleSoccerCD32.lha", "Sensible Soccer CD&sup3;&sup2;"), ("Exile.lha", "Exile"), ("Cadaver.lha", "Cadaver"),
-            ("ReturnOfTheJedi.lha", "Return of the Jedi"), ("StarWars.lha", "Star Wars")]
+            ("ReturnOfTheJedi.lha", "Return of the Jedi"), ("StarWars.lha", "Star Wars"),
+            ("PrinceOfPersia.lha", "Prince of Persia / Prince de Perse"), ("CaptainFizz.lha", "Captain Fizz"), ("Lemmings.lha", "Lemmings"),
+            ("ClassicArcadia.lha", "Classic Arcadia")]
 PAGE = "<TABLE>" + "".join(ROW.format(arc=a, title=t, size=90000 + n, hol=100 + n) for n, (a, t) in enumerate(INSTALLS)) + "</TABLE>"
 
 
@@ -49,6 +51,12 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertEqual(self.match("Sensible Soccer"), ("SensibleSoccer.lha", "title"))          # (not the CD32 one)
         self.assertEqual(self.match("Cadaver - The Last Supper"), ("Cadaver.lha", "main title"))
         self.assertEqual(self.match("Star Wars - Return of the Jedi"), ("ReturnOfTheJedi.lha", "subtitle"))
+
+    def test_another_title_of_the_install_and_a_short_title(self) -> None:
+        self.assertEqual(self.match("Prince de Perse"), ("PrinceOfPersia.lha", "title"))
+        self.assertEqual(self.match("Captain Fizz Meets the Blaster-Trons"), ("CaptainFizz.lha", "short title"))
+        self.assertIsNone(self.match("Lemmings and Friends"))                                     # (one word: too short to tell)
+        self.assertIsNone(self.match("Classic Arcadia & Baby Arcadia"))                          # (two games on one disk)
 
     def test_an_add_on_disk_and_an_unknown_game_have_none(self) -> None:
         self.assertIsNone(self.match("Exile - Discovery Disk"))

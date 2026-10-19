@@ -596,7 +596,7 @@
   const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
     m3u: "Playlists", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums",
-    whdload: "WHDLoad installs" };
+    whdload: "WHDLoad installs", whdcheck: "WHDLoad versions" };
 
 
   const UNMATCHED = "_unmatched";
@@ -1671,10 +1671,14 @@
       const all = el("button", { class: "btn btn-primary", text: todo ? `Download all (${fmt(todo)})` : "All downloaded", "data-needs-idle": "",
         on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, all: true }) } });
       if (!todo) all.dataset.blocked = "1";
+      const check = el("button", { class: "btn", text: "Check which versions WHDLoad can install", "data-needs-idle": "",
+        title: "For every game with an install and more than one version: fetch the install and try it on each version's disks (for the rule \u201cPrefer versions WHDLoad can install\u201d)",
+        on: { click: () => Jobs.start("/api/whdload/check", { platform: this.platform }) } });
       body.replaceChildren(
         el("p", { class: "muted small", text: `An install is a game's WHDLoad slave, installer and icons - no game data (from the list of ${fmt(d.installs)} installs on whdload.de, ${d.fetched}). `
           + "It is unpacked next to the game's disks, in a folder named \u201c<game> (WHDLoad install)\u201d: run its installer with the disks to put the game on a hard drive." }),
-        el("div", { class: "row" }, all),
+        el("div", { class: "row" }, all, check),
+        el("p", { class: "muted small", text: "The check tries each game's install on the disks of each of its versions, so that the rule \u201cPrefer versions WHDLoad can install\u201d keeps a version WHDLoad can be installed from. It fetches one install per game (kept for later) and can take a while." }),
         this.list());
       Jobs.setRunning(Jobs.running);
     },
@@ -1686,7 +1690,7 @@
           .map(([v, t]) => el("option", { value: v, text: t, selected: this.show === v ? "" : null })));
       const search = el("input", { class: "input grow", type: "search", id: "whd-search", placeholder: "Search games", value: this.q, "aria-label": "Search games",
         on: { input: (e) => { this.q = e.target.value; clearTimeout(this.qt); this.qt = setTimeout(() => { this.render(); const s = document.getElementById("whd-search"); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }, 250); } } });
-      const HOW = { title: "", spelling: "same letters", "other title": "another title of the game", subtitle: "by its subtitle", "main title": "by its main title" };
+      const HOW = { title: "", spelling: "same letters", "other title": "another title of the game", subtitle: "by its subtitle", "main title": "by its main title", "short title": "by its short title" };
       const body = el("tbody", {}, ...shown.slice(0, this.limit).map((g) => {
         const i = g.install;
         const info = i ? el("a", { href: `https://www.whdload.de/games/${i.archive.replace(/\.lha$/i, ".html")}`, target: "_blank", rel: "noopener", text: i.title }) : el("span", { class: "muted", text: "none" });
@@ -2743,7 +2747,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
     convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
@@ -4612,6 +4616,14 @@
         bad.length ? "error" : "ok", bad.length ? 12000 : undefined);
     }
     await Whd.load();
+  };
+
+  Jobs.handlers.whdcheck = async (job) => {
+    const r = job.result || {};
+    if (job.status === "done") {
+      toast(`WHDLoad versions: ${nPlural(r.ready_games || 0, "game has", "games have")} a version WHDLoad can install (${fmt(r.checked || 0)} versions of ${nPlural(r.games || 0, "game", "games")} tried)${(r.failed || []).length ? `; ${r.failed.length} installs could not be fetched` : ""}`, "ok", 9000);
+    }
+    await refreshScan();
   };
 
   Jobs.handlers.retroarch = async (job) => {

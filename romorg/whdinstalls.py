@@ -36,7 +36,7 @@ FOLDER_SUFFIX = " (WHDLoad install)"
 ProgressFn = Callable[[int, int, str], None]
 
 __all__ = ["CATALOGUE_URL", "MARKER", "parse_catalogue", "load", "db_info", "check_update", "download_and_build", "Matcher",
-           "download_install", "installed_in", "WhdInstallError"]
+           "download_install", "installed_in", "package", "WhdInstallError"]
 
 
 class WhdInstallError(Exception):
@@ -167,6 +167,9 @@ def _plain(title: str) -> str:
     return title
 
 
+_JOIN_WORDS = {"meets", "in", "and", "versus", "vs"}   # (what joins a game's short title to the rest of a long one)
+
+
 class Matcher:
     """Which install a game title has (``platform``: whose alternate titles count, e.g. ``"Commodore Amiga"``)."""
 
@@ -176,10 +179,11 @@ class Matcher:
         self.by: dict[str, list[dict[str, Any]]] = {}
         self.squashed: dict[str, list[dict[str, Any]]] = {}
         for i in installs:
-            k = self._node(_plain(i["title"]))
-            if k:
-                self.by.setdefault(k, []).append(i)
-                self.squashed.setdefault(k.replace(" ", ""), []).append(i)
+            for name in _plain(i["title"]).split(" / "):     # ("Prince of Persia / Prince de Perse": either title)
+                k = self._node(name)
+                if k:
+                    self.by.setdefault(k, []).append(i)
+                    self.squashed.setdefault(k.replace(" ", ""), []).append(i)
         self.groups: dict[str, list[dict[str, Any]]] = {}
         self.table = alttitles.table(platform) if platform is not None else {}
         for k, v in self.by.items():
@@ -216,6 +220,13 @@ class Matcher:
             kh = self._node(head)
             if len(kh) > 3 and kh in self.by:
                 return self._best(self.by[kh], head), "main title"
+        words = [] if " & " in t else k.split(" ")             # ("Captain Fizz Meets the Blaster-Trons": the install "Captain Fizz";
+        for n in range(len(words) - 1, 1, -1):              #  not "Classic Arcadia & Baby Arcadia", two games on one disk)              # (a short title of two words at least)
+            if words[n] in _JOIN_WORDS:
+                head = " ".join(words[:n])
+                for key, table in ((head, self.by), (head.replace(" ", ""), self.squashed)):
+                    if len(key) > 3 and key in table:
+                        return self._best(table[key], t), "short title"
         return None
 
 
@@ -270,6 +281,29 @@ def download_install(install: dict[str, Any], dest_dir: Path, game: str = "", op
         shutil.rmtree(work, ignore_errors=True)
         raise
     return final
+
+
+def package(install: dict[str, Any], opener: Optional[Callable[[Any], Any]] = None) -> tuple[bytes, bool]:
+    """``(the install's .lha, downloaded now)``: from the cache (``whdinstalls/packages/``) or whdload.de (checked: an LhA archive)."""
+    from .lha import LhaError, LhaFile
+    cache = db_path().parent / "packages" / install["archive"]
+    try:
+        data = cache.read_bytes()
+        LhaFile(data)
+        return data, False
+    except (OSError, LhaError):
+        pass
+    data = _fetch(BASE_URL + install["archive"], opener=opener)
+    try:
+        LhaFile(data)
+    except LhaError as exc:
+        raise WhdInstallError(f"{install['archive']} is not a readable install archive ({exc})") from None
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".pkg-", dir=cache.parent)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, cache)
+    return data, True
 
 
 def installed_in(folder: Path) -> dict[str, dict[str, Any]]:

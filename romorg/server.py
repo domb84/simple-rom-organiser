@@ -299,7 +299,8 @@ LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "dupl
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
-                "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles")
+                "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles",
+                "prefer_whdload")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -2586,6 +2587,79 @@ class App:
 
         return {"job": self.jobs.start("whdload", work, platform=platform.name).to_dict()}
 
+    def whdload_check(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """Find which versions of your Amiga games a WHDLoad install can be made from (for the rule "Prefer versions WHDLoad can
+        install"): for every game with an install and more than one complete version, the install is fetched (kept in a cache) and run
+        here on each version's disks. ``force``: check versions checked before again."""
+        body = body if isinstance(body, dict) else {}
+        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        whd, ready, inst, library = _mod("whdinstalls"), _mod("whdready"), _mod("amigainstall"), self._library_mod()
+        state = self._state_of(platform)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, f"Scan the {platform.name} folder first.", "scan_needed")
+        cat, matcher = self._whd_matcher(platform)
+        if cat is None:
+            raise ApiError(HTTPStatus.CONFLICT, "The list of WHDLoad installs has not been fetched yet (check for updates).",
+                           "whdinstalls_missing")
+        profile = self._profile(platform)
+        items = _mod("totals").user_items(state.result)
+        games = [(title, sets, hit[0]) for title, sets in library.variant_sets(items, profile, platform)
+                 if len(sets) > 1 and (hit := matcher.match(title))]
+        force = _bool_arg(body.get("force"), False)
+
+        def disk_bytes(it: Any) -> bytes:
+            if it.member:
+                with _mod("discarchive").open_member(Path(it.path), it.member) as f:
+                    return f.read()
+            return Path(it.path).read_bytes()
+
+        def work(job: Job) -> Any:
+            rows: dict[str, dict[str, Any]] = {}
+            n_ready = n_checked = 0
+            failed: list[dict[str, str]] = []
+            for n, (title, sets, install) in enumerate(games):
+                if job.cancel.is_set():
+                    break
+                job.report(n, len(games), f"WHDLoad: {title}")
+                todo = [s for s in sets if force or ready.is_ready(it.rom.name for it in s) is None]
+                if not todo:
+                    continue
+                try:
+                    lha, fetched = whd.package(install)
+                except Exception as exc:  # noqa: BLE001 - one install that cannot be fetched does not stop the others
+                    failed.append({"title": title, "error": str(exc) or type(exc).__name__})
+                    continue
+                any_ok = False
+                try:
+                    pkg = inst.Package(lha)
+                except Exception as exc:  # noqa: BLE001
+                    failed.append({"title": title, "error": str(exc) or type(exc).__name__})
+                    continue
+                with pkg:
+                    for s in todo:
+                        key = ready.key_of(it.rom.name for it in s)
+                        try:
+                            pkg.install([disk_bytes(it) for it in s],
+                                        cd=any(re.search(r"CD32|CDTV|CD rip", it.rom.name, re.I) for it in s))
+                            rows[key] = {"ok": True, "archive": install["archive"], "reason": ""}
+                            any_ok = True
+                        except Exception as exc:  # noqa: BLE001 - the reason is the result
+                            rows[key] = {"ok": False, "archive": install["archive"], "reason": (str(exc) or type(exc).__name__)[:300]}
+                        n_checked += 1
+                n_ready += any_ok
+                if fetched:
+                    time.sleep(0.3)                     # (one install at a time, a pause between: whdload.de is a small site)
+                if len(rows) >= 50:
+                    ready.record(rows)
+                    rows = {}
+            if rows:
+                ready.record(rows)
+            state.library_plans.clear()               # (the version a build keeps may be another one now)
+            job.report(len(games), len(games), "WHDLoad versions checked")
+            return {"action": "whdcheck", "games": len(games), "checked": n_checked, "ready_games": n_ready, "failed": failed}
+
+        return {"job": self.jobs.start("whdcheck", work, platform=platform.name).to_dict()}
+
     def updates_cancel(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return {"cancelled": bool(self.updates.cancel())}
 
@@ -2668,7 +2742,7 @@ class App:
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
                     "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-                    "combine_alt_titles"):
+                    "combine_alt_titles", "prefer_whdload"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -5877,6 +5951,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/ratings/download"): App.ratings_download,
     ("GET", "/api/whdload/installs"): App.whdload_installs,
     ("POST", "/api/whdload/download"): App.whdload_download,
+    ("POST", "/api/whdload/check"): App.whdload_check,
     ("POST", "/api/ratings/igdb"): App.ratings_igdb_save,
     ("POST", "/api/ratings/igdb/test"): App.ratings_igdb_test,
     ("GET", "/api/library/profile"): App.library_profile,

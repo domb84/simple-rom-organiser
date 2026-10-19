@@ -370,11 +370,11 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 # AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
 # modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
 APP_MODULES = (
-    "alttitles", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
+    "adf", "alttitles", "amigainstall", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
     "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "keyfiles", "lha", "libexport", "library", "m3u", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "redump", "retroarch", "rvz", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
-    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls",
+    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("index.html", "app.js", "style.css")

@@ -35,6 +35,15 @@ none. The list of installs is fetched with the other databases and kept for a we
 (WHDLoad's RawDIC reads their own disk format): the ADFs of a TOSEC collection are mostly cracked copies, which such an installer may not
 accept. (The separate *Commodore Amiga - WHDLoad* system of v0.2, which matched Retroplay's pre-installed packs, is gone.)
 
+**Prefer versions WHDLoad can install** (Amiga rule, on by default). Of a game's versions, the one its WHDLoad install can be made from
+is kept - after your language order, before cracked / chipset / newest. **Check which versions WHDLoad can install** (WHDLoad installs,
+on the Files page) finds them: for every game with an install and more than one version it fetches the install (kept in
+`whdinstalls/packages/`) and runs the install's own script here, on each version's disks (`romorg/amigainstall.py`: the Amiga
+Installer language, the floppies it asks for are your ADFs by disk label or by a file on them). A version whose disks are not AmigaDOS
+disks (a crack with its own loader), or whose install reads the original disks' own format (RawDIC), or needs an Amiga program
+(xfdDecrunch, Patcher), is no WHDLoad version; the reason is kept (`whdinstalls/ready.json`). The check takes a while (one install
+per game, a pause between downloads).
+
 **Sega Dreamcast, Sony PlayStation and Sony PlayStation 2 (Redump)** are the *folder per game* systems (one shared engine): `<system folder>/<Redump name>/<Redump name>.chd`
 plus the sidecar files next to it (see [Sega Dreamcast: CHD + Redump](#sega-dreamcast-chd--redump) and
 [Sony PlayStation / PlayStation 2](#sony-playstation--playstation-2-chd--redump)). CHD files are
