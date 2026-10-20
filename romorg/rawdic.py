@@ -74,8 +74,10 @@ def _sx32(v: int) -> int:
 
 
 # ---------------------------------------------------------------------- hunk files
-def load_hunks(data: bytes, cpu: Cpu, base: int) -> list[int]:
-    """Load an AmigaDOS executable into the 68000's memory from ``base`` up, relocated; returns the address of each hunk."""
+def load_hunks(data: bytes, cpu: Cpu, base: int, seglist: bool = False) -> list[int]:
+    """Load an AmigaDOS executable into the 68000's memory from ``base`` up, relocated; returns the address of each hunk.
+    ``seglist``: as LoadSeg lays it out - each hunk after a longword of its size and one BPTR to the next hunk's (the first's
+    BPTR is ``(addrs[0] - 4) >> 2``)."""
     u32 = lambda o: struct.unpack_from(">I", data, o)[0]
     if len(data) < 24 or u32(0) != 0x3F3:
         raise ImagerError("not an Amiga program (no hunk header)")
@@ -93,8 +95,14 @@ def load_hunks(data: bytes, cpu: Cpu, base: int) -> list[int]:
         sizes.append((v & 0x3FFFFFFF) * 4)
     addrs, at = [], base
     for s in sizes:
+        if seglist:
+            at += 8
         addrs.append(at)
         at = (at + s + 0x100 + 15) & ~15
+    if seglist:
+        for i, a in enumerate(addrs):
+            cpu.w32(a - 8, sizes[i] + 8)
+            cpu.w32(a - 4, ((addrs[i + 1] - 4) >> 2) if i + 1 < len(addrs) else 0)
     cur = -1
     pending: list[tuple[int, int, int]] = []                 # (hunk, offset, target hunk)
     while o + 4 <= len(data):

@@ -404,6 +404,36 @@ def package(install: dict[str, Any], opener: Optional[Callable[[Any], Any]] = No
     return data, True
 
 
+XFD_URL = "https://aminet.net/util/pack/xfdmaster.lha"
+
+
+def xfd_package(opener: Optional[Callable[[Any], Any]] = None) -> bytes:
+    """The XFD package (xfdmaster.library and its decrunchers, for installs that run xfdDecrunch): from the cache
+    (``whdinstalls/xfdmaster.lha``) or Aminet, once. It is "freely distributable for noncommercial use", kept whole and as it is."""
+    from .lha import LhaError, LhaFile
+    cache = db_path().parent / "xfdmaster.lha"
+    def good(data: bytes) -> bool:
+        try:
+            return any(e.name.replace("\\", "/").lower().endswith("libs/xfdmaster.library") for e in LhaFile(data).entries)
+        except LhaError:
+            return False
+    try:
+        data = cache.read_bytes()
+        if good(data):
+            return data
+    except OSError:
+        pass
+    data = _fetch(XFD_URL, opener=opener)
+    if not good(data):
+        raise WhdInstallError("the XFD package from Aminet is not what it should be (no xfdmaster.library in it)")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".xfd-", dir=cache.parent)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, cache)
+    return data
+
+
 def installed_in(folder: Path) -> dict[str, dict[str, Any]]:
     """``{archive: marker data + "folder"}`` of the installs downloaded into ``folder`` (its direct subfolders)."""
     out: dict[str, dict[str, Any]] = {}

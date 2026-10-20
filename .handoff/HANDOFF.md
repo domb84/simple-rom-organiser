@@ -192,6 +192,17 @@ Note: "[f AGA Fix]" was treated as an AGA version. Only `(AGA)` should count; Th
 - `make_whdknown.py` now also reads rawcheck (builds -> level 1, boots -> 3); the shipped list was rebuilt.
 - Not proven yet on real IPFs (none on the Deck). The IPF reader is checked against an IPF writer (sync / data elements, gap streams, start bit) and bit-exact AmigaDOS MFM. Next: the user's first SPS files - check them against the SPS DAT, run a RawDIC install from them, boot it.
 
+## SPS library, xfdDecrunch, matching, OpenRetro (2026-10-20)
+- SPS set (the user's `commodore-amiga-games-sps/`, 3,014 zips): all 5,571 IPFs match TOSEC's SPS DAT by checksum (276 under an older game name); my IPF reader read every one (CAPS and SPS encoders). `~/.cache/whdwork/spscheck/` (verify.jsonl, build.jsonl, boot.jsonl).
+- SPS builds: 2,111 of 2,555 paired releases build (574 through RawDIC on the real IPFs); then with xfdDecrunch 116 of the 133 that needed it.
+- `romorg/xfd.py`: the real xfdmaster.library (+ LIBS:xfd externals) in the 68000 interpreter; the XFD package is fetched from Aminet (`whdinstalls.xfd_package`), never shipped (licence: freely distributable, noncommercial, kept whole). Work copy: `~/.cache/whdwork/xfd/pkg/` (also the developer package with includes/autodocs). TOSEC copies that needed it: 613 of 773 build (rerun of the rest after the `run` fix in progress).
+- Matcher fixes (articles, umlauts, install main titles, editions, aliases): 53 TOSEC titles newly paired; only 9 of the top-500 multi-disk games really have no install. `~/.cache/whdwork/newpairs/` (559 copies, 376 build).
+- OpenRetro (`romorg/openretro.py`, `romorg/amigahw.py`): synced by the updater; joins 7 more title groups; machine per release (A500/A600/A1200/CD32) shown in the WHDLoad card. Raw dump for analysis: `~/.cache/whdwork/oagd/amiga.json`.
+- Boot chain (`~/.cache/whdwork/bootchain.sh`, resumable, runs again from where it stopped): SPS boots (gaps first) -> newpairs boots (`bootgen.py RUN_DIR=newpairs`) -> xfd TOSEC boots (`RUN_DIR=xfd`). After it: `make_whdknown.py` should also read spscheck/boot.jsonl, newpairs/boot.jsonl and xfd/boot.jsonl (not wired yet; SPS rows are keyed by zip, not TOSEC disk names - the shipped list needs an IPF section or the SPS names).
+- Boot chain finished (2026-10-20 18:40; ran as a temporary user systemd service across power cuts, removed after): SPS 1,567 of 1,745 games boot (679 of 806 gaps); newpairs 45 of 63; xfd TOSEC 73 of 89; fixups 1 of 4. WHDLoad installs with a booting copy: 1,019 -> 1,793 of 2,843. `romorg/whdknown.json.gz` rebuilt from everything (20,330 sets, SPS releases keyed by the names the app gives their IPFs).
+- Results files survive a power cut: `~/.cache/whdwork/jsonlsafe.py` (boot stages clean a damaged last line at start).
+- Not committed yet (as of writing): xfd, OpenRetro, amigahw, foreach / Join / xadUnFile / run joining, UI column, rebuilt whdknown, docs AMENDMENT 44/45. Full suite (1,681), pyz, AppImage, smoke test pass.
+
 ## Cannon Fodder floppy from cracked ADFs (2026-10-19)
 - The RawDIC imager (source: github.com/wepl/winstalls/games/CannonFodder, copied to `~/.cache/whdwork/cannonfodder/cfsrc`) reads Sensible's SOS filesystem.
   - It saves all files except fload/FODDERS/disk1/disk2/disk2.raw/disk3, RNC1-unpacks FODDERC into `fodderc`, and builds `fodder.rel` by diffing FODDERC ($80000 build) against FODDERF ($200000 build).

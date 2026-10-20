@@ -9,7 +9,9 @@ Where the titles come from (no download of its own, both are there for other thi
 * the ratings index (LaunchBox): a game has a database id, its name and its alternate names (``alt`` rows); every name of one id is one
   game;
 * GameTDB's Wii U list: a disc id is a game code, a region letter and a publisher (``ALZE01`` / ``ALZJ01`` / ``ALZP01``); the ids that
-  differ only in the region letter are one game.
+  differ only in the region letter are one game;
+* the OpenRetro database (the Amiga): a game and the releases it was made of, by disk checksum - the titles TOSEC files them under
+  ("Der Clou!" / "Clue!", "Detroit" / "Rüsselsheim") are one game. A compilation's title ("APB & Xybots") joins nothing.
 
 A title is compared in the ratings' normal form (case, punctuation, articles, accents and roman numerals do not count). A name two games
 share in the index (two ids) joins nothing. A group of titles is known by a key of its own (``\\x00`` + its first title), so it can never
@@ -98,11 +100,24 @@ def _gametdb_names(kinds: tuple[str, ...], path: Any) -> list[tuple[str, str]]:
 _GAMETDB_KINDS = {"Nintendo Wii U": ("wiiu", "wiiu_disc")}
 
 
-def _build(lb: str, platform_name: str, rpath: Any, gpath: Any) -> dict[str, list[str]]:
+def _openretro_names(platform_name: str, opath: Any) -> list[tuple[str, str]]:
+    """``(title, game id)`` of OpenRetro's games (the Amiga's), without compilations' titles."""
+    if platform_name != "Commodore Amiga" or opath is None:
+        return []
+    from . import openretro
+    db = openretro.database(opath)
+    if db is None:
+        return []
+    return [(t, g) for t, g in db.titles() if not re.search(r"\s(?:&|\+|and)\s", t, re.IGNORECASE)]
+
+
+def _build(lb: str, platform_name: str, rpath: Any, gpath: Any, opath: Any = None) -> dict[str, list[str]]:
     """``{group key: [normal titles]}`` of the groups of two or more titles."""
-    owners: dict[str, set] = {}                         # normal title -> the games (("lb", id) / ("gt", code)) it names
+    owners: dict[str, set] = {}                         # normal title -> the games (("lb", id) / ("gt", code) / ("or", id)) it names
     for name, dbid in _lb_names(lb, rpath) if lb else ():
         owners.setdefault(node(name), set()).add(("lb", dbid))
+    for name, gid in _openretro_names(platform_name, opath):
+        owners.setdefault(node(name), set()).add(("or", gid))
     kinds = _GAMETDB_KINDS.get(platform_name)
     if kinds:
         for name, code in _gametdb_names(kinds, gpath):
@@ -122,6 +137,8 @@ def _build(lb: str, platform_name: str, rpath: Any, gpath: Any) -> dict[str, lis
         lbs = [g for g in games if g[0] == "lb"]
         if len(lbs) > 1:                                # (a name two LaunchBox games share joins nothing)
             continue
+        if len([g for g in games if g[0] == "or"]) > 1:   # (one two OpenRetro games share: OpenRetro's say about it does not count)
+            games = {g for g in games if g[0] != "or"}
         first = find(("t", key))
         for g in games:
             parent[find(g)] = first
@@ -144,8 +161,9 @@ def groups(platform: Any) -> dict[str, list[str]]:
     lb = ratings.lb_platform(name)
     if not lb and name not in _GAMETDB_KINDS:
         return {}
+    from . import openretro
     rpath, gpath = ratings.index_path(ratings.default_store().directory), gametdb.db_path()
-    return _build(lb, name, rpath, gpath)
+    return _build(lb, name, rpath, gpath, openretro.db_path())
 
 
 def table(platform: Any) -> dict[str, str]:
@@ -155,8 +173,9 @@ def table(platform: Any) -> dict[str, str]:
     lb = ratings.lb_platform(name)
     if not lb and name not in _GAMETDB_KINDS:
         return {}
+    from . import openretro
     rpath = ratings.index_path(ratings.default_store().directory)
-    sig = _signature([rpath, gametdb.db_path()])
+    sig = _signature([rpath, gametdb.db_path(), openretro.db_path()])
     ck = f"{rpath}|{name}"
     with _LOCK:
         hit = _CACHE.get(ck)
@@ -175,7 +194,8 @@ def _sig_now() -> tuple:
     now = time.monotonic()
     if _SIG is not None and now - _SIG[0] < 0.5:
         return _SIG[1]
-    sig = _signature([ratings.index_path(ratings.default_store().directory), gametdb.db_path()])
+    from . import openretro
+    sig = _signature([ratings.index_path(ratings.default_store().directory), gametdb.db_path(), openretro.db_path()])
     _SIG = (now, sig)
     return sig
 

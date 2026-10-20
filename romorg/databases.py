@@ -22,6 +22,7 @@ GROUP_OTHER = "Other"
 TOSEC_URL = "https://www.tosecdev.org/downloads"
 NOINTRO_URL = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
 WHDLOAD_INSTALLS = "https://www.whdload.de/games/all.html"
+OPENRETRO_URL = "https://openretro.org/"
 REDUMP_URL = "http://redump.org/datfile/"
 REDUMP_SLUG = {"Sega - Dreamcast": "dc", "Sony - PlayStation": "psx", "Sony - PlayStation 2": "ps2"}
 REDUMP_MIRROR = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
@@ -79,6 +80,10 @@ def describe(u: Dict[str, Any]) -> List[Dict[str, Any]]:
     wi = u.get("whdinstalls") or {}
     rows.append(_row(GROUP_OTHER, "WHDLoad", f"Game installs{' (%s)' % wi['titles'] if wi.get('titles') else ''}", WHDLOAD_INSTALLS,
                      ["Commodore Amiga"], wi, note="the list of installs (titles, archives); an install is downloaded only when you ask for it"))
+    orr = u.get("openretro") or {}
+    rows.append(_row(GROUP_OTHER, "OpenRetro", f"Amiga game database{' (%s games)' % orr['titles'] if orr.get('titles') else ''}",
+                     OPENRETRO_URL, ["Commodore Amiga"], orr,
+                     note="which releases are one game, what each needs (model, chipset, Kickstart); the FS-UAE Launcher's database"))
     r = u.get("ratings") or {}
     rows.append(_row(GROUP_OTHER, "LaunchBox", f"Community ratings{' (%s games)' % r['games'] if r.get('games') else ''}", LAUNCHBOX_URL,
                      [p.name for p in platforms.list_platforms()], r, note="optional: fetched when a rating filter needs it"))

@@ -857,7 +857,39 @@ class Cpu:
         cc = (op >> 8) & 15
         d8 = op & 0xFF
         test = self.cond_fn(cc)
-        if 0 < d8 < 0xFF and cc >= 2:                        # (the short branches: most of them)
+        if 0 < d8 < 0xFF and cc in (4, 5, 6, 7, 10, 11):     # (BCC BCS BNE BEQ BPL BMI, short: the most frequent of all)
+            disp8 = _sx8(d8)
+            flag, want = {4: ("c", 0), 5: ("c", 1), 6: ("z", 0), 7: ("z", 1), 10: ("n", 0), 11: ("n", 1)}[cc]
+            if flag == "z":
+                if want:
+                    def beq() -> None:
+                        if self.z:
+                            self.pc += disp8
+                    return beq
+                def bne() -> None:
+                    if not self.z:
+                        self.pc += disp8
+                return bne
+            if flag == "c":
+                if want:
+                    def bcs() -> None:
+                        if self.c:
+                            self.pc += disp8
+                    return bcs
+                def bcc_() -> None:
+                    if not self.c:
+                        self.pc += disp8
+                return bcc_
+            if want:
+                def bmi() -> None:
+                    if self.n:
+                        self.pc += disp8
+                return bmi
+            def bpl() -> None:
+                if not self.n:
+                    self.pc += disp8
+            return bpl
+        if 0 < d8 < 0xFF and cc >= 2:                        # (the other short branches)
             disp8 = _sx8(d8)
 
             def bcc_s() -> None:
@@ -1140,9 +1172,63 @@ class Cpu:
         kind, left = (op >> 3) & 3, bool(op & 0x100)
         cnt_reg, ir, dreg = (op >> 9) & 7, bool(op & 0x20), op & 7
 
+        d, m, msb, bits = self.d, _MASK[size], _MSB[size], 8 * size
+        keep = ~m & 0xFFFFFFFF
+        if not ir:                                           # (an immediate count: the common case, made without the loop)
+            n = cnt_reg or 8
+            if kind == 1 and left:                           # LSL
+                def lsl() -> None:
+                    v = d[dreg] & m
+                    r = (v << n) & m
+                    d[dreg] = (d[dreg] & keep) | r
+                    self.c = self.x = (v >> (bits - n)) & 1
+                    self.n = 1 if r & msb else 0
+                    self.z = 0 if r else 1
+                    self.v = 0
+                return lsl
+            if kind == 1:                                    # LSR
+                def lsr() -> None:
+                    v = d[dreg] & m
+                    r = v >> n
+                    d[dreg] = (d[dreg] & keep) | r
+                    self.c = self.x = (v >> (n - 1)) & 1
+                    self.n = 1 if r & msb else 0
+                    self.z = 0 if r else 1
+                    self.v = 0
+                return lsr
+            if kind == 3:                                    # ROL / ROR
+                k = n % bits
+                def rot() -> None:
+                    v = d[dreg] & m
+                    if left:
+                        r = ((v << k) | (v >> (bits - k))) & m if k else v
+                        self.c = r & 1
+                    else:
+                        r = ((v >> k) | (v << (bits - k))) & m if k else v
+                        self.c = 1 if r & msb else 0
+                    d[dreg] = (d[dreg] & keep) | r
+                    self.n = 1 if r & msb else 0
+                    self.z = 0 if r else 1
+                    self.v = 0
+                return rot
+            if kind == 2:                                    # ROXL / ROXR: a rotation of X and the operand, bits + 1 wide
+                w, wm = bits + 1, (1 << (bits + 1)) - 1
+                k = n % w
+                def rox() -> None:
+                    val = (self.x << bits) | (d[dreg] & m)
+                    if k:
+                        val = ((val << k) | (val >> (w - k))) & wm if left else ((val >> k) | (val << (w - k))) & wm
+                    r = val & m
+                    d[dreg] = (d[dreg] & keep) | r
+                    self.c = self.x = val >> bits
+                    self.n = 1 if r & msb else 0
+                    self.z = 0 if r else 1
+                    self.v = 0
+                return rox
+
         def f() -> None:
-            count = (self.d[cnt_reg] & 63) if ir else (cnt_reg or 8)
-            self.put((0, dreg), size, self._shift(kind, left, self.d[dreg] & _MASK[size], count, size))
+            count = (d[cnt_reg] & 63) if ir else (cnt_reg or 8)
+            d[dreg] = (d[dreg] & keep) | self._shift(kind, left, d[dreg] & m, count, size)
         return f
 
     def _shift(self, kind: int, left: bool, v: int, count: int, size: int) -> int:
@@ -1186,17 +1272,14 @@ class Cpu:
             else:
                 v = ((v >> n) | (v << (bits - n))) & m if n else v
                 self.c = 1 if v & msb else 0
-        else:                                                # ROXL / ROXR
-            x = self.x
-            for _ in range(count):
-                if left:
-                    nx = 1 if v & msb else 0
-                    v = ((v << 1) | x) & m
-                else:
-                    nx = v & 1
-                    v = (v >> 1) | (msb if x else 0)
-                x = nx
-            self.c = self.x = x
+        else:                                                # ROXL / ROXR: a rotation of X and the operand, bits + 1 wide
+            w = bits + 1
+            k = count % w
+            val = (self.x << bits) | v
+            if k:
+                val = (((val << k) | (val >> (w - k))) if left else ((val >> k) | (val << (w - k)))) & ((1 << w) - 1)
+            v = val & m
+            self.c = self.x = val >> bits
         self._nz(v, size)
         return v
 

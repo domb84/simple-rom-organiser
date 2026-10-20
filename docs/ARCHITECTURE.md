@@ -2904,7 +2904,7 @@ extension. The Overview card says *found*, the Library card *kept*.
   = the disk that has the file (an `askdisk` "inserts" its disk), `MemDisk` for files of a CD; `WORK:` = the result in memory; the
   package = the current drawer; `@app-name` from the Install icon's `APPNAME`. Questions get their defaults (a "which version"
   question: each version is tried, `Package.install`); `run` knows the harmless commands, does `DIC` from the ADF and RawDIC
-  (AMENDMENT 43), refuses Patcher / xfdDecrunch (`InstallError` with the reason). `write_lha`: level 1, stored, as WHDLoad archives.
+  (AMENDMENT 43) and xfdDecrunch (AMENDMENT 44), refuses Patcher (`InstallError` with the reason). `write_lha`: level 1, stored, as WHDLoad archives.
 * `whdinstalls.package`: install packages kept in `whdinstalls/packages/`. `romorg/whdready.py`: `{disk names: ok, reason}` in
   `whdinstalls/ready.json`. `library.variant_sets`: the complete versions of each game (what the best-variant rule chooses among);
   `LibraryProfile.prefer_whdload` (default on, Amiga best-variant DATs): `_pick_best` puts a ready version after the language rank.
@@ -2962,4 +2962,56 @@ extension. The Overview card says *found*, the Library card *kept*.
 * `amigainstall.floppy`: a disk for an install is an ADF or an IPF; it keeps its tracks (`.tracks`). An IPF whose tracks are all
   standard is also an ADF (files, DIC); otherwise a `RawDisk` only RawDIC reads. `RawDIC SLAVE=x.islave` in a `run` runs the
   imager on the set's disks in order (disk 1 = the first), `IGNOREERRORS` as RawDIC; its files go in the drawer of the `CD`.
+
+**AMENDMENT 44 (v0.3) — xfdDecrunch, install matching for titles that differ, IPFs with a protection track.**
+* `romorg/xfd.py`: the XFD package's own xfdmaster.library and external decrunchers (`LIBS:xfd/`) run in the 68000 interpreter:
+  LoadSeg into real segment lists (`rawdic.load_hunks(seglist=True)`), the RomTag (auto-init: `MakeLibrary`, `InitStruct`, the init
+  routine; or the init routine calling MakeLibrary), `Open`; exec (memory, MakeLibrary, InitStruct, OpenLibrary ...) and dos
+  (Lock / Examine / ExNext of `LIBS:xfd`, LoadSeg) as it asks. `Decruncher.decrunch`: `xfdAllocObject`, `xfdRecogBuffer` with
+  `XFDFF_RECOGEXTERN`, `xfdDecrunchBuffer`, `TargetBufSaveLen` bytes - what xfdDecrunch saves; absolute-address crunchers refused
+  (xfdDecrunch would add a header). The last 64 results kept by SHA-1 (a game's copies share their packed files).
+* The XFD package is "freely distributable for noncommercial use" (kept whole): not in the app; `whdinstalls.xfd_package` fetches
+  `aminet.net/util/pack/xfdmaster.lha` once into `whdinstalls/xfdmaster.lha` (checked: it holds xfdmaster.library).
+  `amigainstall` takes a `decruncher` (a function giving a `Decruncher`); the WHDLoad check passes one. `xfdDecrunch SOURCE [DEST]
+  [ALL] [COPYALL] [NODIRS]`: a file, a drawer or a pattern; over itself without DEST; not packed: left (copied with COPYALL).
+* What the installs that stopped at xfdDecrunch need, measured: 90 of 92 files are packed programs (Imploder, PowerPacker 2.3 - 4.0,
+  Rob Northen ProPack, CrunchMania, Titanics, TNM, Super Cruncher, AMOS's ...); xfdmaster.library decrunched 34 of the first 36.
+* More of the install language: `run` joins all its strings into the command (`(run "xfdDecrunch " (tackon #dest "boot") " >CON:...")`),
+  `foreach` (drawer, pattern, forms; `@each-name`, `@each-type` 2 a drawer / -3 a file), `Join a b AS c`, and `xadUnFile[M]` for
+  what needs no XAD: an AmigaDOS disk image (`DIMG`, or an ADF-sized file with a DOS boot block) and an LhA archive, `FILE` pattern,
+  xadUnFileM's parts (a pattern) joined in name order; other archives (LZX ...) are an `InstallError`.
+* `Cpu` speed: shifts and rotates by an immediate count and the frequent short branches (BCC BCS BNE BEQ BPL BMI) have their own
+  closures (ROXL / ROXR as one rotation of X and the operand); still every SingleStepTests vector.
+* `whdinstalls.Matcher`: articles and umlauts do not stop a match (`loose`: no articles or spaces, ä both "a" and "ae"); an install's
+  title before ": " and after " In " / " Meets " (three words or more) find it (`parts`), but a title with a subtitle of its own
+  only when the subtitles share a word, and not an install whose subtitle is an edition of its own ("Football Manager: World Cup
+  Edition"); a TOSEC title's edition mark comes off (a season or year "'95-'96", "93", not "2000" or "01"; "Deluxe"), a "1" of a
+  series before the subtitle, the title after an ellipsis; an "... Edition" / "... Version" subtitle is the game's own in strict
+  mode; `_ALIASES` for renames no rule finds. Over all 4,042 TOSEC Amiga titles: 53 newly paired, none changed or lost.
+* An IPF with tracks in a game's own format (a protection track) is still its ADF for files (`AdfDisk(unreadable_tracks=...)`: a
+  block on such a track cannot be read); DIC fills such a track with zeros and logs it, as when its read error is ignored (Copylock
+  tracks: the slaves have the protection removed).
+
+**AMENDMENT 45 (v0.3) — The OpenRetro game database: one game across TOSEC's titles, what a release needs.**
+* `romorg/openretro.py`: the FS-UAE Launcher's database ("an open game configuration database for Amiga games with liberal usage
+  terms"), fetched as the launcher does: `openretro.org/api/sync/amiga/games?v=3&sync=<last id>`, pages of 500 records (sync id,
+  16-byte id, length, zlib JSON; empty = deleted). All of it the first time (about 45 pages, a minute), after that only what changed.
+  Kept in `openretro/amiga.json.gz` (about 2 MB): games (name, year, publisher, developer, players, Hall of Light / Lemon Amiga /
+  MobyGames pages, languages) and releases (the TOSEC name they were made from, the SHA-1 of their disks - not every file of an
+  installed game -, languages, protection, model, chipset, Kickstart, video, WHDLoad arguments). An "extra" database of the updater
+  (`autoupdate`, weekly like the WHDLoad list; the first start fetches it), a row on the Databases page. 3,697 games, 17,567
+  releases; it knows 40% of the TOSEC Amiga disks and 72% of the titles; little added since 2019.
+* `Database.release(sha1s)`: the release most of a set's disks belong to, with its game. `titles()`: each game's name (marks like
+  "[AGA]" off; "X: Y" also as "X - Y") and the titles of the releases it was made from.
+* `alttitles`: OpenRetro is a third source of a game's titles (the Amiga's): every title of one OpenRetro game is that game; a name two
+  of its games share counts for nothing (LaunchBox's say about that name stays), a compilation's title ("APB & Xybots") joins
+  nothing. On the TOSEC Amiga Games DAT: 126 combined games become 133 ("Realms of Arkania - Blade of Destiny" / "Das Schwarze Auge -
+  Die Schicksalsklinge", "Tower of Souls" / "Der Seelenturm", "Nicky Boum" / "Nicky Boom" ...), none lost.
+* `romorg/amigahw.py`: `requirements(names, release, slave)`: the strongest of TOSEC's tags ("(AGA)", "(OCS-AGA)", "(ECS)", "(A500)",
+  "(CD32)", "(NTSC)" ...), the OpenRetro release (model, chipset, Kickstart, video) and the WHDLoad slave's flags (`ReqAGA` bit 5,
+  `Req68020` bit 4 of `ws_Flags`; `slave_flags` reads the header, "WHDLOADS" 4 bytes into the code): chipset, model, Kickstart,
+  CPU, video, `machine` for the disks (CD32 / CDTV; AGA: A1200; ECS or Kickstart 2+: A600; else A500), `whdload` for an install
+  (CD32 or A1200), `sources`. Where TOSEC and OpenRetro both name a chipset they agree (all of the collection).
+* The WHDLoad card of the Library page shows each game's machine (its sources as a tooltip), year and publisher, and a protection
+  the game needs its manual / code wheel for.
 

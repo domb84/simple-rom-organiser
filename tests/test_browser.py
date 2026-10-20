@@ -1569,6 +1569,8 @@ class WhdloadInstallsTests(UiTestCase):
         self.page.eval("document.getElementById('ov-whdload').open = true")
         rows = "[...document.querySelectorAll('#ov-whdload tbody tr')].map(r => r.cells[0].textContent)"
         self.assertEqual(self.page.eval(rows), ["Alpha Quest", "Beta Blaster", "Zeta Zone"])
+        machines = "[...document.querySelectorAll('#ov-whdload tbody tr')].map(r => r.cells[2].textContent)"
+        self.assertTrue(all(m.startswith(("A500", "A600", "A1200", "CD32")) for m in self.page.eval(machines)), self.page.eval(machines))
         self.page.eval("(() => { const s = document.getElementById('whd-search'); s.value = 'beta'; s.dispatchEvent(new Event('input')); })()")
         self.page.wait(f"{rows}.length === 1", timeout=10)
         self.page.eval("(() => { const s = document.getElementById('whd-search'); s.value = ''; s.dispatchEvent(new Event('input')); })()")

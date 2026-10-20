@@ -483,6 +483,7 @@ class _Interp:
         self.log: list[str] = []
         self.choices: list[str] = []
         self.steps = 0
+        self.decruncher: Optional[Callable[[], Any]] = None  # (xfdDecrunch: gives a romorg.xfd.Decruncher; None - not here)
 
     # -- evaluation
     def ev(self, x: Any) -> Any:
@@ -597,6 +598,22 @@ class _Interp:
             guard += 1
             if guard > 100000:
                 raise InstallError("the install script loops without end")
+        return 0
+
+    def f_foreach(self, a: list) -> Any:
+        """``(foreach drawer pattern ...)``: the forms for each entry of the drawer the pattern matches, ``@each-name`` its name and
+        ``@each-type`` its kind (2 a drawer, -3 a file, as an AmigaDOS FileInfoBlock has them)."""
+        if len(a) < 2:
+            raise InstallError("foreach: a drawer and a pattern are needed")
+        drawer, pat = str(self.ev(a[0])), str(self.ev(a[1]))
+        rx = pattern_regex(pat or "#?")
+        for name, is_dir in list(self.fs.listing(drawer)):
+            if not rx.match(name):
+                continue
+            self.vars["@each-name"] = name
+            self.vars["@each-type"] = 2 if is_dir else -3
+            for f in a[2:]:
+                self.ev(f)
         return 0
 
     def f_until(self, a: list) -> Any:
@@ -894,7 +911,7 @@ class _Interp:
 
     def f_run(self, a: list) -> Any:
         plain, _o = self.opts(a)
-        cmd = str(self.ev(plain[0])) if plain else ""
+        cmd = "".join(str(self.ev(x)) for x in plain)       # (run "xfdDecrunch " (tackon #dest "boot") " >CON:...": one command)
         return self._shell(cmd)
 
     f_execute = f_run
@@ -935,8 +952,18 @@ class _Interp:
                 self._dic(cwd, args)
             elif word == "rawdic":
                 self._rawdic(cwd, args)
+            elif word in ("xadunfile", "xadunfilem"):
+                self._xad(cwd, args, multi=word == "xadunfilem")
+            elif word == "join":                            # (Join a b ... AS|TO c: the files one after another)
+                names = [x for x in args if not x.startswith(">")]
+                k = next((i for i, x in enumerate(names) if x.casefold() in ("as", "to")), None)
+                if k is None or k + 1 >= len(names):
+                    raise InstallError("join: no AS / TO")
+                self.fs.write(_join(cwd, names[k + 1]), b"".join(self.fs.read(_join(cwd, x)) for x in names[:k]))
             elif word == "patcher":
                 raise InstallError(f"this install reads the disks with {parts[0]} (the original disks' own format): not done here")
+            elif word in ("xfddecrunch", "xfddecrunchall") and self.decruncher is not None:
+                self._xfd(cwd, args)
             elif word in ("xfddecrunch", "xfddecrunchall", "unpack"):
                 raise InstallError(f"this install needs {parts[0]} to unpack a file (an Amiga program)")
             else:
@@ -957,6 +984,128 @@ class _Interp:
                     self.fs.write(_join(dest, e.name), arc.read(e))
         except LhaError as exc:
             raise InstallError(f"lha: {exc}") from None
+
+    _XFD_SWITCHES = {"all", "force", "clone", "nd", "nodirs", "na", "noask", "ls", "linksimple", "lp", "linkpro", "ca", "copyall",
+                     "sh", "striphunks", "ne", "noextern", "nx", "noxpkpwd", "quiet"}
+
+    def _xfd(self, cwd: str, args: list[str]) -> None:
+        """xfdDecrunch SOURCE [DEST] [ALL] [COPYALL] ...: each file the XFD package knows decrunched - over itself without DEST,
+        else into DEST (a drawer, or a file for a single source); the others left alone (copied with COPYALL)."""
+        from . import xfd
+        opt: dict[str, str] = {}
+        plain, switches = [], set()
+        for x in args:
+            if x.startswith(">"):
+                continue
+            k, eq, v = x.partition("=")
+            if eq:
+                opt[k.casefold()] = v
+            elif x.casefold() in self._XFD_SWITCHES:
+                switches.add(x.casefold())
+            else:
+                plain.append(x)
+        source = opt.get("source") or (plain[0] if plain else "")
+        dest = opt.get("dest") or (plain[1] if len(plain) > 1 else "")
+        if not source:
+            raise InstallError("xfdDecrunch: no file named")
+        deep = "all" in switches
+        flat = bool({"nd", "nodirs"} & switches)
+        copy_all = bool({"ca", "copyall"} & switches)
+        src = _join(cwd, source)
+        files: list[tuple[str, str]] = []                   # (path, path below the source drawer)
+        def walk(d: str, below: str) -> None:
+            for name, is_dir in self.fs.listing(d):
+                if is_dir:
+                    if deep:
+                        walk(_join(d, name), name if flat or not below else f"{below}/{name}")
+                else:
+                    files.append((_join(d, name), name if flat or not below else f"{below}/{name}"))
+        head, _, pat = source.replace("\\", "/").rpartition("/")
+        if any(c in pat for c in "#?*"):                    # (a pattern: the files of its drawer that match)
+            rx = pattern_regex(pat.replace("*", "#?"))
+            d = _join(cwd, head) if head else cwd
+            for name, is_dir in self.fs.listing(d):
+                if not is_dir and rx.match(name):
+                    files.append((_join(d, name), name))
+            many = True
+        elif self.fs.exists(src) == 2:
+            walk(src, "")
+            many = True
+        elif self.fs.exists(src) == 1:
+            files.append((src, src.replace(":", "/").rsplit("/", 1)[-1]))
+            many = False
+        else:
+            raise InstallError(f"xfdDecrunch: {source} is not there")
+        dst = _join(cwd, dest) if dest else ""
+        into_dir = bool(dst) and (many or self.fs.exists(dst) == 2)
+        try:
+            dec = self.decruncher()
+        except Exception as exc:  # noqa: BLE001 - the package that cannot be had is the reason
+            raise InstallError(f"xfdDecrunch: the XFD package is not available ({exc})") from None
+        for path, rel in files:
+            data = self.fs.read(path)
+            try:
+                got = dec.decrunch(data)
+            except xfd.XfdError as exc:
+                raise InstallError(f"xfdDecrunch {rel}: {exc}") from None
+            target = (_join(dst, rel) if into_dir else dst) if dst else path
+            if got is None:
+                if dst and copy_all:
+                    self.fs.write(target, data)
+                continue
+            self.fs.write(target, got[0])
+            self.log.append(f"xfdDecrunch {rel}: {got[1]}, {len(data)} -> {len(got[0])}")
+
+    def _xad(self, cwd: str, args: list[str], multi: bool) -> None:
+        """xadUnFile[M] [FROM] archive [DEST] drawer [DIMG] [FILE pattern]: the files of an archive - an AmigaDOS disk image (DIMG),
+        an LhA archive - into the drawer; xadUnFileM: an archive split in parts (a pattern: the parts in name order)."""
+        from .lha import LhaError, LhaFile
+        plain, opt, flags = [], {}, set()
+        it = iter(a for a in args if not a.startswith(">"))
+        for x in it:
+            k = x.casefold()
+            if k in ("from", "dest", "to", "file", "pass", "password"):
+                opt[k] = next(it, "")
+            elif k in ("dimg", "noabs", "quiet", "overwrite", "makedir", "noextern", "nokilldmp", "info", "list", "askuser", "nofont"):
+                flags.add(k)
+            else:
+                plain.append(x)
+        src = opt.get("from") or (plain.pop(0) if plain else "")
+        dest = opt.get("dest") or opt.get("to") or (plain.pop(0) if plain else cwd)
+        if not src:
+            raise InstallError("xadUnFile: no archive named")
+        head, _, pat = src.replace("\\", "/").rpartition("/")
+        if any(c in pat for c in "#?*"):
+            d = _join(cwd, head) if head else cwd
+            rx = pattern_regex(pat.replace("*", "#?"))
+            parts = sorted(n for n, is_dir in self.fs.listing(d) if not is_dir and rx.match(n))
+            if not parts:
+                raise InstallError(f"xadUnFile: no file {src}")
+            data = b"".join(self.fs.read(_join(d, n)) for n in (parts if multi else parts[:1]))
+        else:
+            data = self.fs.read(_join(cwd, src))
+        want = pattern_regex(opt["file"]) if opt.get("file") else None
+        out = _join(cwd, dest) if dest != cwd else cwd
+        files: list[tuple[str, bytes]] = []
+        if "dimg" in flags or (len(data) in (901120, 1802240) and data[:3] == b"DOS"):
+            try:
+                disk = AdfDisk(data)
+                files = [(path, disk.read(path)) for path, _size in disk.files()]
+            except AdfError as exc:
+                raise InstallError(f"xadUnFile: {src}: {exc}") from None
+        else:
+            try:
+                arc = LhaFile(data)
+                files = [(e.name.replace("\\", "/"), arc.read(e)) for e in arc.entries if not e.is_dir]
+            except (LhaError, ValueError):
+                raise InstallError(f"xadUnFile: {src} is an archive this app does not read (an LhA or an AmigaDOS disk it reads)") from None
+        n = 0
+        for path, body in files:
+            if want is not None and not want.match(path.rsplit("/", 1)[-1]):
+                continue
+            self.fs.write(_join(out, path), body)
+            n += 1
+        self.log.append(f"xadUnFile {src}: {n} files")
 
     def _rawdic(self, cwd: str, args: list[str]) -> None:
         """RawDIC: the install's imager (``SLAVE=x.islave``) run on the disks' tracks (disk 1, 2 ... in the order the set has them);
@@ -1147,7 +1296,8 @@ class Package:
             self.close()
             raise
 
-    def install(self, disks: list[Any], volumes: Optional[list[MemDisk]] = None, cd: Optional[bool] = None) -> InstallResult:
+    def install(self, disks: list[Any], volumes: Optional[list[MemDisk]] = None, cd: Optional[bool] = None,
+                decruncher: Optional[Callable[[], Any]] = None) -> InstallResult:
         """Each version the script names is tried; the first that installs wins (else the first reason it gave). The script's CD
         versions ("CD³² release") only for a CD's files (``cd``; by default: when ``volumes`` are given) - floppies made into the CD
         version would install a game that is not theirs."""
@@ -1157,7 +1307,7 @@ class Package:
             if v is not None and not cd and _CD_RE.search(self.names.get(v, "")):
                 continue
             try:
-                return install(self.dir, disks, v, volumes)
+                return install(self.dir, disks, v, volumes, decruncher=decruncher)
             except InstallError as exc:
                 first = first or exc
         raise first  # type: ignore[misc]
@@ -1186,8 +1336,10 @@ def install_archive(lha: bytes, disks: list[Any], volumes: Optional[list[MemDisk
         return pkg.install(disks, volumes)
 
 
-def install(package: Path, disks: list[Any], version: Optional[int] = None, volumes: Optional[list[MemDisk]] = None) -> InstallResult:
-    """Run the install script of ``package`` (the unpacked install's drawer, holding ``Install``) with the ADFs ``disks``."""
+def install(package: Path, disks: list[Any], version: Optional[int] = None, volumes: Optional[list[MemDisk]] = None,
+            decruncher: Optional[Callable[[], Any]] = None) -> InstallResult:
+    """Run the install script of ``package`` (the unpacked install's drawer, holding ``Install``) with the ADFs ``disks``.
+    ``decruncher``: gives a :class:`romorg.xfd.Decruncher` for a script that runs xfdDecrunch (None: such a script stops)."""
     package = Path(package)
     script = next((p for p in package.iterdir() if p.name.casefold() in ("install", "install-" + package.name.casefold())
                    or (p.name.casefold().startswith("install") and p.is_file() and not p.name.casefold().endswith(".info"))), None)
@@ -1200,6 +1352,7 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
     adfs = [floppy(d, n) for n, d in enumerate(disks)]
     fs = _Fs(package, adfs + list(volumes or ()))
     it = _Interp(fs, app, version)
+    it.decruncher = decruncher
     forms = _parse(script.read_text(encoding="latin-1"))
     try:
         for f in forms:

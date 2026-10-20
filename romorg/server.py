@@ -892,7 +892,7 @@ class App:
         if module is not None:
             try:
                 return module.UpdateManager(enabled=enabled, switchdb=_mod("switchdb"), gametdb=_mod("gametdb"),
-                                            whdinstalls=_mod("whdinstalls"))
+                                            whdinstalls=_mod("whdinstalls"), openretro=_mod("openretro"))
             except Exception:  # noqa: BLE001 - never stop the app from starting
                 traceback.print_exc()
         return _NoUpdates()
@@ -2523,10 +2523,13 @@ class App:
             if folders.reserved_of(parts) is not None:
                 continue                         # (a game the rules set aside: _excluded/, _superseded/ ... gets no install)
             t = tags.parse_name(rom.name, tags.STYLE_TOSEC)
-            row = games.setdefault(t.title.casefold(), {"title": t.title, "disks": [], "dir": str(Path(m.entry.path).parent)})
+            row = games.setdefault(t.title.casefold(), {"title": t.title, "disks": [], "sha1": [], "dir": str(Path(m.entry.path).parent)})
             row["disks"].append(rom.name)
+            row["sha1"].append(getattr(rom, "sha1", "") or "")
         installed: dict[str, dict[str, Any]] = {}
         rows = []
+        orr, hw = _optional_mod("openretro"), _optional_mod("amigahw")
+        odb = orr.database() if orr is not None else None
         for row in sorted(games.values(), key=lambda r: r["title"].casefold()):
             hit = matcher.match(row["title"]) if matcher is not None else None
             folder = row["dir"]
@@ -2538,10 +2541,18 @@ class App:
                 rel = os.path.relpath(folder, state.root)
             except ValueError:
                 rel = folder
+            release = odb.release(row["sha1"]) if odb is not None else None
+            needs = hw.requirements(row["disks"], release=release) if hw is not None else None
+            g = (release or {}).get("game_fields") or {}
             rows.append({"title": row["title"], "disks": len(row["disks"]), "dir": rel,
                          "install": ({k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")} if inst else None),
                          "how": hit[1] if hit else "", "downloaded": bool(done),
-                         "folder": os.path.relpath(done["folder"], state.root) if done else ""})
+                         "folder": os.path.relpath(done["folder"], state.root) if done else "",
+                         # (what the game needs - TOSEC's tags, OpenRetro's release - and what OpenRetro knows of it)
+                         "machine": needs["machine"] if needs else "",
+                         "needs": {k: needs[k] for k in ("chipset", "kickstart", "video", "sources")} if needs else None,
+                         "info": {k: g[k] for k in ("year", "publisher", "developer", "hol", "lemon", "moby") if g.get(k)} or None,
+                         "protection": (release or {}).get("protection", "")})
         return cat, rows
 
     def whdload_installs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
@@ -2616,6 +2627,14 @@ class App:
                     return f.read()
             return Path(it.path).read_bytes()
 
+        xfd_state: dict[str, Any] = {}
+
+        def decruncher() -> Any:
+            """The XFD package's xfdmaster.library, for an install that runs xfdDecrunch: fetched from Aminet once, loaded once."""
+            if "x" not in xfd_state:
+                xfd_state["x"] = _mod("xfd").Decruncher(whd.xfd_package())
+            return xfd_state["x"]
+
         def work(job: Job) -> Any:
             rows: dict[str, dict[str, Any]] = {}
             n_ready = n_checked = 0
@@ -2643,7 +2662,7 @@ class App:
                         key = ready.key_of(it.rom.name for it in s)
                         try:
                             pkg.install([disk_bytes(it) for it in s],
-                                        cd=any(re.search(r"CD32|CDTV|CD rip", it.rom.name, re.I) for it in s))
+                                        cd=any(re.search(r"CD32|CDTV|CD rip", it.rom.name, re.I) for it in s), decruncher=decruncher)
                             rows[key] = {"ok": True, "archive": install["archive"], "reason": ""}
                             any_ok = True
                         except Exception as exc:  # noqa: BLE001 - the reason is the result

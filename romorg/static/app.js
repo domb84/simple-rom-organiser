@@ -1699,13 +1699,20 @@
         else if (i) act = el("button", { class: "btn btn-small", text: "Download", "data-needs-idle": "",
           on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, titles: [g.title] }) } });
         else act = el("span", {});
-        return el("tr", {}, el("td", { text: g.title }), el("td", {}, info, i && HOW[g.how] ? el("div", { class: "muted small", text: HOW[g.how] }) : null),
-          el("td", { class: "num", text: i ? fmtBytes(i.size) : "" }), el("td", {}, act));
+        const about = g.info ? [g.info.year, g.info.publisher].filter(Boolean).join(", ") : "";
+        const prot = g.protection && g.protection !== "None" ? `needs its ${g.protection.toLowerCase()} (protection)` : "";
+        const n = g.needs || {};
+        const mach = g.machine ? el("span", { text: g.machine + (n.chipset ? ` (${n.chipset})` : ""),
+          title: (n.sources || []).join("\n") || "Nothing known: an A500 by default" }) : el("span", {});
+        return el("tr", {}, el("td", {}, el("div", { text: g.title }),
+            about || prot ? el("div", { class: "muted small", text: [about, prot].filter(Boolean).join(" · ") }) : null),
+          el("td", {}, info, i && HOW[g.how] ? el("div", { class: "muted small", text: HOW[g.how] }) : null),
+          el("td", {}, mach), el("td", { class: "num", text: i ? fmtBytes(i.size) : "" }), el("td", {}, act));
       }));
       const more = shown.length > this.limit ? el("button", { class: "btn btn-small", text: `Show ${fmt(Math.min(500, shown.length - this.limit))} more`, on: { click: () => { this.limit += 500; this.render(); } } }) : null;
       return el("div", { class: "whd-list" },
         el("div", { class: "row" }, sel, search, el("span", { class: "muted small", id: "whd-count", text: nPlural(shown.length, "game", "games") })),
-        el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "Install" }), el("th", { text: "Size" }), el("th", { text: "" }))), body)),
+        el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Game" }), el("th", { text: "Install" }), el("th", { text: "Machine", title: "What the game needs: TOSEC's tags, the OpenRetro database" }), el("th", { text: "Size" }), el("th", { text: "" }))), body)),
         more);
     },
   };

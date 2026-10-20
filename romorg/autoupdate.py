@@ -117,11 +117,13 @@ class UpdateManager:
                  state_path: Optional[Path] = None,
                  redump: Any = _redump, ratings: Any = _ratings,
                  ratings_wanted: Optional[Callable[[], bool]] = None, switchdb: Any = None, gametdb: Any = None,
-                 whdinstalls: Any = None, igdb: Any = _igdb, igdb_creds: Optional[Callable[[], Any]] = None) -> None:
+                 whdinstalls: Any = None, igdb: Any = _igdb, igdb_creds: Optional[Callable[[], Any]] = None,
+                 openretro: Any = None) -> None:
         self.tosec = tosec
         self.switchdb = switchdb  # the Nintendo Switch title database (blawar/titledb); None = not managed
         self.gametdb = gametdb    # GameTDB's name lists for Wii, GameCube and Wii U discs; None = not managed
         self.whdinstalls = whdinstalls    # the list of WHDLoad installs (whdload.de) for the Amiga games; None = not managed
+        self.openretro = openretro        # the OpenRetro game database (the Amiga's releases); None = not managed
         self.nointro = nointro
         self.redump = redump     # its own DAT source (Redump: Dreamcast, PlayStation, PlayStation 2); None = not managed
         # LaunchBox ratings (Amendment 18): kept current at every start (an index younger than a week is not even asked about);
@@ -169,6 +171,9 @@ class UpdateManager:
         self._whdinstalls_checked: Optional[str] = None
         self._whdinstalls_error: Optional[str] = None
         self._whdinstalls_offline = False
+        self._openretro_checked: Optional[str] = None
+        self._openretro_error: Optional[str] = None
+        self._openretro_offline = False
         self._updating: Optional[str] = None   # source being downloaded right now
         self._load_state()
 
@@ -200,6 +205,8 @@ class UpdateManager:
         self._gametdb_checked = gt.get("checked_at") if isinstance(gt.get("checked_at"), str) else None
         wi = data.get("whdinstalls") if isinstance(data.get("whdinstalls"), dict) else {}
         self._whdinstalls_checked = wi.get("checked_at") if isinstance(wi.get("checked_at"), str) else None
+        orr = data.get("openretro") if isinstance(data.get("openretro"), dict) else {}
+        self._openretro_checked = orr.get("checked_at") if isinstance(orr.get("checked_at"), str) else None
 
     def _save_state(self) -> None:
         data = {"checked_at": self._last_checked,
@@ -208,7 +215,8 @@ class UpdateManager:
                 "redump": {"checked_at": self._redump_checked},
                 "ratings": {"checked_at": self._ratings_checked},
                 "switchdb": {"checked_at": self._switchdb_checked}, "gametdb": {"checked_at": self._gametdb_checked},
-                "whdinstalls": {"checked_at": self._whdinstalls_checked}}
+                "whdinstalls": {"checked_at": self._whdinstalls_checked},
+                "openretro": {"checked_at": self._openretro_checked}}
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -387,6 +395,7 @@ class UpdateManager:
                 "switchdb": self._extra_status("switchdb"),
                 "gametdb": self._extra_status("gametdb"),
                 "whdinstalls": self._extra_status("whdinstalls"),
+                "openretro": self._extra_status("openretro"),
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -417,7 +426,7 @@ class UpdateManager:
             out.append("nointro")
         if self.redump is not None and not set(REDUMP_DATS) <= {d.name for d in self.redump.list_dats()}:
             out.append("redump")
-        for key in ("switchdb", "gametdb", "whdinstalls"):
+        for key in ("switchdb", "gametdb", "whdinstalls", "openretro"):
             mod = getattr(self, key, None)
             if mod is not None and (not mod.db_info()["available"] or not self._made_dats_present(key)):
                 out.append(key)
@@ -760,6 +769,7 @@ class UpdateManager:
             self._do_extra("switchdb", token, forward, True)          # (a check the user asked for, or the first fetch: no age gate)
             self._do_extra("gametdb", token, forward, True)
             self._do_extra("whdinstalls", token, forward, True)
+            self._do_extra("openretro", token, forward, True)
         if errors:
             raise UpdateError("failed", "; ".join(errors))
 
@@ -855,7 +865,7 @@ class UpdateManager:
                 self._updating = None
 
     _EXTRA_LABEL = {"switchdb": "Nintendo Switch title database", "gametdb": "GameTDB names (Wii, GameCube, Wii U)",
-                    "whdinstalls": "list of WHDLoad installs"}
+                    "whdinstalls": "list of WHDLoad installs", "openretro": "OpenRetro game database (Amiga)"}
 
     def _do_extra(self, key: str, token: _Token, forward: Optional[Progress], force: bool) -> None:
         """A name / title database that is not a DAT (the Switch's, GameTDB's): fetched when it is missing, or older than the module's
