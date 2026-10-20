@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import ipf, rawdic
 from .adf import AdfDisk, AdfError
 from .lha import crc16
 
@@ -202,6 +203,35 @@ class RawDisk:
 
     def read(self, path: str) -> bytes:
         raise AdfError(f"{self.reason} (the disk is not an AmigaDOS disk)")
+
+
+def floppy(d: Any, n: int = 0) -> Any:
+    """A floppy for an install: an ADF or an IPF (path or bytes). Its files when it is an AmigaDOS disk (an IPF's standard tracks
+    made into an ADF), always its tracks (``.tracks``: what RawDIC reads - an IPF's as they are, an ADF's MFM-encoded)."""
+    name = Path(d).name if isinstance(d, (str, os.PathLike)) else f"disk {n + 1}"
+    data = Path(d).read_bytes() if isinstance(d, (str, os.PathLike)) else bytes(d)
+    tracks: Any
+    if ipf.is_ipf(data):
+        try:
+            tracks = ipf.IpfDisk(data)
+        except ipf.IpfError as exc:
+            raise InstallError(f"{name}: {exc}") from None
+        adf, bad = rawdic.standard_image(tracks)
+        if bad:                                         # (a disk in the game's own format: only RawDIC reads it)
+            disk: Any = RawDisk(b"", f"{name}: {len(bad)} of its tracks are in the game's own format")
+            disk.tracks = tracks
+            return disk
+        data = adf
+    else:
+        tracks = None
+    try:
+        disk = AdfDisk(data)
+    except AdfError as exc:
+        if len(data) not in (901120, 1802240):
+            raise InstallError(f"{name}: {exc} (the disk is not an AmigaDOS disk)") from None
+        disk = RawDisk(data, f"{name}: {exc}")             # (whole-disk installs - DIC - image it all the same)
+    disk.tracks = tracks or rawdic.AdfDisk(data)
+    return disk
 
 
 _CD_RE = re.compile(r"\bCD(?:TV|32)?(?![a-z])", re.IGNORECASE)    # ("CD version", "CD32", "CD³²", "CDTV")
@@ -906,8 +936,10 @@ class _Interp:
                         self.fs.delete(_join(cwd, x), everything=True)
             elif word == "dic":
                 self._dic(cwd, args)
-            elif word in ("rawdic", "patcher"):
-                raise InstallError(f"this install reads the disks with {parts[0]} (the original disks' own format): not possible from ADFs")
+            elif word == "rawdic":
+                self._rawdic(cwd, args)
+            elif word == "patcher":
+                raise InstallError(f"this install reads the disks with {parts[0]} (the original disks' own format): not done here")
             elif word in ("xfddecrunch", "xfddecrunchall", "unpack"):
                 raise InstallError(f"this install needs {parts[0]} to unpack a file (an Amiga program)")
             else:
@@ -929,6 +961,36 @@ class _Interp:
         except LhaError as exc:
             raise InstallError(f"lha: {exc}") from None
 
+    def _rawdic(self, cwd: str, args: list[str]) -> None:
+        """RawDIC: the install's imager (``SLAVE=x.islave``) run on the disks' tracks (disk 1, 2 ... in the order the set has them);
+        the files it writes go in the current drawer."""
+        opt: dict[str, str] = {}
+        plain = []
+        for x in args:
+            k, eq, v = x.partition("=")
+            if eq:
+                opt[k.casefold()] = v
+            else:
+                plain.append(x.casefold())
+        slave = opt.get("slave") or next((x for x in plain if x.endswith(".islave")), "")
+        if not slave:
+            raise InstallError("RawDIC: no imager (SLAVE=) named")
+        path = _join(cwd, slave)
+        if self.fs.exists(path) != 1:
+            raise InstallError(f"RawDIC: the imager {slave} is not there")
+        disks = {i + 1: d.tracks for i, d in enumerate(self.fs.order) if getattr(d, "tracks", None) is not None}
+        try:
+            im = rawdic.Imager(self.fs.read(path))
+            here = lambda name: self.fs.read(_join(cwd, name)) if self.fs.exists(_join(cwd, name)) == 1 else None
+            files = im.run(disks, ignore_errors="ignoreerrors" in plain, read_file=here)
+        except rawdic.ImagerError as exc:
+            raise InstallError(f"RawDIC ({slave}): {exc}") from None
+        for d in im.made_dirs:
+            self.fs.mkdir(_join(cwd, d))
+        for name, data in files.items():
+            self.fs.write(_join(cwd, name), data)
+        self.log.append(f"RawDIC {slave}: {', '.join(files)}")
+
     def _dic(self, cwd: str, args: list[str]) -> None:
         """DIC: an image of whole disks (``FD=n LD=m``: the n-th to m-th disk, which DIC does not check), ``Disk.<n>``: the ADF itself."""
         opt = {k.casefold(): v for k, v in (x.split("=", 1) for x in args if "=" in x)}
@@ -944,6 +1006,8 @@ class _Interp:
                 raise InstallError(f"DIC: the install images disk {n}, this version has {len(self.fs.order)}")
             data = self.fs.order[n - 1].data
             if not data:
+                if getattr(self.fs.order[n - 1], "tracks", None) is not None:
+                    raise InstallError(f"DIC: disk {n} is in the game's own format (DIC reads standard tracks only)")
                 raise InstallError("DIC: that disk is no floppy image")
             img = bytearray(data[:size] if size else data)
             for part in opt.get("skiptrack", "").split(","):        # (SKIPTRACK=100-101: tracks DIC leaves empty)
@@ -1131,16 +1195,7 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
     if not app:
         slave = next((p for p in sorted(package.iterdir()) if p.suffix.casefold() == ".slave"), None)
         app = slave.stem if slave is not None else package.name
-    adfs = []
-    for n, d in enumerate(disks):
-        try:
-            adfs.append(AdfDisk(d))
-        except AdfError as exc:
-            name = Path(d).name if isinstance(d, (str, os.PathLike)) else f"disk {n + 1}"
-            data = Path(d).read_bytes() if isinstance(d, (str, os.PathLike)) else bytes(d)
-            if len(data) not in (901120, 1802240):
-                raise InstallError(f"{name}: {exc} (the disk is not an AmigaDOS disk)") from None
-            adfs.append(RawDisk(data, f"{name}: {exc}"))   # (whole-disk installs - DIC - image it all the same)
+    adfs = [floppy(d, n) for n, d in enumerate(disks)]
     fs = _Fs(package, adfs + list(volumes or ()))
     it = _Interp(fs, app, version)
     forms = _parse(script.read_text(encoding="latin-1"))

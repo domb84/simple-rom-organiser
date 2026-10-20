@@ -2903,8 +2903,8 @@ extension. The Overview card says *found*, the Library card *kept*.
   `copyfiles` with AmigaDOS patterns, `askdisk`, `exists`, `tackon`, `run` ...). Volumes: the ADFs by disk label, `":file"` / `DF0:`
   = the disk that has the file (an `askdisk` "inserts" its disk), `MemDisk` for files of a CD; `WORK:` = the result in memory; the
   package = the current drawer; `@app-name` from the Install icon's `APPNAME`. Questions get their defaults (a "which version"
-  question: each version is tried, `Package.install`); `run` knows the harmless commands, does `DIC` from the ADF and refuses
-  RawDIC / Patcher / xfdDecrunch (`InstallError` with the reason). `write_lha`: level 1, stored, as WHDLoad archives.
+  question: each version is tried, `Package.install`); `run` knows the harmless commands, does `DIC` from the ADF and RawDIC
+  (AMENDMENT 43), refuses Patcher / xfdDecrunch (`InstallError` with the reason). `write_lha`: level 1, stored, as WHDLoad archives.
 * `whdinstalls.package`: install packages kept in `whdinstalls/packages/`. `romorg/whdready.py`: `{disk names: ok, reason}` in
   `whdinstalls/ready.json`. `library.variant_sets`: the complete versions of each game (what the best-variant rule chooses among);
   `LibraryProfile.prefer_whdload` (default on, Amiga best-variant DATs): `_pick_best` puts a ready version after the language rank.
@@ -2938,4 +2938,28 @@ extension. The Overview card says *found*, the Library card *kept*.
   checksums as for every DAT; the library's ADF rules (best variant, language) do not touch them.
 * `Matcher`: an install title with alternatives ("Prince of Persia / Prince de Perse") is each of them; a short title of two words
   or more matches a long one joined by meets / in / and / versus ("Captain Fizz Meets the Blaster-Trons"), not a compilation ("&").
+
+**AMENDMENT 43 (v0.3) — RawDIC: the install's own imager run here, on IPFs or ADFs.**
+* `romorg/m68k.py`: a 68000 interpreter (stdlib): every integer instruction of the 68000 and the 68020 ones imagers use (long
+  branches, `EXTB`, 32-bit `MULx`/`DIVx`, scaled and full-format indexes, bit fields); no FPU, MMU or exceptions (they are errors).
+  Checked against every SingleStepTests 68000 vector that raises no exception (227,817; `Cpu.m68020 = False` for them: a 68000
+  ignores index bits 8-10 and has no 32-bit branch), BCD included (the binary sum or difference corrected by half carry and carry).
+  Operands are compiled once per opcode (`src` / `dst` / `cond_fn`); Python routines are A-line opcodes (`Cpu.hook`): about
+  600,000 instructions a second.
+* `romorg/rawdic.py`: RawDIC (github.com/wepl/RawDIC, public domain) followed step by step: the library's 10 calls at `A5`
+  (ReadTrack ... SetSync, errors through `lib_ErrorHandler`: fatal unless `DFLG_ERRORS`), the state machine (CRC list - with
+  `_TrackCRC16`'s own CRC16, the byte into the low byte - then the alternative disk structure, `InitCode`, the track list read
+  into the disk image, `DiskCode`, the file list), a raw read of `$7C04` bytes (about 2.5 turns, no index sync; a retry starts
+  elsewhere), the sync searched bit by bit and the rest shifted behind it (4 sync words before the buffer), track numbers as
+  `GetAbsTrackNum` (SINGLESIDE / SWAPSIDES / ERRORSWAP), standard tracks as `_DecodeDOSTrack` (and the trackdisk shortcut for
+  `DMFM_STD` `$4489` `$1600`). exec (AllocMem, CopyMem, OpenLibrary ...) and dos (Open/Read/Write/Seek/Close, Lock, CreateDir,
+  CurrentDir) for the imagers that call them. A disk is anything with `track(n)` (one turn of MFM) and `dos(n)`: `AdfDisk`
+  encodes an ADF as the Amiga writes it (`dos_track_mfm`), so imagers of disks in the standard format (whole or in part) run on ADFs.
+* `romorg/ipf.py`: IPF records (CRC32-checked), INFO / IMGE / DATA, block descriptors of the CAPS and SPS encoders, data streams
+  (sync and raw cells as they are, data and gap bytes MFM-encoded, fuzzy as random bits, sizes in bytes or bits), gaps from
+  forward / backward gap streams (a sample without a length repeats; a short list loops its last sample) or the default value,
+  the track turned to start `startBitPos` after the index. `rawdic.standard_image`: an IPF of a standard disk becomes its ADF.
+* `amigainstall.floppy`: a disk for an install is an ADF or an IPF; it keeps its tracks (`.tracks`). An IPF whose tracks are all
+  standard is also an ADF (files, DIC); otherwise a `RawDisk` only RawDIC reads. `RawDIC SLAVE=x.islave` in a `run` runs the
+  imager on the set's disks in order (disk 1 = the first), `IGNOREERRORS` as RawDIC; its files go in the drawer of the `CD`.
 
