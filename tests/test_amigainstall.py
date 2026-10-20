@@ -176,6 +176,32 @@ class InstallTests(unittest.TestCase):
         ai.write_lha(out, {"Game/Game.slave": b"S"}, {"Game", "Game/save"})       # (a save drawer the game expects)
         self.assertEqual([(e.name, e.is_dir) for e in LhaFile(out).entries], [("Game/Game.slave", False), ("Game/save", True)])
 
+    def test_the_script_named_install_is_the_one_run(self) -> None:
+        (self.pkg / "Install.").write_text('(abort "an old script")')                 # (a stray copy: ConanTheCimmerian has one)
+        (self.pkg / "Install").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game"))')
+        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave"])
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave"])
+
+    def test_without_a_plain_install_each_script_is_tried(self) -> None:
+        (self.pkg / "Install").unlink()
+        (self.pkg / "Install_AGA").write_text('(abort "needs the AGA disks")')
+        (self.pkg / "Install_OCS").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game"))')
+        (self.pkg / "Installation.readme").write_text("how to install")
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            self.assertEqual([p.name for p in pkg.scripts], ["Install_AGA", "Install_OCS"])
+            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave"])
+
+    def test_a_missing_normal_icon_falls_back_to_another_of_the_package(self) -> None:
+        (self.pkg / "Game.GlowIcon").write_bytes(make_icon(["SLAVE=Game.slave"], "WHDLoad"))      # (no Game.inf: only the GlowIcon)
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(copyfiles (source "Game.inf") (dest #dest) (newname "Game.info"))')
+        res = ai.install(self.pkg, [])
+        self.assertEqual(res.files["Game/Game.info"][:2], b"\xe3\x10")
+        self.assertTrue(any("its icon Game.GlowIcon instead" in line for line in res.log))
+
     def test_dic_leaves_skipped_tracks_empty(self) -> None:
         (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
                                           '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=1 SIZE=$b2c00 SKIPTRACK=1" #dest))')

@@ -3014,4 +3014,10 @@ extension. The Overview card says *found*, the Library card *kept*.
   (CD32 or A1200), `sources`. Where TOSEC and OpenRetro both name a chipset they agree (all of the collection).
 * The WHDLoad card of the Library page shows each game's machine (its sources as a tooltip), year and publisher, and a protection
   the game needs its manual / code wheel for.
+* Found by booting the user's SPS set: (1) a release's IPFs go to the install in the order of the disk numbers in their INFO records
+  (`DataDisk.ipf` sorts before `ProgramDisk.ipf`, `Disk10` before `Disk2`; DIC / RawDIC take disks by number) - TOSEC names pad
+  their disk numbers ("Disk 01 of 12"), the app's sets go by slot; (2) the script run is "Install" itself when there is one (60
+  packages also hold another: "Install.", "Install.old", "Installo"; ConanTheCimmerian's "Install." is a different script), else each
+  "Install..." in turn ("Install_AGA", "Install_OCS"), never a document ("Installation.readme"); (3) an icon the script copies that
+  the package lacks (the "Normal" icon of DeathBringer, which has only GlowIcons) is another icon of the same name from the package.
 

@@ -231,6 +231,7 @@ def floppy(d: Any, n: int = 0) -> Any:
     return disk
 
 
+_ICON_EXTS = {"inf", "info", "newicon", "glowicon", "glowicon1", "glowicon2", "colicon", "romicon", "boxicon", "newposter", "colposter"}
 _CD_RE = re.compile(r"\bCD(?:TV|32)?(?![a-z])", re.IGNORECASE)    # ("CD version", "CD32", "CD³²", "CDTV")
 _HD = "RomorgHD:"                                      # (the hard disk the game is installed to: no floppy has that name)
 _HD_NAMES = {"romorghd", "work", "sys", "ram", "t", "env", "envarc", "dh0", "dh1", "hd0", "hd1"}
@@ -853,6 +854,25 @@ class _Interp:
             self.fs.rename(old, new)
         return 1
 
+    def _other_icon(self, src: str) -> Optional[str]:
+        """Another icon of the same name in the package (``X.GlowIcon`` for a missing ``X.inf``), when ``src`` is an icon's name."""
+        head, _, name = src.replace("\\", "/").rpartition("/")
+        stem, dot, ext = name.rpartition(".")
+        if not dot or ext.casefold() not in _ICON_EXTS:
+            return None
+        d = head if head else ""
+        for n, is_dir in self.fs.listing(d):
+            k, dot2, e2 = n.rpartition(".")
+            if is_dir or not dot2 or k.casefold() != stem.casefold() or n.casefold() == name.casefold():
+                continue
+            p = _join(d, n) if d else n
+            try:
+                if self.fs.read(p)[:2] == b"\xe3\x10":           # (an Amiga icon: a DiskObject)
+                    return p
+            except (InstallError, OSError):
+                continue
+        return None
+
     def f_copylib(self, a: list) -> Any:
         return self.f_copyfiles(a)
 
@@ -862,6 +882,13 @@ class _Interp:
         dest = str((o.get("dest") or [""])[0])
         newname = (o.get("newname") or [None])[0]
         kind = self.fs.exists(src)
+        if kind == 0 and self.fs.split(src)[0] == "":
+            alt = self._other_icon(src)                       # (the "Normal" icon the script defaults to, which a package may lack:
+            if alt is not None:                               #  DeathBringer has only its GlowIcons - one of those, as a user would pick)
+                self.log.append(f"{src} is not in the package: its icon {alt} instead")
+                src, kind = alt, 1
+                if newname is None and not str(dest).casefold().endswith(".info"):
+                    newname = Path(str((o.get("source") or [""])[0])).name
         if kind == 0:
             if "optional" in o or "nofail" in o or self.fs.split(src)[0] == "":
                 self.log.append(f"skipped {src} (not in the package)")
@@ -1286,12 +1313,14 @@ class Package:
                 dest = self.work.joinpath(*parts)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(arc.read(e))
-            self.dir = next((Path(r) for r, _d, fs in os.walk(self.work) for f in fs
+            self.dir = next((Path(r) for r, _d, fs in sorted(os.walk(self.work)) for f in fs
                              if f.casefold().startswith("install") and not f.casefold().endswith(".info")), None)
             if self.dir is None:
                 raise InstallError("the install has no Install script")
-            script = next(p for p in self.dir.iterdir() if p.name.casefold().startswith("install") and not p.name.casefold().endswith(".info"))
-            self.names = version_names(script.read_text(encoding="latin-1"))
+            self.scripts = _scripts_of(self.dir)
+            if not self.scripts:
+                raise InstallError("the install has no Install script")
+            self.names = version_names(self.scripts[0].read_text(encoding="latin-1"))
         except BaseException:
             self.close()
             raise
@@ -1303,21 +1332,24 @@ class Package:
         version would install a game that is not theirs."""
         first: Optional[InstallError] = None
         cd = bool(volumes) if cd is None else cd
-        for v in self.tries(len(disks)):
-            if v is not None and not cd and _CD_RE.search(self.names.get(v, "")):
-                continue
-            try:
-                return install(self.dir, disks, v, volumes, decruncher=decruncher)
-            except InstallError as exc:
-                first = first or exc
+        for script in self.scripts:                          # (several only when there is no plain "Install": "Install_AGA" ...)
+            names = self.names if script == self.scripts[0] else version_names(script.read_text(encoding="latin-1"))
+            for v in self.tries(len(disks), names):
+                if v is not None and not cd and _CD_RE.search(names.get(v, "")):
+                    continue
+                try:
+                    return install(self.dir, disks, v, volumes, decruncher=decruncher, script=script)
+                except InstallError as exc:
+                    first = first or exc
         raise first  # type: ignore[misc]
 
-    def tries(self, n_disks: int) -> list[Optional[int]]:
+    def tries(self, n_disks: int, names: Optional[dict[int, str]] = None) -> list[Optional[int]]:
         """The versions to try, in order: those whose text names this many disks ("AGA version (5 disks)": the version these disks
         are, where several would install), the script's own default, then the others."""
-        fits = [v for v, t in self.names.items() if re.search(rf"\b{n_disks}\s*(\+\s*\d+\s*)?disks?\b", t, re.IGNORECASE)
+        names = self.names if names is None else names
+        fits = [v for v, t in names.items() if re.search(rf"\b{n_disks}\s*(\+\s*\d+\s*)?disks?\b", t, re.IGNORECASE)
                 and not re.search(rf"\b{n_disks}\s*\+", t)]
-        return fits + [None] + [v for v in sorted(self.names) if v not in fits]
+        return fits + [None] + [v for v in sorted(names) if v not in fits]
 
     def close(self) -> None:
         import shutil
@@ -1330,6 +1362,20 @@ class Package:
         self.close()
 
 
+def _scripts_of(folder: Path) -> list[Path]:
+    """The install's scripts to run: "Install" itself when there is one (ConanTheCimmerian's package also holds an old "Install." -
+    another script); else every "Install..." file in name order ("Install_AGA", "Install_OCS"), not documents ("Installation.readme")."""
+    cands = sorted((p for p in Path(folder).iterdir() if p.is_file() and p.name.casefold().startswith("install")
+                    and not re.search(r"\.(info|readme|txt|doc|guide)$", p.name, re.IGNORECASE)), key=lambda p: p.name.casefold())
+    exact = [p for p in cands if p.name.casefold() in ("install", "install-" + Path(folder).name.casefold())]
+    return exact[:1] or cands
+
+
+def _script_of(folder: Path) -> Optional[Path]:
+    scripts = _scripts_of(folder)
+    return scripts[0] if scripts else None
+
+
 def install_archive(lha: bytes, disks: list[Any], volumes: Optional[list[MemDisk]] = None) -> InstallResult:
     """Run the install in ``lha`` (an install package as whdload.de has it) on ``disks`` (paths or ADF bytes)."""
     with Package(lha) as pkg:
@@ -1337,12 +1383,11 @@ def install_archive(lha: bytes, disks: list[Any], volumes: Optional[list[MemDisk
 
 
 def install(package: Path, disks: list[Any], version: Optional[int] = None, volumes: Optional[list[MemDisk]] = None,
-            decruncher: Optional[Callable[[], Any]] = None) -> InstallResult:
+            decruncher: Optional[Callable[[], Any]] = None, script: Optional[Path] = None) -> InstallResult:
     """Run the install script of ``package`` (the unpacked install's drawer, holding ``Install``) with the ADFs ``disks``.
     ``decruncher``: gives a :class:`romorg.xfd.Decruncher` for a script that runs xfdDecrunch (None: such a script stops)."""
     package = Path(package)
-    script = next((p for p in package.iterdir() if p.name.casefold() in ("install", "install-" + package.name.casefold())
-                   or (p.name.casefold().startswith("install") and p.is_file() and not p.name.casefold().endswith(".info"))), None)
+    script = script or _script_of(package)
     if script is None:
         raise InstallError("the install has no Install script")
     app = _app_name(script)
@@ -1350,6 +1395,9 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
         slave = next((p for p in sorted(package.iterdir()) if p.suffix.casefold() == ".slave"), None)
         app = slave.stem if slave is not None else package.name
     adfs = [floppy(d, n) for n, d in enumerate(disks)]
+    nums = [getattr(getattr(d, "tracks", None), "disk_number", 0) for d in adfs]
+    if len(adfs) > 1 and all(nums) and len(set(nums)) == len(nums):    # (IPFs know which disk they are: "DataDisk.ipf" is disk 2
+        adfs = [d for _n, d in sorted(zip(nums, adfs), key=lambda x: x[0])]   #  of its release, though its name sorts first)
     fs = _Fs(package, adfs + list(volumes or ()))
     it = _Interp(fs, app, version)
     it.decruncher = decruncher

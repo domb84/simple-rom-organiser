@@ -288,7 +288,7 @@ def _elem(kind: int, payload: bytes, size: int) -> bytes:
     return bytes([(3 << 5) | kind]) + size.to_bytes(3, "big") + payload
 
 
-def write_ipf(tracks: dict[int, tuple[bytes, int]], start: int = 0, split: bool = True) -> bytes:
+def write_ipf(tracks: dict[int, tuple[bytes, int]], start: int = 0, split: bool = True, disk: int = 1) -> bytes:
     """An IPF (SPS encoder): with ``split`` each AmigaDOS sector a block (preamble and data as data elements, the sync pair as a
     sync element, the gap from a forward gap stream); else each track one raw element."""
     imges, datas = [], []
@@ -319,7 +319,7 @@ def write_ipf(tracks: dict[int, tuple[bytes, int]], start: int = 0, split: bool 
         imges.append(_rec(b"IMGE", struct.pack(">17I", n // 2, n % 2, 2, 1, (dbits + gbits) // 8, start // 8, start, dbits, gbits,
                                                 dbits + gbits, nb, 0, 0, key, 0, 0, 0)))
         datas.append(_rec(b"DATA", struct.pack(">IIII", len(extra), 8 * len(extra), zlib.crc32(extra) & 0xFFFFFFFF, key), extra))
-    info = struct.pack(">21I", 1, 2, 1, 0, 1, 0, 0, 79, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0)
+    info = struct.pack(">21I", 1, 2, 1, 0, 1, 0, 0, 79, 0, 1, 0, 0, 1, 0, 0, 0, disk, 0, 0, 0, 0)
     return _rec(b"CAPS", b"") + _rec(b"INFO", info) + b"".join(imges) + b"".join(datas)
 
 
@@ -405,6 +405,15 @@ class InstallTests(unittest.TestCase):
                                           '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=1 SKIPTRACK=159" #dest))')
         img = ai.install(self.pkg, [blob]).files["Game/Disk.1"]
         self.assertEqual(img[:159 * 0x1600], adf[:159 * 0x1600])
+
+    def test_ipfs_go_in_the_order_of_their_disk_numbers(self) -> None:
+        program, data = make_adf("Prog", {"game": b"exe"}), make_adf("Data", {"level": b"L"})
+        ipfs = [write_ipf({t: rawdic.dos_track_mfm(a[t * 0x1600:(t + 1) * 0x1600], t) for t in range(160)}, disk=n)
+                for a, n in ((data, 2), (program, 1))]                      # ("DataDisk.ipf" sorts before "ProgramDisk.ipf")
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=2" #dest))')
+        files = ai.install(self.pkg, ipfs).files
+        self.assertEqual((files["Game/Disk.1"], files["Game/Disk.2"]), (program, data))
 
     def test_an_ipf_of_a_standard_disk_is_read_as_an_adf(self) -> None:
         adf = make_adf("Game1", {"game": b"exe"})

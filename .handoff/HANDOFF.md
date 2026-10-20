@@ -200,6 +200,12 @@ Note: "[f AGA Fix]" was treated as an AGA version. Only `(AGA)` should count; Th
 - OpenRetro (`romorg/openretro.py`, `romorg/amigahw.py`): synced by the updater; joins 7 more title groups; machine per release (A500/A600/A1200/CD32) shown in the WHDLoad card. Raw dump for analysis: `~/.cache/whdwork/oagd/amiga.json`.
 - Boot chain (`~/.cache/whdwork/bootchain.sh`, resumable, runs again from where it stopped): SPS boots (gaps first) -> newpairs boots (`bootgen.py RUN_DIR=newpairs`) -> xfd TOSEC boots (`RUN_DIR=xfd`). After it: `make_whdknown.py` should also read spscheck/boot.jsonl, newpairs/boot.jsonl and xfd/boot.jsonl (not wired yet; SPS rows are keyed by zip, not TOSEC disk names - the shipped list needs an IPF section or the SPS names).
 - Boot chain finished (2026-10-20 18:40; ran as a temporary user systemd service across power cuts, removed after): SPS 1,567 of 1,745 games boot (679 of 806 gaps); newpairs 45 of 63; xfd TOSEC 73 of 89; fixups 1 of 4. WHDLoad installs with a booting copy: 1,019 -> 1,793 of 2,843. `romorg/whdknown.json.gz` rebuilt from everything (20,330 sets, SPS releases keyed by the names the app gives their IPFs).
+- Why SPS games did not boot (2026-10-20 evening): ~80 were booting (the old screen classifier; `puae/shot.py classify3` now knows
+  errors by their title text: the WHDLoad requester, the Workbench file picker, the AmigaDOS shell); disk order, the wrong Install
+  script, a missing icon: fixed in amigainstall; reruns in `~/.cache/whdwork/rerun/`. SPS now 1,631 of 1,745; WHDLoad installs with
+  a booting copy 1,019 -> 1,850. Left: ~26 a different release than the install's, ~20 a file the slave wants is not in the build
+  (not explained yet), 6 need WHDLoad 20 (PUAE's own is 19.1: 20.1 dropped into its WHDLoad/C ends at a shell - not solved), ~34
+  black screens, a few CPU exceptions on any machine.
 - Results files survive a power cut: `~/.cache/whdwork/jsonlsafe.py` (boot stages clean a damaged last line at start).
 - Not committed yet (as of writing): xfd, OpenRetro, amigahw, foreach / Join / xadUnFile / run joining, UI column, rebuilt whdknown, docs AMENDMENT 44/45. Full suite (1,681), pyz, AppImage, smoke test pass.
 
