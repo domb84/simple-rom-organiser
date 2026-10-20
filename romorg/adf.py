@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import struct
-from typing import Iterator, Optional, Union
+from typing import Iterable, Iterator, Optional, Union
 
 __all__ = ["AdfDisk", "AdfError"]
 
@@ -32,7 +32,10 @@ def _s32(v: int) -> int:
 
 
 class AdfDisk:
-    def __init__(self, source: Union[str, os.PathLike, bytes]) -> None:
+    def __init__(self, source: Union[str, os.PathLike, bytes], unreadable_tracks: Iterable[int] = ()) -> None:
+        """``unreadable_tracks``: tracks the image has no data of (an IPF's tracks in a game's own format - a protection track):
+        a file with a block on one cannot be read."""
+        self.unreadable = frozenset(unreadable_tracks)
         if isinstance(source, (bytes, bytearray)):
             self.data = bytes(source)
         else:
@@ -57,6 +60,8 @@ class AdfDisk:
     def _block(self, n: int) -> bytes:
         if not 0 <= n < self.blocks:
             raise AdfError(f"block {n} out of range")
+        if self.unreadable and n // 11 in self.unreadable:
+            raise AdfError(f"block {n} is on track {n // 11}, which is in the game's own format")
         return self.data[n * BLOCK:(n + 1) * BLOCK]
 
     @staticmethod

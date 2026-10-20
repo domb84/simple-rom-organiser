@@ -76,6 +76,43 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertIsNone(self.match("Nonesuch"))
 
 
+class TitlesThatDiffer(unittest.TestCase):
+    """TOSEC's title and the install's, the same game: an article, an umlaut, the install's long title, an edition's mark."""
+
+    def setUp(self) -> None:
+        self.m = whdinstalls.Matcher([{"archive": a, "title": t} for a, t in (
+            ("BatmanTheMovie.lha", "Batman the Movie"), ("LotharMatthaus.lha", "Lothar Matthäus"),
+            ("Populous2.lha", "Populous II: The Challenge Games"), ("HareRaisingHavoc.lha", "Roger Rabbit In Hare Raising Havoc"),
+            ("SWOS.lha", "Sensible World of Soccer"), ("Gloom.lha", "Gloom"), ("ProjectXSE.lha", "Project X - Special Edition"),
+            ("LeisureSuitLarry.lha", "Leisure Suit Larry"), ("OutToLunch.lha", "Out To Lunch"), ("FIFASoccer.lha", "FIFA Soccer"),
+            ("Ultima4.lha", "Ultima IV: Quest for the Avatar"), ("ConflictEurope.lha", "Conflict: Europe"),
+            ("FootballManagerWCE.lha", "Football Manager: World Cup Edition"), ("Arena.lha", "Arena"), ("SimCity.lha", "Sim City"),
+            ("Starflight.lha", "Starflight"), ("DylanDog.lha", "Dylan Dog: The Murderers"))])
+        self.others = {"sensible world of soccer", "gloom", "starflight", "leisure suit larry in the land of the lounge lizards",
+                       "football manager", "arena", "sim city"}
+
+    def match(self, title: str):
+        r = self.m.match(title, strict=True, others=self.others)
+        return r[0]["archive"] if r else None
+
+    def test_the_same_game(self) -> None:
+        for title, arc in (("Batman - The Movie", "BatmanTheMovie.lha"),
+                           ("Lothar Matthaeus - Die Interaktive Fussballsimulation", "LotharMatthaus.lha"),
+                           ("Populous II - Trials of the Olympian Gods", "Populous2.lha"), ("Hare Raising Havoc", "HareRaisingHavoc.lha"),
+                           ("Sensible World of Soccer '95-'96", "SWOS.lha"),
+                           ("Sensible World of Soccer '95-'96 - European Championship Edition", "SWOS.lha"),
+                           ("Gloom Deluxe", "Gloom.lha"), ("Project-X - Special Edition 93", "ProjectXSE.lha"),
+                           ("Leisure Suit Larry 1 - In the Land of the Lounge Lizards", "LeisureSuitLarry.lha"),
+                           ("Pierre le Chef is... Out to Lunch", "OutToLunch.lha"), ("FIFA International Soccer", "FIFASoccer.lha"),
+                           ("Ultima IV - Quest of the Avatar", "Ultima4.lha")):
+            self.assertEqual(self.match(title), arc, title)
+
+    def test_other_games(self) -> None:
+        for title in ("Conflict - Korea", "Football Manager", "Arena 2000", "SimCity 2000", "Starflight II - Trade Routes of the Cloud Nebula",
+                      "Dylan Dog 01 - La Regina delle Tenebre"):
+            self.assertIsNone(self.match(title), title)
+
+
 class Download(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())

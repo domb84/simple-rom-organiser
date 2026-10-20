@@ -216,21 +216,18 @@ def floppy(d: Any, n: int = 0) -> Any:
             tracks = ipf.IpfDisk(data)
         except ipf.IpfError as exc:
             raise InstallError(f"{name}: {exc}") from None
-        adf, bad = rawdic.standard_image(tracks)
-        if bad:                                         # (a disk in the game's own format: only RawDIC reads it)
-            disk: Any = RawDisk(b"", f"{name}: {len(bad)} of its tracks are in the game's own format")
-            disk.tracks = tracks
-            return disk
-        data = adf
-    else:
-        tracks = None
+        data, bad = rawdic.standard_image(tracks)    # (tracks in the game's own format - all, or a protection track - are
+    else:                                               # zeros here and unreadable: only RawDIC reads them)
+        tracks, bad = None, []
     try:
-        disk = AdfDisk(data)
+        disk: Any = AdfDisk(data, unreadable_tracks=bad)
     except AdfError as exc:
         if len(data) not in (901120, 1802240):
             raise InstallError(f"{name}: {exc} (the disk is not an AmigaDOS disk)") from None
-        disk = RawDisk(data, f"{name}: {exc}")             # (whole-disk installs - DIC - image it all the same)
+        why = f"{len(bad)} of its tracks are in the game's own format" if bad else str(exc)
+        disk = RawDisk(data, f"{name}: {why}")             # (whole-disk installs - DIC - image it all the same)
     disk.tracks = tracks or rawdic.AdfDisk(data)
+    disk.bad_tracks = bad
     return disk
 
 
@@ -1006,15 +1003,20 @@ class _Interp:
                 raise InstallError(f"DIC: the install images disk {n}, this version has {len(self.fs.order)}")
             data = self.fs.order[n - 1].data
             if not data:
-                if getattr(self.fs.order[n - 1], "tracks", None) is not None:
-                    raise InstallError(f"DIC: disk {n} is in the game's own format (DIC reads standard tracks only)")
                 raise InstallError("DIC: that disk is no floppy image")
             img = bytearray(data[:size] if size else data)
+            skip: set[int] = set()
             for part in opt.get("skiptrack", "").split(","):        # (SKIPTRACK=100-101: tracks DIC leaves empty)
                 lo, _, hi = part.partition("-")
                 if lo.strip().isdigit():
                     for t in range(int(lo), int(hi or lo) + 1):
+                        skip.add(t)
                         img[t * 0x1600:(t + 1) * 0x1600] = bytes(len(img[t * 0x1600:(t + 1) * 0x1600]))
+            own = [t for t in getattr(self.fs.order[n - 1], "bad_tracks", ()) if t * 0x1600 < len(img) and t not in skip]
+            if own:                                 # (DIC reads standard tracks: a protection track - Copylock - gives a read error,
+                self.log.append(                    #  which one ignores; the slave has the protection removed: zeros, as DIC leaves)
+                    f"DIC: disk {n}: tracks {', '.join(map(str, own[:8]))}{' ...' if len(own) > 8 else ''} not in the standard "
+                    "format (read errors ignored)")
             self.fs.write(_join(cwd, f"Disk.{n}"), bytes(img))
 
 

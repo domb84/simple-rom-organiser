@@ -168,6 +168,17 @@ def _plain(title: str) -> str:
 
 
 _JOIN_WORDS = {"meets", "in", "and", "versus", "vs"}   # (what joins a game's short title to the rest of a long one)
+_ARTICLES = {"the", "a", "an"}
+_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss", "æ": "ae", "Æ": "Ae",
+                          "ø": "oe", "Ø": "Oe", "å": "a", "Å": "A"})
+# an edition's mark at the end of a title: the season or year ("'95-'96", "'93", "93", "88"; not "2000" - SimCity 2000 is a game
+# of its own - nor "01", Dylan Dog 01 is), "Deluxe"; the install is the game's
+_EDITION_RE = re.compile(r"(?:\s+(?:'\d{2}|[89]\d)(?:\s*[-/]\s*'?\d{2})?|\s+Deluxe)$", re.IGNORECASE)
+_EDITION_SUB_RE = re.compile(r"\b(?:edition|version)$", re.IGNORECASE)
+# renamed releases no rule finds (TOSEC's title -> the install's)
+_ALIASES = {"fifa international soccer": "fifa soccer",
+            "populous 2 trials of the olympian gods": "populous 2 challenge games"}   # (that install is Populous 2 and its data disk)
+_MINOR_WORDS = {"the", "a", "an", "of", "in", "for", "and", "to", "on", "der", "die", "das", "des", "le", "la", "les", "de", "el", "il"}
 
 
 class Matcher:
@@ -178,18 +189,74 @@ class Matcher:
         self._node = alttitles.node
         self.by: dict[str, list[dict[str, Any]]] = {}
         self.squashed: dict[str, list[dict[str, Any]]] = {}
+        self.loose: dict[str, list[dict[str, Any]]] = {}      # without articles and spaces, umlauts both ways
+        self.parts: dict[str, list[tuple[dict[str, Any], str]]] = {}   # an install's main title ("X: ...") or its long title's end
+                                                              # ("... In X"), with what follows the main title
         for i in installs:
             for name in _plain(i["title"]).split(" / "):     # ("Prince of Persia / Prince de Perse": either title)
                 k = self._node(name)
                 if k:
                     self.by.setdefault(k, []).append(i)
                     self.squashed.setdefault(k.replace(" ", ""), []).append(i)
+                    for v in {k, self._node(name.translate(_UMLAUTS))}:
+                        if v:
+                            self.loose.setdefault(self._loose(v), []).append(i)
+                    if ": " in name:                         # ("Centerbase: Science-Fiction Simulation" is Centerbase; not
+                        head, sub = name.split(": ", 1)       #  "Football Manager: World Cup Edition", an edition of its own)
+                        if not _EDITION_SUB_RE.search(sub):
+                            self._part(head, i, sub)
+                    m = re.search(r"\s(?:in|meets)\s(.+)$", name, re.IGNORECASE)
+                    if m and len(self._node(m.group(1)).split()) >= 3:     # ("Roger Rabbit In Hare Raising Havoc")
+                        self._part(m.group(1), i, "")
         self.groups: dict[str, list[dict[str, Any]]] = {}
         self.table = alttitles.table(platform) if platform is not None else {}
         for k, v in self.by.items():
             g = self.table.get(k)
             if g:
                 self.groups.setdefault(g, []).extend(v)
+
+    @staticmethod
+    def _loose(k: str) -> str:
+        return "".join(w for w in k.split(" ") if w not in _ARTICLES)
+
+    def _part(self, name: str, install: dict[str, Any], sub: str) -> None:
+        k = self._node(name)
+        if len(k) > 3 and k not in self.by:                  # (never over an install of that very title)
+            self.parts.setdefault(k, []).append((install, sub))
+
+    def _words(self, t: str) -> set[str]:
+        return {w for w in self._node(t.translate(_UMLAUTS)).split(" ") if len(w) > 2 and w not in _MINOR_WORDS}
+
+    def _in_parts(self, k: str, sub: str = "") -> Optional[list[dict[str, Any]]]:
+        """The installs whose main title is ``k``; for a title with a subtitle of its own only those whose subtitle shares a word
+        with it ("Ultima IV - Quest of the Avatar": "Ultima IV: Quest for the Avatar"; "Conflict - Korea" is not "Conflict: Europe")."""
+        got = [i for i, isub in self.parts.get(k, ()) if not sub or not isub or self._words(sub) & self._words(isub)]
+        return got or None
+
+    def _variants(self, t: str) -> list[tuple[str, str]]:
+        """Other forms of a TOSEC title that are the same game for an install: the edition's mark off ("Sensible World of Soccer
+        '95-'96", "Gloom Deluxe", "Project-X - Special Edition 93"), a "1" before the subtitle ("Leisure Suit Larry 1 - In the Land
+        of ..."), the title after an ellipsis ("Pierre le Chef is... Out to Lunch"), the alias of a renamed release."""
+        out = []
+        head, sep, sub = t.partition(" - ")
+        for _ in range(2):
+            new = _EDITION_RE.sub("", head) if not sep else head + sep + _EDITION_RE.sub("", sub)
+            if new == (head + sep + sub) and sep:
+                new = _EDITION_RE.sub("", head) + sep + sub
+            if new and new != head + sep + sub:
+                out.append((new, "edition"))
+                head, sep, sub = new.partition(" - ")
+            else:
+                break
+        if sep and re.search(r"\s1$", head):
+            out.append((head[:-2] + sep + sub, "first of a series"))
+            out.append((head[:-2], "first of a series"))
+        if "... " in t:
+            out.append((t.split("... ", 1)[1], "subtitle"))
+        a = _ALIASES.get(self._node(t))
+        if a:
+            out.append((a, "other title"))
+        return out
 
     @staticmethod
     def _best(cands: list[dict[str, Any]], title: str) -> dict[str, Any]:
@@ -212,6 +279,15 @@ class Matcher:
         g = self.table.get(k)
         if g and g in self.groups:
             return self.groups[g], "other title", t
+        if self._loose(k) in self.loose:                    # ("Batman - The Movie": "Batman the Movie"; "Matthaeus": "Matthäus")
+            return self.loose[self._loose(k)], "spelling", t
+        for v, how in self._variants(t):
+            hit = self._find(v, strict, others)
+            if hit is not None:
+                return hit[0], how, hit[2]
+        hit = self._in_parts(k)
+        if hit:
+            return hit, "main title", t
         if " - " in t:
             head, sub = t.split(" - ", 1)
             if _ADDON_RE.search(sub):
@@ -220,8 +296,15 @@ class Matcher:
             if len(ks) > 3 and ks in self.by:
                 return self.by[ks], "subtitle", sub
             kh = self._node(head)
-            if len(kh) > 3 and kh in self.by and (not strict or (others is not None and kh not in others)):
-                return self.by[kh], "main title", head
+            own = not strict or (others is not None and kh not in others) or bool(_EDITION_SUB_RE.search(sub))
+            if len(kh) > 3 and own:                          # (an "... Edition" is the game's own: its install is the game's)
+                for key, table in ((kh, self.by), (self._loose(kh), self.loose),
+                                   (self._loose(self._node(head.translate(_UMLAUTS))), self.loose)):
+                    if key in table:
+                        return table[key], "main title", head
+                hit = self._in_parts(kh, sub)
+                if hit:
+                    return hit, "main title", head
         words = [] if " & " in t else k.split(" ")             # ("Captain Fizz Meets the Blaster-Trons": the install "Captain Fizz";
         for n in range(len(words) - 1, 1, -1):              #  not "Classic Arcadia & Baby Arcadia", two games on one disk)
             if words[n] in _JOIN_WORDS:                     # (a short title of two words at least)

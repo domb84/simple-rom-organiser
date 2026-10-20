@@ -388,6 +388,24 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(ai.InstallError, "RawDIC \\(Game.islave\\)"):
             ai.install(self.pkg, [bytes(adf)])
 
+    def test_an_ipf_with_a_protection_track(self) -> None:
+        adf = make_adf("Game1", {"game": b"exe"})
+        tracks = {t: rawdic.dos_track_mfm(adf[t * 0x1600:(t + 1) * 0x1600], t) for t in range(160)}
+        tracks[159] = self.disk.track(2)                                   # (the last track: the game's own format)
+        blob = write_ipf(tracks)
+        disk = ai.floppy(blob)
+        self.assertEqual(disk.bad_tracks, [159])
+        self.assertEqual(disk.read("game"), b"exe")                        # (its files: AmigaDOS as ever)
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=1" #dest))')
+        res = ai.install(self.pkg, [blob])                                  # (a read error, ignored: zeros)
+        self.assertEqual(res.files["Game/Disk.1"][159 * 0x1600:], bytes(0x1600))
+        self.assertTrue(any("tracks 159 not in the standard format" in line for line in res.log))
+        (self.pkg / "Install").write_text('(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest)) '
+                                          '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=1 SKIPTRACK=159" #dest))')
+        img = ai.install(self.pkg, [blob]).files["Game/Disk.1"]
+        self.assertEqual(img[:159 * 0x1600], adf[:159 * 0x1600])
+
     def test_an_ipf_of_a_standard_disk_is_read_as_an_adf(self) -> None:
         adf = make_adf("Game1", {"game": b"exe"})
         blob = write_ipf({t: rawdic.dos_track_mfm(adf[t * 0x1600:(t + 1) * 0x1600], t) for t in range(160)})
