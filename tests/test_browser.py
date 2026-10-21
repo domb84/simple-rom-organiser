@@ -264,7 +264,7 @@ class LibraryDefaultsTests(UiTestCase):
         self.open("#/settings")
         self.page.wait("!!document.querySelector('#set-library-rules #rules-amiga')", timeout=30)
         inside = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-amiga input[data-opt]')].map(i => i.dataset.opt).sort()")
-        self.assertEqual(inside, ["best_variant", "borrow_other_editions", "prefer_whdload", "rescue_only_dump"])
+        self.assertEqual(inside, ["best_variant", "borrow_other_editions", "prefer_unprotected", "prefer_whdload", "rescue_only_dump"])
         self.assertTrue(self.page.eval("!!document.querySelector('#rules-amiga #rules-flags')"))                       # (the dump types too)
         outside = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-options input[data-opt]')].map(i => i.dataset.opt)")
         self.assertFalse({"best_variant", "borrow_other_editions", "prefer_whdload", "rescue_only_dump"} & set(outside), outside)

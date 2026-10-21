@@ -178,6 +178,7 @@ class LibraryProfile:
     prefer_editions: bool = True                 # of a game's releases a special / limited / premium edition beats the plain release (off: after it)
     combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
     prefer_whdload: bool = True                  # Amiga: of a game's versions, one a WHDLoad install can be made from first (``whdready``)
+    prefer_unprotected: bool = True              # Amiga: an original (SPS) that asks for the manual gives way to a crack WHDLoad installs
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -213,7 +214,8 @@ class LibraryProfile:
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
                 "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
                 "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
-                "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload}
+                "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload,
+                "prefer_unprotected": self.prefer_unprotected}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -271,7 +273,8 @@ class LibraryProfile:
                    prefer_saved=flag("prefer_saved", base.prefer_saved),
                    prefer_editions=flag("prefer_editions", base.prefer_editions),
                    combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles),
-                   prefer_whdload=flag("prefer_whdload", base.prefer_whdload))
+                   prefer_whdload=flag("prefer_whdload", base.prefer_whdload),
+                   prefer_unprotected=flag("prefer_unprotected", base.prefer_unprotected))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -309,7 +312,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
                "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-               "combine_alt_titles", "prefer_whdload")
+               "combine_alt_titles", "prefer_whdload", "prefer_unprotected")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
 # decides its own rules. Your defaults keep the one list ``exclude``.
@@ -363,6 +366,8 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.add("exclude_amiga")
         if _dats(platform, "best_variant_dats"):
             out.add("prefer_whdload")
+        if _dats(platform, "image_set_dats"):
+            out.add("prefer_unprotected")
     else:
         out.add("prefer_editions")                                # (the release tags of No-Intro / Redump names: editions, budget lines)
     out.add("combine_alt_titles")
@@ -1474,6 +1479,8 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
                       if x.kept or any(sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
     if scope.disc and profile.best_variant:
         _rank_across(items, sel, profile, platform)
+    if profile.prefer_unprotected and profile.best_variant and _dats(platform, "image_set_dats"):
+        _prefer_unprotected(items, sel, profile, platform)
     return sel
 
 
@@ -1590,6 +1597,69 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
                 gone.add(it.key)
         if gone:
             sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
+
+
+# The protections OpenRetro gives a release that make it ask for the manual (or a code wheel / sheet that came in the box).
+MANUAL_CHECKS = frozenset({"Manual", "Code Sheet", "Code Wheel", "Codewheel", "Word Lookup In Manual", "Registration Code"})
+
+
+def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
+    """An original (an SPS / IPF release, ``Platform.image_set_dats``) that asks for the manual - OpenRetro's protection of the release:
+    a manual, a code wheel, a code sheet - and that its WHDLoad install does not take the check out of (the install is not known to
+    boot from it, or its ReadMe does not say it removes the check: ``whdready.leaves_manual``) gives way to a kept crack of the game
+    (TOSEC's ``[cr]``) the install boots from, or to any kept crack when no install of the game is known: it is superseded by it."""
+    from . import whdready
+    try:
+        from . import openretro
+        odb = openretro.database()
+    except Exception:  # noqa: BLE001 - no OpenRetro data: nothing is known of protections, nothing changes
+        odb = None
+    if odb is None:
+        return
+    image_sets = set(_dats(platform, "image_set_dats"))
+    gdat = getattr(platform, "game_dat", "")
+    originals: dict[tuple, dict[str, list[Item]]] = {}     # game -> release -> its kept images (one zip: the library has one of them)
+    cracks: dict[tuple, dict[Any, list[Item]]] = {}        # game -> kept set of the games DAT -> its disks
+    titles: dict[tuple, set[str]] = {}                     # game -> the titles of every version of it (is an install known?)
+    for it in items:
+        if it.dat not in image_sets and it.dat != gdat:
+            continue
+        g = game_key(it, profile.combine_alt_titles)
+        titles.setdefault(g, set()).add(it.rom.name)
+        d = sel.decisions.get(it.key)
+        if d is None or d.action != KEEP:
+            continue
+        if it.dat in image_sets:
+            originals.setdefault(g, {}).setdefault(it.rom.game, []).append(it)
+        elif tags.is_cracked(_tags_of(it)):
+            cracks.setdefault(g, {}).setdefault(d.set_id if d.set_id is not None else it.rom.name, []).append(it)
+    gone: set[int] = set()
+    for g, releases in originals.items():
+        kept_cracks = list((cracks.get(g) or {}).values())
+        if not kept_cracks:
+            continue
+        booting = [m for m in kept_cracks if whdready.level([x.rom.name for x in m]) == whdready.BOOTS]
+        installs = any(whdready.has_install(t) for t in titles.get(g, ()))
+        crack = (booting or ([] if installs else kept_cracks))[:1]
+        if not crack:
+            continue
+        winner = _stem(sorted(x.rom.name for x in crack[0])[0])
+        for name, members in releases.items():
+            release = odb.release([m.rom.sha1 for m in members if m.rom.sha1])
+            check = (release or {}).get("protection", "")
+            if check not in MANUAL_CHECKS:
+                continue
+            lv, arc = (whdready.release(name) or [None, None])[:2]
+            if lv == whdready.BOOTS and not whdready.leaves_manual(arc):
+                continue                                   # (its install boots and takes the check out)
+            how = "its WHDLoad install boots from the crack" if booting else "the game has no WHDLoad install"
+            for it in members:
+                sel.decisions[it.key] = Decision(
+                    key=it.key, action=SUPERSEDED, superseded_by=winner,
+                    reason=f"superseded by {winner}: this original asks for the manual ({check.lower()}) and {how}")
+                gone.add(it.key)
+    if gone:
+        sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
 
 
 # --------------------------------------------------------------------------- the rating filter
@@ -2271,6 +2341,11 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "game's files from, then one it makes disk images of - after your language order, before cracked / chipset / newest. The app "
         "knows this for many TOSEC versions already (installs run on them and booted in PUAE); \"Check which versions WHDLoad can "
         "install\" (WHDLoad installs, on the Files page) finds it for yours.", [STYLE_TOSEC])
+    opt("prefer_unprotected", "prefer_unprotected", "Prefer cracks to originals that ask for the manual", True,
+        "An original disk set (SPS / IPF) whose game asks for something from the manual or a code wheel - OpenRetro's protection of "
+        "the release - and whose WHDLoad install does not take that check out gives way to a cracked version you have that the "
+        "install boots from (or to any cracked version when the game has no WHDLoad install): the original is set aside as "
+        "superseded.", [STYLE_TOSEC])
     opt("best_variant", "best_variant", "One best variant per game", True,
         "Keep ONE variant per game: preferred language, then cracked, then best platform "
         "(CD32 > AGA > CDTV > ECS > OCS: a CD32 or CDTV disc image, when you have one, over the game's floppies), then newest, "

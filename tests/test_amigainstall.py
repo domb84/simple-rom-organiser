@@ -456,6 +456,51 @@ class PreferWhdloadVersions(unittest.TestCase):
         self.assertIn("prefer_whdload", library.applicable_fields(AMIGA))
         self.assertNotIn("prefer_whdload", library.applicable_fields(platforms.get_platform("Nintendo Game Boy Advance")))
 
+    def test_an_original_that_asks_for_the_manual_gives_way_to_a_crack(self) -> None:
+        sps, crack = "Commodore Amiga - Games - SPS", "Zap (1993)(Acme)[cr FLT]"
+        items = [Item(key=1, dat=sps, rom=Rom(name="Zap (1993)(Acme)[0042] - Zap.ipf", size=1, crc="", md5="", sha1="aa",
+                                              game="Zap (1993)(Acme)[0042]", dat=sps), style="tosec", path=Path("z.ipf"), member=None),
+                 Item(key=2, dat=GAMES, rom=Rom(name=crack + ".adf", size=1, crc="", md5="", sha1="bb", game=crack, dat=GAMES),
+                      style="tosec", path=Path("z.adf"), member=None)]
+        orig, cr = whdready.key_of(["Zap (1993)(Acme)[0042] - Zap.ipf"]), whdready.key_of([crack + ".adf"])
+        boots = {orig: [whdready.BOOTS, "Zap.lha"], cr: [whdready.BOOTS, "Zap.lha"]}
+
+        class Db:
+            def __init__(self, check: str) -> None:
+                self.check = check
+
+            def release(self, sha1s: list) -> dict:
+                return {"protection": self.check} if "aa" in sha1s else {}
+
+        def run(check: str = "Code Wheel", shipped: dict = boots, keeps: bool = True, **changes) -> Any:
+            with mock.patch("romorg.openretro.database", return_value=Db(check) if check else None), \
+                 mock.patch.object(whdready, "known", return_value=shipped), \
+                 mock.patch.object(whdready, "leaves_manual", return_value=keeps):
+                return library.select(items, replace(library.default_profile(AMIGA), languages=(), **changes), AMIGA).decisions[1]
+
+        d = run()                                                       # (the install leaves the code wheel in; it boots the crack)
+        self.assertEqual((d.action, d.superseded_by), (library.SUPERSEDED, crack))
+        self.assertIn("asks for the manual (code wheel)", d.reason)
+        self.assertEqual(run(keeps=False).action, KEEP)                 # (the install takes the check out)
+        self.assertEqual(run(check="None").action, KEEP)                # (no check)
+        self.assertEqual(run(check="").action, KEEP)                    # (no OpenRetro data)
+        self.assertEqual(run(prefer_unprotected=False).action, KEEP)
+        self.assertEqual(run(shipped={orig: [whdready.BOOTS, "Zap.lha"], cr: [whdready.NO_BOOT, "Zap.lha"]}).action, KEEP)   # (the crack does not boot)
+        d = run(shipped={})                                             # (no install of the game known: any crack)
+        self.assertEqual(d.action, library.SUPERSEDED)
+        self.assertIn("no WHDLoad install", d.reason)
+        d = run(shipped={orig: [whdready.BOOTS, "Zap.lha"], cr: [whdready.NO_BOOT, "Zap.lha"]}, keeps=False)
+        self.assertEqual(d.action, KEEP)
+        self.assertEqual(run(shipped={whdready.key_of(["Zap (1993)(Acme)[cr PDX].adf"]): [whdready.NONE, ""]}).action, KEEP)   # (an install, none booted)
+        self.assertIn("prefer_unprotected", library.applicable_fields(AMIGA))
+        self.assertTrue(library.default_profile(AMIGA).prefer_unprotected)
+        self.assertNotIn("prefer_unprotected", library.applicable_fields(platforms.get_platform("Nintendo Game Boy Advance")))
+
+    def test_the_shipped_list_names_installs_that_leave_the_manual_check(self) -> None:
+        self.assertTrue(whdready.leaves_manual("CruiseForACorpse.lha"))      # (its ReadMe: "protection not removed")
+        self.assertFalse(whdready.leaves_manual("Zool2.lha"))               # ("Manual protection removed")
+        self.assertFalse(whdready.leaves_manual(None))
+
     def test_the_versions_of_a_game_are_listed_for_the_check(self) -> None:
         names = ["Zap (1993)(Acme)(Disk 1 of 2)[cr FLT]", "Zap (1993)(Acme)(Disk 2 of 2)[cr FLT]", "Zap (1993)(Acme)[cr PDX]"]
         items = [Item(key=i, dat=GAMES, rom=Rom(name=n + ".adf", size=1, crc="", md5="", sha1="", game=n, dat=GAMES), style="tosec",

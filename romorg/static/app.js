@@ -2754,7 +2754,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_unprotected: "Prefer cracks to originals that ask for the manual", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
     convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 

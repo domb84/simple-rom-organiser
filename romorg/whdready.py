@@ -9,20 +9,23 @@ The library only reads it (:func:`is_ready`): a version never checked is no WHDL
 What is known already ships with the app (``whdknown.json.gz``, made from TOSEC-named ADFs: an install run on every copy, and the
 builds booted headless in PUAE): :func:`level` of a version - 3 boots, 2 installs the game's files, 1 installs disk images, 0 does not
 install, -1 installs but does not boot. The user's own check counts first for whether it installs; whether it boots only the shipped
-list knows.
+list knows. It also lists the installs whose ReadMe does not say they take the game's manual / code-wheel check out
+(:func:`leaves_manual`): an original of a game that has one asks for the manual even installed.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-__all__ = ["path", "key_of", "is_ready", "level", "known", "record", "load", "clear_cache"]
+__all__ = ["path", "key_of", "is_ready", "level", "known", "archive", "release", "has_install", "leaves_manual", "record", "load",
+           "clear_cache"]
 
 BOOTS, FILES, IMAGES, NONE, NO_BOOT = 3, 2, 1, 0, -1
 
@@ -61,20 +64,78 @@ def load() -> dict[str, Any]:
 
 
 _KNOWN: Optional[dict[str, Any]] = None
+_MANUAL_KEPT: Optional[frozenset] = None
+
+
+def _shipped() -> dict[str, Any]:
+    import gzip
+    import importlib.resources
+    try:
+        raw = importlib.resources.files(__package__).joinpath("whdknown.json.gz").read_bytes()
+        data = json.loads(gzip.decompress(raw))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def known() -> dict[str, Any]:
     """The shipped list: ``{disk names: [level, install archive]}`` (empty when it is missing)."""
-    global _KNOWN
+    global _KNOWN, _MANUAL_KEPT
     if _KNOWN is None:
-        import gzip
-        import importlib.resources
-        try:
-            raw = importlib.resources.files(__package__).joinpath("whdknown.json.gz").read_bytes()
-            _KNOWN = json.loads(gzip.decompress(raw)).get("sets") or {}
-        except (OSError, ValueError, AttributeError):
-            _KNOWN = {}
+        data = _shipped()
+        _KNOWN = data.get("sets") or {}
+        _MANUAL_KEPT = frozenset(data.get("manual_kept") or ())
     return _KNOWN
+
+
+def archive(names: Iterable[str]) -> Optional[str]:
+    """The install the shipped list ran on these disks (None: none known)."""
+    ship = known().get(key_of(names))
+    return (ship[1] or None) if isinstance(ship, list) and len(ship) > 1 else None
+
+
+_INDEX: Optional[tuple[int, dict[str, list], frozenset]] = None
+_VERSION_RE = re.compile(r"\s+v[\w.\-]*\d[\w.\-]*$")
+
+
+def _title(name: str) -> str:
+    """A TOSEC name's title without its version ("Civilization v855e.01 (1994)(MicroProse)" -> "civilization")."""
+    return _VERSION_RE.sub("", name.split(" (")[0]).casefold()
+
+
+def _index() -> tuple[dict[str, list], frozenset]:
+    """``(releases, titles)``: the shipped entry of each image-set release by its name (an SPS release is one zip, its images
+    "<release> - <file>.ipf" - the library has one of them, the list all), and the titles (the name before " (") that have an entry
+    at all: their game has an install (one that did not install is listed too, as 0)."""
+    global _INDEX
+    sets = known()
+    if _INDEX is None or _INDEX[0] != id(sets):
+        releases: dict[str, list] = {}
+        titles = set()
+        for key, v in sets.items():
+            lines = key.split("\n")
+            titles.add(_title(lines[0]))
+            if all(n.lower().endswith(".ipf") and " - " in n for n in lines):
+                releases[lines[0].rsplit(" - ", 1)[0]] = v
+        _INDEX = (id(sets), releases, frozenset(titles))
+    return _INDEX[1], _INDEX[2]
+
+
+def release(name: str) -> Optional[list]:
+    """The shipped ``[level, install archive]`` of the image-set release (SPS / IPF) named ``name``, None: not known."""
+    return _index()[0].get(name)
+
+
+def has_install(title: str) -> bool:
+    """True: the shipped list knows a WHDLoad install of the game of this title (the TOSEC title: the name before " (")."""
+    return _title(title) in _index()[1]
+
+
+def leaves_manual(arc: Optional[str]) -> bool:
+    """True: this install's ReadMe does not say it takes the manual / code-wheel check out (it keeps it, takes it out of some versions
+    only, or says nothing of it)."""
+    known()
+    return bool(arc) and arc in (_MANUAL_KEPT or ())
 
 
 def level(names: Iterable[str]) -> Optional[int]:

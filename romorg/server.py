@@ -300,7 +300,7 @@ PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "lang
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
                 "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles",
-                "prefer_whdload")
+                "prefer_whdload", "prefer_unprotected")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -2765,7 +2765,7 @@ class App:
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
                     "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-                    "combine_alt_titles", "prefer_whdload"):
+                    "combine_alt_titles", "prefer_whdload", "prefer_unprotected"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))

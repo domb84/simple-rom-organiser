@@ -265,6 +265,14 @@ Note: "[f AGA Fix]" was treated as an AGA version. Only `(AGA)` should count; Th
   Icons fixed (`repair_slave_tooltypes`, `night/slavefix.py` / `slavefix.jsonl`): Cygnus 8, Indy Temple of Doom, Mr Blobby, Beast III,
   Franko boot; Doman finds its slave now but is an unsupported version. Santa's Xmas Caper ([cr MST]) boots by eye. 297 left.
   whdknown rebuilt (20,237 sets). Next proposed: the 23 SPS originals RawDIC rejects.
+- 2026-10-21, evening: protections. `/tmp/claude-1000/prot/` (prot.py, final.py, spscrack.py, ask.py): of the booting installs of
+  games OpenRetro marks with a manual / code-wheel check, which ReadMes say the install removes it (264 of 302) - and where the SPS
+  original still asks and a crack exists. Stage G (`night/stageG.py`, `bootG.jsonl`; `stageG2.py` 12000-frame runs) built every crack
+  of those games: 17 boot (Cruise for a Corpse and Obsession still show the check from the crack). `night/lib.py` job(): a set
+  whose other disks are named differently took the uncracked disk 1 - fixed, the 7 affected rows of B / E / newpairs2 rerun
+  (`diskfix.jsonl`). Then the user: "prioritise cracked versions when the whdload doesnt remove it" - superseding the SPS original
+  (asked, chosen): AMENDMENT 49, rule `prefer_unprotected`, `~/.cache/whdwork/protection.py` -> `protection.json` -> `manual_kept`.
+  The user's data dir has no OpenRetro file yet (fetched with the next update): until then the rule does nothing.
 - Games with no install at all: 45 of 60 readable native AGA ones are plain AmigaDOS disks with a startup-sequence (night/
   aga_noinstall_kinds.json). PUAE's WHDLoad mode shows a file picker for an archive with no slave; an HD-style install of them
   would need a hardfile or a launcher - not started, for the user to decide.

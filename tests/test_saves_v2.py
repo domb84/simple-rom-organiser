@@ -422,7 +422,7 @@ class ProfileRoundTrip(unittest.TestCase):
         cfg: dict[str, Any] = {}
         plat = mock.Mock()
         plat.name = "Some System"
-        plat.latest_dats = plat.best_variant_dats = plat.m3u_dats = plat.language_dats = plat.region_dats = ()
+        plat.latest_dats = plat.best_variant_dats = plat.m3u_dats = plat.language_dats = plat.region_dats = plat.image_set_dats = ()
         library.store_profile(cfg, plat, p)
         self.assertEqual(library.load_profile(cfg, plat).saved_overrides, p.saved_overrides)
 

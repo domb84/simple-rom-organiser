@@ -3142,3 +3142,21 @@ extension. The Overview card says *found*, the Library card *kept*.
   that is not in its drawer (a script that renamed or put the slave elsewhere: Cygnus 8, Indiana Jones and the Temple of Doom,
   Mr Blobby, Shadow of the Beast III), or a WHDLoad icon with no `Slave=` at all (WHDLoad then looks for "WHDLoad.Slave": Franko),
   gets the drawer's only slave, or the one named like the icon; the tooltype keeps its own spelling. A ReadMe's icon is left alone.
+
+
+**AMENDMENT 49 (v0.3) — Cracks over originals that ask for the manual.**
+* New rule `prefer_unprotected` ("Prefer cracks to originals that ask for the manual", on by default; systems with
+  `Platform.image_set_dats`: the Amiga). `library._prefer_unprotected`, after the selection: an SPS / IPF release kept in the
+  library whose OpenRetro release has a manual check (`MANUAL_CHECKS`: Manual, Code Wheel, Code Sheet, Word Lookup In Manual,
+  Registration Code) and that its WHDLoad install does not take the check out - the install is not known to boot from it, or its
+  ReadMe does not say it removes the check - is superseded by a kept crack (TOSEC `[cr]`) of the game that the install boots from;
+  when no install of the game is known at all, by any kept crack. No OpenRetro data (not fetched yet): nothing changes.
+* The shipped list (`whdknown.json.gz`) has `manual_kept`: the installs whose ReadMe keeps the check, removes it from some versions
+  only, or says nothing of it (classified from every install's ReadMe, with the verdicts read by hand). `whdready.leaves_manual`,
+  `whdready.release(name)` (an SPS release is one zip in the library - one matched image - and is looked up by its name),
+  `whdready.has_install(title)` (a title with any entry, a failed install included; TOSEC versions ignored).
+* A crack installed is not always free of the check: the install runs the game through its own loader (Cruise for a Corpse, Obsession
+  still ask). They are superseded all the same - the crack as a plain disk does not ask.
+* On the user's folders (with the OpenRetro data): 33 SPS zips of 26 games superseded - 25 by a crack the install boots from (Maniac
+  Mansion, Operation Stealth, Buck Rogers, F-15 Strike Eagle II, Oscar, Space Quest I ...), 8 where the game has no install (Whale's
+  Voyage, Fields of Glory, Championship Manager '93 ...).
