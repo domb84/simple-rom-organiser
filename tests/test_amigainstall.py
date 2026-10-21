@@ -513,6 +513,11 @@ class PreferWhdloadVersions(unittest.TestCase):
             def release(self, sha1s: list) -> dict:
                 return {"protection": self.check} if "aa" in sha1s else {}
 
+            games: dict = {}
+
+            def titles(self) -> list:                                   # (the alternate titles read it too)
+                return []
+
         def run(check: str = "Code Wheel", shipped: dict = boots, keeps: bool = True, **changes) -> Any:
             with mock.patch("romorg.openretro.database", return_value=Db(check) if check else None), \
                  mock.patch.object(whdready, "known", return_value=shipped), \
@@ -536,6 +541,15 @@ class PreferWhdloadVersions(unittest.TestCase):
         self.assertIn("prefer_unprotected", library.applicable_fields(AMIGA))
         self.assertTrue(library.default_profile(AMIGA).prefer_unprotected)
         self.assertNotIn("prefer_unprotected", library.applicable_fields(platforms.get_platform("Nintendo Game Boy Advance")))
+
+    def test_the_language_rules_take_an_sps_release_by_its_name(self) -> None:
+        sps = "Commodore Amiga - Games - SPS"
+        mk = lambda k, game, f: Item(key=k, dat=sps, rom=Rom(name=f"{game} - {f}.ipf", size=1, crc="", md5="", sha1="", game=game, dat=sps),
+                                     style="tosec", path=Path(f"{k}.ipf"), member=None)
+        items = [mk(1, "Dune (1992)(Virgin)(DE)[0459]", "Dune_Disk1"), mk(2, "Dune (1992)(Virgin)[1156]", "Dune_Disk1")]
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA)          # (English, the default)
+        self.assertEqual(sel.decisions[1].action, library.EXCLUDED)
+        self.assertEqual(sel.decisions[2].action, KEEP)
 
     def test_the_shipped_list_names_installs_that_leave_the_manual_check(self) -> None:
         self.assertTrue(whdready.leaves_manual("CruiseForACorpse.lha"))      # (its ReadMe: "protection not removed")

@@ -300,7 +300,7 @@ PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "lang
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
                 "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles",
-                "prefer_whdload", "prefer_unprotected")
+                "prefer_whdload", "prefer_unprotected", "build_whdload")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
     "bad_dump": "Bad dumps [b]", "virus": "Virus-infected [v]", "bad_size": "Over/under dumps [o] [u]",
@@ -2511,7 +2511,8 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, f"Scan the {platform.name} folder first.", "scan_needed")
         cat, matcher = self._whd_matcher(platform)
         folders = _mod("folders")
-        games: dict[str, dict[str, Any]] = {}
+        image_sets = set(getattr(platform, "image_set_dats", ()) or ())
+        releases: dict[str, dict[tuple, dict[str, Any]]] = {}     # title -> release -> its disks
         for m in getattr(state.result, "matched", ()):
             rom = m.roms[0] if m.roms else None
             if (rom is None or "Games" not in getattr(rom, "dat", "")
@@ -2523,10 +2524,22 @@ class App:
                 parts = ()
             if folders.reserved_of(parts) is not None:
                 continue                         # (a game the rules set aside: _excluded/, _superseded/ ... gets no install)
-            t = tags.parse_name(rom.name, tags.STYLE_TOSEC)
-            row = games.setdefault(t.title.casefold(), {"title": t.title, "disks": [], "sha1": [], "dir": str(Path(m.entry.path).parent)})
-            row["disks"].append(rom.name)
-            row["sha1"].append(getattr(rom, "sha1", "") or "")
+            sps = rom.dat in image_sets and bool(getattr(rom, "game", ""))
+            # (an SPS release is one zip of "<release> - <file>.ipf" images: its title is the release's - Alien Breed - Tower
+            #  Assault's images are not "Alien Breed" - and it is a release of its own beside the game's floppies)
+            t = tags.parse_name(rom.game + ".ipf" if sps else rom.name, tags.STYLE_TOSEC)
+            key = (sps, rom.game if sps else re.sub(r"\s*\(Dis[ck] \d+ of \d+\)", "", rom.game or rom.name))
+            rel = releases.setdefault(t.title.casefold(), {}).setdefault(
+                key, {"title": t.title, "disks": [], "sha1": [], "dir": str(Path(m.entry.path).parent), "sps": sps})
+            names = [r.name for r in m.roms] if sps else [rom.name]   # (a zip's images: all of the release)
+            sha1s = [getattr(r, "sha1", "") or "" for r in m.roms] if sps else [getattr(rom, "sha1", "") or ""]
+            for n, h in zip(names, sha1s):
+                if n not in rel["disks"]:
+                    rel["disks"].append(n)
+                    rel["sha1"].append(h)
+        games: dict[str, dict[str, Any]] = {}
+        for title, rels in releases.items():                # (one row a game: its floppies when there are some, else its SPS release)
+            games[title] = min(rels.values(), key=lambda r: (r["sps"], -len(r["disks"])))
         installed: dict[str, dict[str, Any]] = {}
         rows = []
         orr, hw = _optional_mod("openretro"), _optional_mod("amigahw")
@@ -2683,6 +2696,28 @@ class App:
 
         return {"job": self.jobs.start("whdcheck", work, platform=platform.name).to_dict()}
 
+    def whdload_build(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """Build WHDLoad games: every game the library keeps that a WHDLoad install works from, a ``<release>.lha`` beside its disks
+        (``romorg.whdbuild``); the same one again is left as it is. A job (cancellable): the first run can take an hour or more."""
+        body = body if isinstance(body, dict) else {}
+        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        state = self._state_of(platform)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, f"Scan the {platform.name} folder first.", "scan_needed")
+        cat = _mod("whdinstalls").load()
+        if cat is None:
+            raise ApiError(HTTPStatus.CONFLICT, "The list of WHDLoad installs has not been fetched yet (check for updates).",
+                           "whdinstalls_missing")
+        whdbuild = _mod("whdbuild")
+        todo = whdbuild.targets(self._library_plan(state), platform)
+
+        def work(job: Job) -> Any:
+            out = whdbuild.build(todo, state.root, cat.get("installs") or [], progress=job.report, cancel=job.cancel)
+            return {"action": "whdbuild", "games": len(todo), **{k: (v if isinstance(v, int) else len(v)) for k, v in out.items()
+                                                                  if k != "failed"}, "failed": out["failed"][:50]}
+
+        return {"job": self.jobs.start("whdbuild", work, platform=platform.name).to_dict()}
+
     def updates_cancel(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         return {"cancelled": bool(self.updates.cancel())}
 
@@ -2765,7 +2800,7 @@ class App:
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
                     "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-                    "combine_alt_titles", "prefer_whdload", "prefer_unprotected"):
+                    "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -3964,6 +3999,9 @@ class App:
                 if sweep or arch_out:
                     res["aside"] = {"path": str(aside), "moved": out["moved"] + (arch_out or {}).get("moved", 0),
                                     "failed": (out["failed"] + (arch_out or {}).get("failed", []))[:20]}
+            if ("build_whdload" in self._library_mod().applicable_fields(st.platform) and self._profile(st.platform).build_whdload
+                    and not job.cancel.is_set()):
+                res["whdload_next"] = st.platform.name          # (the page starts "Build WHDLoad games" next: a job of its own, cancellable)
             return self._rescan_into(job, st, res)
 
         return {"job": self.jobs.start("library", work, cancellable=False, platform=state.platform.name).to_dict()}
@@ -5539,9 +5577,12 @@ class App:
         style = _mod("library")._style_of_platform(platform) if platform is not None else "nointro"
         try:
             category = str((row.get("tags") or {}).get("category") or "")
+            raw_dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
+            if raw_dat in _mod("library")._image_set_dats() and " - " in name:
+                name = name.rsplit(" - ", 1)[0] + ".ipf"       # (an SPS image "<release> - <file>.ipf": its release's name)
             t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
-            dat = _mod("library").game_dat((row.get("game_ref") or {}).get("dat") or row.get("dat", ""))   # (a disc: its games DAT's)
+            dat = _mod("library").game_dat(raw_dat)                                                   # (a disc: its games DAT's)
             return ("game", (dat, _mod("library").combined_key(dat, tags_mod.game_key(t), combine)))     # (the tiles' key: no region, no disc number)
         except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
             return ("name", name)
@@ -5975,6 +6016,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/whdload/installs"): App.whdload_installs,
     ("POST", "/api/whdload/download"): App.whdload_download,
     ("POST", "/api/whdload/check"): App.whdload_check,
+    ("POST", "/api/whdload/build"): App.whdload_build,
     ("POST", "/api/ratings/igdb"): App.ratings_igdb_save,
     ("POST", "/api/ratings/igdb/test"): App.ratings_igdb_test,
     ("GET", "/api/library/profile"): App.library_profile,

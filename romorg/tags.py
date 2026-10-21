@@ -103,6 +103,13 @@ _PRERELEASE = {"alpha": 1, "beta": 2, "rc": 3}
 _TOSEC_VERSION_RE = re.compile(
     r"\s(v\d+(?:\.\d+)*[a-z]?|[Rr]ev ?\d+(?:\.\d+)*|r\d+(?:\.\d+)*)([A-Z]{1,3})?((?:\s?(?:[Rr]ev|r) ?\d+(?:\.\d+)*)?)"
     r"([A-Z]{1,3})?$")
+# Versions the pattern above does not know, tried after it: "v855e.01" (MicroProse), "v2.0f i2.202" (Sierra's interpreter),
+# "vP1.00-D1.00" / "v0.90-1.00" (program and data), "v1.0D3", "v3.1 29701" (a build), "v3.0+", "v1.2-G" (the locale after a dash);
+# and a version before a subtitle ("Whale's Voyage v1.2 - Super Enhanced", "Falcon v1.1 - Mission Disk Volume 1 - ...") or before
+# "CD32" ("Gunship 2000 v3.32 CD32"): the title is the rest, so the release is a version of its title like the others.
+_TOSEC_VER = r"v[A-Z]?\d+[a-z]?(?:\.\d+[a-z]?)*(?:-[A-Z]?\d+(?:\.\d+)*)?(?:[A-Z]\d+)?\+?(?:\s[ir]\d+(?:\.\d+)*)?(?:\s\d{4,})?"
+_TOSEC_VERSION_END_RE = re.compile(rf"\s({_TOSEC_VER})(?:-([A-Z]{{1,2}}))?$")
+_TOSEC_VERSION_MID_RE = re.compile(rf"\s({_TOSEC_VER})(?:-([A-Z]{{1,2}}))?\s(?:-\s(\S.*)|(CD32|CDTV))$")
 _TOSEC_DATE_RE = re.compile(r"^[\dx?]{4}(?:-[\dx?]{2}(?:-[\dx?]{2})?)?$", re.IGNORECASE)
 _TOSEC_STATUS_RE = re.compile(
     r"^(?:alpha|beta|preview|pre-release|proto|demo(?:-[a-z]+)?)(?: \d+)?$", re.IGNORECASE)
@@ -194,7 +201,8 @@ def _version_key(version: str, widths: Optional[dict[int, int]] = None) -> tuple
             stage = _PRERELEASE[m.group(3).lower()]
             return (1, *parts, 1_000_000 + stage, int(m.group(4) or 0))
         return (1, *nums, *letter)
-    return (1, 0)
+    nums = re.findall(r"\d+", v)                             # (the other forms: "v855e.01", "vP1.00-D1.00" - their numbers in order)
+    return (1, *(int(x) for x in nums)) if nums else (1, 0)
 
 
 def _max_version(parts: list[str]) -> str:
@@ -349,6 +357,11 @@ def _parse_tosec(name: str) -> Tags:
         version = m.group(1) + m.group(3)
         suffix = (m.group(2) or "") + (m.group(4) or "")
         title = title[:m.start()].rstrip()
+    elif (e := _TOSEC_VERSION_END_RE.search(title)) is not None:
+        version, suffix, title = e.group(1), e.group(2) or "", title[:e.start()].rstrip()
+    elif (mid := _TOSEC_VERSION_MID_RE.search(title)) is not None:
+        version, suffix = mid.group(1), mid.group(2) or ""
+        title = title[:mid.start()].rstrip() + (f" - {mid.group(3)}" if mid.group(3) else f" {mid.group(4)}")
     regions: tuple[str, ...] = ()
     languages: Optional[tuple[str, ...]] = None
     status = date = publisher = ""

@@ -178,10 +178,17 @@ _EDITION_SUB_RE = re.compile(r"\b(?:edition|version)$", re.IGNORECASE)
 # renamed releases no rule finds (TOSEC's title -> the install's)
 _ALIASES = {"fifa international soccer": "fifa soccer",
             "populous 2 trials of the olympian gods": "populous 2 challenge games",   # (that install is Populous 2 and its data disk)
-            "lotus turbo challenge 2": "lotus 2"}
+            "lotus turbo challenge 2": "lotus 2",
+            "lemmings xmas lemmings 1991": "lemmings x mas 1991", "lemmings xmas lemmings 1992": "lemmings x mas 1992",
+            "lemmings holiday lemmings 1993": "lemmings holiday 1993 1994", "lemmings holiday lemmings 1994": "lemmings holiday 1993 1994"}
 # games whose title is an install's but not its game (title -> the install that is another game's): Grandslam's Hunt for Red October
 # of 1987 (German: Jagd auf Roter Oktober) is not the 1990 game of the film, the only one with an install
-_NOT_ITS_INSTALL = {"hunt for red october": {"HuntForRedOctober.lha"}, "jagd auf roter oktober": {"HuntForRedOctober.lha"}}
+_NOT_ITS_INSTALL = {"hunt for red october": {"HuntForRedOctober.lha"}, "jagd auf roter oktober": {"HuntForRedOctober.lha"},
+                    "hanse die expedition": {"Hanse.lha"},                       # (1994; the install is Ariolasoft's Hanse of 1988)
+                    "d day": {"DDay.lha"},                                       # (the install is Impressions' D-Day: The Beginning of the End)
+                    "gettysburg turning point": {"Gettysburg.lha"},              # (SSI's of 1986; the install is ARC's Gettysburg of 1990)
+                    "space harrier return to the fantasy zone": {"SpaceHarrier.lha", "LiveAndLetDie.lha"},   # (another game)
+                    "trivial pursuit": {"TrivialPursuit2.lha"}}                  # (Domark's of 1986; the install is A New Beginning, 1988)
 _DEMO_RE = re.compile(r"\b(?:demo|preview)\b", re.IGNORECASE)
 _NICKNAME_RE = re.compile(r"\s+['\"][A-Za-z][^'\"]{1,20}['\"](?=\s)")    # (a nickname in quotes: "Ivan 'Ironman' Stewart")
 _POSSESSIVE_RE = re.compile(r"(?<=[a-z])'s\b", re.IGNORECASE)
@@ -327,7 +334,7 @@ class Matcher:
     def _found(self, title: str, strict: bool, others: Optional[set[str]]) -> Optional[tuple[list[dict[str, Any]], str, str]]:
         """:meth:`_find`, first by the game's Hall of Light page (OpenRetro's, for this title: one game's page, an install that has
         it - no demo install for a game; "Indiana Jones and the Last Crusade - The Action Game" is not the adventure's install),
-        never an install that is another game's (``_NOT_ITS_INSTALL``)."""
+        never an install that is another game's (``_NOT_ITS_INSTALL``), nor an Arcadia board's for a title that is not."""
         t = _plain(title or "")
         k = self._node(t)
         hols = self._hols().get(k) or set()
@@ -335,8 +342,9 @@ class Matcher:
         if cands and len({str(i["hol"]) for i in cands}) == 1:
             return cands, "Hall of Light", t
         hit = self._find(title, strict, others)
-        if hit is not None and k in _NOT_ITS_INSTALL:
-            keep = [i for i in hit[0] if i["archive"] not in _NOT_ITS_INSTALL[k]]
+        if hit is not None:                              # (an Arcadia install wants the arcade board's ROMs, not the floppies)
+            arcadia = "arcadia" in t.casefold()
+            keep = [i for i in hit[0] if i["archive"] not in _NOT_ITS_INSTALL.get(k, ()) and (arcadia or "arcadia" not in i["title"].casefold())]
             hit = (keep, hit[1], hit[2]) if keep else None
         return hit
 
@@ -361,10 +369,11 @@ class Matcher:
             hit = self._find(v, strict, others)
             if hit is not None:
                 return hit[0], how, hit[2]
-        hit = self._in_parts(k)
+        compilation = " & " in t                            # (two games on one disk: no main title is either of them)
+        hit = None if compilation else self._in_parts(k)
         if hit:
             return hit, "main title", t
-        if " - " in t:
+        if " - " in t and not compilation:
             head, sub = t.split(" - ", 1)
             if _ADDON_RE.search(sub) or _ADDON_HEAD_RE.search(head):
                 return None                               # (a data / course / scenario disk: not the game's install)

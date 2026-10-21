@@ -179,6 +179,7 @@ class LibraryProfile:
     combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
     prefer_whdload: bool = True                  # Amiga: of a game's versions, one a WHDLoad install can be made from first (``whdready``)
     prefer_unprotected: bool = True              # Amiga: an original (SPS) that asks for the manual gives way to a crack WHDLoad installs
+    build_whdload: bool = True                   # Amiga: Build library also makes each kept game a WHDLoad archive beside its disks (``whdbuild``)
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise whatever the caller passed (lists, sets, unknown codes)
@@ -215,7 +216,7 @@ class LibraryProfile:
                 "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
                 "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
                 "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload,
-                "prefer_unprotected": self.prefer_unprotected}
+                "prefer_unprotected": self.prefer_unprotected, "build_whdload": self.build_whdload}
 
     @classmethod
     def from_dict(cls, d: Any, defaults: Optional["LibraryProfile"] = None) -> "LibraryProfile":
@@ -274,7 +275,8 @@ class LibraryProfile:
                    prefer_editions=flag("prefer_editions", base.prefer_editions),
                    combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles),
                    prefer_whdload=flag("prefer_whdload", base.prefer_whdload),
-                   prefer_unprotected=flag("prefer_unprotected", base.prefer_unprotected))
+                   prefer_unprotected=flag("prefer_unprotected", base.prefer_unprotected),
+                   build_whdload=flag("build_whdload", base.build_whdload))
 
     @classmethod
     def latest_only_profile(cls) -> "LibraryProfile":
@@ -312,7 +314,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
                "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-               "combine_alt_titles", "prefer_whdload", "prefer_unprotected")
+               "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
 # decides its own rules. Your defaults keep the one list ``exclude``.
@@ -366,6 +368,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.add("exclude_amiga")
         if _dats(platform, "best_variant_dats"):
             out.add("prefer_whdload")
+            out.add("build_whdload")
         if _dats(platform, "image_set_dats"):
             out.add("prefer_unprotected")
     else:
@@ -809,7 +812,8 @@ def combined_key(dat: str, key: tuple, combine: bool) -> tuple:
     if not combine or len(key) < 2:
         return key
     if key[0] == STYLE_TOSEC and len(key) == 6:            # (style, title, countries, publisher, edition, statuses)
-        edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language"))    # (PAL / NTSC, M3: a release, not a game)
+        edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language")    # (PAL / NTSC, M3: a release, not a game;
+                        and not re.fullmatch(r"[A-Z]{1,3}", f))      #  nor a version's letter: "v1.14C", "v1.00R", "v1.44GE" - your languages choose)
         key = (key[0], key[1], (), _apart(key[1], key[3]), edition, key[5])
     g = alttitles.group(dat, key[1])                        # (key[1]: the title, casefold)
     if g:
@@ -1191,7 +1195,7 @@ def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Pl
         if _style(it) not in OTHER_LANGUAGE_STYLES or it.dat not in scope.language:
             continue
         if not eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
-                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP else None):
+                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP or it.dat in _image_set_dats() else None):
             out.add(game_key(it, profile.combine_alt_titles))
     return frozenset(out)
 
@@ -1372,7 +1376,7 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     for it in items:
         info = eligibility(_rom_name(it), _style(it), profile, languages=it.dat in scope.language,
                            flags=scope.flags(it.dat),
-                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP else None)
+                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP or it.dat in _image_set_dats() else None)
         if info and it.dat in scope.disc:              # (a CD32 / CDTV disc is the game itself: never "a conversion")
             info = [(r, x) for r, x in info if r != "cd_conversion"]
         if info:
@@ -2341,6 +2345,10 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "game's files from, then one it makes disk images of - after your language order, before cracked / chipset / newest. The app "
         "knows this for many TOSEC versions already (installs run on them and booted in PUAE); \"Check which versions WHDLoad can "
         "install\" (WHDLoad installs, on the Files page) finds it for yours.", [STYLE_TOSEC])
+    opt("build_whdload", "build_whdload", "Build WHDLoad games", True,
+        "Build library also makes every game it keeps that a WHDLoad install works from a WHDLoad archive (<release>.lha) beside "
+        "its disks, for PUAE to run as from a hard disk: the install from whdload.de, run here on your own disks. One that is "
+        "already there and the same is left as it is; the first build can take an hour or more.", [STYLE_TOSEC])
     opt("prefer_unprotected", "prefer_unprotected", "Prefer cracks to originals that ask for the manual", True,
         "An original disk set (SPS / IPF) whose game asks for something from the manual or a code wheel - OpenRetro's protection of "
         "the release - and whose WHDLoad install does not take that check out gives way to a cracked version you have that the "

@@ -180,6 +180,35 @@ class VersionTest(unittest.TestCase):
         self.assertLess(version_key("Rev 1.2"), version_key("Rev 1.4"))
 
 
+class OtherVersionForms(unittest.TestCase):
+    def test_versions_the_first_pattern_does_not_know(self) -> None:
+        for name, title, version in (
+                ("Uridium 2 vP1.00-D1.00 (1993)(Renegade)(Disk 1 of 2)[cr CLS].adf", "Uridium 2", "vP1.00-D1.00"),
+                ("Uridium 2 v0.90-1.00 (1993)(Renegade)(AGA)(Disk 1 of 2)[cr FLT].adf", "Uridium 2", "v0.90-1.00"),
+                ("Civilization v855e.01 (1993)(MicroProse)(AGA)(Disk 1 of 4)[cr CSL].adf", "Civilization", "v855e.01"),
+                ("Space Quest II - Vohaul's Revenge v2.0f i2.202 (1988)(Sierra).adf", "Space Quest II - Vohaul's Revenge", "v2.0f i2.202"),
+                ("Reach for the Skies v1.0D3 (1993)(Virgin).adf", "Reach for the Skies", "v1.0D3"),
+                ("Dream Zone v3.1 29701 (1988)(Baudville).adf", "Dream Zone", "v3.1 29701"),
+                ("Whale's Voyage v1.2 - Super Enhanced (1993)(neo - Flair).adf", "Whale's Voyage - Super Enhanced", "v1.2"),
+                ("Falcon v1.3 r2.0 - Mission Disk Volume II - Operation Firefight (1990)(Mirrorsoft).adf",
+                 "Falcon - Mission Disk Volume II - Operation Firefight", "v1.3 r2.0"),
+                ("Gunship 2000 v3.32 CD32 (1994)(MicroProse)[CD32 rip].adf", "Gunship 2000 CD32", "v3.32"),
+                ("Death or Glory v1.0 Update Disk (1994)(Software 2000).adf", "Death or Glory v1.0 Update Disk", "")):   # (left as it is)
+            t = parse_name(name, tags.STYLE_TOSEC)
+            self.assertEqual((t.title, t.version), (title, version), name)
+        t = parse_name("Dragon Wars v1.2-G (1990)(Interplay).adf", tags.STYLE_TOSEC)
+        self.assertEqual((t.title, t.version, t.flags[0]), ("Dragon Wars", "v1.2", "G"))
+        self.assertLess(version_key("v0.90-1.00"), version_key("vP1.00-D1.00"))
+
+    def test_a_version_letter_parts_no_game_when_titles_are_combined(self) -> None:
+        from romorg import library
+        k = lambda n: library.combined_key("Commodore Amiga - Games - [ADF]", tags.identity_key(parse_name(n, tags.STYLE_TOSEC)), True)
+        self.assertEqual(k("Wolfpack v1.00 (1990)(Broderbund)(US).adf"), k("Wolfpack v1.00R (1990)(Mirrorsoft).adf"))
+        self.assertEqual(k("Championship Manager '93 v1.10 (1993)(Domark).adf"), k("Championship Manager '93 v1.14C (1993)(Domark).adf"))
+        self.assertNotEqual(tags.identity_key(parse_name("A320 Airbus v1.44GE (1994)(Thalion).adf", tags.STYLE_TOSEC)),
+                            tags.identity_key(parse_name("A320 Airbus v1.44E (1994)(Thalion).adf", tags.STYLE_TOSEC)))   # (not combined: apart)
+
+
 class SupersededTest(unittest.TestCase):
     def test_nointro_groups(self) -> None:
         names = [

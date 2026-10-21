@@ -72,7 +72,7 @@ import os
 import re
 import stat
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -647,7 +647,13 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
         for p, why in unmatched_archives:
             others.append(planner.unmatched(p, why))
         for p in result.unsupported:
-            others.append(planner.unmatched(_abs(Path(p), root), ("unsupported disc image" if str(p).lower().endswith(".rvz") else "unsupported archive (7z not found)")))
+            ap = _abs(Path(p), root)
+            if str(p).lower().endswith(".rvz"):
+                others.append(planner.unmatched(ap, "unsupported disc image"))
+            else:                                    # (an archive no 7z here can open: what is in it is not known - left where it is,
+                op = RenameOp(ap, ap, "skip", "could not be read: 7z is not installed")   #  never moved; no game you have)
+                op.code = "unmatched"
+                others.append(op)
         for p, msg in result.errors:
             ap = _abs(Path(p), root)
             others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))
@@ -913,6 +919,7 @@ class LibraryPlan:
     playlists: list["m3u.M3UOp"]         # write | ok | conflict
     selection: "library.Selection"
     profile: "library.LibraryProfile"
+    owners: dict = field(default_factory=dict)  # Item.key -> (its op, its unit): where each kept file ends up (WHDLoad games)
 
     def counts(self) -> dict[str, int]:
         out = plan_counts(self.ops)
@@ -960,6 +967,7 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings, lang_games, saved)
     root = result.root
     ops = core.ops
+    _rule_partial_archives(result, ops, profile, platform)
     sel = core.selection if core.selection is not None else library.Selection()
 
     specs: list["m3u.PlaylistSpec"] = []
@@ -998,7 +1006,31 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
             continue
         deleting.add(_fold(st.path))
         kept_ops.append(RenameOp(st.path, st.path, DELETE_STATUS, st.reason, "", "m3u"))
-    return LibraryPlan(kept_ops, playlists, sel, profile)
+    return LibraryPlan(kept_ops, playlists, sel, profile, core.owners)
+
+
+def _rule_partial_archives(result: "ScanResult", ops: list[RenameOp], profile: "library.LibraryProfile", platform: Any) -> None:
+    """An archive that holds a game next to other files stays where it is (the build cannot rename it), but the rules still say
+    whether the game is one to have: one they set aside (a language, a bad dump ...) is ``excluded`` - Fatal Heritage's German SPS
+    release, with its scans - not counted as yours."""
+    from . import library
+    if platform is None:
+        return
+    units = {_fold(u.path): u for u in partial_archives(result)}
+    if not units:
+        return
+    scope = library._Scope(platform)
+    for op in ops:
+        u = units.get(_fold(op.src)) if op.status == "skip" and not op.code else None
+        if u is None:
+            continue
+        item = library.Item(key=0, dat=u.dat, rom=u.rom, style=u.style, path=u.path, member=None)
+        info = library.eligibility(library._rom_name(item), u.style, profile, languages=u.dat in scope.language,
+                                   flags=scope.flags(u.dat), parsed=library._tags_of(item))
+        if info:
+            op.code = "excluded"
+            op.reasons = tuple(code for code, _x in info)
+            op.reason = f"excluded: {library._describe(info)} - left where it is (the archive holds other files too)"
 
 
 def _library_delete_reason(op: RenameOp, by_src: dict[str, RenameOp]) -> str:

@@ -242,18 +242,18 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual(ops[f"{GAMES}/stray.txt"].dst, U / GAMES / "stray.txt")
         self.assertEqual(ops[f"{UNMATCHED_DIR}/old/thing.bin"].status, "ok")
         self.assertEqual(ops[f"{UNMATCHED_DIR}/deep/alpha.adf"].dst, self.root / GAMES / "Alpha (1990)(Pub).adf")
-        self.assertEqual(ops["game.7z"].dst, U / "game.7z")
+        self.assertEqual((ops["game.7z"].dst, ops["game.7z"].status), (self.root / "game.7z", "skip"))   # (no 7z: not known, left where it is)
         self.assertEqual(ops["multi.zip"].dst, U / "multi.zip")
         self.assertEqual(ops["partial.zip"].status, "skip")
         self.assertNotIn("Mine.m3u", ops)
-        self.assertEqual(plan_counts(ops.values())["to_unmatched"], 4)
+        self.assertEqual(plan_counts(ops.values())["to_unmatched"], 3)
 
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["failed"], [])
         self.assertEqual(self.files(), {
             f"{GAMES}/Alpha (1990)(Pub).adf", f"{UNMATCHED_DIR}/sub/dir/junk.bin",
             f"{UNMATCHED_DIR}/{GAMES}/stray.txt", f"{UNMATCHED_DIR}/old/thing.bin",
-            f"{UNMATCHED_DIR}/game.7z", f"{UNMATCHED_DIR}/multi.zip", "partial.zip", "Mine.m3u",
+            "game.7z", f"{UNMATCHED_DIR}/multi.zip", "partial.zip", "Mine.m3u",
         })
         self.assertNotIn(f"{UNMATCHED_DIR}/deep", self.dirs())  # emptied by our move
         self.assertIn(UNMATCHED_DIR, self.dirs())
@@ -1319,6 +1319,21 @@ class LibraryPlanTests(unittest.TestCase):
         for n in ABC_NAMES:
             self.have(n, f"in/{n}")
         self.have(ABC1 + ".adf", "in/plain1.adf")   # uncracked disk 1 of v1.1: superseded by the cracked set
+
+    def test_an_archive_with_other_files_still_follows_the_rules(self) -> None:
+        data = _rand(600, 99)
+        self.roms.append(_rom("Spiel (1990)(Pub)(DE).adf", data))
+        with zipfile.ZipFile(self.root / "spiel.zip", "w") as zf:                  # (the game and its scans: never renamed)
+            zf.writestr("Spiel (1990)(Pub)(DE).adf", data)
+            zf.writestr("scan.jpg", "jpg")
+        prof = dataclasses.replace(library.default_profile(platforms.get_platform("Commodore Amiga")), languages=("En",))
+        ops = {op.src.name: op for op in self.plan(profile=prof, platform=platforms.get_platform("Commodore Amiga")).ops}
+        op = ops["spiel.zip"]
+        self.assertEqual((op.status, op.dst, op.code), ("skip", op.src, "excluded"))      # (left where it is, not yours by the rules)
+        self.assertIn("not in the selected languages", op.reason)
+        ops = {op.src.name: op for op in self.plan(profile=dataclasses.replace(prof, languages=("De",)),
+                                                   platform=platforms.get_platform("Commodore Amiga")).ops}
+        self.assertEqual((ops["spiel.zip"].status, ops["spiel.zip"].code), ("skip", ""))
 
     def test_abc_playlist_per_slot_and_reason_folders(self) -> None:
         self.abc()

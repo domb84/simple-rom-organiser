@@ -1704,6 +1704,27 @@ def repair_data_tooltype(files: dict[str, bytes]) -> list[str]:
     return out
 
 
+def alias_icons(files: dict[str, bytes]) -> dict[str, bytes]:
+    """``files`` with an icon named like each slave ("<slave stem>.info") where the drawer has only icons of other names that run it
+    (``Slave=``): PUAE's WHDLoad helper takes the tooltypes from the icon of the slave's name. A copy; ``files`` unchanged."""
+    out = dict(files)
+    for k in [k for k in files if k.lower().endswith(".slave")]:
+        d, _, s = k.rpartition("/")
+        want = f"{d}/{s[:-6]}.info" if d else f"{s[:-6]}.info"
+        if any(x.lower() == want.lower() for x in files):
+            continue
+        for ik, iv in files.items():
+            if ik.lower().endswith(".info") and ik.rpartition("/")[0] == d:
+                try:
+                    _tool, tts, _s, _e = icon_info(iv)
+                except ValueError:
+                    continue
+                if any(t.lower().replace(" ", "") == f"slave={s.lower()}" for t in tts):
+                    out[want] = iv
+                    break
+    return out
+
+
 def puae_launcher(files: dict[str, bytes]) -> Optional[bytes]:
     """The ``load`` script for the archive's top (PUAE's WHDLoad helper runs ``DH0:load`` when there is one) when its own way of
     finding the game would go wrong: it takes every slave of the drawer (``List #?.slav#?``) - with several (Worms: The Director's

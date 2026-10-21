@@ -3197,3 +3197,51 @@ extension. The Overview card says *found*, the Library card *kept*.
   setting), Ace Ball (its crack is not a supported version), Star Trek - 25th Anniversary (black on every machine tried).
   "exact" CPU compatibility for every game with a black screen: 3 of 49 boot so (The Chaos Engine, Cyber World, Skidoo) - no
   reason to suggest it for all; `whdknown.json.gz` records what boots with PUAE's defaults only.
+
+
+**AMENDMENT 51 (v0.3) — A last check of disk and title matching on the user's Amiga folders.**
+* The WHDLoad page (`server._whd_games`) read an SPS image by its file name ("<release> - <file>.ipf") - 8,836 "games" for 3,592,
+  each matched by the part before " - " ("Alien Breed - Tower Assault ..." got Alien Breed's install). An image's title is its
+  release's now, a row is one release (the floppies when there are some, else the SPS release), its disks that release's.
+* `whdinstalls.Matcher`: a compilation ("A & B") is never paired by its main title; not the installs of other games of a title
+  (`_NOT_ITS_INSTALL`: Hanse - Die Expedition, D-Day, Gettysburg - The Turning Point, Space Harrier - Return to the Fantasy Zone,
+  Domark's Trivial Pursuit of 1986); never an Arcadia board's install for a floppy title; Xmas / Holiday Lemmings their own
+  installs (`_ALIASES`). An add-on paired with its base game stays: most base installs take their data disks (Cadaver's Payoff,
+  Kick Off's Extra Time, Populous', Utopia's, Space Crusade's, Campaign's).
+* `tags`: versions the old pattern did not read are read ("v855e.01", "v2.0f i2.202", "vP1.00-D1.00", "v0.90-1.00", "v1.0D3",
+  "v3.1 29701", "v3.0+", "v1.2-G"), also before a subtitle ("Whale's Voyage v1.2 - Super Enhanced" is "Whale's Voyage - Super
+  Enhanced") or "CD32"; `version_key` compares the numbers of the other forms. `library.combined_key`: a version's letter ("v1.14C",
+  "v1.00R", "v1.44GE") parts no game when titles are combined (your languages choose). Of 8 OpenRetro games the user had kept twice,
+  4 are one now (Championship Manager '93, Wolfpack, Uridium 2, Space Quest III); left: a fan edition, a data disk, an EasyPlay and a
+  "Super Enhanced" release. 22 files of the user's superseded by another kept release of their game; tree = totals (3,423 / 223).
+* `organiser`: an archive no 7z here can open is left where it is ("could not be read: 7z is not installed"), never set aside as
+  unmatched - the user's CD32 discs are 7z archives.
+* Checked and right: no game keeps more than one set in the ADF DAT; all 1,091 playlist sets are whole, every disk kept and on disk;
+  every "superseded by" names a kept release. Noted, unchanged: two sets complete their English disks with German ones (The Legend
+  of Kyrandia, Rise of the Dragon); the SPS DAT's releases are all kept, every language (Dune: DE, FR, IT and the English one).
+
+
+**AMENDMENT 52 (v0.3) — The language rules apply to the SPS releases.**
+* The user: "language rules should apply to sps releases too". `Platform.language_dats` of the Amiga holds the SPS and Unofficial
+  IPF DATs too; an image's languages are its release's (`library.eligibility(..., parsed=_tags_of(item))`: "<release> - <file>.ipf"
+  read as the file name says nothing of them). On the user's folders 369 images set aside: 337 for their language (221 German, 95
+  French, 18 Italian ...), the rest by the other rules now that the release's name is read (demos, unreleased, virus-infected).
+* An archive that holds a game next to other files (an SPS release with its scans) is still never renamed, but the rules decide
+  whether its game is one to have (`organiser._rule_partial_archives`): set aside, its row is `excluded` ("... - left where it is"),
+  and it is not counted as yours. An archive no 7z can open is `unmatched` (left where it is). The tree's own reading of a name an
+  SPS image's release's (`App._game_unit`). Tree = totals on the user's folders: 3,306 owned, 173 missing.
+
+
+**AMENDMENT 53 (v0.3) — WHDLoad games built from the user's disks, beside them.**
+* The user: build them into WHDLoad archives to play; next to the disks; every game that installs (not only those seen booting).
+  `romorg/whdbuild.py`: `targets(plan, platform)` - of every game the library plan keeps, the version (an ADF set or an SPS
+  release) its install works from best (`whdready`: boots 3, files 2, images 1 - the shipped list, or the user's own check; the
+  floppies first when as good), its disks where the build leaves them (`LibraryPlan.owners`: each kept file's op and unit);
+  `build(...)`: the install fetched (`whdinstalls.package`, cached), run (`amigainstall`), icons aliased for PUAE's helper
+  (`alias_icons`), written as `<release>.lha` (the TOSEC name: PUAE takes the machine from its tags) atomically.
+* The first entry of every archive is `.romorg-whdload-build.json` (its disks' names, the install and its date): the scanner leaves
+  it alone (`scanner.is_built_whdload`) - never an unmatched file; the next build keeps one that is the same, moves one whose disks
+  moved, makes again one whose disks or install changed, removes ours no kept game wants. Never over a file of another's.
+* Rule `build_whdload` ("Build WHDLoad games", Amiga, on): after Build library the page starts `POST /api/whdload/build` - a job of
+  its own, cancellable; also a button on the WHDLoad panel. On the user's folders: 1,984 games (1,885 known to boot, 54 + 45 that
+  install), about 1.2 s and 1.4 MB a game in a sample of 12 (all 12 built; Dennis, Hook, Shadowgate, Castles booted in PUAE).

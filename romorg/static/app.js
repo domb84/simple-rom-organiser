@@ -596,7 +596,7 @@
   const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
     m3u: "Playlists", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums",
-    whdload: "WHDLoad installs", whdcheck: "WHDLoad versions" };
+    whdload: "WHDLoad installs", whdcheck: "WHDLoad versions", whdbuild: "WHDLoad games" };
 
 
   const UNMATCHED = "_unmatched";
@@ -1674,10 +1674,13 @@
       const check = el("button", { class: "btn", text: "Check which versions WHDLoad can install", "data-needs-idle": "",
         title: "For every game with an install and more than one version: fetch the install and try it on each version's disks (for the rule \u201cPrefer versions WHDLoad can install\u201d)",
         on: { click: () => Jobs.start("/api/whdload/check", { platform: this.platform }) } });
+      const build = el("button", { class: "btn", text: "Build WHDLoad games", "data-needs-idle": "",
+        title: "Every game your library keeps that a WHDLoad install works from: a <release>.lha beside its disks, for PUAE (the first run can take an hour or more)",
+        on: { click: () => Jobs.start("/api/whdload/build", { platform: this.platform }) } });
       body.replaceChildren(
         el("p", { class: "muted small", text: `An install is a game's WHDLoad slave, installer and icons - no game data (from the list of ${fmt(d.installs)} installs on whdload.de, ${d.fetched}). `
           + "It is unpacked next to the game's disks, in a folder named \u201c<game> (WHDLoad install)\u201d: run its installer with the disks to put the game on a hard drive." }),
-        el("div", { class: "row" }, all, check),
+        el("div", { class: "row" }, all, check, build),
         el("p", { class: "muted small", text: "The check tries each game's install on the disks of each of its versions, so that the rule \u201cPrefer versions WHDLoad can install\u201d keeps a version WHDLoad can be installed from. It fetches one install per game (kept for later) and can take a while." }),
         this.list());
       Jobs.setRunning(Jobs.running);
@@ -2754,7 +2757,7 @@
     languages: "Languages", keep_flags: "Dump types", rescue_only_dump: "Keep the only dump", region_priority: "Region priority", region_ties: "Region priority",
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
-    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_unprotected: "Prefer cracks to originals that ask for the manual", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
+    saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_unprotected: "Prefer cracks to originals that ask for the manual", build_whdload: "Build WHDLoad games", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
     convert_first: "Convert when building", delete_converted: "Delete originals" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
@@ -4197,6 +4200,16 @@
     }
     await refreshScan();
     if (wasOpen && state.scan) { vanishTable = null; await showLibraryPlan(); }
+    if (job.result && job.result.whdload_next) Jobs.start("/api/whdload/build", { platform: job.result.whdload_next });   // (the rule "Build WHDLoad games")
+  };
+
+  Jobs.handlers.whdbuild = async (job) => {
+    const r = job.result || {};
+    if (job.status !== "done" || !r.action) return;
+    const failed = r.failed || [];
+    toast(`WHDLoad games: ${fmt(r.built || 0)} built, ${fmt(r.moved || 0)} moved, ${fmt(r.kept || 0)} already there`
+      + (r.removed ? `, ${fmt(r.removed)} removed` : "") + (failed.length ? `, ${fmt(failed.length)} could not be built` : ""), failed.length ? "error" : "ok", 8000);
+    showFailures("lib-failures", "WHDLoad games not built:", failed, (f) => `${f.title}: ${f.error}`, []);
   };
 
   function filterChips(container, counts, current, order, onPick, labelFor = (k) => k, allLabel = "All") {

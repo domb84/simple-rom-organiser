@@ -1100,6 +1100,22 @@ def is_hidden(name: str) -> bool:
     return name.startswith(".") and not name.startswith("..")
 
 
+WHDLOAD_BUILD_MARKER = ".romorg-whdload-build.json"   # the first entry of a WHDLoad game this app built from the user's disks
+
+
+def is_built_whdload(path: Any) -> bool:
+    """A ``.lha`` this app built (``romorg.whdbuild``): its first entry is the marker (an LhA level-1 header: the name at byte 22)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return False
+    if len(head) < 22 or head[2:7] not in (b"-lh0-", b"-lh5-"):
+        return False
+    n = head[21]
+    return head[22:22 + n] == WHDLOAD_BUILD_MARKER.encode()
+
+
 def _skip_name(name: str) -> bool:
     return (is_hidden(name) or Path(name).suffix.lower() in SKIP_SUFFIXES
             or name.startswith(UNDO_LOG_PREFIX) or TEMP_MARKER in name or CONVERT_TEMP_MARKER in name)
@@ -1142,6 +1158,8 @@ def collect_files(root: Path, recursive: bool = True,
                             if recursive:
                                 stack.append(Path(de.path))
                         elif de.is_file():
+                            if de.name.lower().endswith(".lha") and is_built_whdload(de.path):
+                                continue    # a WHDLoad game built from the disks next to it: not a game file of a DAT
                             files.append(Path(de.path))
                         elif problems is not None and de.is_symlink():
                             problems.append((Path(de.path), "dangling symbolic link (its target is missing)"))

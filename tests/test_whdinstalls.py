@@ -67,6 +67,15 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertIsNone(self.match("Sir Fred - The Legend"))                                      # (one word)
         self.assertIsNone(self.match("Dreadnoughts Data Disk - Bismarck"))
 
+    def test_a_compilation_and_a_game_of_another_year(self) -> None:
+        self.assertIsNone(self.match("Alien Breed - Tower Assault & Alien Breed II - The Horror Continues"))   # (two games)
+        m = whdinstalls.Matcher(whdinstalls.parse_catalogue("<TABLE>" + ROW.format(arc="Hanse.lha", title="Hanse", size=1, hol=1)
+                                                               + ROW.format(arc="Lemmings.lha", title="Lemmings", size=1, hol=2)
+                                                               + ROW.format(arc="LemmingsXmas91.lha", title="Lemmings - X-Mas 1991", size=1, hol=3) + "</TABLE>"))
+        self.assertIsNone(m.match("Hanse - Die Expedition"))                                        # (1994: not Ariolasoft's of 1988)
+        self.assertEqual(m.match("Lemmings - Xmas Lemmings 1991")[0]["archive"], "LemmingsXmas91.lha")
+        self.assertEqual(m.match("Hanse")[0]["archive"], "Hanse.lha")
+
     def test_another_title_of_the_install_and_a_short_title(self) -> None:
         self.assertEqual(self.match("Prince de Perse"), ("PrinceOfPersia.lha", "title"))
         self.assertEqual(self.match("Captain Fizz Meets the Blaster-Trons"), ("CaptainFizz.lha", "short title"))
