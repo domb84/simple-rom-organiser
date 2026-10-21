@@ -3021,3 +3021,124 @@ extension. The Overview card says *found*, the Library card *kept*.
   "Install..." in turn ("Install_AGA", "Install_OCS"), never a document ("Installation.readme"); (3) an icon the script copies that
   the package lacks (the "Normal" icon of DeathBringer, which has only GlowIcons) is another icon of the same name from the package.
 
+
+**AMENDMENT 46 (v0.3) — An install's own Amiga programs run here; scripts answered until one installs.**
+* Chipset hints: `chipset_hints(names)` - "(AGA)" disks give `("AGA",)`, "(ECS)" / "(OCS)" `("ECS", "OCS")`, "(OCS-AGA)" nothing.
+  With a hint, `askchoice` takes the answer naming the chipset when the default does not (Theme Park's `"ECS" "AGA" "CD32"`),
+  `Package.tries` puts the versions naming it first and the other chipset's last, an "Install_AGA" script is run before the others.
+  The WHDLoad check passes the hint of the set's names. Found by native AGA games whose AGA disks got the OCS version: 35 of 66 boot
+  with it.
+* `romorg/amigados.py`: an AmigaDOS executable from the install package ("DecrunchCIV", "PMFC", "ReunionFC", "icfd_fix",
+  "install_hack_english" ...) run in the 68000 interpreter, with its arguments, on the installer's volumes (the package, the disks by
+  label, `RomorgHD:`): exec (memory, lists, libraries, `RawDoFmt`, `StackSwap`, trackdisk.device `CMD_READ` from the disk images),
+  dos.library (files, locks, `Examine` / `ExNext`, `ReadArgs` with the template's /A /K /S /N /M /F, `VPrintf` / `VFPrintf` - RawDoFmt's
+  words unless "%l" -, `FGets`, variables, `FilePart` / `PathPart` / `AddPart`, `Execute` / `SystemTagList` back into the installer's
+  shell), utility.library's 32-bit arithmetic, intuition / reqtools requesters answered with their first button. A program started as
+  from a shell (`pr_CLI` set). What it writes is installed as the script's own writes are. 60 million instructions at most (about a
+  minute here). The installer's `run` runs a command that is a program (in the current drawer, the package, C:, T:); its return code
+  is `run`'s, 20 or more (FAIL) stops the install with what the program printed. Not done: a program that drives the floppy hardware
+  itself (Striker.Imager calls `Supervisor`), Patcher (a GUI program with its own disk routines), a program that starts another process.
+* Answers tried: a script that fails is run again with another answer to one of its questions (`askchoice`, `askbool`; the first
+  question first, the earlier ones as they were), at most 8 runs / 45 s, never a CD or demo answer for floppies, not when the disks
+  are the fault (an imager that finds no sync, not an ADF ...). Zynaps asks "JST" or "WHDLoad" (JST first); Civilization's, Wing
+  Commander's, Ace Ball's ... versions are answers 3 to 5 of a list whose first three are empty. A script that wants the Expert user
+  level ("You must select 'Expert' user level") is run at it. The error reported is that of the run that got furthest (most steps;
+  "no slave was installed" counts least) - also across `Package.install`'s versions.
+* More of the install language: `Assign NAME: drawer` / `Assign NAME: Remove` in `run` (Dune II decrunches through `ToPatch:`);
+  writes outside `RomorgHD:` (RawDIC's `BLOCK880` in the package drawer, `C:OSEmu.400`, a disk) kept to be read again, never
+  installed; `getsum` (the file's longwords added, signed - Tower of Babel's 68284644), `patmatch`; `run` starts in `@execute-dir`;
+  `exists "DEVS:Kickstarts/kick40068.A1200"` (and the others PUAE puts in WHDLoad's `DEVS:Kickstarts` from its system folder) is
+  there - a slave that boots the real Kickstart (Subwar 2050) has it; a question whether to install the player's save-game / high-score
+  disk is answered No; `#version` holding a word (Ambermoon's "de") is not a version number; `CPU`, `SetPatch`, `Stack`, `FailAt`,
+  `Path` are nothing to do; `lhex -w=drawer e archive`.
+* Packages: a slave the script names that the package lacks, when the package has one slave, is that one under the script's name
+  (Total Football's icon says APPNAME=Total Football, its slave is TotalFootball.slave); "Install-BombX" in "BombXInstall" is the
+  package's own script as "Install" is (Bomb'X's "Install" is another game's, left over: both are tried); an Installer script named
+  "RodlandInstall" is found (those are Patcher installs).
+* A package with a slave and no script (Rubicon's script is not in the package; Burnout's readme says to copy the game's files over
+  the drawer): `install_scriptless` makes the drawer as a script would - the slave (the chipset hint's, else the one with an icon),
+  its icon as `<slave>.info`, the documents, and in the slave's data drawer (`ws_CurrentDir`, `slave_dir`) every file of the disks
+  and each disk's image as `Disk.N` (what DIC makes of a standard disk is its ADF), for a slave that reads files and one that reads
+  images. Not done: the "install slaves" (ConquerorInstall.Slave, PerihelionInstall.Slave) that WHDLoad runs to image a disk.
+* `xfdDecrunch` of a file that is not there is a return code (20), as on an Amiga - Indy's Fate of Atlantis scripts decrunch
+  "atlantis" before copying it and go on.
+* Patcher (Egon / Harry / Wepl; its sources are in WHDLoad's developer package, `Extra/Patcher1.06dev.lha`): `run(... "Patcher
+  -p<Game>.Imager -sDF0:")` runs the module in `amigados.run_patcher` - its tags (`PCH_FILECOUNT`, `PCH_DISKNAME`, `PCH_FILENAME`,
+  `PCH_SPECIAL`, `PCH_DATALENGTH`, `PCH_PROCESSING`, `PCH_CHANGES`, `PCH_SAVEPGM`, `PCH_SAVEDATA`, `PCH_INIT`, `PCH_FINISH`,
+  `PCH_CHECKDISK`, `PCH_LOADOFFSET`, `PCH_APPENDSPACE`) and Patcher's cycles: the disk name (the volume the script assigned to the
+  game's drawer), the load routine (an imager reading the disk itself: trackdisk.device `TD_RAWREAD` - the track's MFM from the
+  index, or from a $4489 sync word, the turn read again - from the IPF's real tracks or an ADF's encoded ones), processing,
+  MAKECOMPTAB's changes table (an offset in bits 0-20, the kind in 21-23: a byte - the next long's top byte -, a count and
+  bytes, the end), the file saved. A5 points at the PTB table (dos, the file's memory and size, names, `PTB_OPENDEVICE`, a $C000
+  work area, `PTB_CRC16` - CRC-16/ARC from 0 -, `PTB_DISPLAY`, the requester answered "Ok"); cycle k reads disk k. Not done: a
+  module that writes a bootblock to a disk. Supremacy builds from its SPS release so.
+* System volumes (`C:`, `LIBS:`, `DEVS:`, `S:`, `L:`, `FONTS:`, `ENV:`, `ENVARC:` ...) are never a floppy by another name (the only disk
+  was taken for any volume a script named); `ENV:` / `ENVARC:` are kept apart (not installed); `SetEnv NAME value` writes
+  `ENV:NAME` (Run the Gauntlet, Winter Camp copy `ENV:WHDLInstPath`); the commands a script checks for in `C:` (`C:WHDLoad`,
+  RawDIC, DIC, Patcher, xfdDecrunch ...) are there.
+* `adf`: a directory's hash chain into a block that is no file header (a damaged directory, or a cracker's) ends that chain, the
+  other entries listed as AmigaDOS lists them (`AdfDisk.damaged`: those blocks) - before, the disk could not be read at all
+  (Spider-Man and Captain America, Bundesliga Manager Hattrick, One to One Match, MF Tanks, Persian Gulf Inferno).
+* `amigahw.slave_flags`: `exp_memory` / `exp_optional` (`ws_ExpMem`, offset 32, version 8+); `requirements(...)["fast_memory"]`
+  (information: the machine stays the A1200).
+* PUAE's WHDLoad helper (its `S:Startup-Sequence`) finds the game with `List #?.slav#?` in the drawer: with several slaves (Worms:
+  The Director's Cut installs its normal, 8 MB and 12 MB ones; Fuzzball an intro; Dizzy Collection one a disk) whichever comes
+  first, and a name with a space ("Total Football.Slave") breaks its unquoted `$SLAVE`. It runs `DH0:load` instead when the
+  archive has one: `puae_launcher` adds `load` (`CD "<drawer>"`, `C:WBRun "<icon>" SYNC` - the game's own icon, the one named like
+  the drawer, else the icon of the plainest slave; no icon: `C:WHDLoad "<slave>" Preload`) to an install's files in those cases.
+  Worms (on the A1200 - "Can't allocate ExpMem" was its 12 MB slave), Fuzzball, Dizzy Collection, Total Football boot so.
+  (The helper also boots an archive with `S/Startup-Sequence` at its top as a hard disk.)
+* `amigados`: after each library call the condition codes are set from D0 (N, Z; V, C clear), as AmigaOS's own routines leave them
+  - code that branches right after the call (kcdepack: `jsr ReadArgs; beq`) went the wrong way. `SetMode`; the console gives a key
+  (Return) when read, `WaitForChar` says one is waiting until one is read ("press any key" goes on; a loop that empties the
+  keyboard ends). `run`'s return code is the script's to judge, as the Installer's is (kcdepack always returns 50 and the script
+  checks for its files); a FAIL code is added to the reason of a later error.
+* The Installer language: a comparison evaluates every argument, its extras for what they do (Kid Chaos runs its unpacker as the
+  third argument of `=`); the version tried (`Package.tries`) answers the first "version" question only (Civilization then asks
+  "Floppy Disk version" or "CD version"). The answers search starts from the question asked last (Battle Isle: "Do you have the
+  First Data Disk?", default Yes, a disk not among the user's) and never changes which icon.
+* IPFs are given to an install in the order of the disk numbers they carry; when that fails with what a wrong disk gives (an
+  imager that finds no sync or a wrong checksum, a disk asked for that is not there ...), `Package.install` tries the order they
+  were given, then the others (3 disks at most): SPS numbers Shadow of the Beast III's intro disk 3, the install's disk 1.
+* RawDIC: a track decoder may take 40 million instructions (Hybris' imager - "a bit slow, be patient" - takes 37 million on a
+  track, a quarter of an hour for the disk here), a run 1.5 billion.
+* The WHDLoad check no longer lets an install use its CD version on floppies named "CD32 rip" / "CD rip" (TOSEC's floppy
+  conversions of CD32 games): a floppy set is installed as a floppy, always (`cd=False`); a CD version is for a CD's own files.
+* Matching: a nickname in quotes ("Ivan 'Ironman' Stewart's Super Off Road") and a possessive ("Archer Maclean's Pool") off as a
+  last try, the very title only ("Hero's Quest" stays Quest for Glory, not HeroQuest); the same words in another order, three at
+  least, one install ("Oh No! More Lemmings" / "Lemmings - Oh! No More"; TOSEC's "Aventura Espacial, La", "Portes du Temps,
+  Les"; "Damocles - Mercenary II" / "Mercenary II: Damocles"). 15 more of the user's titles paired; 11 boot.
+
+
+**AMENDMENT 47 (v0.3) — CD32 and CDTV discs in the Amiga system; floppy conversions excluded.**
+* The Commodore Amiga system has TOSEC's CD DATs too (`Commodore Amiga CD32 - Games - [ISO]/[IMG]/[BIN]`, `Commodore Amiga CDTV -
+  Games - [ISO]/[IMG]/[BIN]/[MDF]`, from the TOSEC-ISO pack the updater already fetches): `Platform.disc_dats`, `game_dat` ("Commodore
+  Amiga - Games - [ADF]"). No new system: PUAE runs the discs as they are (no install) and takes the machine from the path - CD32 by
+  default for a CD, CDTV with "CDTV" in it: the DAT folders' names give both.
+* A disc is a game of several files (a cue sheet with its ISO and WAV tracks; a CloneCD .ccd/.img/.sub; .mds/.mdf), decided as one
+  (`library._select_discs`): complete with every file of its DAT game (`register_disc_files`, from `load_platform_dats`), a game of
+  "(Disc N of M)" with all its discs; one excluded file excludes its disc; one release per game in a DAT (a good dump [!] first, then the
+  newest, then the fewest flags). The cue sheets need no rewriting: a TOSEC sheet is matched by its checksum, its FILE lines name the
+  TOSEC files.
+* One game with its floppies: a disc's game key is its games DAT's (`library.game_dat`), so the totals, tiles and tree count a game's
+  disc and floppies as one game; `_rank_across` keeps the best kept release by `tags.PLATFORM_ORDER` = CD32 > AGA > CDTV > ECS > OCS
+  (a CD32 disc, an AGA floppy, a CDTV disc, an ECS floppy, the rest; ECS is now above plain OCS) and supersedes the others; two
+  discs of a game in two CD DATs: the DAT listed first. "CD32" / "CDTV" are never a floppy's tag: `platform_class` ignores them.
+* New exclusion rule `cd_conversion` (on by default; Amiga only): TOSEC's floppy conversions of CD32 / CDTV games - "[CD32 rip]",
+  "[HD, CD32 rip]", "[CDTV rip ...]" (anywhere in a bracket of notes) or a title ending in "CD32" / "CDTV" ("Fears CD32 (1995)...");
+  not "[inc. CD32 intro]". `RULES_VERSION` 3: a saved list gets only the rules added since its version (`_RULES_ADDED`) - one turned
+  off stays off. The WHDLoad lists leave the discs out; the shipped list of booting installs (`whdknown.json.gz`) has no conversions.
+* Not done: CHD for these discs (the Amiga path matches the files themselves), playlists for multi-disc CDTV games.
+* On the user's folders: 608 conversion files excluded; owned games -84 (the conversions), "not the preferred version" +125 (floppies
+  of games the rules now want on CD32), the tree's "have" equal to the totals.
+
+
+**AMENDMENT 48 (v0.3) — SPS images counted by their release; a game icon's Slave= made to name a slave it has.**
+* An image-set DAT's file (SPS, Unofficial IPF: "<release> - <file>.ipf") takes its tags and title from its release's name
+  (`library._tags_of`: `rom.game`), and its game key from the games DAT (`library.game_dat`), so the Files tree, tiles and totals count
+  an SPS release as one game, the same game as its floppies. On the user's Amiga folders the tree said 542 missing, the totals 3,100;
+  now both say 231 missing, 3,446 owned.
+* `amigainstall.repair_slave_tooltypes` (after an install, and for a package with no script): a game icon whose `Slave=` names a slave
+  that is not in its drawer (a script that renamed or put the slave elsewhere: Cygnus 8, Indiana Jones and the Temple of Doom,
+  Mr Blobby, Shadow of the Beast III), or a WHDLoad icon with no `Slave=` at all (WHDLoad then looks for "WHDLoad.Slave": Franko),
+  gets the drawer's only slave, or the one named like the icon; the tooltype keeps its own spelling. A ReadMe's icon is left alone.

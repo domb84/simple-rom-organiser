@@ -98,7 +98,7 @@ class PlatformTests(unittest.TestCase):
                 "Commodore Amiga - Games - [ADF]", "Commodore Amiga - Operating Systems - Workbench",
                 "Commodore Amiga - Firmware"])
             self.assertEqual(missing, ["Commodore Amiga - Kickstart-Disks", "Commodore Amiga - Games - SPS",
-                                       "Commodore Amiga - Games - [Unofficial IPF]"])
+                                       "Commodore Amiga - Games - [Unofficial IPF]", "Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga CD32 - Games - [IMG]", "Commodore Amiga CD32 - Games - [BIN]", "Commodore Amiga CDTV - Games - [ISO]", "Commodore Amiga CDTV - Games - [IMG]", "Commodore Amiga CDTV - Games - [BIN]", "Commodore Amiga CDTV - Games - [MDF]"])
             self.assertEqual([r.name for r in loaded[2].roms], ["K.rom"])  # newest version
             self.assertEqual(loaded[1].roms[0].dat, "Commodore Amiga - Operating Systems - Workbench")
             status = platform_dat_status(amiga, folder)
@@ -109,6 +109,7 @@ class PlatformTests(unittest.TestCase):
                 ("Commodore Amiga - Firmware", "2025-01-03", True),
                 ("Commodore Amiga - Games - SPS", None, False),
                 ("Commodore Amiga - Games - [Unofficial IPF]", None, False),
+                *((name, None, False) for name in ("Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga CD32 - Games - [IMG]", "Commodore Amiga CD32 - Games - [BIN]", "Commodore Amiga CDTV - Games - [ISO]", "Commodore Amiga CDTV - Games - [IMG]", "Commodore Amiga CDTV - Games - [BIN]", "Commodore Amiga CDTV - Games - [MDF]")),
             ])
 
     def test_the_sps_images_are_named_by_game_and_only_the_images_count(self) -> None:

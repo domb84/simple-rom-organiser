@@ -49,7 +49,7 @@ SYNC_INDEX, SYNC_STD = 0, 0x4489
 DMFM_NULL, DMFM_STD = 0, 1
 VERSION = 6                                                  # the RawDIC version this follows
 RAWLEN = 0x7C04                                              # bytes of a raw read (xx_RawLength)
-_DECODER_STEPS = 10_000_000                                  # instructions a track decoder may take
+_DECODER_STEPS = 40_000_000                                  # instructions a track decoder may take (Hybris': 37 million)
 
 # --- where things are in the 68000's memory
 _LIB = 0x1000                                                # the library's jump table (12 entries of 4 bytes)
@@ -991,7 +991,7 @@ class Imager:
             if err:
                 raise ImagerError(self._why(err))
 
-    def run(self, disks: dict[int, Disk], max_steps: int = 150_000_000, ignore_errors: bool = False,
+    def run(self, disks: dict[int, Disk], max_steps: int = 1_500_000_000, ignore_errors: bool = False,
             read_file: Optional[Callable[[str], Optional[bytes]]] = None) -> dict[str, bytes]:
         """Image every disk the imager reads (disk 1, 2 ... as ``disks`` gives them); returns the files written, in order (in
         drawers the imager made: "GG/G00"). ``ignore_errors``: RawDIC's IGNOREERRORS - a track that does not decode is kept as it

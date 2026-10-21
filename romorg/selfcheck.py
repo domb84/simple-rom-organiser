@@ -370,7 +370,7 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 # AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
 # modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
 APP_MODULES = (
-    "adf", "alttitles", "amigahw", "amigainstall", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
+    "adf", "alttitles", "amigados", "amigahw", "amigainstall", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
     "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "keyfiles", "lha", "libexport", "library", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",

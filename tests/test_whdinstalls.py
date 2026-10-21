@@ -76,6 +76,25 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertIsNone(self.match("Nonesuch"))
 
 
+class WordsInAnotherOrder(unittest.TestCase):
+    """A nickname in quotes, a possessive, the same words in another order (TOSEC's article at the end of a title)."""
+
+    def test_found(self) -> None:
+        m = whdinstalls.Matcher([{"archive": a, "title": t} for a, t in (
+            ("SuperOffroad.lha", "Ivan Stewart's Super Offroad"), ("ArcherMacleanPool.lha", "Archer Maclean Pool"),
+            ("LemmingsOhNoMore.lha", "Lemmings - Oh! No More"), ("AventuraEspacial.lha", "La Aventura Espacial"),
+            ("Mercenary2.lha", "Mercenary II: Damocles"), ("HeroQuest.lha", "HeroQuest"),
+            ("QuestForGlory.lha", "Hero's Quest / Quest For Glory"))])
+        got = lambda t: (m.match(t) or ({"archive": None}, ""))[0]["archive"]
+        self.assertEqual(got("Ivan 'Ironman' Stewart's Super Off Road"), "SuperOffroad.lha")
+        self.assertEqual(got("Archer Maclean's Pool"), "ArcherMacleanPool.lha")
+        self.assertEqual(got("Oh No! More Lemmings"), "LemmingsOhNoMore.lha")
+        self.assertEqual(got("Aventura Espacial, La"), "AventuraEspacial.lha")
+        self.assertEqual(got("Damocles - Mercenary II"), "Mercenary2.lha")
+        self.assertEqual(got("Hero's Quest - So You Want to Be a Hero"), "QuestForGlory.lha")   # (not the game HeroQuest)
+        self.assertIsNone(got("Lemmings More Oh"))                                                 # (too few words: no)
+
+
 class TitlesThatDiffer(unittest.TestCase):
     """TOSEC's title and the install's, the same game: an article, an umlaut, the install's long title, an edition's mark."""
 

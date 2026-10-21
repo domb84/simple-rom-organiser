@@ -56,6 +56,21 @@ class Platform:
     # DATs of floppy images whose file names repeat from game to game (SPS: ``1869_DiskA.ipf`` is in two releases of 1869) and that list
     # pictures and info files as well: only the ``.ipf`` entries count, each named "<game> - <file>" so no two files can collide.
     image_set_dats: tuple[str, ...] = ()
+    # DATs of CD images (TOSEC's CD32 / CDTV games): a game is the files of one DAT game together - a cue sheet with its ISO and audio
+    # tracks, a CloneCD set - one unit, counted as a game of ``game_dat`` (the system's games DAT: a disc and the floppies of a game are
+    # one game; the best of them is kept, see library.PLATFORM_ORDER)
+    disc_dats: tuple[str, ...] = ()
+    game_dat: str = ""
+
+
+_CD32_DATS = ("Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga CD32 - Games - [IMG]", "Commodore Amiga CD32 - Games - [BIN]")
+_CDTV_DATS = ("Commodore Amiga CDTV - Games - [ISO]", "Commodore Amiga CDTV - Games - [IMG]", "Commodore Amiga CDTV - Games - [BIN]",
+              "Commodore Amiga CDTV - Games - [MDF]")
+
+
+def disc_class(dat: str) -> str:
+    """"CD32" / "CDTV": the machine a CD DAT's discs are for (PUAE takes it from the folder's name), "" for any other DAT."""
+    return "CD32" if dat in _CD32_DATS else "CDTV" if dat in _CDTV_DATS else ""
 
 
 def _nointro(name: str, dat: str, extensions: tuple[str, ...], alt_hashes: tuple[str, ...],
@@ -76,6 +91,8 @@ PLATFORMS: dict[str, Platform] = {
             "Commodore Amiga - Firmware",
             "Commodore Amiga - Games - SPS",                   # the original disks as IPF (Software Preservation Society)
             "Commodore Amiga - Games - [Unofficial IPF]",
+            *_CD32_DATS,                                       # CD32 and CDTV discs (PUAE runs them: no install)
+            *_CDTV_DATS,
         ),
         m3u_dats=(
             "Commodore Amiga - Games - [ADF]",
@@ -83,8 +100,10 @@ PLATFORMS: dict[str, Platform] = {
             "Commodore Amiga - Kickstart-Disks",
         ),
         kickstart_dat="Commodore Amiga - Firmware",
-        extensions=(".adf", ".ipf", ".zip", ".7z"),
+        extensions=(".adf", ".ipf", ".zip", ".7z", ".cue", ".iso", ".bin", ".wav", ".img", ".ccd", ".sub", ".mdf", ".mds"),
         image_set_dats=("Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]"),
+        disc_dats=(*_CD32_DATS, *_CDTV_DATS),
+        game_dat="Commodore Amiga - Games - [ADF]",
         folder_hint="amiga",
         latest_dats=("Commodore Amiga - Games - [ADF]",),
         best_variant_dats=("Commodore Amiga - Games - [ADF]",),
@@ -368,6 +387,9 @@ def load_platform_dats(platform: Platform,
             # Header names normally equal the filename part; keep the platform's name canonical.
             dat.name = name
             dat.roms = [replace(r, dat=name) if r.dat != name else r for r in dat.roms]
+        if name in platform.disc_dats:                       # (a disc: the files of its DAT game, for the library to know it whole)
+            from . import library
+            library.register_disc_files(name, dat.roms)
         if name in platform.image_set_dats:                  # (the images only, each with a name of its own)
             dat.roms = [r if r.name.startswith(r.game) else replace(r, name=f"{r.game} - {r.name}")
                         for r in dat.roms if r.name.lower().endswith(".ipf")]

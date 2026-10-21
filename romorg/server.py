@@ -2514,8 +2514,9 @@ class App:
         games: dict[str, dict[str, Any]] = {}
         for m in getattr(state.result, "matched", ()):
             rom = m.roms[0] if m.roms else None
-            if rom is None or "Games" not in getattr(rom, "dat", ""):
-                continue
+            if (rom is None or "Games" not in getattr(rom, "dat", "")
+                    or getattr(rom, "dat", "") in getattr(platform, "disc_dats", ())):
+                continue                                    # (a CD32 / CDTV disc: PUAE runs it, no install)
             try:
                 parts = Path(m.entry.path).relative_to(state.root).parts
             except ValueError:
@@ -2661,8 +2662,8 @@ class App:
                     for s in todo:
                         key = ready.key_of(it.rom.name for it in s)
                         try:
-                            pkg.install([disk_bytes(it) for it in s],
-                                        cd=any(re.search(r"CD32|CDTV|CD rip", it.rom.name, re.I) for it in s), decruncher=decruncher)
+                            pkg.install([disk_bytes(it) for it in s], cd=False, decruncher=decruncher,   # (floppies: never a CD
+                                        hints=inst.chipset_hints(it.rom.name for it in s))                 #  version, a "CD32 rip" too)
                             rows[key] = {"ok": True, "archive": install["archive"], "reason": ""}
                             any_ok = True
                         except Exception as exc:  # noqa: BLE001 - the reason is the result
@@ -5540,7 +5541,7 @@ class App:
             category = str((row.get("tags") or {}).get("category") or "")
             t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
-            dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
+            dat = _mod("library").game_dat((row.get("game_ref") or {}).get("dat") or row.get("dat", ""))   # (a disc: its games DAT's)
             return ("game", (dat, _mod("library").combined_key(dat, tags_mod.game_key(t), combine)))     # (the tiles' key: no region, no disc number)
         except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
             return ("name", name)

@@ -981,10 +981,10 @@ class RealModulesIntegrationTests(unittest.TestCase):
     def test_full_workflow(self) -> None:
         plats = self.call("GET", "/api/platforms")
         amiga = next(p for p in plats if p["name"] == "Commodore Amiga")
-        self.assertEqual([d["present"] for d in amiga["dats"]], [True, True, False, True, False, False])
+        self.assertEqual([d["present"] for d in amiga["dats"]], [True, True, False, True, False, False] + [False] * 7)   # (+ CD32 / CDTV)
 
         summary = self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})["result"]
-        self.assertEqual(summary["missing_dats"], [KICKDISKS, *IPF_SETS])
+        self.assertEqual(summary["missing_dats"], [KICKDISKS, *IPF_SETS, *__import__("romorg.platforms", fromlist=["x"]).get_platform("Commodore Amiga").disc_dats])
         self.assertEqual(summary["matched_files"], 4)
         self.assertEqual(summary["per_dat"][GAMES]["have"], 2)
         self.assertEqual(summary["per_dat"][GAMES]["missing"], 1)
@@ -1380,6 +1380,9 @@ class RealModulesIntegrationTests(unittest.TestCase):
 
 
     def test_saves_named_after_a_playlist_follow_the_playlist(self) -> None:
+        p = mock.patch("romorg.retroarch.is_running", return_value=False)    # (saves are left alone while RetroArch runs - a
+        p.start()                                                            #  RetroArch of the machine's must not decide this)
+        self.addCleanup(p.stop)
         saves, ra = self.tmp / "saves", self.tmp / "ra"
         (ra / "info").mkdir(parents=True)
         saves.mkdir()

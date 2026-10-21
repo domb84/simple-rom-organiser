@@ -225,7 +225,7 @@ class AmigaExclusions(unittest.TestCase):
     """The exclusion rules only the Amiga systems have are an override of their own (``exclude_amiga``) next to ``exclude``."""
 
     def test_the_amiga_only_rules_are_those_of_the_amiga_styles(self) -> None:
-        self.assertEqual(library.amiga_exclusions(), frozenset({"virus", "bad_size", "faked", "modified", "unreleased"}))
+        self.assertEqual(library.amiga_exclusions(), frozenset({"virus", "bad_size", "faked", "modified", "unreleased", "cd_conversion"}))
         self.assertIn("exclude_amiga", library.applicable_fields(platforms.get_platform("Commodore Amiga")))
         self.assertNotIn("exclude_amiga", library.applicable_fields(platforms.get_platform("Super Nintendo Entertainment System")))
 

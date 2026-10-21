@@ -269,7 +269,7 @@ class LibraryDefaultsTests(UiTestCase):
         outside = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-options input[data-opt]')].map(i => i.dataset.opt)")
         self.assertFalse({"best_variant", "borrow_other_editions", "prefer_whdload", "rescue_only_dump"} & set(outside), outside)
         self.assertIn("latest_only", outside)
-        amiga_rules = ["bad_size", "faked", "modified", "unreleased", "virus"]                                   # (the exclusions only the Amiga systems have)
+        amiga_rules = ["bad_size", "cd_conversion", "faked", "modified", "unreleased", "virus"]                                   # (the exclusions only the Amiga systems have)
         self.assertEqual(self.page.eval("[...document.querySelectorAll('#rules-amiga #rules-exclude-amiga input[data-rule]')].map(i => i.dataset.rule).sort()"), amiga_rules)
         shared = self.page.eval("[...document.querySelectorAll('#set-library-rules #rules-exclude input[data-rule]')].map(i => i.dataset.rule)")
         self.assertFalse(set(amiga_rules) & set(shared), shared)

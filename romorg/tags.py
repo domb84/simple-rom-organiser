@@ -598,8 +598,8 @@ def flag_kind(flag: str) -> str:
 # --------------------------------------------------------------------------- library rules
 # Exclusion rule keys (see library.LibraryProfile.exclude), in report priority order.
 RULES = ("bad_dump", "virus", "bad_size", "pre_release", "prototype", "demo", "faked",
-         "unreleased", "modified", "budget", "online")
-NEW_RULES = ("budget", "online")      # rules added after configs were first written: on for an older saved list too (library.migrate_config)
+         "unreleased", "modified", "budget", "online", "cd_conversion")
+NEW_RULES = ("budget", "online", "cd_conversion")      # rules added after configs were first written: on for an older saved list too (library.migrate_config)
 RULE_LABELS: dict[str, str] = {
     "bad_dump": "Bad dumps [b]",
     "virus": "Virus-infected [v]",
@@ -612,6 +612,7 @@ RULE_LABELS: dict[str, str] = {
     "modified": "Modified [m]",
     "budget": "Budget re-releases",
     "online": "Online-only titles",
+    "cd_conversion": "CD32 / CDTV conversions (floppy rips)",
 }
 
 # The classification tables below are the single source of truth: the rule catalog shown in the UI
@@ -644,7 +645,11 @@ _BRACKET_RULES: tuple[tuple[str, "re.Pattern[str]", tuple[str, ...]], ...] = (
      ("[beta]", "[alpha]", "[preview]", "[pre-release]")),
     ("prototype", re.compile(r"^proto(?:type)?\b", re.IGNORECASE), ("[proto]", "[prototype]")),
     ("demo", re.compile(r"^(?:technical )?demo\b", re.IGNORECASE), ("[demo]", "[technical demo]")),
+    # (TOSEC writes it with other notes in one bracket: "[HD, CD32 rip]", "[CD32 rip, Quarterback 6.0 archive]")
+    ("cd_conversion", re.compile(r"^(?:.*,\s*)?(?:CD32|CDTV|CD) rip\b"), ("[CD32 rip]", "[CDTV rip]", "[HD, CD32 rip]")),
 )
+# a floppy conversion of a CD32 / CDTV game by its title ("Fears CD32 (1995)(Manyk)(AGA)(Disk 1 of 3)...")
+_CD_TITLE_RE = re.compile(r"\s(CD32|CDTV)$")
 _CR_RE = re.compile(r"^cr\d*(?:\s.*)?$")
 _MOD_RE = re.compile(r"^(?:t|h|tr|f|a)\d*(?:\s.*)?$")
 
@@ -721,6 +726,10 @@ def exclusion_info(t: Tags) -> list[tuple[str, str]]:
         rule = classify_token("[", text, t.style)
         if rule:
             add(rule, f"[{text}]")
+    if t.style == STYLE_TOSEC:
+        m = _CD_TITLE_RE.search(t.title or "")
+        if m:
+            add("cd_conversion", f"{m.group(1)} in the title")
     if t.category and CATEGORY_RULES.get(t.category):
         add(CATEGORY_RULES[t.category], f"(category: {t.category})")
     if t.style in (STYLE_REDUMP, STYLE_NOINTRO):
@@ -755,9 +764,11 @@ def modification_count(t: Tags) -> int:
 
 
 # --- platform (chipset) versions of one Amiga title: a ranking attribute, NOT part of the identity
-_CHIPSET_RE = re.compile(r"^(?:OCS|ECS|AGA|CD32)(?:-(?:OCS|ECS|AGA|CD32))*$")
-# Platform classes best-first. Extend here (e.g. a future CD32 phase): CD32 > AGA > OCS.
-PLATFORM_ORDER: tuple[str, ...] = ("CD32", "AGA", "OCS")
+_CHIPSET_RE = re.compile(r"^(?:OCS|ECS|AGA|CD32|CDTV)(?:-(?:OCS|ECS|AGA|CD32|CDTV))*$")
+# Platform classes best-first: a CD32 disc, an AGA floppy, a CDTV disc, an ECS floppy, the rest. CD32 / CDTV are the discs of the
+# CD DATs (library: Platform.disc_dats), never a tag on a floppy - a floppy with "(CD32)" is a conversion, ranked by its chipset.
+PLATFORM_ORDER: tuple[str, ...] = ("CD32", "AGA", "CDTV", "ECS", "OCS")
+_DISC_CLASSES = frozenset({"CD32", "CDTV"})
 PLATFORM_BASE = "OCS"                  # untagged / OCS / ECS-only / anything without a better chipset
 
 
@@ -782,8 +793,9 @@ def chipset(t: Tags) -> tuple[str, ...]:
 
 
 def platform_class(t: Tags) -> str:
-    """One of :data:`PLATFORM_ORDER`: the best platform the chipset tags allow (untagged -> ``OCS``)."""
-    found = {part for c in chipset(t) for part in c.split("-")}
+    """One of :data:`PLATFORM_ORDER`: the best platform a floppy's chipset tags allow (untagged -> ``OCS``; "CD32" / "CDTV" tags do
+    not count - those classes are the CD DATs' discs)."""
+    found = {part for c in chipset(t) for part in c.split("-")} - _DISC_CLASSES
     for cls in PLATFORM_ORDER:
         if cls in found:
             return cls

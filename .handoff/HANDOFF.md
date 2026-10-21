@@ -209,6 +209,66 @@ Note: "[f AGA Fix]" was treated as an AGA version. Only `(AGA)` should count; Th
 - Results files survive a power cut: `~/.cache/whdwork/jsonlsafe.py` (boot stages clean a damaged last line at start).
 - Not committed yet (as of writing): xfd, OpenRetro, amigahw, foreach / Join / xadUnFile / run joining, UI column, rebuilt whdknown, docs AMENDMENT 44/45. Full suite (1,681), pyz, AppImage, smoke test pass.
 
+## Night of 2026-10-20: chipset hints, the installs' own programs, answers tried (not committed yet)
+- Chipset hints (`amigainstall.chipset_hints`, passed by `server.whdload_check`): native AGA games (no CD32 conversions) with no
+  booting AGA copy, rerun (`~/.cache/whdwork/rerun/rerun4.py`, `boot4.jsonl`): 35 of 66 now boot.
+- `romorg/amigados.py` (new, `tests/test_amigados.py`): runs the install package's own CLI programs in the 68000 interpreter with a
+  small exec / dos.library on the installer's volumes. Civilization (DecrunchCIV), Premier Manager 1-3 (PMFC), Reunion, Crystal
+  Dragon, It Came from the Desert, Realms of Arkania, Tower of Souls ... now build.
+- `amigainstall`: answer search on failure, Assign, scratch writes, getsum / patmatch, @execute-dir, DEVS:Kickstarts (Subwar 2050
+  boots), save disk "No", the package's only slave, Install-<game> / <game>Install scripts. AMENDMENT 46.
+- Overnight run, resumable (`~/.cache/whdwork/night/chain.sh`, run it again after a power cut): stage A rebuilds every copy that
+  did not build of the games with no booting copy (`buildA.jsonl`), stage B boots up to two newly building copies a game
+  (`bootB.jsonl`). `make_whdknown.py` reads both (and `rerun/boot4.jsonl`, `night/eye.jsonl`: Wacky Races and International
+  Soccer were booting - the classifier took their title screens for requesters). Helpers: `night/fails.py` (causes of the
+  remaining failures), `lib.py`, `show.py <title>` (build), `dbg.py <title>` (trace), `montage.py`.
+- Later the same night: Patcher modules run (`amigados.run_patcher`, from Patcher's own source in WHDLoad_dev.lha - fetched to
+  `~/.cache/whdwork/whdldev/`; 10 Patcher games now boot: Deflektor, Encounter, Rod-Land, Supremacy, Onslaught, Realms, Thomas
+  the Tank Engine 2, Flip-it & Magnose, F-16 Combat Pilot, Lamborghini), packages with no script (`install_scriptless`), damaged
+  directory chains skipped (`adf`), xfdDecrunch of a missing file a return code, SetEnv / ENV:, system volumes never a floppy,
+  C: tools there, `amigahw` expansion memory. Stages C (A4000 + more memory: nothing new) and D (`bootD.jsonl`).
+- Result (by eye checked: Burnout and Total Football show their ReadMe - not booting, corrected in the jsonl with `result_v1`):
+  WHDLoad install titles with a booting copy 1,803 -> 1,884 of 2,314; non-CD32 titles with none 450 -> 369. `whdknown.json.gz`
+  rebuilt (20,339 sets, 4,879 boot). Full suite 1,697 OK (5 failures once under load from 6 PUAE runs - passed twice since),
+  pyz / AppImage / smoke test pass. Nothing committed.
+- What is left (see `night/fails_by_cause.json`): mostly copies that are another release than the install's (RawDIC finds no
+  sync, "images disk 3, this version has 2", the slave wants files the copy does not have, CPU exceptions); install slaves
+  (ConquerorInstall.Slave: WHDLoad's resload would have to be emulated); imagers that drive the hardware (Striker); WHDLoad 20;
+  absolute-address crunchers (Twintris: xfdDecrunch asks what header to add); NTSC-only RoboCop 3D (gets past the requester with
+  `puae_video_standard = "NTSC"`, not judged); stage B ran ~15 minutes with ENV: resolving to the only floppy (fixed) - a few
+  of its builds may have failed falsely.
+- 2026-10-21 (user: "yes please" to: the slave choice, matcher misses, the SPS failures, low-colour verdicts):
+  - Worms DC never needed more memory: PUAE's helper (`saves/PUAE/WHDLoad/S/Startup-Sequence`) takes `List #?.slav#?` - several
+    slaves, any order. `amigainstall.puae_launcher` adds `load` (the helper runs `DH0:load`). Worms, Fuzzball, Dizzy Collection,
+    Total Football boot on the A1200 so. The A4000 rule of amigahw removed.
+  - Matcher: nickname / possessive (last try, exact only), words in another order: 15 titles paired, 11 boot
+    (`night/newpairs2.jsonl`; Oh No! More Lemmings is the data-disk release - wants Lemmings disk 1).
+  - Kid Chaos (flags after library calls, SetMode, run's rc), Battle Isle (search from the last question; icons skipped),
+    Civilization (version answer only once - it had regressed), Beast III (IPF disk order retry), Hybris (decoder 40M steps; 14 min).
+  - The classifier (`puae/shot.py classify3`, work-side only): a two-colour text screen is the game - 26 games were booting
+    (`night/eye.jsonl`).
+  - Stage E (`night/stageE.py`, `E.log`, resumable): regression rebuild of every newly booting game (159: all build), then every
+    failing non-CD32 game's two cleanest copies built and booted (`bootE.jsonl`). Then `make_whdknown.py` (reads newpairs2,
+    slaves_test, eye; add bootE), fails.py, top_missing.py for the new top 25.
+- CD32 / CDTV (2026-10-21, user's decision: no new platform): AMENDMENT 47 - the TOSEC CD DATs in the Amiga system, a disc decided
+  whole, counted with its floppies, CD32 > AGA > CDTV > ECS > OCS across DATs, rule `cd_conversion` (608 files of the user's).
+  Stage E: 48 more boot (Burnout, Sorceror's Apprentice only show their ReadMe - corrected); titles with installs (no
+  conversions) with a booting copy 1,801 -> 1,948 of 2,251; whdknown rebuilt (no conversions). Full suite 1,707 OK, pyz / AppImage /
+  smoke pass. Found, older than this: the Files tree's "missing" (542) is not the totals' (3,100) on the Amiga - the SPS and
+  Unofficial IPF DATs count one game per IPF file; not fixed yet.
+- 2026-10-21, later (user: "fix the count bug. anything common against the 300ish..."): the count bug was the SPS / Unofficial IPF
+  images parsed by their file name - fixed, AMENDMENT 48 (tree = totals: 231 missing, 3,446 owned). The ~300 non-conversion titles
+  with an install and no booting copy (`night/remaining303.json`, `rem_causes.json`): 153 do not build (RawDIC 80: no sync 41,
+  checksum 24, sector 11, CRC 4 - 23 of them fail on their SPS originals too, which points at our IPF reading / RawDIC; DIC disk
+  count 9; waiting for a disk 9; Patcher), 144 build but do not boot (WHDLoad requester 126: ~50 unsupported version, ~36 DOS error
+  205 - a file the slave wants is not on the copy, ~15 CPU exceptions, ~12 WHDLoad 20; a Workbench file picker 7; black 7).
+  Icons fixed (`repair_slave_tooltypes`, `night/slavefix.py` / `slavefix.jsonl`): Cygnus 8, Indy Temple of Doom, Mr Blobby, Beast III,
+  Franko boot; Doman finds its slave now but is an unsupported version. Santa's Xmas Caper ([cr MST]) boots by eye. 297 left.
+  whdknown rebuilt (20,237 sets). Next proposed: the 23 SPS originals RawDIC rejects.
+- Games with no install at all: 45 of 60 readable native AGA ones are plain AmigaDOS disks with a startup-sequence (night/
+  aga_noinstall_kinds.json). PUAE's WHDLoad mode shows a file picker for an archive with no slave; an HD-style install of them
+  would need a hardfile or a launcher - not started, for the user to decide.
+
 ## Cannon Fodder floppy from cracked ADFs (2026-10-19)
 - The RawDIC imager (source: github.com/wepl/winstalls/games/CannonFodder, copied to `~/.cache/whdwork/cannonfodder/cfsrc`) reads Sensible's SOS filesystem.
   - It saves all files except fload/FODDERS/disk1/disk2/disk2.raw/disk3, RNC1-unpacks FODDERC into `fodderc`, and builds `fodder.rel` by diffing FODDERC ($80000 build) against FODDERF ($200000 build).

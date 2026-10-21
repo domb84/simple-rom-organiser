@@ -94,8 +94,8 @@ class SyncTests(unittest.TestCase):
         self.assertFalse(any(alttitles.node("APB & Xybots") in v for v in groups.values()))
 
 
-def slave(flags: int) -> bytes:
-    code = b"\x70\xff\x4e\x75" + b"WHDLOADS" + struct.pack(">HHI", 17, flags, 0x80000) + bytes(44)
+def slave(flags: int, exp: int = 0) -> bytes:
+    code = b"\x70\xff\x4e\x75" + b"WHDLOADS" + struct.pack(">HHI", 17, flags, 0x80000) + bytes(12) + struct.pack(">i", exp) + bytes(28)
     n = len(code) // 4
     return struct.pack(">IIIIII", 0x3F3, 0, 1, 0, 0, n) + struct.pack(">II", 0x3E9, n) + code + struct.pack(">I", 0x3F2)
 
@@ -119,3 +119,7 @@ class RequirementsTests(unittest.TestCase):
         self.assertEqual((r["chipset"], r["machine"]), ("AGA", "A1200"))
         self.assertIn("WHDLoad slave: needs AGA", r["sources"])
         self.assertIsNone(amigahw.slave_flags(b"not a slave"))
+        self.assertEqual(amigahw.slave_flags(slave(0, -0x100000))["exp_optional"], True)
+        r = amigahw.requirements(["Worms - The Director's Cut (1997)(Team 17)(AGA).adf"], slave=slave(0x20, 12 << 20))
+        self.assertEqual((r["whdload"], r["fast_memory"]), ("A1200", 12 << 20))         # (what the slave asks for: information)
+        self.assertEqual(amigahw.requirements(["G (1993)(P)(AGA).adf"], slave=slave(0x20, -(4 << 20)))["fast_memory"], 0)

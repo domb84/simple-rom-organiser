@@ -43,6 +43,8 @@ DAT_FILES = {
     SPS: "2025-01-13",
     UIPF: "2025-01-29",
 }
+CDS = platforms.get_platform("Commodore Amiga").disc_dats                 # (the CD32 / CDTV discs: no disc in these folders)
+DAT_FILES.update({d: "2019-09-07" for d in CDS})
 
 _rng = random.Random(1234)
 
@@ -137,7 +139,7 @@ class IntegrationTest(unittest.TestCase):
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {self.fw_name[:-4]: [(self.fw_name, d["fw"])]})
         write_dat(self.dats_dir, AMIX, DAT_FILES[AMIX],
                   {"AMIX (1990)(Commodore)": [("AMIX (1990)(Commodore).adf", d["amix"])]})
-        for dat in (SPS, UIPF):                                              # (the image sets: no IPF in these folders)
+        for dat in (SPS, UIPF, *CDS):                                              # (the image sets: no IPF in these folders)
             write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
 
     def _put(self, rel: str, data: bytes) -> None:
@@ -757,7 +759,7 @@ class LibraryIntegrationTest(unittest.TestCase):
         write_dat(self.dats_dir, KSD, DAT_FILES[KSD], {n[:-4]: [(n, data(n))] for n in ks})
         fw = "Kickstart v1.3 rev 34.5 (1987)(Commodore)(A500)[!].rom"
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {fw[:-4]: [(fw, data(fw))]})
-        for dat in (SPS, UIPF):
+        for dat in (SPS, UIPF, *CDS):
             write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         self.names = {"abc": self.ABC, "pre": [self.ABC_PRE], "hero": self.HERO, "wb": self.WB, "ks": ks, "fw": [fw]}
         for i, n in enumerate(self.ABC):
@@ -886,7 +888,7 @@ class BorrowIntegrationTest(unittest.TestCase):
         self.platform = platforms.get_platform("Commodore Amiga")
         self.blobs = {n: blob(1024) for n in [*self.D, self.OTHER]}
         write_dat(self.dats_dir, GAMES, DAT_FILES[GAMES], {n[:-4]: [(n, self.blobs[n])] for n in self.blobs})
-        for dat in (WB, KSD, FW, SPS, UIPF):
+        for dat in (WB, KSD, FW, SPS, UIPF, *CDS):
             write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         for i, n in enumerate([*self.D, self.OTHER]):
             (self.root / f"d{i}.adf").write_bytes(self.blobs[n])
@@ -990,7 +992,7 @@ class LibraryScenarioTest(unittest.TestCase):
         write_dat(self.dats_dir, FW, DAT_FILES[FW], {n[:-4]: [(n, self._data(n))] for n in self.KS})
         write_dat(self.dats_dir, WB, DAT_FILES[WB], {})
         write_dat(self.dats_dir, KSD, DAT_FILES[KSD], {})
-        for dat in (SPS, UIPF):
+        for dat in (SPS, UIPF, *CDS):
             write_dat(self.dats_dir, dat, DAT_FILES[dat], {})
         d = self._data
         # Saga: v1.0 complete, v1.1 [cr] has only disk 1 locally (disks 2/3 come from the 1990 release)

@@ -112,6 +112,17 @@ def make_icon(tooltypes: list[str], tool: str = "") -> bytes:
 
 
 class AdfTests(unittest.TestCase):
+    def test_a_directory_chain_into_a_block_that_is_no_file(self) -> None:
+        img = bytearray(make_adf("Game", {"game": b"exe"}))
+        root = 880 * 512
+        free = next(i for i in range(72) if not struct.unpack_from(">I", img, root + 24 + 4 * i)[0])
+        struct.pack_into(">I", img, root + 24 + 4 * free, 2)          # (a hash slot to block 2: zeros, no file header)
+        struct.pack_into(">I", img, root + 20, 0)
+        struct.pack_into(">I", img, root + 20, (-sum(struct.unpack_from(">128I", img, root))) & 0xFFFFFFFF)
+        d = AdfDisk(bytes(img))
+        self.assertEqual([f for f, _s in d.files()], ["game"])         # (the others, as AmigaDOS lists them)
+        self.assertEqual(d.damaged, {2})
+
     def test_files_of_an_ofs_disk(self) -> None:
         big = bytes(range(256)) * 9
         d = AdfDisk(make_adf("Game1", {"game": b"exe", "data/level1": big, "data/level1.info": b"i"}))
@@ -175,6 +186,82 @@ class InstallTests(unittest.TestCase):
         out = self.tmp / "g.lha"
         ai.write_lha(out, {"Game/Game.slave": b"S"}, {"Game", "Game/save"})       # (a save drawer the game expects)
         self.assertEqual([(e.name, e.is_dir) for e in LhaFile(out).entries], [("Game/Game.slave", False), ("Game/save", True)])
+
+    def test_aga_disks_get_the_aga_version(self) -> None:
+        self.assertEqual(ai.chipset_hints(["Game (1994)(Pub)(AGA)(Disk 1 of 2).adf"]), ("AGA",))
+        self.assertEqual(ai.chipset_hints(["Game (1994)(Pub)(OCS-AGA).adf"]), ())
+        self.assertEqual(ai.chipset_hints(["Game (1994)(Pub)(ECS).adf"]), ("ECS", "OCS"))
+        (self.pkg / "GameAGA.slave").write_bytes(b"AGA")
+        (self.pkg / "Install").write_text(          # (a chipset question outside the version list: Theme Park's)
+            '(set #v (askchoice (prompt "Which version of Game do you like to install?") (default 0) (choices "ECS" "AGA" "CD32")))'
+            '(select #v (set #c "") (set #c "AGA") (set #c "CD32"))'
+            '(copyfiles (source ("Game%s.slave" #c)) (dest "WORK:Game") (newname "Game.slave"))')
+        self.assertEqual(ai.install(self.pkg, [], hints=("AGA",)).files["Game/Game.slave"], b"AGA")
+        self.assertEqual(ai.install(self.pkg, [], hints=("ECS", "OCS")).files["Game/Game.slave"], b"SLAVE")
+        script = ('(set #multiple-versions "yes")\n(procedure P_SelectVersion (set #version (askchoice (prompt "Which version?") '
+                  '(default 0) (choices "OCS version" "AGA version"))))\n(P_SelectVersion)\n'
+                  '(if (= #version 1) (copyfiles (source "GameAGA.slave") (dest "WORK:Game") (newname "Game.slave"))'
+                  ' (copyfiles (source "Game.slave") (dest "WORK:Game")))\n')
+        (self.pkg / "Install").write_text(script)
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            self.assertEqual(pkg.install([], hints=("AGA",)).files["Game/Game.slave"], b"AGA")
+            self.assertEqual(pkg.install([]).files["Game/Game.slave"], b"SLAVE")              # (no hint: the default)
+
+    def test_a_kickstart_the_emulator_gives_whdload(self) -> None:
+        (self.pkg / "Install").write_text(          # (Subwar 2050's check: the slave boots the real Kickstart 3.1)
+            '(if (exists "DEVS:Kickstarts/Kick40068.A1200") (set #k 1) (if (exists "DEVS:Kickstarts/Kick40068.A4000") (set #k 1)'
+            ' (abort "No 3.1 kickstart file found in DEVS:Kickstarts, cannot continue")))'
+            '(if (exists "DEVS:Kickstarts/kick99999.A9000") (abort "not one there is"))'
+            '(copyfiles (source "Game.slave") (dest "WORK:Game"))')
+        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave"])
+
+    def test_an_icon_naming_a_slave_that_is_not_there(self) -> None:
+        files = {"ShadowOfTheBeast3/ShadowOfTheBeast3.slave": b"S", "ShadowOfTheBeast3/ShadowOfTheBeast3.info": make_icon(["SLAVE=Beast3.slave", "PRELOAD"], "WHDLoad"),
+                 "ShadowOfTheBeast3/ReadMe.info": make_icon(["FILETYPE=Text"])}
+        log = ai.repair_slave_tooltypes(files)
+        self.assertEqual(ai.icon_info(files["ShadowOfTheBeast3/ShadowOfTheBeast3.info"])[1], ["SLAVE=ShadowOfTheBeast3.slave", "PRELOAD"])
+        self.assertEqual(len(log), 1)
+        self.assertEqual(ai.repair_slave_tooltypes(files), [])                              # (right now: nothing to do)
+        files = {"Doman/Doman.Slave": b"S", "Doman/Doman.info": make_icon([""], "WHDLoad"), "Doman/ReadMe.info": make_icon([], "MultiView")}
+        self.assertEqual(len(ai.repair_slave_tooltypes(files)), 1)                          # (a WHDLoad icon with no Slave=)
+        self.assertIn("Slave=Doman.Slave", ai.icon_info(files["Doman/Doman.info"])[1])
+        self.assertEqual(ai.icon_info(files["Doman/ReadMe.info"])[1], [])
+
+    def test_a_comparison_evaluates_every_argument(self) -> None:
+        (self.pkg / "Install").write_text('(if (= 0 (set #x 1) (copyfiles (source "Game.slave") (dest "WORK:Game"))) ("") ("")) ')
+        self.assertIn("Game/Game.slave", ai.install(self.pkg, []).files)
+
+    def test_a_drawer_with_several_slaves_gets_a_load_script(self) -> None:
+        files = {"WormsDC/WormsDC.Slave": b"S", "WormsDC/WormsDC_8MB.Slave": b"S8", "WormsDC/WormsDC_12MB.Slave": b"S12",
+                 "WormsDC/WormsDC 8MB.info": make_icon(["SLAVE=WormsDC_8MB.Slave"], "WHDLoad"),
+                 "WormsDC/WormsDC.info": make_icon(["PRELOAD", "SLAVE=WormsDC.Slave"], "WHDLoad")}
+        self.assertEqual(ai.puae_launcher(files), b'CD "WormsDC"\nC:WBRun "WormsDC" SYNC\n')     # (the game's own icon)
+        files = {"Fuzz/FuzzballIntro.slave": b"I", "Fuzz/Fuzzball.slave": b"G"}                # (no icons: the plainest slave)
+        self.assertEqual(ai.puae_launcher(files), b'CD "Fuzz"\nC:WHDLoad "Fuzzball.slave" Preload\n')
+        self.assertIsNone(ai.puae_launcher({"Game/Game.slave": b"S", "Game/Game.info": b"I"}))   # (one slave: PUAE finds it)
+        self.assertEqual(ai.puae_launcher({"Total Football/Total Football.Slave": b"S"}),         # (a space breaks PUAE's script)
+                         b'CD "Total Football"\nC:WHDLoad "Total Football.Slave" Preload\n')
+        (self.pkg / "Game8MB.slave").write_bytes(b"BIG")
+        (self.pkg / "Install").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game")) (copyfiles (source "Game8MB.slave") (dest "WORK:Game"))')
+        self.assertEqual(ai.install(self.pkg, []).files["load"], b'CD "Game"\nC:WHDLoad "Game.slave" Preload\n')
+
+    def test_a_package_with_no_script(self) -> None:
+        import struct
+        hdr = b"\x70\xff\x4e\x75WHDLOADS" + struct.pack(">HHIIHH", 17, 0, 0x80000, 0, 0, 40) + bytes(12) + b"data\0"
+        files = {"Rubicon/Rubicon.slave": hdr, "Rubicon/Rubicon.inf": b"\xe3\x10icon", "Rubicon/ReadMe": b"use DIC",
+                 "Rubicon/source/Rubicon.s": b"; the source"}
+        ai.write_lha(self.tmp / "pkg.lha", files)
+        disk = make_adf("Rubicon", {"game": b"exe", "levels/l1": b"L1"})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            res = pkg.install([disk])
+        self.assertEqual(res.files["Rubicon/Rubicon.slave"], hdr)
+        self.assertEqual(res.files["Rubicon/Rubicon.info"], b"\xe3\x10icon")
+        self.assertEqual((res.files["Rubicon/data/game"], res.files["Rubicon/data/levels/l1"]), (b"exe", b"L1"))
+        self.assertEqual(res.files["Rubicon/data/Disk.1"], disk)                 # (a DIC image of a standard disk is the ADF)
+        self.assertIn("Rubicon/ReadMe", res.files)
+        self.assertNotIn("Rubicon/source/Rubicon.s", res.files)
+        self.assertEqual(ai.slave_dir(b"no slave"), "")
 
     def test_the_script_named_install_is_the_one_run(self) -> None:
         (self.pkg / "Install.").write_text('(abort "an old script")')                 # (a stray copy: ConanTheCimmerian has one)

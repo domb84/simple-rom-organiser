@@ -20,7 +20,8 @@ _TAG_RE = re.compile(r"\(([^()]*)\)")
 
 
 def slave_flags(slave: bytes) -> Optional[dict[str, Any]]:
-    """``{version, needs_aga, needs_68020, chip_memory}`` of a WHDLoad slave (its header: "WHDLOADS" 4 bytes into its code), or None."""
+    """``{version, needs_aga, needs_68020, chip_memory, exp_memory, exp_optional}`` of a WHDLoad slave (its header: "WHDLOADS" 4 bytes
+    into its code; ``ws_ExpMem`` from version 8, negative: optional), or None."""
     try:
         u32 = lambda o: struct.unpack_from(">I", slave, o)[0]
         if u32(0) != 0x3F3:
@@ -39,8 +40,9 @@ def slave_flags(slave: bytes) -> Optional[dict[str, Any]]:
         if code[4:12] != b"WHDLOADS":
             return None
         version, flags = struct.unpack_from(">HH", code, 12)
+        exp = struct.unpack_from(">i", code, 32)[0] if version >= 8 and len(code) >= 36 else 0
         return {"version": version, "needs_aga": bool(flags & 0x20), "needs_68020": bool(flags & 0x10),
-                "chip_memory": struct.unpack_from(">I", code, 16)[0]}
+                "chip_memory": struct.unpack_from(">I", code, 16)[0], "exp_memory": abs(exp), "exp_optional": exp < 0}
     except (struct.error, IndexError):
         return None
 
@@ -50,9 +52,10 @@ def _rank(chipset: str) -> int:
 
 
 def requirements(names: Iterable[str], release: Optional[dict[str, Any]] = None, slave: Optional[bytes] = None) -> dict[str, Any]:
-    """``{chipset, model, kickstart, cpu, video, machine, whdload, sources}``: what is known ("" for nothing known); ``machine`` the
-    one to run the disks on (CD32 / CDTV, AGA: A1200, ECS or Kickstart 2+: A600, else A500), ``whdload`` the one for a WHDLoad
-    install (CD32 for a CD32 game, else an A1200: WHDLoad itself needs Kickstart 2+ and the memory)."""
+    """``{chipset, model, kickstart, cpu, video, machine, whdload, fast_memory, sources}``: what is known ("" for nothing known);
+    ``machine`` the one to run the disks on (CD32 / CDTV, AGA: A1200, ECS or Kickstart 2+: A600, else A500), ``whdload`` the one for
+    a WHDLoad install (CD32 for a CD32 game, else an A1200: WHDLoad itself needs Kickstart 2+ and the memory); ``fast_memory``: the
+    bytes the slave must have besides chip memory (0: none or optional)."""
     chipset, model, kick, cpu, video = "", "", "", "", ""
     sources: list[str] = []
 
@@ -97,6 +100,9 @@ def requirements(names: Iterable[str], release: Optional[dict[str, Any]] = None,
         if rv.upper() in ("NTSC", "PAL"):
             video = video or rv.upper()
     flags = slave_flags(slave) if slave else None
+    fast = flags["exp_memory"] if flags and not flags["exp_optional"] else 0
+    if fast:
+        sources.append(f"WHDLoad slave: {fast // 1024} KB expansion memory")
     if flags:
         if flags["needs_aga"]:
             need("AGA", "WHDLoad slave: needs AGA")
@@ -116,4 +122,4 @@ def requirements(names: Iterable[str], release: Optional[dict[str, Any]] = None,
     else:
         machine = "A500"
     return {"chipset": chipset, "model": model, "kickstart": kick, "cpu": cpu, "video": video, "machine": machine,
-            "whdload": "CD32" if model == "CD32" else "A1200", "sources": sources}
+            "whdload": "CD32" if model == "CD32" else "A1200", "fast_memory": fast, "sources": sources}

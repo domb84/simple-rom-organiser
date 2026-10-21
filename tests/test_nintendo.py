@@ -555,7 +555,7 @@ class DatabasesList(unittest.TestCase):
                                    "switchdb": {"status": "up_to_date"}, "gametdb": {"status": "up_to_date"}})
         listed = {r["name"] for r in rows}
         every_dat = {d for p in platforms.list_platforms() for d in p.dats}
-        tosec = {d for d in every_dat if d.startswith("Commodore Amiga - ")}
+        tosec = {d for d in every_dat if d.startswith("Commodore Amiga")}          # (TOSEC's: the pack, CD32 / CDTV too)
         made = {"Nintendo - Wii U", "Nintendo - Switch", "Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"}      # (each is said by the list it is made from)
         self.assertEqual(every_dat - listed - tosec - made, set(), "a DAT of a system that the Databases page does not list")
         covered = {s for r in rows if r["group"].startswith("Game lists made") for s in r["used_by"]}

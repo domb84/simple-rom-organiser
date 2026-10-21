@@ -178,6 +178,8 @@ _EDITION_SUB_RE = re.compile(r"\b(?:edition|version)$", re.IGNORECASE)
 # renamed releases no rule finds (TOSEC's title -> the install's)
 _ALIASES = {"fifa international soccer": "fifa soccer",
             "populous 2 trials of the olympian gods": "populous 2 challenge games"}   # (that install is Populous 2 and its data disk)
+_NICKNAME_RE = re.compile(r"\s+['\"][A-Za-z][^'\"]{1,20}['\"](?=\s)")    # (a nickname in quotes: "Ivan 'Ironman' Stewart")
+_POSSESSIVE_RE = re.compile(r"(?<=[a-z])'s\b", re.IGNORECASE)
 _MINOR_WORDS = {"the", "a", "an", "of", "in", "for", "and", "to", "on", "der", "die", "das", "des", "le", "la", "les", "de", "el", "il"}
 
 
@@ -190,6 +192,7 @@ class Matcher:
         self.by: dict[str, list[dict[str, Any]]] = {}
         self.squashed: dict[str, list[dict[str, Any]]] = {}
         self.loose: dict[str, list[dict[str, Any]]] = {}      # without articles and spaces, umlauts both ways
+        self.bag: dict[str, list[dict[str, Any]]] = {}        # its words in any order ("Lemmings - Oh! No More": "Oh No! More Lemmings")
         self.parts: dict[str, list[tuple[dict[str, Any], str]]] = {}   # an install's main title ("X: ...") or its long title's end
                                                               # ("... In X"), with what follows the main title
         for i in installs:
@@ -198,6 +201,8 @@ class Matcher:
                 if k:
                     self.by.setdefault(k, []).append(i)
                     self.squashed.setdefault(k.replace(" ", ""), []).append(i)
+                    if len(k.split(" ")) >= 3:
+                        self.bag.setdefault(" ".join(sorted(k.split(" "))), []).append(i)
                     for v in {k, self._node(name.translate(_UMLAUTS))}:
                         if v:
                             self.loose.setdefault(self._loose(v), []).append(i)
@@ -259,6 +264,16 @@ class Matcher:
         return out
 
     @staticmethod
+    def _last_variants(t: str) -> list[str]:
+        """"Ivan 'Ironman' Stewart's Super Off Road": "Ivan Stewart's Super Off Road"; "Archer Maclean's Pool": "Archer Maclean Pool"."""
+        nick = _NICKNAME_RE.sub("", t)
+        out = [nick] if nick != t else []
+        own = _POSSESSIVE_RE.sub("", nick)
+        if own != nick:
+            out.append(own)
+        return out
+
+    @staticmethod
     def _best(cands: list[dict[str, Any]], title: str) -> dict[str, Any]:
         """Of several installs of a title, the plain one (not the CD32 / AGA / Arcadia variant) and the closest title."""
         low = title.casefold()
@@ -305,6 +320,16 @@ class Matcher:
                 hit = self._in_parts(kh, sub)
                 if hit:
                     return hit, "main title", head
+        for v in self._last_variants(t):                     # (a nickname or a possessive off: only the very title, spelled
+            kv = self._node(v)                                #  otherwise - "Hero's Quest" is not the install "HeroQuest")
+            for key, table in ((kv, self.by), (kv.replace(" ", ""), self.squashed), (self._loose(kv), self.loose)):
+                if key in table and (v != _POSSESSIVE_RE.sub("", t) or table is self.by):
+                    return table[key], "spelling", v
+        for v in [t] + self._last_variants(t):
+            kv = self._node(v)
+            bag = self.bag.get(" ".join(sorted(kv.split(" ")))) if len(kv.split(" ")) >= 3 else None
+            if bag and len({i["archive"] for i in bag}) == 1:     # (the same words in another order, one install has them:
+                return bag, "spelling", v                          #  "Aventura Espacial, La", "Lemmings - Oh! No More")
         words = [] if " & " in t else k.split(" ")             # ("Captain Fizz Meets the Blaster-Trons": the install "Captain Fizz";
         for n in range(len(words) - 1, 1, -1):              #  not "Classic Arcadia & Baby Arcadia", two games on one disk)
             if words[n] in _JOIN_WORDS:                     # (a short title of two words at least)

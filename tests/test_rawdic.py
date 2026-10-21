@@ -8,6 +8,7 @@ import shutil
 import struct
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 from pathlib import Path
 
@@ -414,6 +415,23 @@ class InstallTests(unittest.TestCase):
                                           '(run ("cd \\"%s\\"\\nDIC DF0: FD=1 LD=2" #dest))')
         files = ai.install(self.pkg, ipfs).files
         self.assertEqual((files["Game/Disk.1"], files["Game/Disk.2"]), (program, data))
+
+    def test_ipfs_whose_numbers_are_not_the_installs_order(self) -> None:
+        program, data = make_adf("Prog", {"game": b"exe"}), make_adf("Data", {"level": b"L"})
+        ipfs = [write_ipf({t: rawdic.dos_track_mfm(a[t * 0x1600:(t + 1) * 0x1600], t) for t in range(160)}, disk=n)
+                for a, n in ((program, 2), (data, 1))]                      # (SPS numbers Beast III's intro disk 3: the install's 1)
+        (self.pkg / "Install").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game")) (copyfiles (source "Prog:game") (dest "WORK:Game"))')
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        real = ai.install
+        def imager(package, disks, *a, **k):                                # (an imager that reads disk 1 as its own format)
+            first = disks[0] if k.get("keep_order") else sorted(disks, key=lambda d: ai.floppy(d).tracks.disk_number)[0]
+            if ai.floppy(first).label != "Prog":
+                raise ai.InstallError("RawDIC (Game.islave): the imager stopped: a checksum is wrong (disk 1, track 2)")
+            return real(package, disks, *a, **k)
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg, mock.patch.object(ai, "install", imager):
+            res = pkg.install(ipfs)
+        self.assertEqual(res.files["Game/game"], b"exe")
+        self.assertIn("the disks in another order than their numbers", res.log)
 
     def test_an_ipf_of_a_standard_disk_is_read_as_an_adf(self) -> None:
         adf = make_adf("Game1", {"game": b"exe"})

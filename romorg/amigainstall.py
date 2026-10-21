@@ -29,7 +29,7 @@ from . import ipf, rawdic
 from .adf import AdfDisk, AdfError
 from .lha import crc16
 
-__all__ = ["install", "install_archive", "Package", "version_choices", "InstallResult", "InstallError", "MemDisk", "write_lha", "pattern_regex"]
+__all__ = ["install", "install_archive", "Package", "chipset_hints", "version_choices", "InstallResult", "InstallError", "MemDisk", "write_lha", "pattern_regex"]
 
 
 class InstallError(Exception):
@@ -234,7 +234,18 @@ def floppy(d: Any, n: int = 0) -> Any:
 _ICON_EXTS = {"inf", "info", "newicon", "glowicon", "glowicon1", "glowicon2", "colicon", "romicon", "boxicon", "newposter", "colposter"}
 _CD_RE = re.compile(r"\bCD(?:TV|32)?(?![a-z])", re.IGNORECASE)    # ("CD version", "CD32", "CD³²", "CDTV")
 _HD = "RomorgHD:"                                      # (the hard disk the game is installed to: no floppy has that name)
-_HD_NAMES = {"romorghd", "work", "sys", "ram", "t", "env", "envarc", "dh0", "dh1", "hd0", "hd1"}
+# The commands an install expects in C: (WHDLoad's, the Installer's): done here or by the emulator - a script's check finds them
+_TOOLS = {"whdload", "rawdic", "dic", "patcher", "xfddecrunch", "xadunfile", "xadunfilem", "lha", "lhx", "lhex", "unlzx", "assign",
+          "copy", "delete", "rename", "makedir", "join", "setenv", "which", "protect", "filenote", "cd", "list", "echo", "execute"}
+
+# What the emulator puts in WHDLoad's DEVS:Kickstarts from the Kickstart ROMs in its system folder (PUAE does): the files of an install
+# whose slave runs the real Kickstart ("No 3.1 kickstart file found in DEVS:Kickstarts" - Subwar 2050 checks for one before it installs)
+_PUAE_KICKSTARTS = {n.casefold() for k in ("kick33180.A500", "kick34005.A500", "kick40063.A600", "kick40068.A1200")
+                    for n in (k, k + ".RTB")} | {"kick40068.a4000.rtb"}
+
+_HD_NAMES = {"romorghd", "work", "sys", "ram", "t", "dh0", "dh1", "hd0", "hd1"}       # (ENV:, ENVARC: are of their own: not installed)
+_SYSTEM_VOLS = {"env", "envarc", "c", "libs", "devs", "s", "l", "fonts", "locale", "keymaps", "printers"}   # (never a floppy by
+#   another name - a game disk called otherwise is not C: - unless a disk is labelled so)
 
 
 class _Fs:
@@ -252,10 +263,18 @@ class _Fs:
         self.guessed: set[str] = set()                # volumes matched only by that order
         self.work: dict[str, bytes] = {}                 # "Game/data/file" -> bytes (no volume, "/" separated)
         self.work_dirs: set[str] = set()
+        self.assigns: dict[str, str] = {}             # "topatch" -> "RomorgHD:DuneII" (Assign in a script's run)
+        self.scratch: dict[tuple[str, str], tuple[str, bytes]] = {}    # what is written elsewhere than WORK: - the package drawer
+        #   (RawDIC's BLOCK880 there), C: (OSEmu.400), a disk - kept to be read again, not installed: (vol, path folded) -> (path, data)
 
     def split(self, path: str) -> tuple[str, str]:
         """``("vol", "rest")``; vol "" = the current drawer (the package). ``":file"`` (no volume name) is the disk in the drive:
         the ADF that has that file (the one found last when it has not)."""
+        for _ in range(8):                            # (an assigned name: the drawer it stands for)
+            v, colon, rest = path.partition(":")
+            if not colon or v.strip().casefold() not in self.assigns:
+                break
+            path = _join(self.assigns[v.strip().casefold()], rest.strip("/"))
         if ":" in path:
             v, rest = path.split(":", 1)
             v, rest = v.strip().casefold(), rest.strip("/").lstrip(":")
@@ -268,7 +287,7 @@ class _Fs:
                 return (self.current if self.current is not None else "\0none"), rest
             if v in self.disks and v != "romorghd":   # (a disk named like the hard disk - "Work:" - is that disk)
                 return v, rest
-            if v not in _HD_NAMES and self.resolve(v, rest) is not None:
+            if v not in _HD_NAMES and v not in _SYSTEM_VOLS and self.resolve(v, rest) is not None:
                 return v, rest                           # (a disk the script knows by another name than its label)
             return ("hd" if v in _HD_NAMES else v), rest
         return "", path.strip("/")
@@ -326,6 +345,14 @@ class _Fs:
 
     def exists(self, path: str) -> int:
         vol, rest = self.split(path)
+        if (vol, rest.casefold()) in self.scratch:
+            return 1
+        if rest and any(v == vol and k.startswith(rest.casefold() + "/") for v, k in self.scratch):
+            return 2
+        if vol == "devs" and rest.casefold().startswith("kickstarts/") and vol not in self.disks:
+            return 1 if rest.casefold()[len("kickstarts/"):] in _PUAE_KICKSTARTS else 0
+        if vol == "c" and rest.casefold() in _TOOLS and vol not in self.disks and (vol, rest.casefold()) not in self.scratch:
+            return 1                                     # ("You need the program: c:whdload installed": the tools are here)
         if self.is_work(vol):
             k = rest.casefold()
             if k in {x.casefold() for x in self.work} or k in {x.casefold() for x in self.work_dirs} or rest == "":
@@ -348,8 +375,25 @@ class _Fs:
         return 0
 
     def listing(self, path: str) -> list[tuple[str, bool]]:
-        """The entries directly in a drawer: ``(name, is_dir)``."""
+        """The entries directly in a drawer: ``(name, is_dir)`` (with what was written there besides WORK:)."""
         vol, rest = self.split(path)
+        pre = (rest + "/").casefold() if rest else ""
+        extra = {}
+        for (v, k), (name, _d) in self.scratch.items():
+            if v == vol and k.startswith(pre) and len(k) > len(pre):
+                tail = name[len(pre):]
+                extra[tail.split("/")[0]] = "/" in tail
+        if not extra:
+            return self._listing(vol, rest)
+        try:
+            names = dict(self._listing(vol, rest))
+        except InstallError:
+            names = {}
+        for k, is_dir in extra.items():
+            names[k] = names.get(k, False) or is_dir
+        return sorted(names.items())
+
+    def _listing(self, vol: str, rest: str) -> list[tuple[str, bool]]:
         if vol == "":
             p = self._pkg(rest)
             return [] if p is None or not p.is_dir() else [(c.name, c.is_dir()) for c in sorted(p.iterdir())]
@@ -372,6 +416,9 @@ class _Fs:
 
     def read(self, path: str) -> bytes:
         vol, rest = self.split(path)
+        hit = self.scratch.get((vol, rest.casefold()))
+        if hit is not None:
+            return hit[1]
         if vol == "":
             p = self._pkg(rest)
             if p is None or not p.is_file():
@@ -390,7 +437,8 @@ class _Fs:
     def write(self, path: str, data: bytes) -> None:
         vol, rest = self.split(path)
         if not self.is_work(vol):
-            raise InstallError(f"cannot write to {path}")
+            self.scratch[(vol, rest.casefold())] = (rest, data)
+            return
         for k in list(self.work):
             if k.casefold() == rest.casefold():
                 del self.work[k]
@@ -408,9 +456,12 @@ class _Fs:
 
     def delete(self, path: str, everything: bool = False) -> None:
         vol, rest = self.split(path)
+        low = rest.casefold()
+        for v, k in list(self.scratch):
+            if v == vol and (k == low or (everything and k.startswith(low + "/"))):
+                del self.scratch[(v, k)]
         if not self.is_work(vol):
             return
-        low = rest.casefold()
         for k in list(self.work):
             if k.casefold() == low or (everything and k.casefold().startswith(low + "/")):
                 del self.work[k]
@@ -485,6 +536,19 @@ class _Interp:
         self.choices: list[str] = []
         self.steps = 0
         self.decruncher: Optional[Callable[[], Any]] = None  # (xfdDecrunch: gives a romorg.xfd.Decruncher; None - not here)
+        self.hints: tuple[str, ...] = ()                   # (what the disks are: "AGA", or "ECS" / "OCS" - see chipset_hints)
+        self.answers: dict[int, int] = {}                  # (the k-th question asked: this answer - another try, see install)
+        self.failed_runs: list[str] = []                   # (the install's programs that returned FAIL: a later error's reason)
+        self.asked: list[tuple[int, int, list[str]]] = []  # (each question asked: its answers, the one given, their texts)
+
+    def _answer(self, n: int, given: Any, texts: list[str], prompt: str = "") -> Any:
+        """The answer to the next question (one of ``n``): ``given``, or the one this try gives it."""
+        k = len(self.asked)
+        if k in self.answers:
+            given = self.answers[k]
+            self.log.append(f"answered \"{texts[given] if given < len(texts) else given}\" (another try)")
+        self.asked.append((n, given if isinstance(given, int) else 0, texts, prompt))
+        return given
 
     # -- evaluation
     def ev(self, x: Any) -> Any:
@@ -686,6 +750,21 @@ class _Interp:
     def f_exists(self, a: list) -> Any:
         return self.fs.exists(str(self.ev(a[0])))
 
+    def f_getsum(self, a: list) -> Any:
+        """The Installer's checksum of a file: its longwords added (big-endian, the end padded with zeros), as a signed number -
+        Tower of Babel's script knows its disk image by it (68284644)."""
+        try:
+            data = self.fs.read(str(self.ev(a[0])))
+        except InstallError:
+            return 0
+        data += bytes(-len(data) % 4)
+        total = sum(struct.unpack(f">{len(data) // 4}I", data)) & 0xFFFFFFFF
+        return total - (1 << 32) if total >= 1 << 31 else total
+
+    def f_patmatch(self, a: list) -> Any:
+        """``(patmatch pattern string)``: 1 when the AmigaDOS pattern matches."""
+        return 1 if pattern_regex(str(self.ev(a[0]))).match(str(self.ev(a[1]))) else 0
+
     def f_getsize(self, a: list) -> Any:
         try:
             return len(self.fs.read(str(self.ev(a[0]))))
@@ -719,6 +798,8 @@ class _Interp:
 
     def _cmp(self, a: list, op: Callable[[Any, Any], bool]) -> int:
         x, y = self.ev(a[0]), self.ev(a[1])
+        for extra in a[2:]:                                  # (evaluated all the same, as the Installer does: Kid Chaos runs its
+            self.ev(extra)                                   #  unpacker as a third argument of "=")
         if isinstance(x, int) and isinstance(y, int):
             return int(op(x, y))
         if isinstance(x, int) or isinstance(y, int):
@@ -763,16 +844,33 @@ class _Interp:
         _p, o = self.opts(a)
         if re.search(r"\brun\b.*\bnow\b", str((o.get("prompt") or [""])[0]), re.IGNORECASE):
             return 0                                      # ("Run Monkey Island 2 now?": not here)
-        return (o.get("default") or [1])[0]
+        texts = [str(c) for c in o.get("choices", [])][:2] or ["Yes", "No"]
+        if _SAVE_DISK_RE.search(str((o.get("prompt") or [""])[0])):
+            return 0
+        d = (o.get("default") or [1])[0]
+        got = self._answer(2, 0 if d else 1, texts, str((o.get("prompt") or [""])[0]))   # (as an answer: 0 the first, "yes")
+        return 0 if got else 1
 
     def f_askchoice(self, a: list) -> Any:
         _p, o = self.opts(a)
         choices = [str(c) for c in o.get("choices", [])]
         prompt = str((o.get("prompt") or [""])[0]).lower()
-        if self.version_choice is not None and "version" in prompt:
-            self.choices = choices
-            return self.version_choice
-        return (o.get("default") or [0])[0]
+        if self.version_choice is not None and "version" in prompt and not self.choices:
+            self.choices = choices                         # (the version question: only the first - Civilization asks "Floppy
+            return self.version_choice                     #  Disk version" or "CD version" after it)
+        return self._answer(len(choices), self._choice(choices, prompt, o), choices, prompt)
+
+    def _choice(self, choices: list[str], prompt: str, o: dict) -> Any:
+        default = (o.get("default") or [0])[0]
+        no = next((k for k, c in enumerate(choices) if re.match(r"\s*no\b", c, re.IGNORECASE)), None)
+        if no is not None and _SAVE_DISK_RE.search(prompt):
+            self.log.append("no save disk")              # ("Do you want install your DuneII Save Games Disk?": none is among the disks)
+            return no
+        pick = _hinted(choices, self.hints)                # ("ECS" "AGA" "CD32" for AGA disks: the AGA one)
+        if pick is not None and not (isinstance(default, int) and 0 <= default < len(choices) and _hinted([choices[default]], self.hints) == 0):
+            self.log.append(f"chose \"{choices[pick]}\" ({'/'.join(self.hints)} disks)")
+            return pick
+        return default
 
     def f_askoptions(self, a: list) -> Any:
         _p, o = self.opts(a)
@@ -873,6 +971,11 @@ class _Interp:
                 continue
         return None
 
+    def _only_slave(self) -> Optional[str]:
+        """The package's one WHDLoad slave (None: none, or several to choose from)."""
+        found = [c.name for c in self.fs.package.iterdir() if c.is_file() and c.suffix.casefold() == ".slave"]
+        return found[0] if len(found) == 1 else None
+
     def f_copylib(self, a: list) -> Any:
         return self.f_copyfiles(a)
 
@@ -882,6 +985,13 @@ class _Interp:
         dest = str((o.get("dest") or [""])[0])
         newname = (o.get("newname") or [None])[0]
         kind = self.fs.exists(src)
+        if kind == 0 and self.fs.split(src)[0] == "" and src.casefold().endswith(".slave"):
+            alt = self._only_slave()                          # (a slave by another name than the script's: Total Football's icon
+            if alt is not None:                               #  says APPNAME=Total Football, its slave is TotalFootball.slave)
+                self.log.append(f"{src} is not in the package: its slave {alt} instead")
+                src, kind = alt, 1
+                if newname is None:
+                    newname = Path(str((o.get("source") or [""])[0])).name
         if kind == 0 and self.fs.split(src)[0] == "":
             alt = self._other_icon(src)                       # (the "Normal" icon the script defaults to, which a package may lack:
             if alt is not None:                               #  DeathBringer has only its GlowIcons - one of those, as a user would pick)
@@ -943,8 +1053,56 @@ class _Interp:
 
     f_execute = f_run
 
+    def _program(self, cwd: str, name: str) -> Optional[str]:
+        """The program a command line names, when it is one here: in the current drawer, the package's, C: or T: (where a script
+        copied it) - an AmigaDOS executable."""
+        cands = [_join(cwd, name)] if ":" in name else [_join(cwd, name), name, "C:" + name, "T:" + name]
+        for c in cands:
+            try:
+                if self.fs.exists(c) == 1 and self.fs.read(c)[:4] == b"\0\0\x03\xf3":
+                    return c
+            except InstallError:
+                continue
+        return None
+
+    def _run_program(self, path: str, parts: list[str], cwd: str) -> int:
+        """An install's own program (``romorg.amigados``): its return code; 20 and over (FAIL) stops the install."""
+        from . import amigados
+        args = " ".join(f'"{x}"' if (" " in x or not x) else x for x in parts[1:] if not x.startswith((">", "<")))
+        name = path.replace(":", "/").rsplit("/", 1)[-1]
+        def shell(line: str, where: str) -> int:
+            return self._shell((f'cd "{where}"\n' if where else "") + line)
+        try:
+            rc, out = amigados.run(self.fs.read(path), args, self.fs, cwd=cwd, disks=list(self.fs.order), name=name, shell=shell)
+        except amigados.AmigaDosError as exc:
+            raise InstallError(f"the install's program {name} cannot run here: {exc}") from None
+        said = " / ".join(x.strip() for x in out.replace("\r", "\n").split("\n") if x.strip())
+        self.log.append(f"ran {name} {args[:60]}: {rc}" + (f" ({said[:200]})" if said else ""))
+        if rc >= 20:                                         # (as on an Amiga the script decides - kcdepack always says 50;
+            self.failed_runs.append(f"{name} returned {rc}" + (f": {said[-160:]}" if said else ""))   #  a later error says it)
+        return rc
+
+    def _patcher(self, cwd: str, args: list[str]) -> None:
+        from . import amigados
+        mod = next((x[2:] for x in args if x[:2].casefold() == "-p"), "")
+        drive = next((x[2:] for x in args if x[:2].casefold() == "-s"), "DF0:").rstrip(":").casefold()
+        if not mod:
+            raise InstallError("Patcher: no module (-p)")
+        path = _join(cwd, mod)
+        try:
+            data = self.fs.read(path)
+        except InstallError:
+            raise InstallError(f"Patcher: its module {mod} is not there") from None
+        disks = [d for d in self.fs.order if isinstance(d, (AdfDisk, RawDisk))]
+        try:
+            said = amigados.run_patcher(data, self.fs, disks, name=Path(mod).name, unit=int(drive[2:]) if drive[2:].isdigit() else 0)
+        except amigados.AmigaDosError as exc:
+            raise InstallError(f"Patcher: {exc}") from None
+        self.log.append(f"Patcher {mod}" + (f": {' / '.join(said)[:200]}" if said else ""))
+
     def _shell(self, script: str) -> int:
-        cwd = ""
+        cwd = str(self.vars.get("@execute-dir") or "")     # (where the command runs: the script can set it)
+        rc = 0
         for line in script.split("\n"):
             parts = _split_args(line.strip())
             if not parts:
@@ -957,9 +1115,24 @@ class _Interp:
             args = parts[1:]
             if word == "cd":
                 cwd = args[0] if args else cwd
-            elif word in ("which", "setenv", "copy", "multiview", "more", "assign", "wait", "echo", "avail", "version", "resident",
+            elif word == "setenv":                           # (SetEnv NAME value: the file ENV:NAME - Run the Gauntlet copies it)
+                names = [x for x in args if not x.startswith(">") and x.casefold() not in ("save", "quiet")]
+                if names:
+                    self.fs.write("ENV:" + names[0], " ".join(names[1:]).encode("latin-1"))
+                continue
+            elif word == "assign":                           # (Assign NAME: drawer / NAME: Remove: a name for a drawer)
+                names = [x for x in args if not x.startswith(">")]
+                if names and names[0].endswith(":"):
+                    key = names[0][:-1].strip().casefold()
+                    rest_ = [x for x in names[1:] if x.casefold() not in ("add", "defer", "path", "exists", "quiet")]
+                    if not rest_ or rest_[0].casefold() in ("remove", "dismount"):
+                        self.fs.assigns.pop(key, None)
+                    else:
+                        self.fs.assigns[key] = _join(cwd, rest_[0])
+                continue
+            elif word in ("which", "copy", "multiview", "more", "wait", "echo", "avail", "version", "resident",
                           "whdload", "diskimagectrl", "diskchange", "opendrawer", "filenote", "protect", "makedir", "info", "list",
-                          "type", "relabel", "setdate"):
+                          "type", "relabel", "setdate", "cpu", "setpatch", "stack", "failat", "path", "date", "ask"):
                 if word == "makedir":
                     for x in args:
                         self.fs.mkdir(_join(cwd, x))
@@ -968,8 +1141,11 @@ class _Interp:
                 names = [x for x in args if x.casefold() not in ("quiet", "as", "to")]
                 if len(names) >= 2 and self.fs.exists(_join(cwd, names[0])) == 1:
                     self.fs.rename(_join(cwd, names[0]), _join(cwd, names[1]))
-            elif word in ("lhx", "lhx.exe", "lha", "lhex") and args and args[0].casefold() in ("x", "e", "-x", "-e"):
-                self._unlha(cwd, [x for x in args[1:] if not x.startswith(">")])
+            elif word in ("lhx", "lhx.exe", "lha", "lhex") and any(x.casefold() in ("x", "e", "-x", "-e") for x in args):
+                opts = [x for x in args if x.startswith("-")]          # ("lhex -qw=RomorgHD:Game/data e archive": -w= the drawer)
+                to = next((x.split("=", 1)[1] for x in opts if "w=" in x.casefold()), None)
+                rest = [x for x in args if not x.startswith(("-", ">")) and x.casefold() not in ("x", "e")]
+                self._unlha(cwd, rest[:1] + ([to] if to else rest[1:2]))
                 continue                                        # (tools there are, an environment: nothing to do here)
             elif word == "delete":
                 for x in args:
@@ -987,15 +1163,18 @@ class _Interp:
                 if k is None or k + 1 >= len(names):
                     raise InstallError("join: no AS / TO")
                 self.fs.write(_join(cwd, names[k + 1]), b"".join(self.fs.read(_join(cwd, x)) for x in names[:k]))
-            elif word == "patcher":
-                raise InstallError(f"this install reads the disks with {parts[0]} (the original disks' own format): not done here")
+            elif word == "patcher":                          # (Patcher -p<module> -s<drive>: its module run here - amigados)
+                self._patcher(cwd, args)
             elif word in ("xfddecrunch", "xfddecrunchall") and self.decruncher is not None:
-                self._xfd(cwd, args)
+                rc = self._xfd(cwd, args)
             elif word in ("xfddecrunch", "xfddecrunchall", "unpack"):
                 raise InstallError(f"this install needs {parts[0]} to unpack a file (an Amiga program)")
             else:
-                raise InstallError(f"the install script runs \"{line.strip()[:80]}\" (an Amiga program)")
-        return 0
+                prog = self._program(cwd, parts[0])
+                if prog is None:
+                    raise InstallError(f"the install script runs \"{line.strip()[:80]}\" (an Amiga program)")
+                rc = self._run_program(prog, parts, cwd)
+        return rc
 
     def _unlha(self, cwd: str, args: list[str]) -> None:
         """``lha x archive [dest]``: an LhA archive the install unpacks, with this app's reader."""
@@ -1015,7 +1194,7 @@ class _Interp:
     _XFD_SWITCHES = {"all", "force", "clone", "nd", "nodirs", "na", "noask", "ls", "linksimple", "lp", "linkpro", "ca", "copyall",
                      "sh", "striphunks", "ne", "noextern", "nx", "noxpkpwd", "quiet"}
 
-    def _xfd(self, cwd: str, args: list[str]) -> None:
+    def _xfd(self, cwd: str, args: list[str]) -> int:
         """xfdDecrunch SOURCE [DEST] [ALL] [COPYALL] ...: each file the XFD package knows decrunched - over itself without DEST,
         else into DEST (a drawer, or a file for a single source); the others left alone (copied with COPYALL)."""
         from . import xfd
@@ -1061,8 +1240,9 @@ class _Interp:
         elif self.fs.exists(src) == 1:
             files.append((src, src.replace(":", "/").rsplit("/", 1)[-1]))
             many = False
-        else:
-            raise InstallError(f"xfdDecrunch: {source} is not there")
+        else:                                               # (as xfdDecrunch does: an error, its return code - a script
+            self.log.append(f"xfdDecrunch: {source} is not there")     #  that does not look at it goes on: Indy's Atlantis)
+            return 20
         dst = _join(cwd, dest) if dest else ""
         into_dir = bool(dst) and (many or self.fs.exists(dst) == 2)
         try:
@@ -1082,6 +1262,7 @@ class _Interp:
                 continue
             self.fs.write(target, got[0])
             self.log.append(f"xfdDecrunch {rel}: {got[1]}, {len(data)} -> {len(got[0])}")
+        return 0
 
     def _xad(self, cwd: str, args: list[str], multi: bool) -> None:
         """xadUnFile[M] [FROM] archive [DEST] drawer [DIMG] [FILE pattern]: the files of an archive - an AmigaDOS disk image (DIMG),
@@ -1314,42 +1495,74 @@ class Package:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(arc.read(e))
             self.dir = next((Path(r) for r, _d, fs in sorted(os.walk(self.work)) for f in fs
-                             if f.casefold().startswith("install") and not f.casefold().endswith(".info")), None)
-            if self.dir is None:
-                raise InstallError("the install has no Install script")
-            self.scripts = _scripts_of(self.dir)
-            if not self.scripts:
-                raise InstallError("the install has no Install script")
-            self.names = version_names(self.scripts[0].read_text(encoding="latin-1"))
+                             if (f.casefold().startswith("install") and not f.casefold().endswith(".info"))
+                             or (f.casefold().endswith("install") and "." not in f)), None)    # ("RodlandInstall")
+            self.scripts = _scripts_of(self.dir) if self.dir is not None else []
+            if not self.scripts:                         # (no script: a package of a slave alone - see install_scriptless)
+                self.dir = next((Path(r) for r, _d, fs in sorted(os.walk(self.work)) for f in fs if f.casefold().endswith(".slave")
+                                 and "install" not in f.casefold()), None)
+                if self.dir is None:
+                    raise InstallError("the install has no Install script")
+            self.names = version_names(self.scripts[0].read_text(encoding="latin-1")) if self.scripts else {}
         except BaseException:
             self.close()
             raise
 
     def install(self, disks: list[Any], volumes: Optional[list[MemDisk]] = None, cd: Optional[bool] = None,
-                decruncher: Optional[Callable[[], Any]] = None) -> InstallResult:
+                decruncher: Optional[Callable[[], Any]] = None, hints: tuple[str, ...] = ()) -> InstallResult:
         """Each version the script names is tried; the first that installs wins (else the first reason it gave). The script's CD
         versions ("CD³² release") only for a CD's files (``cd``; by default: when ``volumes`` are given) - floppies made into the CD
         version would install a game that is not theirs."""
+        if not self.scripts:
+            return install_scriptless(self.dir, disks, hints)
+        try:
+            return self._attempt(disks, volumes, cd, decruncher, hints, False)
+        except InstallError as exc:
+            first = exc
+        # IPFs in the order of the disk numbers they carry, when that is not the order the install reads them in (Shadow of the
+        # Beast III: SPS numbers its intro disk 3, the install's disk 1): the order they were given, then the others (3 at most)
+        if len(disks) > 1 and _DISK_ORDER_RE.search(str(first)) and any(_is_ipf(d) for d in disks):
+            import itertools
+            orders = [list(disks)] + ([list(p) for p in itertools.permutations(disks)][1:] if len(disks) <= 3 else [])
+            for order in orders:
+                try:
+                    res = self._attempt(order, volumes, cd, decruncher, hints, True)
+                    res.log.append("the disks in another order than their numbers")
+                    return res
+                except InstallError:
+                    continue
+        raise first
+
+    def _attempt(self, disks: list[Any], volumes: Optional[list[MemDisk]], cd: Optional[bool],
+                 decruncher: Optional[Callable[[], Any]], hints: tuple[str, ...], keep_order: bool) -> InstallResult:
         first: Optional[InstallError] = None
         cd = bool(volumes) if cd is None else cd
-        for script in self.scripts:                          # (several only when there is no plain "Install": "Install_AGA" ...)
+        scripts = sorted(self.scripts, key=lambda p: 0 if hints and _hinted([p.name], hints) == 0 else 1)   # ("Install_AGA" for AGA)
+        for script in scripts:                               # (several only when there is no plain "Install": "Install_AGA" ...)
             names = self.names if script == self.scripts[0] else version_names(script.read_text(encoding="latin-1"))
-            for v in self.tries(len(disks), names):
+            for v in self.tries(len(disks), names, hints):
                 if v is not None and not cd and _CD_RE.search(names.get(v, "")):
                     continue
                 try:
-                    return install(self.dir, disks, v, volumes, decruncher=decruncher, script=script)
-                except InstallError as exc:
-                    first = first or exc
+                    return install(self.dir, disks, v, volumes, decruncher=decruncher, script=script, hints=hints,
+                                   keep_order=keep_order)
+                except InstallError as exc:                  # (the reason of the version that got furthest)
+                    if first is None or getattr(exc, "progress", 0) > getattr(first, "progress", 0):
+                        first = exc
         raise first  # type: ignore[misc]
 
-    def tries(self, n_disks: int, names: Optional[dict[int, str]] = None) -> list[Optional[int]]:
+    def tries(self, n_disks: int, names: Optional[dict[int, str]] = None, hints: tuple[str, ...] = ()) -> list[Optional[int]]:
         """The versions to try, in order: those whose text names this many disks ("AGA version (5 disks)": the version these disks
         are, where several would install), the script's own default, then the others."""
         names = self.names if names is None else names
         fits = [v for v, t in names.items() if re.search(rf"\b{n_disks}\s*(\+\s*\d+\s*)?disks?\b", t, re.IGNORECASE)
                 and not re.search(rf"\b{n_disks}\s*\+", t)]
-        return fits + [None] + [v for v in sorted(names) if v not in fits]
+        order = fits + [None] + [v for v in sorted(names) if v not in fits]
+        if hints:                                          # (AGA disks: the versions that say AGA first, those for the other
+            chip = [v for v in order if v is not None and _hinted([names[v]], hints) == 0]          #  chipset last)
+            other = [v for v in order if v is not None and v not in chip and _hinted([names[v]], _OTHER_CHIP[hints]) == 0]
+            order = chip + [v for v in order if v not in chip and v not in other] + other
+        return order
 
     def close(self) -> None:
         import shutil
@@ -1362,13 +1575,188 @@ class Package:
         self.close()
 
 
+_SIDE_SLAVE_RE = re.compile(r"intro|cd32|cdtv|\d+\s*mb|demo|editor|setup|config", re.IGNORECASE)
+
+
+def main_slave(files: dict[str, bytes], drawer: str) -> tuple[Optional[str], Optional[str]]:
+    """``(icon name, slave)`` a player starts a game drawer with - the icon named like the drawer (the one an install makes for the
+    game) and the slave its ``Slave=`` tooltype names; else another icon's; else the slave named like the drawer, else the plainest
+    (not an intro, a CD32 version, a bigger-memory one)."""
+    pre = drawer + "/"
+    slaves = {k[len(pre):]: k for k in files if k.startswith(pre) and "/" not in k[len(pre):] and k.casefold().endswith(".slave")}
+    by_low = {n.casefold(): n for n in slaves}
+    icons = []
+    for k, v in files.items():
+        if k.startswith(pre) and "/" not in k[len(pre):] and k.casefold().endswith(".info"):
+            try:
+                _tool, tts, _s, _e = icon_info(v)
+            except ValueError:
+                continue
+            slave = next((t.split("=", 1)[1].strip() for t in tts if t.replace(" ", "").casefold().startswith("slave=")), "")
+            if slave.casefold() in by_low:
+                icons.append((k[len(pre):-5], by_low[slave.casefold()]))
+    rank = lambda name: (bool(_SIDE_SLAVE_RE.search(name)), len(name), name.casefold())
+    own = next((i for i in icons if i[0].casefold() == drawer.casefold()), None)
+    if own:
+        return own
+    if icons:
+        return min(icons, key=lambda i: rank(i[1]))
+    named = by_low.get(drawer.casefold() + ".slave")
+    if named or slaves:
+        return None, named or min(slaves, key=rank)
+    return None, None
+
+
+def repair_slave_tooltypes(files: dict[str, bytes]) -> list[str]:
+    """An icon whose ``Slave=`` names a slave that is not in its drawer (Shadow of the Beast III's package: its icons say
+    Beast3.slave, its slave is ShadowOfTheBeast3.slave) - WHDLoad would stop at "object not found": the slave there instead, the
+    drawer's only one or the one named like the icon. ``files`` changed in place; what was changed."""
+    out = []
+    drawers: dict[str, dict[str, str]] = {}
+    for k in files:
+        d, _s, name = k.rpartition("/")
+        if name.casefold().endswith(".slave"):
+            drawers.setdefault(d, {})[name.casefold()] = name
+    for k in list(files):
+        d, _s, name = k.rpartition("/")
+        slaves = drawers.get(d)
+        if not slaves or not name.casefold().endswith(".info"):
+            continue
+        try:
+            tool, tts, _a, _b = icon_info(files[k])
+        except ValueError:
+            continue
+        entry = next((t for t in tts if t.replace(" ", "").casefold().startswith("slave=")), None)
+        said = entry.split("=", 1)[1].strip() if entry else None
+        if said is None and not (tool or "").casefold().rstrip("/").endswith("whdload"):
+            continue                                       # (not a WHDLoad icon: a ReadMe's)
+        if said is not None and said.casefold() in slaves:
+            continue                                       # (no Slave= on a WHDLoad icon: WHDLoad looks for "WHDLoad.Slave" - Doman)
+        stem = name[:-5].casefold()
+        new = next(iter(slaves.values())) if len(slaves) == 1 else slaves.get(stem + ".slave")
+        if new is None:
+            continue
+        try:
+            files[k] = edit_icon(files[k], [(entry.split("=", 1)[0].strip() if entry else "Slave", new)], None, None, False)
+        except ValueError:
+            continue
+        out.append(f"{k}: Slave={said} is not there - {new}" if said else f"{k}: no Slave= - {new}")
+    return out
+
+
+def puae_launcher(files: dict[str, bytes]) -> Optional[bytes]:
+    """The ``load`` script for the archive's top (PUAE's WHDLoad helper runs ``DH0:load`` when there is one) when its own way of
+    finding the game would go wrong: it takes every slave of the drawer (``List #?.slav#?``) - with several (Worms: The Director's
+    Cut's 8 MB and 12 MB ones, an intro, a CD32 version) whichever comes first - and a slave's name with a space breaks it. The
+    script starts the game as a double-click on its icon would (``WBRun``: WHDLoad with the icon's tooltypes), else its slave."""
+    drawers = {k.split("/", 1)[0] for k in files if "/" in k}
+    if len(drawers) != 1 or "load" in files:
+        return None
+    drawer = drawers.pop()
+    pre = drawer + "/"
+    slaves = [k for k in files if k.startswith(pre) and "/" not in k[len(pre):] and k.casefold().endswith(".slave")]
+    if len(slaves) < 2 and not any(" " in k[len(pre):] for k in slaves):
+        return None
+    icon, slave = main_slave(files, drawer)
+    if slave is None:
+        return None
+    run = f'C:WBRun "{icon}" SYNC' if icon else f'C:WHDLoad "{slave}" Preload'
+    return f'CD "{drawer}"\n{run}\n'.encode("latin-1")
+
+
+def slave_dir(slave: bytes) -> str:
+    """The data drawer a WHDLoad slave reads its files from (``ws_CurrentDir``: "data"), "" for the slave's own."""
+    at = slave.find(b"WHDLOADS") - 4
+    if at < 0 or len(slave) < at + 28:
+        return ""
+    off = struct.unpack_from(">H", slave, at + 26)[0]
+    if not off:
+        return ""
+    end = slave.find(b"\0", at + off)
+    return slave[at + off:end if end >= 0 else at + off].decode("latin-1").strip("/")
+
+
+def install_scriptless(folder: Path, disks: list[Any], hints: tuple[str, ...] = ()) -> InstallResult:
+    """An install package with a slave and no script to install it (Rubicon's, whose script is not in the package; Burnout's, "copy
+    the game's files over the drawer"): the game's drawer made as a script would make it - the slave, its icon, the package's
+    documents, and in the slave's data drawer (``ws_CurrentDir``) every file of the disks and each disk's image ("Disk.1": what DIC
+    makes of a disk, whose sectors are the ADF), for a slave that reads files and one that reads images."""
+    folder = Path(folder)
+    slaves = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.casefold() == ".slave"
+                     and "install" not in p.stem.casefold()), key=lambda p: (len(p.name), p.name))
+    if not slaves:
+        raise InstallError("the install has no Install script")
+    slave = next((p for p in slaves if hints and _hinted([p.stem], hints) == 0), None) or \
+        next((p for p in slaves if any(p.with_suffix(e).exists() for e in (".inf", ".info"))), slaves[0])
+    game = slave.stem
+    data = slave.read_bytes()
+    files: dict[str, bytes] = {f"{game}/{slave.name}": data}
+    for p in folder.iterdir():                               # (its icon, as the script would name it; the documents)
+        if not p.is_file() or p == slave or p.suffix.casefold() == ".slave":
+            continue
+        if p.stem.casefold() == game.casefold() and p.suffix.casefold() in (".inf", ".info"):
+            files[f"{game}/{game}.info"] = p.read_bytes()
+        elif re.fullmatch(r"(?i)read ?me|manual|.*\.(txt|doc|guide)(\.info)?|read ?me\.info", p.name):
+            files[f"{game}/{p.name}"] = p.read_bytes()
+    sub = slave_dir(data)
+    into = f"{game}/{sub}" if sub else game
+    log = [f"no install script: {slave.name}, the disks' files and images in {into or game}"]
+    for n, d in enumerate((floppy(x, k) for k, x in enumerate(disks)), 1):
+        for name, _size in d.files():
+            try:
+                files[f"{into}/{name}"] = d.read(name)
+            except AdfError as exc:
+                log.append(f"disk {n}: {name}: {exc}")
+        if len(d.data) in (901120, 1802240):
+            files[f"{into}/Disk.{n}"] = d.data
+    dirs = {"/".join(k.split("/")[:i]) for k in files for i in range(1, k.count("/") + 1)}
+    log += repair_slave_tooltypes(files)
+    loader = puae_launcher(files)
+    if loader:
+        files["load"] = loader
+    return InstallResult(files=files, dirs=dirs, log=log)
+
+
 def _scripts_of(folder: Path) -> list[Path]:
     """The install's scripts to run: "Install" itself when there is one (ConanTheCimmerian's package also holds an old "Install." -
     another script); else every "Install..." file in name order ("Install_AGA", "Install_OCS"), not documents ("Installation.readme")."""
     cands = sorted((p for p in Path(folder).iterdir() if p.is_file() and p.name.casefold().startswith("install")
                     and not re.search(r"\.(info|readme|txt|doc|guide)$", p.name, re.IGNORECASE)), key=lambda p: p.name.casefold())
-    exact = [p for p in cands if p.name.casefold() in ("install", "install-" + Path(folder).name.casefold())]
-    return exact[:1] or cands
+    if not cands:                                         # (an older one: "RodlandInstall", an Installer script by that name)
+        cands = sorted((p for p in Path(folder).iterdir() if p.is_file() and p.name.casefold().endswith("install")
+                        and p.read_bytes()[:1] in (b";", b"(")), key=lambda p: p.name.casefold())
+    own = Path(folder).name.casefold()
+    exact = [p for p in cands if p.name.casefold() == "install" or (p.name.casefold().startswith("install-") and
+             own in {p.name.casefold()[8:] + x for x in ("", "install", "hd")})]     # ("Install-BombX" in "BombXInstall")
+    return exact or cands                                 # (both: Bomb'X's "Install" is another game's, left over - "Install-BombX" is its own)
+
+
+_OTHER_CHIP = {("AGA",): ("ECS", "OCS"), ("ECS", "OCS"): ("AGA",)}
+
+
+def chipset_hints(names: Any) -> tuple[str, ...]:
+    """What chipset a set's disks are for, from their names: ("AGA",) for "(AGA)", ("ECS", "OCS") for "(ECS)" / "(OCS)"; () for
+    both or none ("(OCS-AGA)": the install's default)."""
+    text = " ".join(str(n) for n in names)
+    if re.search(r"\((?:OCS|ECS)-AGA\)", text, re.IGNORECASE):
+        return ()
+    if re.search(r"\(AGA\)", text, re.IGNORECASE):
+        return ("AGA",)
+    if re.search(r"\((?:ECS|OCS)\)", text, re.IGNORECASE):
+        return ("ECS", "OCS")
+    return ()
+
+
+# a question whether to install the player's own save-game / high-score disk: "No" (a TOSEC set has the game's disks, not one of those)
+_SAVE_DISK_RE = re.compile(r"\bsave[ds]?[- ]?games?\b.*\bdisks?\b|\bsave[- ]?disks?\b|\b(?:high[- ]?)?scores?[- ]?disks?\b", re.IGNORECASE)
+
+
+def _hinted(texts: list[str], hints: tuple[str, ...]) -> Optional[int]:
+    """The first of ``texts`` that names one of the chipsets ``hints`` (as a word: "AGA version", "ECS"), or None."""
+    if not hints:
+        return None
+    rx = re.compile(r"(?<![A-Za-z])(?:" + "|".join(hints) + r")(?![A-Za-z])", re.IGNORECASE)
+    return next((i for i, t in enumerate(texts) if rx.search(t)), None)
 
 
 def _script_of(folder: Path) -> Optional[Path]:
@@ -1382,8 +1770,35 @@ def install_archive(lha: bytes, disks: list[Any], volumes: Optional[list[MemDisk
         return pkg.install(disks, volumes)
 
 
+_DISK_ORDER_RE = re.compile(r"the imager stopped|never finishes|asks for the disk|waits for a disk|DIC: the install images"
+                            r"|which is not there")
+
+
+def _is_ipf(d: Any) -> bool:
+    try:
+        head = Path(d).read_bytes()[:12] if isinstance(d, (str, os.PathLike)) else bytes(d[:12])
+    except OSError:
+        return False
+    return ipf.is_ipf(head)
+
+
+_MAX_TRIES = 8                                             # (runs of one script with other answers to its questions ...)
+_TRIES_SECONDS = 45.0                                      # (... while it takes no longer than this: RawDIC can be slow)
+_DISK_FAULT_RE = re.compile(r"the imager stopped|never finishes|not an ADF|cannot be read|bad OFS|no root block|bad header block"
+                            r"|not an AmigaDOS disk|in the game's own format", re.IGNORECASE)
+
+
+def _int(v: Any) -> int:
+    """A script's ``#version`` as the number of the version it installed (0: a script that keeps a word there - Ambermoon: "de")."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def install(package: Path, disks: list[Any], version: Optional[int] = None, volumes: Optional[list[MemDisk]] = None,
-            decruncher: Optional[Callable[[], Any]] = None, script: Optional[Path] = None) -> InstallResult:
+            decruncher: Optional[Callable[[], Any]] = None, script: Optional[Path] = None, hints: tuple[str, ...] = (),
+            keep_order: bool = False) -> InstallResult:
     """Run the install script of ``package`` (the unpacked install's drawer, holding ``Install``) with the ADFs ``disks``.
     ``decruncher``: gives a :class:`romorg.xfd.Decruncher` for a script that runs xfdDecrunch (None: such a script stops)."""
     package = Path(package)
@@ -1396,23 +1811,75 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
         app = slave.stem if slave is not None else package.name
     adfs = [floppy(d, n) for n, d in enumerate(disks)]
     nums = [getattr(getattr(d, "tracks", None), "disk_number", 0) for d in adfs]
-    if len(adfs) > 1 and all(nums) and len(set(nums)) == len(nums):    # (IPFs know which disk they are: "DataDisk.ipf" is disk 2
+    if not keep_order and len(adfs) > 1 and all(nums) and len(set(nums)) == len(nums):   # (IPFs know which disk they are: "DataDisk.ipf" is disk 2
         adfs = [d for _n, d in sorted(zip(nums, adfs), key=lambda x: x[0])]   #  of its release, though its name sorts first)
-    fs = _Fs(package, adfs + list(volumes or ()))
-    it = _Interp(fs, app, version)
-    it.decruncher = decruncher
     forms = _parse(script.read_text(encoding="latin-1"))
-    try:
-        for f in forms:
-            it.ev(f)
-    except _Exit:
-        pass
-    except AdfError as exc:                                 # (a damaged disk, found while the script reads it)
-        raise InstallError(f"a disk cannot be read: {exc}") from None
-    if not any(k.casefold().endswith(".slave") for k in fs.work):
-        raise InstallError("the install script made no game (no .slave was installed)")
-    return InstallResult(files=dict(fs.work), dirs=set(fs.work_dirs), log=it.log, version=int(it.vars.get("#version", 0) or 0),
-                         choices=it.choices, guessed=len(fs.guessed))
+
+    def run(answers: dict[int, int], level: int) -> tuple[_Interp, Optional[InstallError]]:
+        fs = _Fs(package, adfs + list(volumes or ()))
+        it = _Interp(fs, app, version)
+        it.decruncher = decruncher
+        it.hints = tuple(hints)
+        it.answers = answers
+        it.vars["@user-level"] = level
+        try:
+            for f in forms:
+                it.ev(f)
+        except _Exit:
+            pass
+        except InstallError as exc:
+            if it.failed_runs and it.failed_runs[-1].split(" ", 1)[0] not in str(exc):
+                exc = InstallError(f"{exc} ({it.failed_runs[-1]})")
+            return it, exc
+        except AdfError as exc:                             # (a damaged disk, found while the script reads it)
+            return it, InstallError(f"a disk cannot be read: {exc}")
+        if not any(k.casefold().endswith(".slave") for k in fs.work):
+            return it, InstallError("the install script made no game (no .slave was installed)")
+        return it, None
+
+    # The script's own answers first. When it fails, again with another answer to one of its questions - the one asked last
+    # first (Battle Isle: "Do you have the First Data Disk?"), then those before ("JST" or "WHDLoad"?: Zynaps' default is the JST
+    # loader), never which icon - a few tries, never a CD or demo version for floppies; a script that wants the Expert user level,
+    # at that level.
+    first: Optional[InstallError] = None
+    far = 0
+    queue: list[tuple[dict[int, int], int]] = [({}, 1)]
+    seen: set[tuple] = set()
+    started = time.monotonic()
+    while queue and len(seen) < _MAX_TRIES and time.monotonic() - started < _TRIES_SECONDS:
+        answers, level = queue.pop(0)
+        sig = (tuple(sorted(answers.items())), level)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        it, err = run(answers, level)
+        if err is None:
+            fs = it.fs
+            files = dict(fs.work)
+            it.log += repair_slave_tooltypes(files)
+            loader = puae_launcher(files)
+            if loader:
+                files["load"] = loader
+                it.log.append("load: " + loader.decode("latin-1").replace("\n", " / ").strip(" /"))
+            return InstallResult(files=files, dirs=set(fs.work_dirs), log=it.log, version=_int(it.vars.get("#version", 0)),
+                                 choices=it.choices, guessed=len(fs.guessed))
+        score = 0 if "no .slave was installed" in str(err) else it.steps        # (the reason of the try that got furthest -
+        if first is None or score > far:                                        #  not "no slave" when another said why)
+            first, far = err, score
+        if level == 1 and re.search(r"\bexpert\b", str(err), re.IGNORECASE):
+            queue.insert(0, (answers, 2))
+        if _DISK_FAULT_RE.search(str(err)):                  # (the disks are not the ones it reads: no answer changes that)
+            continue
+        for k in reversed(range(len(it.asked))):           # (the question asked last first: the likeliest reason - Battle Isle's
+            n, given, texts, prompt = it.asked[k]            #  "Do you have the First Data Disk?" after an icon question of 20)
+            if k in answers or re.search(r"\bicons?\b", prompt, re.IGNORECASE):
+                continue                                     # (which icon: never why an install fails)
+            for alt in range(n):
+                t = texts[alt] if alt < len(texts) else ""
+                if alt != given and not (_CD_RE.search(t) and not volumes) and not re.search(r"\b(demo|preview)\b", t, re.IGNORECASE):
+                    queue.append(({**answers, **{q: x[1] for q, x in enumerate(it.asked[:k])}, k: alt}, level))
+    first.progress = far  # type: ignore[union-attr]
+    raise first  # type: ignore[misc]
 
 
 # --------------------------------------------------------------------------- icons

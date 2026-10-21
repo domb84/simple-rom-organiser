@@ -54,6 +54,7 @@ class AdfDisk:
         if self._long(r, 0) != _T_HEADER or _s32(self._long(r, BLOCK - 4)) != _ST_ROOT:
             raise AdfError("no root block")
         self.label = self._name(r)
+        self.damaged: set[int] = set()                    # (the blocks a directory's chain led to that are no file header)
         self._files: Optional[list[tuple[str, int]]] = None
 
     # ---------------------------------------------------------------- blocks
@@ -81,9 +82,13 @@ class AdfDisk:
             n = self._long(d, 24 + 4 * i)
             while n and n not in seen:
                 seen.add(n)
+                if not 0 <= n < self.blocks:
+                    self.damaged.add(n)
+                    break
                 h = self._block(n)
-                if self._long(h, 0) != _T_HEADER:
-                    raise AdfError(f"bad header block {n}")
+                if self._long(h, 0) != _T_HEADER:          # (a chain into a block that is no file's: a damaged directory, or a
+                    self.damaged.add(n)                    #  cracker's - AmigaDOS shows the other entries, so do we)
+                    break
                 yield self._name(h), n, _s32(self._long(h, BLOCK - 4))
                 n = self._long(h, BLOCK - 16)          # (the next of the same hash)
 

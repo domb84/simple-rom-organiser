@@ -536,17 +536,18 @@ class PlatformRanking(unittest.TestCase):
     def test_all_chipset_spellings_are_aga_class(self) -> None:
         for chip in ("AGA", "OCS-AGA", "ECS-AGA", "OCS-ECS-AGA"):
             self.assertEqual(tags.platform_class(tos(f"G (1993)(P)({chip}).adf")), "AGA", chip)
-        for chip in ("OCS", "ECS", "OCS-ECS"):
-            self.assertEqual(tags.platform_class(tos(f"G (1993)(P)({chip}).adf")), "OCS", chip)
+        for chip in ("ECS", "OCS-ECS"):
+            self.assertEqual(tags.platform_class(tos(f"G (1993)(P)({chip}).adf")), "ECS", chip)
+        self.assertEqual(tags.platform_class(tos("G (1993)(P)(OCS).adf")), "OCS")
         self.assertEqual(tags.platform_class(tos("G (1993)(P).adf")), "OCS")
         # a labelled disk is no chipset tag
         self.assertEqual(tags.chipset(tos("G (1993)(P)(Disk 2 of 3)(AGA Data).adf")), ())
 
-    def test_cd32_is_ready_to_slot_in_above_aga(self) -> None:
-        self.assertEqual(tags.PLATFORM_ORDER, ("CD32", "AGA", "OCS"))
-        self.assertLess(tags.platform_rank(tos("G (1994)(P)(CD32).adf")),
-                        tags.platform_rank(tos("G (1993)(P)(AGA).adf")))
-        self.assertEqual(self.kept(["D (1994)(P)(CD32)", "D (1993)(P)(AGA)", "D (1992)(P)"]), ["D (1994)(P)(CD32)"])
+    def test_cd32_and_cdtv_are_discs_not_floppy_tags(self) -> None:
+        self.assertEqual(tags.PLATFORM_ORDER, ("CD32", "AGA", "CDTV", "ECS", "OCS"))
+        self.assertEqual(tags.platform_class(tos("G (1994)(P)(CD32).adf")), "OCS")      # (a floppy: a conversion, not a CD32 disc)
+        self.assertEqual(self.kept(["D (1994)(P)(CD32)", "D (1993)(P)(AGA)", "D (1992)(P)"]), ["D (1993)(P)(AGA)"])
+        self.assertEqual(self.kept(["E (1993)(P)(ECS)", "E (1994)(P)"]), ["E (1993)(P)(ECS)"])     # (ECS above plain OCS)
         # identity ignores it, too
         self.assertEqual(tags.identity_key(tos("D (1994)(P)(CD32).adf")), tags.identity_key(tos("D (1992)(P).adf")))
 
@@ -946,9 +947,12 @@ class EditionsBudgetAndOnline(unittest.TestCase):
         self.assertTrue({"budget", "online"} <= prof.exclude and prof.prefer_editions)
         cfg = {"library_defaults": {"exclude": ["demo"]}, "library_overrides": {"Sega Dreamcast": {"exclude": ["bad_dump"]}}}
         self.assertTrue(library.migrate_config(cfg))
-        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo", "budget", "online"])
-        self.assertEqual(cfg["library_overrides"]["Sega Dreamcast"]["exclude"], ["bad_dump", "budget", "online"])
+        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo", "budget", "online", "cd_conversion"])
+        self.assertEqual(cfg["library_overrides"]["Sega Dreamcast"]["exclude"], ["bad_dump", "budget", "online", "cd_conversion"])
         self.assertFalse(library.migrate_config(cfg))                                  # (once: turning one off afterwards sticks)
+        cfg = {"rules_version": 2, "library_defaults": {"exclude": ["demo"]}}           # (budget / online turned off since: stay off)
+        self.assertTrue(library.migrate_config(cfg))
+        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo", "cd_conversion"])
 
 
 class PreferTheReleaseWithSaves(unittest.TestCase):
@@ -1324,3 +1328,73 @@ class IdempotenceProperty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CD32_ISO, CDTV_ISO = "Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga CDTV - Games - [ISO]"
+
+
+def disc_items(game: str, dat: str, files: list[str], have: list[str] | None = None, start: int = 100) -> list[Item]:
+    """The files of a CD DAT game (registered as the DAT's), those in ``have`` (all by default) as items."""
+    roms = [Rom(name=f"{game}{f}", size=1, crc="", md5="", sha1="", game=game, dat=dat) for f in files]
+    known = dict(library._DISC_FILES.get(dat, {}))
+    library.register_disc_files(dat, roms)
+    library._DISC_FILES[dat] = {**known, **library._DISC_FILES[dat]}
+    keep = set(have if have is not None else files)
+    return [Item(key=start + i, dat=dat, rom=r, style=tags.STYLE_TOSEC, path=Path(r.name), member=None)
+            for i, (r, f) in enumerate(zip(roms, files)) if f in keep]
+
+
+class DiscsAndFloppies(unittest.TestCase):
+    """A CD32 / CDTV disc (TOSEC's CD DATs) is one game with the floppies of its title: CD32 > AGA > CDTV > ECS > OCS; its files are
+    decided together; a floppy conversion of a CD32 game ([CD32 rip], "... CD32") is excluded."""
+
+    TRACKS = [".cue", "[Track 01 of 02].iso", "[Track 02 of 02].wav"]
+
+    def decide(self, items: list[Item]) -> dict[str, library.Decision]:
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA)
+        return {it.rom.name: sel.decisions[it.key] for it in items}
+
+    def test_a_cd32_disc_beats_the_aga_floppies(self) -> None:
+        items = amiga_items(["Zool (1993)(Gremlin)(AGA)"]) + disc_items("Zool (1993)(Gremlin)", CD32_ISO, self.TRACKS)
+        by = self.decide(items)
+        self.assertEqual({n: d.action for n, d in by.items() if not n.endswith(".adf")}, {f"Zool (1993)(Gremlin){f}": KEEP for f in self.TRACKS})
+        self.assertEqual(by["Zool (1993)(Gremlin)(AGA).adf"].action, SUPERSEDED)
+        self.assertIn("CD32", by["Zool (1993)(Gremlin)(AGA).adf"].reason)
+        self.assertEqual(library.game_key(items[0], True), library.game_key(items[1], True))     # (one game, counted once)
+
+    def test_an_aga_floppy_beats_a_cdtv_disc_which_beats_an_ocs_one(self) -> None:
+        by = self.decide(amiga_items(["Gem (1993)(P)(AGA)"]) + disc_items("Gem (1993)(P)", CDTV_ISO, self.TRACKS))
+        self.assertEqual(by["Gem (1993)(P)(AGA).adf"].action, KEEP)
+        self.assertEqual(by["Gem (1993)(P).cue"].action, SUPERSEDED)
+        by = self.decide(amiga_items(["Ruby (1991)(P)"]) + disc_items("Ruby (1991)(P)", CDTV_ISO, self.TRACKS, start=200))
+        self.assertEqual((by["Ruby (1991)(P).adf"].action, by["Ruby (1991)(P).cue"].action), (SUPERSEDED, KEEP))
+
+    def test_an_incomplete_disc_is_not_kept_and_the_floppy_stays(self) -> None:
+        items = amiga_items(["Zap (1994)(P)(AGA)"]) + disc_items("Zap (1994)(P)", CD32_ISO, self.TRACKS, have=self.TRACKS[:2])
+        by = self.decide(items)
+        self.assertEqual(by["Zap (1994)(P).cue"].action, INCOMPLETE)
+        self.assertIn("1 of the 3 files", by["Zap (1994)(P).cue"].reason)
+        self.assertEqual(by["Zap (1994)(P)(AGA).adf"].action, KEEP)
+
+    def test_a_game_of_two_discs_is_one_release(self) -> None:
+        items = (disc_items("Duo (1992)(P)(Disc 1 of 2)", CDTV_ISO, [".cue", ".iso"])
+                 + disc_items("Duo (1992)(P)(Disc 2 of 2)", CDTV_ISO, [".cue", ".iso"], start=300))
+        self.assertEqual({d.action for d in self.decide(items).values()}, {KEEP})
+        self.assertEqual({d.action for d in self.decide(items[:2]).values()}, {INCOMPLETE})       # (disc 2 is not here)
+
+    def test_a_floppy_conversion_of_a_cd32_game_is_excluded(self) -> None:
+        by = self.decide(amiga_items(["Fears CD32 (1995)(Manyk)(AGA)(Disk 1 of 3)[cr WT][HD, CD32 rip]",
+                                      "Lunar-C CD32 (1993)(Mindscape)[cr DFT][HD]", "Zool 2 (1993)(Gremlin)(AGA)[cr HLM][inc. CD32 intro]"]))
+        self.assertEqual([by[n].action for n in sorted(by)], [EXCLUDED, EXCLUDED, KEEP])
+        self.assertEqual({by[n].codes for n in by if by[n].action == EXCLUDED}, {("cd_conversion",)})
+
+
+class OriginalDisksCountWithTheFloppies(unittest.TestCase):
+    def test_an_sps_release_is_one_game_the_floppy_game(self) -> None:
+        sps = "Commodore Amiga - Games - SPS"
+        game = "Zool (1993)(Gremlin)[0816]"
+        ipfs = [Item(key=i, dat=sps, rom=Rom(name=f"{game} - Zool_Disk{i}.ipf", size=1, crc="", md5="", sha1="", game=game, dat=sps),
+                     style=tags.STYLE_TOSEC, path=Path(f"Zool_Disk{i}.ipf"), member=None) for i in (1, 2)]
+        floppy = amiga_items(["Zool (1993)(Gremlin)"])[0]
+        keys = {library.game_key(it, True) for it in [*ipfs, floppy]}
+        self.assertEqual(len(keys), 1)                                         # (one game: counted once, whichever you own)
