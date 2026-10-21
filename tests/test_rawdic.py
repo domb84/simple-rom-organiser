@@ -208,6 +208,22 @@ def make_drawer_imager() -> bytes:
     return a.hunks()
 
 
+def make_return_address_imager() -> bytes:
+    """An imager whose disk code finds the disk image as Lollypop's does: in RawDIC's own code, the long $3A bytes after the call's
+    return address - and saves its first $20 bytes."""
+    a = Asm()
+    a.hex("70ff 4e75"); a.raw(b"RAWDIC"); a.hex("05 00"); a.ptr("disk"); a.ptr("text")
+    a.label("disk")
+    a.hex("00000000 0001 0000"); a.ptr("tracks"); a.hex("00000000 ffffffff 00000000 00000000 00000000"); a.ptr("code")
+    a.label("tracks"); a.hex("0000 0001 1600 4489 00000001 ffff 0000")
+    a.label("code")
+    a.hex("2657 d7fc 0000003a 2253 41fa"); a.pcrel("name")          # movea.l (sp),a3 / adda.l #$3a,a3 / movea.l (a3),a1 / lea name(pc),a0
+    a.hex("203c 00000020 4ead 000c 7000 4e75")                      # move.l #$20,d0 / SaveFile / moveq #0,d0 / rts
+    a.label("name"); a.raw(b"head\0")
+    a.label("text"); a.raw(b"text\0")
+    return a.hunks()
+
+
 class GameDisk:
     """Two standard tracks, then two in the game's own format (a sync, then the data as odd/even long pairs)."""
 
@@ -262,6 +278,10 @@ class ImagerTests(unittest.TestCase):
         files = im.run({1: self.disk})
         self.assertEqual(files, {"sub/a": b"text", "b": b"text"})
         self.assertEqual(im.made_dirs, ["sub"])
+
+    def test_the_image_found_from_the_return_address(self) -> None:
+        files = rawdic.Imager(make_return_address_imager()).run({1: self.disk})
+        self.assertEqual(files["head"], self.disk.std[:0x20])
 
     def test_mfm_round_trip(self) -> None:
         data = bytes(random.Random(1).getrandbits(8) for _ in range(0x1600))

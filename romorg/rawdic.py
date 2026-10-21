@@ -15,7 +15,7 @@ import re
 import struct
 from typing import Callable, Optional, Protocol
 
-from .m68k import Cpu, CpuError
+from .m68k import _RETURN, Cpu, CpuError
 
 __all__ = ["AdfDisk", "Imager", "ImagerError", "dos_sectors", "dos_track_mfm", "is_imager", "load_hunks", "mfm_encode",
            "standard_image"]
@@ -912,6 +912,8 @@ class Imager:
         cpu.a[0] = self.disk
         if self.version >= 5:
             cpu.a[1] = _IMAGE if self.image_len else 0
+            if self.image_len:                               # (Lollypop's imager takes the image from RawDIC's own code: the long
+                cpu.w32((_RETURN + 0x3A) & cpu.amask, _IMAGE)   #  $3A bytes after the call's return address - there, here too)
         else:
             cpu.a[1] = self.slv
         cpu.a[5] = _LIB

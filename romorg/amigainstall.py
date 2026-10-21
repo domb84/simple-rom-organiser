@@ -1149,14 +1149,23 @@ class _Interp:
                 continue                                        # (tools there are, an environment: nothing to do here)
             elif word == "delete":
                 for x in args:
-                    if x.casefold() not in ("all", "quiet", "force"):
+                    if x.casefold() in ("all", "quiet", "force") or x.startswith(">"):
+                        continue
+                    head, _, pat = x.replace("\\", "/").rpartition("/")
+                    if any(c in pat for c in "#?*|~"):          # (a pattern: "Delete disk.#? Quiet" - the names it matches)
+                        d = _join(cwd, head) if head else cwd
+                        rx = pattern_regex(pat.replace("*", "#?"))
+                        for name, _is_dir in self.fs.listing(d):
+                            if rx.fullmatch(name):
+                                self.fs.delete(_join(d, name), everything=True)
+                    else:
                         self.fs.delete(_join(cwd, x), everything=True)
             elif word == "dic":
                 self._dic(cwd, args)
             elif word == "rawdic":
                 self._rawdic(cwd, args)
             elif word in ("xadunfile", "xadunfilem"):
-                self._xad(cwd, args, multi=word == "xadunfilem")
+                rc = self._xad(cwd, args, multi=word == "xadunfilem")
             elif word == "join":                            # (Join a b ... AS|TO c: the files one after another)
                 names = [x for x in args if not x.startswith(">")]
                 k = next((i for i, x in enumerate(names) if x.casefold() in ("as", "to")), None)
@@ -1264,9 +1273,11 @@ class _Interp:
             self.log.append(f"xfdDecrunch {rel}: {got[1]}, {len(data)} -> {len(got[0])}")
         return 0
 
-    def _xad(self, cwd: str, args: list[str], multi: bool) -> None:
+    def _xad(self, cwd: str, args: list[str], multi: bool) -> int:
         """xadUnFile[M] [FROM] archive [DEST] drawer [DIMG] [FILE pattern]: the files of an archive - an AmigaDOS disk image (DIMG),
-        an LhA archive - into the drawer; xadUnFileM: an archive split in parts (a pattern: the parts in name order)."""
+        an LhA archive - into the drawer; xadUnFileM: an archive split in parts (a pattern: the parts in name order). A file of a disk
+        image that cannot be read is left out, as xadUnFile does (it goes on with the next one), and the return code is 10 (ERROR):
+        Project-X's trackloader is written over the data blocks of a file of its disk."""
         from .lha import LhaError, LhaFile
         plain, opt, flags = [], {}, set()
         it = iter(a for a in args if not a.startswith(">"))
@@ -1295,12 +1306,18 @@ class _Interp:
         want = pattern_regex(opt["file"]) if opt.get("file") else None
         out = _join(cwd, dest) if dest != cwd else cwd
         files: list[tuple[str, bytes]] = []
+        bad: list[str] = []
         if "dimg" in flags or (len(data) in (901120, 1802240) and data[:3] == b"DOS"):
             try:
                 disk = AdfDisk(data)
-                files = [(path, disk.read(path)) for path, _size in disk.files()]
+                listing = disk.files()
             except AdfError as exc:
                 raise InstallError(f"xadUnFile: {src}: {exc}") from None
+            for path, _size in listing:
+                try:
+                    files.append((path, disk.read(path)))
+                except AdfError as exc:
+                    bad.append(f"{path} ({exc})")
         else:
             try:
                 arc = LhaFile(data)
@@ -1313,7 +1330,8 @@ class _Interp:
                 continue
             self.fs.write(_join(out, path), body)
             n += 1
-        self.log.append(f"xadUnFile {src}: {n} files")
+        self.log.append(f"xadUnFile {src}: {n} files" + (f"; not readable, left out: {', '.join(bad)}" if bad else ""))
+        return 10 if bad else 0
 
     def _rawdic(self, cwd: str, args: list[str]) -> None:
         """RawDIC: the install's imager (``SLAVE=x.islave``) run on the disks' tracks (disk 1, 2 ... in the order the set has them);
@@ -1644,6 +1662,48 @@ def repair_slave_tooltypes(files: dict[str, bytes]) -> list[str]:
     return out
 
 
+def slave_current_dir(data: bytes) -> Optional[str]:
+    """A WHDLoad slave's ``ws_CurrentDir`` - the drawer its data is read from ("" none: the slave's own), None: no slave."""
+    o = data.find(b"WHDLOADS")
+    if o < 4 or o - 4 + 0x1C > len(data):
+        return None
+    base = o - 4
+    off = int.from_bytes(data[base + 0x1A:base + 0x1C], "big")
+    if not off:
+        return ""
+    end = data.find(b"\0", base + off)
+    return data[base + off:end].decode("latin-1") if end >= 0 else ""
+
+
+def repair_data_tooltype(files: dict[str, bytes]) -> list[str]:
+    """A WHDLoad icon with no ``Data=``, whose slave names no drawer of its own, in a drawer whose disk images are only in its
+    "data" drawer: ``Data=data``. Chaos Strikes Back's script images the disks into "data" and leaves the icon without it -
+    WHDLoad stops at "object not found on reading Disk.1". ``files`` changed in place; what was changed."""
+    out = []
+    low = {k.casefold(): k for k in files}
+    for k in list(files):
+        d, _s, name = k.rpartition("/")
+        if not name.casefold().endswith(".info"):
+            continue
+        try:
+            tool, tts, _a, _b = icon_info(files[k])
+        except ValueError:
+            continue
+        if not (tool or "").casefold().rstrip("/").endswith("whdload") or any(t.replace(" ", "").casefold().startswith("data=") for t in tts):
+            continue
+        said = next((t.split("=", 1)[1].strip() for t in tts if t.replace(" ", "").casefold().startswith("slave=")), "")
+        slave = low.get(f"{d}/{said}".casefold() if d else said.casefold()) if said else None
+        pre = f"{d}/".casefold() if d else ""
+        if slave is None or slave_current_dir(files[slave]) != "" or f"{pre}disk.1" in low or f"{pre}data/disk.1" not in low:
+            continue
+        try:
+            files[k] = edit_icon(files[k], [("Data", "data")], None, None, False)
+        except ValueError:
+            continue
+        out.append(f"{k}: Data=data (its disk images are there; the slave names no drawer)")
+    return out
+
+
 def puae_launcher(files: dict[str, bytes]) -> Optional[bytes]:
     """The ``load`` script for the archive's top (PUAE's WHDLoad helper runs ``DH0:load`` when there is one) when its own way of
     finding the game would go wrong: it takes every slave of the drawer (``List #?.slav#?``) - with several (Worms: The Director's
@@ -1711,6 +1771,7 @@ def install_scriptless(folder: Path, disks: list[Any], hints: tuple[str, ...] = 
             files[f"{into}/Disk.{n}"] = d.data
     dirs = {"/".join(k.split("/")[:i]) for k in files for i in range(1, k.count("/") + 1)}
     log += repair_slave_tooltypes(files)
+    log += repair_data_tooltype(files)
     loader = puae_launcher(files)
     if loader:
         files["load"] = loader
@@ -1857,6 +1918,7 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
             fs = it.fs
             files = dict(fs.work)
             it.log += repair_slave_tooltypes(files)
+            it.log += repair_data_tooltype(files)
             loader = puae_launcher(files)
             if loader:
                 files["load"] = loader

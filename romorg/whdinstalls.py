@@ -177,10 +177,29 @@ _EDITION_RE = re.compile(r"(?:\s+(?:'\d{2}|[89]\d)(?:\s*[-/]\s*'?\d{2})?|\s+Delu
 _EDITION_SUB_RE = re.compile(r"\b(?:edition|version)$", re.IGNORECASE)
 # renamed releases no rule finds (TOSEC's title -> the install's)
 _ALIASES = {"fifa international soccer": "fifa soccer",
-            "populous 2 trials of the olympian gods": "populous 2 challenge games"}   # (that install is Populous 2 and its data disk)
+            "populous 2 trials of the olympian gods": "populous 2 challenge games",   # (that install is Populous 2 and its data disk)
+            "lotus turbo challenge 2": "lotus 2"}
+# games whose title is an install's but not its game (title -> the install that is another game's): Grandslam's Hunt for Red October
+# of 1987 (German: Jagd auf Roter Oktober) is not the 1990 game of the film, the only one with an install
+_NOT_ITS_INSTALL = {"hunt for red october": {"HuntForRedOctober.lha"}, "jagd auf roter oktober": {"HuntForRedOctober.lha"}}
+_DEMO_RE = re.compile(r"\b(?:demo|preview)\b", re.IGNORECASE)
 _NICKNAME_RE = re.compile(r"\s+['\"][A-Za-z][^'\"]{1,20}['\"](?=\s)")    # (a nickname in quotes: "Ivan 'Ironman' Stewart")
 _POSSESSIVE_RE = re.compile(r"(?<=[a-z])'s\b", re.IGNORECASE)
 _MINOR_WORDS = {"the", "a", "an", "of", "in", "for", "and", "to", "on", "der", "die", "das", "des", "le", "la", "les", "de", "el", "il"}
+# a main title that is a data / scenario disk's ("Dreadnoughts Data Disk - Bismarck": not the game Bismarck)
+_ADDON_HEAD_RE = re.compile(r"\b(?:data|scenario|mission|course|level)s?\s*disks?\b", re.IGNORECASE)
+# a main title with a number of its own ("Xenon 2", "Zork III", "Mean 18", "Time Runners 03"): it names the game, the subtitle is
+# only a subtitle - never the install of another game of that name ("Megablast", "The Dungeon Master", "Ultimate Golf")
+_NUMBERED_RE = re.compile(r"(?:\s|^)(?:\d+|[IVX]+)$")
+_NUMERAL_RE = re.compile(r"\s+(?:\d+|[IVXivx]+)$")
+
+
+def _abbreviates(head: str, sub: str) -> bool:
+    """The main title is the subtitle's initials: "A.M.C. - Astro Marine Corps", "ATF II - Advanced Tactical Fighter II",
+    "F.O.F.T. - Federation of Free Traders"."""
+    h = re.sub(r"[^a-z]", "", _NUMERAL_RE.sub("", head).casefold())
+    words = re.findall(r"[a-z0-9]+", _NUMERAL_RE.sub("", sub).casefold())
+    return len(h) >= 2 and h in ("".join(w[0] for w in words), "".join(w[0] for w in words if w not in _MINOR_WORDS))
 
 
 class Matcher:
@@ -213,6 +232,10 @@ class Matcher:
                     m = re.search(r"\s(?:in|meets)\s(.+)$", name, re.IGNORECASE)
                     if m and len(self._node(m.group(1)).split()) >= 3:     # ("Roger Rabbit In Hare Raising Havoc")
                         self._part(m.group(1), i, "")
+        self.byhol: dict[str, list[dict[str, Any]]] = {}       # the installs by their Hall of Light page
+        for i in installs:
+            if str(i.get("hol") or "").isdigit():
+                self.byhol.setdefault(str(i["hol"]), []).append(i)
         self.groups: dict[str, list[dict[str, Any]]] = {}
         self.table = alttitles.table(platform) if platform is not None else {}
         for k, v in self.by.items():
@@ -273,11 +296,49 @@ class Matcher:
             out.append(own)
         return out
 
+    def _same_game(self, title: str, installs: list[dict[str, Any]]) -> bool:
+        """An install of ``installs`` has the Hall of Light page OpenRetro gives the game of ``title`` (no OpenRetro data: False)."""
+        hols = self._hols().get(self._node(title), ())
+        return any(str(i.get("hol") or "") in hols for i in installs)
+
+    def _hols(self) -> dict[str, set[str]]:
+        """OpenRetro's games by title (``node``): their Hall of Light page numbers - fetched with the other databases."""
+        if getattr(self, "_hol_index", None) is None:
+            index: dict[str, set[str]] = {}
+            try:
+                from . import openretro
+                odb = openretro.database()
+            except Exception:  # noqa: BLE001 - no OpenRetro data: no tie-break
+                odb = None
+            if odb is not None:
+                for name, gid in odb.titles():
+                    m = re.search(r"(\d+)\s*$", str((odb.games.get(gid) or {}).get("hol") or ""))
+                    if m:
+                        index.setdefault(self._node(name), set()).add(m.group(1))
+            self._hol_index = index
+        return self._hol_index
+
     @staticmethod
     def _best(cands: list[dict[str, Any]], title: str) -> dict[str, Any]:
         """Of several installs of a title, the plain one (not the CD32 / AGA / Arcadia variant) and the closest title."""
         low = title.casefold()
         return min(cands, key=lambda i: (_plain(i["title"]) != i["title"], i["title"].casefold() != low, len(i["title"]), i["archive"]))
+
+    def _found(self, title: str, strict: bool, others: Optional[set[str]]) -> Optional[tuple[list[dict[str, Any]], str, str]]:
+        """:meth:`_find`, first by the game's Hall of Light page (OpenRetro's, for this title: one game's page, an install that has
+        it - no demo install for a game; "Indiana Jones and the Last Crusade - The Action Game" is not the adventure's install),
+        never an install that is another game's (``_NOT_ITS_INSTALL``)."""
+        t = _plain(title or "")
+        k = self._node(t)
+        hols = self._hols().get(k) or set()
+        cands = [i for h in sorted(hols) for i in self.byhol.get(h, ()) if _DEMO_RE.search(t) or not _DEMO_RE.search(i["title"])]
+        if cands and len({str(i["hol"]) for i in cands}) == 1:
+            return cands, "Hall of Light", t
+        hit = self._find(title, strict, others)
+        if hit is not None and k in _NOT_ITS_INSTALL:
+            keep = [i for i in hit[0] if i["archive"] not in _NOT_ITS_INSTALL[k]]
+            hit = (keep, hit[1], hit[2]) if keep else None
+        return hit
 
     def _find(self, title: str, strict: bool, others: Optional[set[str]] = None) -> Optional[tuple[list[dict[str, Any]], str, str]]:
         """``(every install of it, how, the title it was found by)``. ``strict``: the main title of a longer one only when that main
@@ -305,21 +366,30 @@ class Matcher:
             return hit, "main title", t
         if " - " in t:
             head, sub = t.split(" - ", 1)
-            if _ADDON_RE.search(sub):
+            if _ADDON_RE.search(sub) or _ADDON_HEAD_RE.search(head):
                 return None                               # (a data / course / scenario disk: not the game's install)
-            ks = self._node(sub)
-            if len(ks) > 3 and ks in self.by:
-                return self.by[ks], "subtitle", sub
-            kh = self._node(head)
+            ks, kh = self._node(sub), self._node(head)
+            by_sub = self.by.get(ks) if len(ks) > 3 else None
+            by_head = None
             own = not strict or (others is not None and kh not in others) or bool(_EDITION_SUB_RE.search(sub))
             if len(kh) > 3 and own:                          # (an "... Edition" is the game's own: its install is the game's)
                 for key, table in ((kh, self.by), (self._loose(kh), self.loose),
                                    (self._loose(self._node(head.translate(_UMLAUTS))), self.loose)):
                     if key in table:
-                        return table[key], "main title", head
-                hit = self._in_parts(kh, sub)
-                if hit:
-                    return hit, "main title", head
+                        by_head = table[key]
+                        break
+                else:
+                    by_head = self._in_parts(kh, sub)
+            if by_sub and _abbreviates(head, sub):
+                return by_sub, "subtitle", sub
+            if by_sub and by_head:                           # (both a game: "Star Wars - Return of the Jedi" is the install Return of
+                if self._same_game(t, by_sub) and not self._same_game(t, by_head):   # the Jedi, "Xenon 2 - Megablast" is Xenon 2 -
+                    return by_sub, "subtitle", sub           #  OpenRetro's Hall of Light page of the game decides; none: the main title)
+                return by_head, "main title", head
+            if by_sub and not _NUMBERED_RE.search(head) and len([w for w in ks.split(" ") if w not in _ARTICLES]) >= 2:
+                return by_sub, "subtitle", sub               # (another title of the game: "Legend of Robin Hood - Conquests of the
+            if by_head:                                      #  Longbow"; not "Sir Fred - The Legend", nor "Zork III - The Dungeon Master")
+                return by_head, "main title", head
         for v in self._last_variants(t):                     # (a nickname or a possessive off: only the very title, spelled
             kv = self._node(v)                                #  otherwise - "Hero's Quest" is not the install "HeroQuest")
             for key, table in ((kv, self.by), (kv.replace(" ", ""), self.squashed), (self._loose(kv), self.loose)):
@@ -340,16 +410,17 @@ class Matcher:
         return None
 
     def match(self, title: str, strict: bool = False, others: Optional[set[str]] = None) -> Optional[tuple[dict[str, Any], str]]:
-        """``(install, how)`` (``title`` | ``spelling`` | ``other title`` | ``subtitle`` | ``short title`` | ``main title``), or None.
+        """``(install, how)`` (``Hall of Light`` | ``title`` | ``spelling`` | ``other title`` | ``subtitle`` | ``short title`` |
+        ``main title``), or None.
         ``strict``: "Kick Off 2 - KOA Competition" is not the game "Kick Off 2" (what a result recorded for a game must go by; a
         suggestion to download may be looser): the main title counts only when it is no game of its own (``others``)."""
-        hit = self._find(title, strict, others)
+        hit = self._found(title, strict, others)
         return None if hit is None else (self._best(hit[0], hit[2]), hit[1])
 
     def exact(self, title: str, others: Optional[set[str]] = None) -> list[dict[str, Any]]:
         """Every install of exactly this game (its variants too: the CD32 / AGA install of the same title), never of a longer title
         that starts with it - unless that is only the game's full title (``others``, see :meth:`match`)."""
-        hit = self._find(title, True, others)
+        hit = self._found(title, True, others)
         return [] if hit is None else list(hit[0])
 
 

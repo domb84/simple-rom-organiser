@@ -228,6 +228,20 @@ class InstallTests(unittest.TestCase):
         self.assertIn("Slave=Doman.Slave", ai.icon_info(files["Doman/Doman.info"])[1])
         self.assertEqual(ai.icon_info(files["Doman/ReadMe.info"])[1], [])
 
+    def test_disk_images_in_a_data_drawer_the_icon_does_not_name(self) -> None:
+        def slave(cur: bytes) -> bytes:                            # (a WHDLoad slave header: ws_CurrentDir at $1A, its string after)
+            head = b"\x70\xff\x4e\x75WHDLOADS" + struct.pack(">HHIIHH", 16, 0, 0x80000, 0, 0, 0x20 if cur else 0)
+            return head + bytes(0x20 - len(head)) + cur + b"\0"
+        files = {"CSB/CSB.Slave": slave(b""), "CSB/CSB.info": make_icon(["PreLoad", "Slave=CSB.Slave"], "WHDLoad"),
+                 "CSB/data/Disk.1": b"D1", "CSB/ReadMe.info": make_icon([], "MultiView")}
+        self.assertEqual(ai.slave_current_dir(files["CSB/CSB.Slave"]), "")
+        self.assertEqual(len(ai.repair_data_tooltype(files)), 1)                            # (Chaos Strikes Back's install)
+        self.assertIn("Data=data", ai.icon_info(files["CSB/CSB.info"])[1])
+        self.assertEqual(ai.repair_data_tooltype(files), [])                                # (done: nothing more)
+        files = {"G/G.Slave": slave(b"data"), "G/G.info": make_icon(["Slave=G.Slave"], "WHDLoad"), "G/data/Disk.1": b"D1"}
+        self.assertEqual(ai.slave_current_dir(files["G/G.Slave"]), "data")
+        self.assertEqual(ai.repair_data_tooltype(files), [])                                # (the slave names its drawer itself)
+
     def test_a_comparison_evaluates_every_argument(self) -> None:
         (self.pkg / "Install").write_text('(if (= 0 (set #x 1) (copyfiles (source "Game.slave") (dest "WORK:Game"))) ("") ("")) ')
         self.assertIn("Game/Game.slave", ai.install(self.pkg, []).files)
@@ -408,6 +422,33 @@ class InstallTests(unittest.TestCase):
 
 AMIGA = platforms.get_platform("Commodore Amiga")
 GAMES = "Commodore Amiga - Games - [ADF]"
+
+
+class XadAndDelete(unittest.TestCase):
+    def test_a_disk_image_file_that_cannot_be_read_is_left_out(self) -> None:
+        img = bytearray(make_adf("Game", {"good": b"good data", "bad": b"x" * 600}))
+        n = AdfDisk(bytes(img))._find("bad")
+        first = struct.unpack_from(">I", img, n * BLOCK + BLOCK - 204)[0]       # (its first data block, overwritten as a trackloader
+        img[first * BLOCK:first * BLOCK + 8] = b"\x4e\x75" * 4                   #  does - Project-X: no OFS data block header now)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pkg = tmp / "GameInstall"
+        pkg.mkdir()
+        (pkg / "Game.slave").write_bytes(b"SLAVE")
+        (pkg / "image").write_bytes(bytes(img))
+        (pkg / "Install").write_text(
+            '(copyfiles (source "Game.slave") (dest "WORK:Game"))'
+            ' (copyfiles (source "Game.slave") (dest "WORK:Game") (newname "disk.1"))'
+            ' (copyfiles (source "Game.slave") (dest "WORK:Game") (newname "disk.2"))'
+            ' (if (> 0 (run "xadUnFile image DEST WORK:Game/out DIMG")) (abort "xadUnFile failed"))'   # (as P_XADDecrunch looks at it)
+            ' (if (<> 10 (run "xadUnFile image DEST WORK:Game/out DIMG")) (abort "not 10"))'
+            ' (run "CD WORK:Game\nDelete disk.#? nomem Quiet")')
+        res = ai.install(pkg, [make_adf("Other", {"x": b"x"})])
+        self.assertEqual(res.files["Game/out/good"], b"good data")
+        self.assertNotIn("Game/out/bad", res.files)
+        self.assertTrue(any("left out: bad" in x for x in res.log))
+        self.assertFalse([k for k in res.files if k.casefold().startswith("game/disk.")])   # (Delete took the pattern)
+        self.assertIn("Game/Game.slave", res.files)
 
 
 class PreferWhdloadVersions(unittest.TestCase):

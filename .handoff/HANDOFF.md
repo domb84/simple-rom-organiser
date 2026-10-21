@@ -273,6 +273,15 @@ Note: "[f AGA Fix]" was treated as an AGA version. Only `(AGA)` should count; Th
   (`diskfix.jsonl`). Then the user: "prioritise cracked versions when the whdload doesnt remove it" - superseding the SPS original
   (asked, chosen): AMENDMENT 49, rule `prefer_unprotected`, `~/.cache/whdwork/protection.py` -> `protection.json` -> `manual_kept`.
   The user's data dir has no OpenRetro file yet (fetched with the next update): until then the rule does nothing.
+- 2026-10-22 (user: "lets fix our problems" - the top 250's games with an install and no booting copy): AMENDMENT 50. Oh No!
+  More Lemmings' SPS original boots (its screen is the game's manual check - my by-eye verdict was wrong; corrected in
+  newpairs2.jsonl). `night/top250_now.py` (the app's ranking): 239 of 250 have an install, 227 booted. Fixed: matcher (Hall of
+  Light first, subtitle rule, Lotus 2, `_NOT_ITS_INSTALL`; 79 titles change - /tmp/claude-1000/prot/match_changes.json), xadUnFile
+  skips an unreadable file (Project-X), Delete patterns, absolute crunchers (Twintris), RawDIC 5 return-address image (Lollypop).
+  The Chaos Engine: black on PUAE's default A1200 CPU settings, runs with puae_cpu_compatibility "exact" - not changed (the user's).
+  Stage I (`night/stageI.py`, `bootI.jsonl`): the changed pairings and the fixed games built and booted; stage J (`stageJ.py`,
+  `bootJ.jsonl`): every black-screen game again with "exact" CPU compatibility. Running 6 PUAE workers and the test suite at once
+  ran the Deck out of memory (VS Code restarted) - run them one after the other.
 - Games with no install at all: 45 of 60 readable native AGA ones are plain AmigaDOS disks with a startup-sequence (night/
   aga_noinstall_kinds.json). PUAE's WHDLoad mode shows a file picker for an archive with no slave; an HD-style install of them
   would need a hardfile or a launcher - not started, for the user to decide.

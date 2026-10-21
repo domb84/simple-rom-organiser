@@ -22,7 +22,9 @@ INSTALLS = [("Turrican.lha", "Turrican"), ("Pushover.lha", "Pushover"), ("Sensib
             ("ReturnOfTheJedi.lha", "Return of the Jedi"), ("StarWars.lha", "Star Wars"),
             ("PrinceOfPersia.lha", "Prince of Persia / Prince de Perse"), ("CaptainFizz.lha", "Captain Fizz"), ("Lemmings.lha", "Lemmings"),
             ("ClassicArcadia.lha", "Classic Arcadia"), ("KickOff2.lha", "Kick Off 2"), ("KickOff2FinalWhistle.lha", "Kick Off 2 - The Final Whistle"),
-            ("AlienBreed2.lha", "Alien Breed II")]
+            ("AlienBreed2.lha", "Alien Breed II"), ("Xenon2.lha", "Xenon 2"), ("MegaBlast.lha", "MegaBlast"),
+            ("AstroMarineCorps.lha", "Astro Marine Corps"), ("DungeonMaster.lha", "Dungeon Master"), ("Legend.lha", "Legend"),
+            ("ConquestsOfTheLongbow.lha", "Conquests Of The Longbow")]
 PAGE = "<TABLE>" + "".join(ROW.format(arc=a, title=t, size=90000 + n, hol=100 + n) for n, (a, t) in enumerate(INSTALLS)) + "</TABLE>"
 
 
@@ -51,7 +53,19 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertEqual(self.match("Push-Over"), ("Pushover.lha", "spelling"))
         self.assertEqual(self.match("Sensible Soccer"), ("SensibleSoccer.lha", "title"))          # (not the CD32 one)
         self.assertEqual(self.match("Cadaver - The Last Supper"), ("Cadaver.lha", "main title"))
-        self.assertEqual(self.match("Star Wars - Return of the Jedi"), ("ReturnOfTheJedi.lha", "subtitle"))
+        self.assertEqual(self.match("Star Wars - Return of the Jedi"), ("StarWars.lha", "main title"))     # (both a game: no OpenRetro data,
+        from romorg.alttitles import node                                                             #  the main title)
+        with mock.patch.object(self.m, "_hols", return_value={node("Star Wars - Return of the Jedi"): {"106"}}):   # (OpenRetro's page of it)
+            self.assertEqual(self.match("Star Wars - Return of the Jedi"), ("ReturnOfTheJedi.lha", "Hall of Light"))
+            self.assertEqual(self.match("Turrican"), ("Turrican.lha", "title"))                  # (no page known for it)
+
+    def test_a_subtitle_that_is_another_games_title(self) -> None:
+        self.assertEqual(self.match("Xenon 2 - Megablast"), ("Xenon2.lha", "main title"))           # (MegaBlast: L.K. Avalon's, 1995)
+        self.assertEqual(self.match("A.M.C. - Astro Marine Corps"), ("AstroMarineCorps.lha", "subtitle"))   # (the initials)
+        self.assertEqual(self.match("Legend of Robin Hood - Conquests of the Longbow"), ("ConquestsOfTheLongbow.lha", "subtitle"))
+        self.assertIsNone(self.match("Zork III - The Dungeon Master"))                              # (a numbered game's subtitle)
+        self.assertIsNone(self.match("Sir Fred - The Legend"))                                      # (one word)
+        self.assertIsNone(self.match("Dreadnoughts Data Disk - Bismarck"))
 
     def test_another_title_of_the_install_and_a_short_title(self) -> None:
         self.assertEqual(self.match("Prince de Perse"), ("PrinceOfPersia.lha", "title"))

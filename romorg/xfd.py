@@ -250,8 +250,8 @@ class Decruncher:
             if not cpu.d[0] & 0xFFFF:
                 return None
             name = cpu.cstring(cpu.r32(bi + 12)) if cpu.r32(bi + 12) else "?"
-            if cpu.r16(bi + 16) & _XFDPFF_ADDR:
-                raise XfdError(f"{name}: an absolute-address cruncher (xfdDecrunch would add a header to it)")
+            absolute = bool(cpu.r16(bi + 16) & _XFDPFF_ADDR)   # (an absolute-address cruncher: decrunched like any other - xfdDecrunch
+                                                             #  saves the plain data unless told LINKSIMPLE / LINKPRO: Twintris)
             cpu.w32(bi + 24, _MEMF_ANY)
             cpu.a[0] = bi
             self._call(self.base - 60, self.base)            # xfdDecrunchBuffer
@@ -259,6 +259,8 @@ class Decruncher:
                 err = cpu.r16(bi + 18)
                 raise XfdError(f"{name}: {_ERRORS.get(err, f'error {err:#x}')}")
             out, n = cpu.r32(bi + 20), cpu.r32(bi + 32)
+            if absolute:
+                name += f" (absolute: ${cpu.r32(bi + 36):x})"      # (xfdbi_DecrAddress: where it would be loaded)
             return bytes(cpu.m[out:out + n]), name
         finally:
             self._heap = mark                                # (each file: the memory of the last one again)

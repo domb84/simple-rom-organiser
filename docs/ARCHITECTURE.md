@@ -3160,3 +3160,40 @@ extension. The Overview card says *found*, the Library card *kept*.
 * On the user's folders (with the OpenRetro data): 33 SPS zips of 26 games superseded - 25 by a crack the install boots from (Maniac
   Mansion, Operation Stealth, Buck Rogers, F-15 Strike Eagle II, Oscar, Space Quest I ...), 8 where the game has no install (Whale's
   Voyage, Fields of Glory, Championship Manager '93 ...).
+
+
+**AMENDMENT 50 (v0.3) — The top 250's failures: matching by the Hall of Light, xadUnFile, Delete patterns, absolute crunchers, RawDIC 5.**
+* Of the user's top 250 Amiga games (the app's rating order) 239 have an install, 227 had a booting copy; the 12 without were
+  looked at one by one. One is another release (Kwik Snax: the install wants the original, there is only a crack), one needs
+  WHDLoad 20 (Emerald Mine); the others were the app's:
+* `whdinstalls.Matcher`: an install is first found by the game's Hall of Light page - OpenRetro's for the title (one game's page;
+  no demo install for a game) against the page whdload.de gives each install - then by name as before. 79 TOSEC titles change: 51
+  that had no install get one (Back to the Future II / III, G-LOC, Diabolik, Time Runners, Obsession, Space Quest I ...), wrong
+  ones are put right (Xenon 2 - Megablast had the install of L.K. Avalon's MegaBlast; Indiana Jones ... - The Action Game the
+  adventures'; Jagd auf Roter Oktober and the 1987 Hunt for Red October the film game's - `_NOT_ITS_INSTALL`).
+* By name, a subtitle names the install only when the main title is its initials ("A.M.C. - Astro Marine Corps"), or the main title
+  is no install's and is not numbered and the subtitle has two words at least ("Legend of Robin Hood - Conquests of the Longbow");
+  never "Zork III - The Dungeon Master", "Sir Fred - The Legend", "Dreadnoughts Data Disk - Bismarck". When both are installs,
+  OpenRetro's page decides ("Star Wars - Return of the Jedi"), else the main title ("Sensible Soccer - European Champions").
+  "Lotus Turbo Challenge 2" is the install "Lotus 2" (`_ALIASES`).
+* `amigainstall`: xadUnFile of a disk image leaves out a file it cannot read and returns 10, as xadUnFile goes on with the next file
+  (Project-X's trackloader is written over the data blocks of a file; its script only aborts on a negative code); the shell's Delete
+  takes AmigaDOS patterns ("Delete disk.#?": the 3.5 MB of disk images Project-X's script deletes after unpacking them).
+* `xfd`: an absolute-address cruncher (TetraPack, Mega Cruncher) is decrunched like any other - xfdDecrunch saves the plain data
+  unless told LINKSIMPLE / LINKPRO (its own doc); the address is logged. Twintris builds from its Razor 1911 crack, as its install
+  says it should.
+* `rawdic`: for a version-5 imager the disk image's address is also the long $3A bytes after the call's return address, where the
+  real RawDIC 5 has it in its own code: Lollypop's imager takes it from there to fix three corrupt files of the original release
+  (it put the fixes elsewhere, and the slave said "file 0F,58 or 6E is corrupted").
+* PUAE: The Chaos Engine (ECS and AGA) shows only black on the A1200 with PUAE's default CPU settings - on an A600, or an A1200
+  with `puae_cpu_compatibility = "exact"` or a 68030, it runs. The user's RetroArch has no PUAE options of its own (defaults). Not
+  changed: the user's settings are the user's.
+* `amigainstall.repair_data_tooltype` (after an install, beside the slave repair): a WHDLoad icon with no `Data=`, whose slave names
+  no drawer (`ws_CurrentDir` empty: `slave_current_dir`), in a drawer whose disk images are only in "data" gets `Data=data` - Chaos
+  Strikes Back's script images its disks there and leaves the icon without it (WHDLoad: "object not found on reading Disk.1").
+* Results: the 79 titles the matcher now finds differently and the games fixed here, built and booted (by eye checked): 54 boot.
+  The user's top 250: 241 with an install, 233 with a booting copy (227 before). Not booting: Kwik Snax, Chaos Strikes Back,
+  Cyberzerk (the installs want the originals, the user has cracks), Emerald Mine (WHDLoad 20), The Chaos Engine (PUAE's CPU
+  setting), Ace Ball (its crack is not a supported version), Star Trek - 25th Anniversary (black on every machine tried).
+  "exact" CPU compatibility for every game with a black screen: 3 of 49 boot so (The Chaos Engine, Cyber World, Skidoo) - no
+  reason to suggest it for all; `whdknown.json.gz` records what boots with PUAE's defaults only.
