@@ -8,6 +8,7 @@ import json
 import os
 import random
 import tempfile
+import unicodedata
 import unittest
 import zipfile
 import zlib
@@ -1805,3 +1806,428 @@ class ReadOnlyFilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BugCheckPlanTests(unittest.TestCase):
+    """The organiser's part of the bug check of the library build (Amendment 54)."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+    AMIGA = platforms.get_platform("Commodore Amiga")
+
+    def fake_bios(self, *blobs: tuple[bytes, str]) -> None:
+        from romorg import bios
+        sha1, crc = dict(bios._BY_SHA1), dict(bios._BY_CRC)
+        for data, name in blobs:
+            entry = bios.Bios("Test - System", name, frozenset({name}))
+            sha1[hashlib.sha1(data).hexdigest()] = entry
+            crc[(len(data), f"{zlib.crc32(data) & 0xFFFFFFFF:08x}")] = entry
+        for attr, value in (("_BY_SHA1", sha1), ("_BY_CRC", crc), ("_SIZES", bios._SIZES | {len(d) for d, _n in blobs}), ("_SEEN", {}),
+                            ("_SEEN_ZIPS", {})):
+            p = mock.patch.object(bios, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_a_symbolic_link_to_a_bios_is_never_part_of_its_duplicates(self) -> None:
+        data = _rand(1024, 4242)
+        self.fake_bios((data, "kick.rom"))
+        self.have("Solo Game (1993)(Pub).adf")
+        (self.root / "firmware").mkdir()
+        (self.root / "firmware" / "kick.rom").write_bytes(data)
+        (self.root / "a" / "deeper").mkdir(parents=True)
+        make_symlink(self.root / "a" / "deeper" / "kick.rom", "../../firmware/kick.rom")
+        self.build()
+        self.assertTrue(os.path.islink(self.root / "a" / "deeper" / "kick.rom"))
+        self.assertTrue(os.path.exists(self.root / "a" / "deeper" / "kick.rom"))              # (the real file stays where it is)
+        self.assertIn("firmware/kick.rom", self.files())
+
+    def test_a_zip_of_several_bios_files_is_no_copy_of_one_of_them(self) -> None:
+        a, b = _rand(1024, 1), _rand(2048, 2)
+        self.fake_bios((a, "bios_a.bin"), (b, "bios_b.bin"))
+        self.have("Solo Game (1993)(Pub).adf")
+        with zipfile.ZipFile(self.root / "system bios.zip", "w") as zf:
+            zf.writestr("bios_a.bin", a)
+            zf.writestr("bios_b.bin", b)                                                     # (the only copy of bios_b.bin)
+        (self.root / "bios_a.bin").write_bytes(a)
+        self.build()
+        self.assertIn("system bios.zip", self.files())
+        self.assertIn("bios_a.bin", self.files())
+
+    def test_a_disk_in_an_archive_with_other_files_fills_its_slot(self) -> None:
+        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
+        self.have(d1, f"in/{d1}")
+        data2 = _rand(600, 555)
+        self.roms.append(_rom(d2, data2))
+        with zipfile.ZipFile(self.root / "in" / "Game disk 2.zip", "w") as zf:
+            zf.writestr(d2, data2)
+            zf.writestr("readme.txt", "hello")
+        plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        ops = {op.src.name: op for op in plan.ops}
+        self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "skip"))
+        self.assertEqual([p.lines[-1] for p in plan.playlists], [f"../in/Game disk 2.zip#{d2}|Disk 2"])
+
+    def test_your_choice_for_a_game_in_an_archive_with_other_files_holds(self) -> None:
+        data = _rand(600, 99)
+        name = "Spiel (1990)(Pub)(DE).adf"
+        self.roms.append(_rom(name, data))
+        with zipfile.ZipFile(self.root / "spiel.zip", "w") as zf:
+            zf.writestr(name, data)
+            zf.writestr("scan.jpg", "jpg")
+        self.have("Solo Game (1993)(Pub).adf")
+        base = library.default_profile(self.AMIGA)
+        for choice, code in (("keep", ""), ("exclude", "excluded")):
+            prof = dataclasses.replace(base, overrides=((GAMES, name, choice),))
+            op = next(o for o in self.plan(profile=prof, platform=self.AMIGA).ops if o.src.name == "spiel.zip")
+            self.assertEqual((op.status, op.code), ("skip", code), choice)
+
+    def test_a_game_in_an_archive_with_other_files_comes_back_out_of_unmatched_once_its_dat_knows_it(self) -> None:
+        data, name = _rand(600, 77), "Spiel (1990)(Pub).adf"
+        (self.root / "in").mkdir()
+        with zipfile.ZipFile(self.root / "in" / "spiel.zip", "w") as zf:
+            zf.writestr(name, data)
+            zf.writestr("scan.jpg", "jpg")
+        self.have("Solo Game (1993)(Pub).adf")
+        self.build()
+        self.assertIn(f"{UNMATCHED_DIR}/in/spiel.zip", self.files())
+        self.roms.append(_rom(name, data))                                                  # (a DAT update adds it)
+        self.build(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        self.assertIn("in/spiel.zip", self.files())
+
+    def test_undo_of_a_case_only_rename_keeps_the_playlist_it_restores(self) -> None:
+        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
+        self.have(d1, f"{GAMES}/{d1.lower()}")
+        self.have(d2, f"{GAMES}/{d2.lower()}")
+        (self.root / GAMES / "My old list.m3u").write_text(m3u.M3U_MARKER + "\n" + d1.lower() + "\n" + d2.lower() + "\n")
+        _plan, res = self.build()
+        out = undo(Path(res["undo_log"]))
+        self.assertEqual((out["m3us_restored"], out["m3us_removed"]), (1, 0))
+        self.assertIn(f"{GAMES}/My old list.m3u", self.files())
+
+    def test_an_old_playlist_whose_name_differs_in_case_is_removed(self) -> None:
+        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
+        self.have(d1, f"{GAMES}/{d1.lower()}")
+        self.have(d2, f"{GAMES}/{d2.lower()}")
+        old = self.root / GAMES / "game (1990)(pub).m3u"
+        old.write_text(m3u.M3U_MARKER + "\n" + d1.lower() + "|Disk 1\n" + d2.lower() + "|Disk 2\n")
+        if (self.root / GAMES / "Game (1990)(Pub).m3u").exists():
+            self.skipTest("a file system that ignores case")
+        self.build()
+        self.build()
+        self.assertEqual(sorted(n for n in self.files() if n.endswith(".m3u")), [f"{GAMES}/Game (1990)(Pub).m3u"])
+
+    def test_a_symbolic_link_to_an_archive_with_other_files_fills_its_slot(self) -> None:
+        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
+        self.have(d1, f"in/{d1}")
+        data2 = _rand(600, 556)
+        self.roms.append(_rom(d2, data2))
+        (self.root / "elsewhere").mkdir()
+        with zipfile.ZipFile(self.root / "elsewhere" / "d2.zip", "w") as zf:
+            zf.writestr(d2, data2)
+            zf.writestr("readme.txt", "hello")
+        make_symlink(self.root / "in" / "Game disk 2.zip", "../elsewhere/d2.zip")
+        plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        ops = {op.src.name: op for op in plan.ops}
+        self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "skip"))
+        self.assertEqual(len(plan.playlists), 1)
+
+    def test_an_old_playlist_whose_name_differs_in_case_goes_when_nothing_moves(self) -> None:
+        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
+        self.have(d1, f"{GAMES}/{d1}")
+        self.have(d2, f"{GAMES}/{d2}")
+        (self.root / GAMES / "game (1990)(pub).m3u").write_text(m3u.M3U_MARKER + "\n" + d1 + "|Disk 1\n" + d2 + "|Disk 2\n")
+        if (self.root / GAMES / "Game (1990)(Pub).m3u").exists():
+            self.skipTest("a file system that ignores case")
+        self.build()
+        self.build()
+        self.assertEqual(sorted(n for n in self.files() if n.endswith(".m3u")), [f"{GAMES}/Game (1990)(Pub).m3u"])
+
+    def test_a_hard_link_in_another_folder_is_not_the_file_in_place(self) -> None:
+        name = "Solo Game (1993)(Pub).adf"
+        self.have(name, f"{GAMES}/{name}")
+        (self.root / "in").mkdir()
+        os.link(self.root / GAMES / name, self.root / "in" / name)
+        plan = self.plan()
+        ops = {op.src.relative_to(self.root).as_posix(): op for op in plan.ops}
+        self.assertEqual(ops[f"{GAMES}/{name}"].status, "ok")
+        self.assertEqual(ops[f"in/{name}"].code, "duplicate")
+
+    def test_undo_of_an_older_log_never_moves_back_a_file_a_later_build_put_in_its_place(self) -> None:
+        name = "Alpha (1990)(Pub).adf"
+        self.have(name, "in/a.adf")                                                         # game A
+        _p, first = self.build()                                                            # in/a.adf -> the DAT folder
+        a, b = self.blobs[name], _rand(600, 999)
+        (self.root / "in").mkdir(exist_ok=True)
+        (self.root / "in" / "b.adf").write_bytes(b)
+        self.roms[:] = [_rom("Alpha Renamed (1990)(Pub).adf", a), _rom(name, b)]             # (a DAT update: B takes A's old name)
+        self.build()
+        out = undo(Path(first["undo_log"]))
+        self.assertEqual(out["restored"], 0)
+        self.assertIn("not the one this build moved", out["skipped"][0]["reason"])
+        self.assertEqual(self.files()[f"{GAMES}/{name}"], b)                                  # (B stays where the later build put it)
+        self.assertNotIn("in/a.adf", self.files())
+
+
+class UndoOfAnOlderLogTests(unittest.TestCase):
+    """Undo of a log that is not the newest: a later build moved the file on, so the older log's step finds nothing at its target."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+    NAME, RENAMED = "Alpha (1990)(Pub).adf", "Alpha Renamed (1990)(Pub).adf"
+
+    def two_builds(self) -> tuple[dict, dict, bytes]:
+        self.have(self.NAME, "in/a.adf")
+        data = self.blobs[self.NAME]
+        _plan, first = self.build()
+        self.assertEqual(self.files(), {f"{GAMES}/{self.NAME}": data})
+        self.roms[0] = _rom(self.RENAMED, data)                                   # (a DAT update renames the game: build 2 moves it on)
+        _plan, second = self.build()
+        self.assertEqual(self.files(), {f"{GAMES}/{self.RENAMED}": data})
+        self.assertNotEqual(first["undo_log"], second["undo_log"])
+        self.assertEqual(list_undo_logs(self.root)[0], Path(second["undo_log"]))     # (the newer one is listed first)
+        return first, second, data
+
+    def test_undo_of_the_older_log_moves_nothing_and_says_why(self) -> None:
+        first, _second, data = self.two_builds()
+        out = undo(Path(first["undo_log"]))
+        self.assertEqual((out["restored"], out["failed"]), (0, []))
+        self.assertEqual([(s["dst"], s["reason"]) for s in out["skipped"]],
+                         [(str(self.root / GAMES / self.NAME), "moved file no longer exists")])
+        self.assertEqual(self.files(), {f"{GAMES}/{self.RENAMED}": data})            # (the file the newer build moved is where it was)
+        self.assertFalse((self.root / "in" / "a.adf").exists())
+
+    def test_the_newer_log_still_undoes_after_the_older_one(self) -> None:
+        first, second, data = self.two_builds()
+        undo(Path(first["undo_log"]))
+        out = undo(Path(second["undo_log"]))
+        self.assertEqual((out["restored"], out["skipped"], out["failed"], out["remaining"]), (1, [], [], 0))
+        self.assertEqual(self.files(), {f"{GAMES}/{self.NAME}": data})               # (back where build 1 put it, nothing lost)
+
+    def test_undo_newest_first_walks_both_builds_back(self) -> None:
+        first, second, data = self.two_builds()
+        self.assertEqual(undo(Path(second["undo_log"]))["restored"], 1)
+        out = undo(Path(first["undo_log"]))
+        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (1, [], []))
+        self.assertEqual(self.files(), {"in/a.adf": data})
+        self.assertEqual(list_undo_logs(self.root), [])                                  # (both are undone)
+
+
+class EmptyAndUnmatchedOnlyFolderTests(unittest.TestCase):
+    """A library folder with nothing in it, and one with only files no DAT knows: plan, apply and undo."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+
+    def test_an_empty_folder_plans_nothing_writes_no_log_and_stays_empty(self) -> None:
+        self.roms.append(_rom("Alpha (1990)(Pub).adf", _rand(600, 1)))            # (the DAT knows a game the folder does not have)
+        plan = self.plan()
+        self.assertEqual((plan.ops, plan.playlists), ([], []))
+        self.assertEqual(set(organiser.reason_counts(plan).values()), {0})
+        res = apply_renames(plan.ops, self.root, playlists=plan.playlists)
+        self.assertEqual((res["moved"], res["deleted"], res["failed"], res["undo_log"]), (0, 0, [], None))
+        self.assertEqual(list(self.root.iterdir()), [])                                  # (no DAT folder, no log, no reserved folder)
+        self.assertEqual(list_undo_logs(self.root), [])
+
+    def test_an_empty_folder_with_no_dat_either(self) -> None:
+        plan = self.plan()
+        self.assertEqual(plan.ops, [])
+        self.assertEqual(apply_renames(plan.ops, self.root, playlists=plan.playlists)["undo_log"], None)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_only_unmatched_files_go_to_unmatched_and_come_back_on_undo(self) -> None:
+        self.roms.append(_rom("Alpha (1990)(Pub).adf", _rand(600, 1)))
+        for rel, data in (("in/x.adf", _rand(700, 2)), ("in/deeper/y.adf", _rand(800, 3)), ("notes.txt", b"hello")):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_bytes(data)
+        before = self.files()
+        plan = self.plan()
+        self.assertEqual(sorted((op.src.relative_to(self.root).as_posix(), op.dst.relative_to(self.root).as_posix(), op.status)
+                                for op in plan.ops),
+                         [("in/deeper/y.adf", f"{UNMATCHED_DIR}/in/deeper/y.adf", "move"), ("in/x.adf", f"{UNMATCHED_DIR}/in/x.adf", "move"),
+                          ("notes.txt", f"{UNMATCHED_DIR}/notes.txt", "move")])
+        self.assertTrue(all(op.unmatched for op in plan.ops))
+        self.assertEqual(plan.playlists, [])
+        _plan, res = self.build()
+        self.assertEqual(self.files(), {f"{UNMATCHED_DIR}/{k}": v for k, v in before.items()})
+        self.assertFalse((self.root / GAMES).exists())                                   # (no DAT folder for a game nobody has)
+        self.assertFalse((self.root / "in").exists())
+        self.assertEqual({op.status for op in self.plan().ops}, {"ok"})                  # (a second build leaves them where they are)
+        out = undo(Path(res["undo_log"]))
+        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (3, [], []))
+        self.assertEqual(self.files(), before)
+        self.assertFalse((self.root / UNMATCHED_DIR).exists())
+        self.assertEqual(list_undo_logs(self.root), [])
+
+
+class UnicodeNormalisationTests(unittest.TestCase):
+    """A name in NFC (as a DAT writes it) and the same name in NFD (as macOS writes it) are two names on a file system that keeps
+    the bytes: a file is matched by its checksums whatever form its name has, gets its DAT's name, and undo puts the very bytes of its
+    old name back. A name in the other form is never taken for the target (no overwrite)."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+    NFC = unicodedata.normalize("NFC", "Café Olé (1990)(Pub).adf")
+    NFD = unicodedata.normalize("NFD", NFC)
+
+    def setUp(self) -> None:  # noqa: F811
+        LibraryPlanTests.setUp(self)
+        probe = self.root / self.NFD
+        probe.write_bytes(b"")
+        same = (self.root / self.NFC).exists()
+        probe.unlink()
+        if same:
+            self.skipTest("a file system that normalises Unicode names")
+
+    def rel(self, plan) -> list[tuple[str, str, str, str]]:
+        return sorted((op.src.relative_to(self.root).as_posix(), op.dst.relative_to(self.root).as_posix(), op.status, op.code)
+                      for op in plan.ops)
+
+    def test_an_nfd_name_is_matched_and_gets_the_dat_name_and_undo_restores_its_bytes(self) -> None:
+        self.assertNotEqual(self.NFC, self.NFD)
+        self.have(self.NFC, f"in/{self.NFD}")
+        before = self.files()
+        self.assertEqual(self.rel(self.plan()), [(f"in/{self.NFD}", f"{GAMES}/{self.NFC}", "move", "")])
+        _plan, res = self.build()
+        self.assertEqual(list(self.files()), [f"{GAMES}/{self.NFC}"])
+        self.assertEqual(self.rel(self.plan()), [(f"{GAMES}/{self.NFC}",) * 2 + ("ok", "")])      # (idempotent)
+        out = undo(Path(res["undo_log"]))
+        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (1, [], []))
+        self.assertEqual(self.files(), before)
+        self.assertEqual(os.listdir(self.root / "in"), [self.NFD])                       # (the NFD bytes, not an NFC copy of them)
+
+    def test_an_nfd_name_in_its_dat_folder_is_renamed_to_the_dat_name(self) -> None:
+        self.have(self.NFC, f"{GAMES}/{self.NFD}")
+        op, = self.plan().ops
+        self.assertEqual((op.status, op.kind, op.dst.name), ("move", "rename", self.NFC))
+
+    def test_an_unknown_file_with_the_nfc_name_is_set_aside_not_overwritten(self) -> None:
+        self.have(self.NFC, f"in/{self.NFD}")
+        stranger = b"not a rom of any DAT" * 20
+        (self.root / GAMES).mkdir()
+        (self.root / GAMES / self.NFC).write_bytes(stranger)
+        before = self.files()
+        self.assertEqual(self.rel(self.plan()), [(f"{GAMES}/{self.NFC}", f"{UNMATCHED_DIR}/{GAMES}/{self.NFC}", "move", ""),
+                                                 (f"in/{self.NFD}", f"{GAMES}/{self.NFC}", "move", "")])
+        _plan, res = self.build()
+        self.assertEqual(self.files(), {f"{GAMES}/{self.NFC}": self.blobs[self.NFC], f"{UNMATCHED_DIR}/{GAMES}/{self.NFC}": stranger})
+        out = undo(Path(res["undo_log"]))
+        self.assertEqual((out["restored"], out["failed"]), (2, []))
+        self.assertEqual(self.files(), before)
+
+    def test_two_copies_named_in_the_two_forms_are_one_game_and_a_duplicate(self) -> None:
+        self.have(self.NFC, f"{GAMES}/{self.NFD}")
+        (self.root / "in").mkdir()
+        (self.root / "in" / self.NFC).write_bytes(self.blobs[self.NFC])
+        before = self.files()
+        plan = self.plan()
+        claims = [op.dst for op in plan.ops if op.code != "duplicate"]
+        self.assertEqual(claims, [self.root / GAMES / self.NFC])                         # (one claim on the target, the other is a spare)
+        self.assertEqual(sorted(op.code for op in plan.ops), ["", "duplicate"])
+        _plan, res = self.build()
+        self.assertEqual(sorted(self.files().values()), [self.blobs[self.NFC]] * 2)       # (nothing overwritten: both copies are there)
+        self.assertIn(f"{GAMES}/{self.NFC}", self.files())
+        self.assertEqual({op.status for op in self.plan().ops}, {"ok"})
+        undo(Path(res["undo_log"]))
+        self.assertEqual(self.files(), before)
+
+    def test_a_dat_that_writes_nfd_names_its_file_in_nfd(self) -> None:
+        data = _rand(700, 11)
+        self.roms.append(_rom(self.NFD, data))
+        (self.root / GAMES).mkdir()
+        (self.root / GAMES / self.NFC).write_bytes(data)
+        op, = self.plan().ops
+        self.assertEqual((op.status, op.dst.name), ("move", self.NFD))
+
+
+class BiosExclusionTests(unittest.TestCase):
+    """bios_exclude: a BIOS file a TOSEC firmware list names with a flag the rules set aside (a bad dump) goes to _excluded as a ROM
+    would - also when it is a zip of it - but a symbolic link to one is never moved."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+    BAD = "Kick (1990)(Commodore)[b]"
+
+    def tosec_bios(self, *blobs: tuple[bytes, str, str]) -> None:
+        """The TOSEC firmware lists are these entries only (data, file name, game name); no pack is read."""
+        from romorg import bios
+        sha1, crc = {}, {}
+        for data, name, game in blobs:
+            entry = bios.Bios("Test", name, frozenset(), "tosec", game)
+            sha1[hashlib.sha1(data).hexdigest()] = entry
+            crc[(len(data), f"{zlib.crc32(data) & 0xFFFFFFFF:08x}")] = entry
+        for attr, value in (("_T_SHA1", sha1), ("_T_CRC", crc), ("_T_SIZES", frozenset(len(d) for d, _n, _g in blobs)), ("_T_SIG", ()),
+                            ("_SEEN", {}), ("_SEEN_ZIPS", {}), ("_firmware_dats", lambda: [])):
+            p = mock.patch.object(bios, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def setUp(self) -> None:  # noqa: F811
+        LibraryPlanTests.setUp(self)
+        self.bad = _rand(1024, 4243)
+        self.tosec_bios((self.bad, "kick.rom", self.BAD))
+        self.have("Solo Game (1993)(Pub).adf")
+
+    def test_a_zip_of_a_bad_dump_bios_is_excluded_whole_and_undo_brings_it_back(self) -> None:
+        with zipfile.ZipFile(self.root / "kick.zip", "w") as zf:
+            zf.writestr("kick.rom", self.bad)
+        before = self.files()
+        op = next(o for o in self.plan().ops if o.src.name == "kick.zip")
+        self.assertEqual((op.status, op.code, op.bios, op.dst), ("move", "excluded", False, self.root / "_excluded" / "kick.zip"))
+        self.assertEqual((op.reasons, op.flags_text), (("bad_dump",), "[b]"))
+        self.assertIn(self.BAD, op.reason)
+        _plan, res = self.build()
+        self.assertIn("_excluded/kick.zip", self.files())
+        self.assertEqual(zipfile.ZipFile(self.root / "_excluded" / "kick.zip").read("kick.rom"), self.bad)   # (the zip as it was)
+        again = next(o for o in self.plan().ops if o.src.name == "kick.zip")
+        self.assertEqual((again.status, again.code), ("ok", "excluded"))                   # (it stays set aside)
+        undo(Path(res["undo_log"]))
+        self.assertEqual(self.files(), before)
+
+    def test_a_loose_bad_dump_bios_is_excluded(self) -> None:
+        (self.root / "fw").mkdir()
+        (self.root / "fw" / "kick.rom").write_bytes(self.bad)
+        op = next(o for o in self.plan().ops if o.src.name == "kick.rom")
+        self.assertEqual((op.code, op.dst), ("excluded", self.root / "_excluded" / "fw" / "kick.rom"))
+
+    def test_a_symbolic_link_to_a_bad_dump_bios_is_never_moved(self) -> None:
+        (self.root / "fw").mkdir()
+        (self.root / "fw" / "kick.rom").write_bytes(self.bad)
+        make_symlink(self.root / "link.rom", "fw/kick.rom")
+        make_symlink(self.root / f"{self.BAD}.rom", "fw/kick.rom")                     # (one named as the list names it, too)
+        ops = {op.src.name: op for op in self.plan().ops}
+        for name in ("link.rom", f"{self.BAD}.rom"):
+            self.assertEqual((ops[name].status, ops[name].dst, ops[name].code), ("skip", ops[name].src, ""), name)
+        self.assertEqual(ops["kick.rom"].code, "excluded")                                 # (the real file is judged as a file)
+        self.build()
+        for name in ("link.rom", f"{self.BAD}.rom"):
+            self.assertTrue(os.path.islink(self.root / name), name)
+            self.assertEqual(os.readlink(self.root / name), "fw/kick.rom")               # (the link itself is left as it was)
+
+    def test_a_symbolic_link_to_a_bad_dump_bios_outside_the_folder_is_left_and_so_is_its_file(self) -> None:
+        outside = Path(self.tmp.name) / "outside kick.rom"
+        outside.write_bytes(self.bad)
+        make_symlink(self.root / "kick.rom", str(outside))
+        op = next(o for o in self.plan().ops if o.src.name == "kick.rom")
+        self.assertEqual((op.dst, op.code), (op.src, ""))                                   # (named as the list names it: it stays)
+        self.assertIn(op.status, ("ok", "skip"))
+        self.build()
+        self.assertTrue(os.path.islink(self.root / "kick.rom"))
+        self.assertEqual(outside.read_bytes(), self.bad)
+        self.assertFalse((self.root / "_excluded").exists())
+
+
+    def test_a_zip_of_several_bios_files_is_never_excluded_for_one_of_them(self) -> None:
+        bad, good = _rand(1024, 5), _rand(2048, 6)
+        self.tosec_bios((bad, "kick.rom", "Kick (1990)(Commodore)[b]"), (good, "ext.rom", "Ext (1990)(Commodore)"))
+        self.have("Solo Game (1993)(Pub).adf")
+        for name, order in (("bad first.zip", (("kick.rom", bad), ("ext.rom", good))), ("good first.zip", (("ext.rom", good), ("kick.rom", bad)))):
+            with zipfile.ZipFile(self.root / name, "w") as zf:
+                for member, data in order:
+                    zf.writestr(member, data)
+        ops = {o.src.name: o for o in self.plan().ops}
+        self.assertEqual({n: (ops[n].status, ops[n].code) for n in ("bad first.zip", "good first.zip")},
+                         {"bad first.zip": ("ok", ""), "good first.zip": ("ok", "")})

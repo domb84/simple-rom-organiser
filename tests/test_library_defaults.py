@@ -64,10 +64,11 @@ class LayeringTests(unittest.TestCase):
         self.assertTrue(library.migrate_config(cfg))
         self.assertNotIn("collection", cfg)
         self.assertNotIn("library", cfg)
-        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo"])                    # the Collection's rules are your defaults
+        added = [r for v, rs in sorted(library._RULES_ADDED.items()) for r in rs]           # (rules newer than the config: on, as for any older list)
+        self.assertEqual(cfg["library_defaults"]["exclude"], ["demo", *added])           # the Collection's rules are your defaults
         self.assertEqual(library.overridden_fields(cfg, self.snes), ["exclude", "latest_only"])    # only what differs is an override
         after = {p.name: library.load_profile(cfg, p).to_dict() for p in (self.snes, platforms.PLATFORMS[GBA])}
-        self.assertEqual(before[SNES]["exclude"], after[SNES]["exclude"])
+        self.assertEqual(sorted({*before[SNES]["exclude"], *added}), sorted(after[SNES]["exclude"]))
         self.assertEqual(before[SNES]["latest_only"], after[SNES]["latest_only"])
         self.assertFalse(library.migrate_config(cfg))                                      # (and once only)
 

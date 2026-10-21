@@ -233,8 +233,8 @@ class LibraryScopes(unittest.TestCase):
 
     def test_scopes(self) -> None:
         amiga = get_platform("Commodore Amiga")
-        self.assertEqual(amiga.language_dats, ("Commodore Amiga - Games - [ADF]", "Commodore Amiga - Games - SPS",
-                                               "Commodore Amiga - Games - [Unofficial IPF]"))     # (the SPS releases' languages count too)
+        self.assertEqual(amiga.language_dats, ("Commodore Amiga - Games - [ADF]", "Commodore Amiga - Games - SPS",       # (the SPS releases'
+                                               "Commodore Amiga - Games - [Unofficial IPF]", *amiga.disc_dats))  #  and discs' languages count too)
         self.assertEqual(amiga.region_dats, ())
         for p in list_platforms():
             if p.name == "Commodore Amiga":

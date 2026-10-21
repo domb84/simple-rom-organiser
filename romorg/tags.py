@@ -28,9 +28,11 @@ for _r in ("Europe", "Australia", "New Zealand", "Germany", "France", "Spain", "
            "Sweden", "Denmark", "Norway", "Finland", "Scandinavia", "United Kingdom", "Ireland",
            "Portugal", "Austria", "Switzerland", "Belgium", "Greece", "Poland", "Russia", "Croatia",
            "Czech", "Hungary", "Turkey", "South Africa", "China", "Hong Kong", "India", "Argentina",
-           "United Arab Emirates"):
+           "United Arab Emirates", "Slovakia", "Slovenia", "Yugoslavia", "Serbia", "Romania", "Bulgaria", "Lithuania", "Latvia",
+           "Estonia", "Ukraine", "Israel", "Iceland", "Luxembourg", "Singapore", "Thailand", "Malaysia", "Indonesia", "Egypt"):
     REGIONS[_r] = "PAL"
-for _r in ("USA", "Canada", "Japan", "Korea", "Taiwan", "Brazil", "Mexico", "Peru", "Latin America"):
+for _r in ("USA", "Canada", "Japan", "Korea", "Taiwan", "Brazil", "Mexico", "Peru", "Latin America", "Chile", "Colombia",
+           "Philippines", "Vietnam"):
     REGIONS[_r] = "NTSC"
 for _r in ("World", "Asia", "Unknown"):
     REGIONS[_r] = ""
@@ -58,6 +60,9 @@ TOSEC_COUNTRIES: dict[str, str] = {
     "JP": "Japan", "KR": "Korea", "MX": "Mexico", "NL": "Netherlands", "NO": "Norway",
     "NZ": "New Zealand", "PL": "Poland", "PT": "Portugal", "RU": "Russia", "SE": "Sweden",
     "TR": "Turkey", "TW": "Taiwan", "US": "USA", "ZA": "South Africa",
+    "BG": "Bulgaria", "CL": "Chile", "CS": "Serbia", "EE": "Estonia", "EG": "Egypt", "ID": "Indonesia", "IL": "Israel",
+    "IS": "Iceland", "LT": "Lithuania", "LU": "Luxembourg", "LV": "Latvia", "MY": "Malaysia", "PE": "Peru", "PH": "Philippines",
+    "RO": "Romania", "SG": "Singapore", "SI": "Slovenia", "SK": "Slovakia", "TH": "Thailand", "VN": "Vietnam", "YU": "Yugoslavia",
 }
 
 LANGUAGES: dict[str, str] = {
@@ -81,7 +86,10 @@ for _codes, _lang in (
         (("Netherlands",), "Nl"), (("Sweden",), "Sv"), (("Norway",), "No"), (("Denmark",), "Da"),
         (("Finland",), "Fi"), (("Brazil", "Portugal"), "Pt"), (("Russia",), "Ru"),
         (("Korea",), "Ko"), (("China", "Taiwan", "Hong Kong"), "Zh"), (("Poland",), "Pl"),
-        (("Greece",), "El")):
+        (("Greece",), "El"), (("Czech",), "Cs"), (("Slovakia",), "Sk"), (("Slovenia",), "Sl"), (("Hungary",), "Hu"),
+        (("Croatia",), "Hr"), (("Serbia", "Yugoslavia"), "Sr"), (("Romania",), "Ro"), (("Bulgaria",), "Bg"), (("Lithuania",), "Lt"),
+        (("Latvia",), "Lv"), (("Estonia",), "Et"), (("Ukraine",), "Uk"), (("Israel",), "He"), (("Iceland",), "Is"),
+        (("Turkey",), "Tr"), (("Thailand",), "Th"), (("Vietnam",), "Vi"), (("Indonesia",), "Id"), (("Chile", "Colombia"), "Es")):
     for _c in _codes:
         REGION_LANGUAGE[_c] = _lang
 del _codes, _lang, _c
@@ -201,8 +209,16 @@ def _version_key(version: str, widths: Optional[dict[int, int]] = None) -> tuple
             stage = _PRERELEASE[m.group(3).lower()]
             return (1, *parts, 1_000_000 + stage, int(m.group(4) or 0))
         return (1, *nums, *letter)
-    nums = re.findall(r"\d+", v)                             # (the other forms: "v855e.01", "vP1.00-D1.00" - their numbers in order)
-    return (1, *(int(x) for x in nums)) if nums else (1, 0)
+    # the other forms ("v855e.01", "v2.0f i2.202", "v1.1+", "vP1.00-D1.00"): a leading "vX.Y<letter>" read as above (its widths and
+    # letter), then the rest's numbers in order
+    lead = re.match(r"^v(\d+(?:\.\d+)*)([a-z]?)(?![0-9])", v, re.IGNORECASE)
+    head: list[int] = []
+    if lead:
+        head = [int(x.ljust(widths[i], "0")) if widths and i in widths else int(x) for i, x in enumerate(lead.group(1).split("."))]
+        head += [ord(lead.group(2).lower()) - 96] if lead.group(2) else []
+        v = v[lead.end():]
+    nums = head + [int(x) for x in re.findall(r"\d+", v)]
+    return (1, *nums) if nums else (1, 0)
 
 
 def _max_version(parts: list[str]) -> str:
@@ -1220,6 +1236,7 @@ def to_json(t: Tags) -> dict[str, Any]:
         "regions": list(t.regions),
         "languages": list(t.languages),
         "languages_implied": t.languages_implied,
+        "variant_languages": sorted(variant_languages(t)),     # (what the language rules read: TOSEC's untagged release is English)
         "version": t.version,
         "status": t.status,
         "flags": list(t.flags),

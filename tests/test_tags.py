@@ -107,7 +107,7 @@ class NoIntroParseTest(unittest.TestCase):
         a = parse_name("Zelda (USA) (Rev 1).nes")
         self.assertIs(a, parse_name("Zelda (USA) (Rev 1).nes"))
         self.assertEqual(to_json(a), {
-            "regions": ["USA"], "languages": ["En"], "languages_implied": True, "version": "Rev 1",
+            "regions": ["USA"], "languages": ["En"], "languages_implied": True, "variant_languages": ["En"], "version": "Rev 1",
             "status": "", "flags": [], "dump_flags": [], "bad": False, "bios": False, "video": ["NTSC"],
             "bad_flags": [], "excluded_by": []})
 
@@ -119,6 +119,15 @@ class NoIntroParseTest(unittest.TestCase):
         self.assertTrue(all(c in tags.REGIONS for c in tags.TOSEC_COUNTRIES.values()))
         self.assertTrue(all(lang in tags.LANGUAGES for lang in tags.REGION_LANGUAGE.values()))
         self.assertEqual(len(tags.LANGUAGES), 43)
+
+    def test_every_tosec_country_is_a_region_with_its_language(self) -> None:
+        for code, lang in (("SK", "Sk"), ("SI", "Sl"), ("YU", "Sr"), ("RO", "Ro"), ("BG", "Bg"), ("LT", "Lt"), ("LV", "Lv"), ("EE", "Et"),
+                           ("IL", "He"), ("IS", "Is"), ("TH", "Th"), ("CZ", "Cs"), ("HU", "Hu")):
+            t = parse_name(f"Hra (1995)(Pub)({code}).adf", tags.STYLE_TOSEC)
+            self.assertEqual((t.regions, t.flags, tags.variant_languages(t)), ((tags.TOSEC_COUNTRIES[code],), ("Pub",), {lang}), code)
+        # (No-Intro: a region it has, never a product tag that parts a game)
+        for region in ("Israel", "Thailand", "Singapore", "Ukraine", "Slovakia", "Bulgaria"):
+            self.assertEqual(tags.game_key(parse_name(f"Game (USA, {region}).gba")), tags.game_key(parse_name("Game (USA).gba")), region)
 
     def test_flag_kind(self) -> None:
         self.assertEqual(tags.flag_kind("Unl"), "license")
@@ -199,6 +208,14 @@ class OtherVersionForms(unittest.TestCase):
         t = parse_name("Dragon Wars v1.2-G (1990)(Interplay).adf", tags.STYLE_TOSEC)
         self.assertEqual((t.title, t.version, t.flags[0]), ("Dragon Wars", "v1.2", "G"))
         self.assertLess(version_key("v0.90-1.00"), version_key("vP1.00-D1.00"))
+
+    def test_the_other_forms_order_against_the_plain_ones(self) -> None:
+        # (their leading "vX.Y<letter>" is read as the plain form's: its letter, and the widths of the versions next to it)
+        self.assertLess(version_key("v855e"), version_key("v855e.01"))
+        self.assertLess(version_key("v2.0c"), version_key("v2.0f i2.202"))
+        for older, newer in (("v1.05", "v1.1+"), ("v1.05", "v1.3 29701")):
+            keys = tags.group_version_keys([f"Game {older} (1990)(X).adf", f"Game {newer} (1990)(X).adf"], tags.STYLE_TOSEC)
+            self.assertLess(keys[f"Game {older} (1990)(X).adf"], keys[f"Game {newer} (1990)(X).adf"], newer)
 
     def test_a_version_letter_parts_no_game_when_titles_are_combined(self) -> None:
         from romorg import library

@@ -289,6 +289,12 @@ def _dats(platform: Any, attr: str) -> tuple[str, ...]:
     return tuple(getattr(platform, attr, ()) or ())
 
 
+def complete_dats(platform: Any) -> tuple[str, ...]:
+    """The DATs "Complete multi-disk sets only" decides: the multi-disk ones (``m3u_dats``), or the discs of a system with a folder
+    per game (Dreamcast, PlayStation, PlayStation 2: their Redump DATs)."""
+    return _dats(platform, "m3u_dats") or (_dats(platform, "latest_dats") if getattr(platform, "layout", "") == "game_folder" else ())
+
+
 def _borrow_scope(platform: Any) -> bool:
     """Borrowing disks of other editions applies to the TOSEC "Games"-style DATs (``best_variant_dats``) only."""
     return bool(_dats(platform, "best_variant_dats")) and _style_of_platform(platform) == STYLE_TOSEC
@@ -300,7 +306,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         exclude=frozenset(RULES),
         latest_only=bool(_dats(platform, "latest_dats")),
         best_variant=bool(_dats(platform, "best_variant_dats")),
-        complete_only=bool(_dats(platform, "m3u_dats")),
+        complete_only=bool(complete_dats(platform)),
         languages=("En",) if _dats(platform, "language_dats") else (),
         one_per_game=bool(_dats(platform, "region_dats")),
         borrow_other_editions=_borrow_scope(platform))
@@ -543,18 +549,7 @@ def migrate_config(cfg: dict) -> bool:
     gone) become your defaults, each system's saved profile becomes its list of overrides (only where it differs from the defaults).
     A saved list of exclusion rules from before a rule existed gets that rule (new rules are on by default)."""
     changed = False
-    if cfg.get("rules_version", 1) < RULES_VERSION:
-        since = cfg.get("rules_version", 1)
-        added = [r for v, rs in sorted(_RULES_ADDED.items()) if v > since for r in rs]   # (only the rules newer than the config:
-        lists = [cfg.get("library_defaults")] + list((cfg.get("library_overrides") or {}).values())   #  one turned off stays off)
-        for entry in lists:
-            if not isinstance(entry, dict):
-                continue
-            for key in ("exclude", "exclude_amiga"):
-                if isinstance(entry.get(key), list):
-                    entry[key] = list(dict.fromkeys([*entry[key], *added]))
-        cfg["rules_version"] = RULES_VERSION
-        changed = True
+    since = cfg.get("rules_version", 1)
     coll = cfg.get("collection")
     if isinstance(coll, dict):
         mine = coll.get("global") if isinstance(coll.get("global"), dict) else {}
@@ -583,6 +578,17 @@ def migrate_config(cfg: dict) -> bool:
                     _put_overrides(cfg, platform, found)
                     changed = True
         cfg.pop("library", None)
+        changed = True
+    if since < RULES_VERSION:                                     # (after the conversions above: their lists are as old as the config)
+        added = [r for v, rs in sorted(_RULES_ADDED.items()) if v > since for r in rs]   # (only the rules newer than the config:
+        lists = [cfg.get("library_defaults")] + list((cfg.get("library_overrides") or {}).values())   #  one turned off stays off)
+        for entry in lists:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("exclude", "exclude_amiga"):
+                if isinstance(entry.get(key), list):
+                    entry[key] = list(dict.fromkeys([*entry[key], *added]))
+        cfg["rules_version"] = RULES_VERSION
         changed = True
     return changed
 
@@ -664,6 +670,7 @@ class Selection:
     incomplete: list[IncompleteSet] = field(default_factory=list)
     vanished: list[Vanished] = field(default_factory=list)
     combine_alt: bool = False                  # the profile's "Combine alternate titles" (what :func:`game_key` of its items needs)
+    before_borrow: dict[int, Optional[Decision]] = field(default_factory=dict)   # a borrowed disk's own decision (its set may be dropped)
 
     def exclusion_counts(self) -> dict[str, dict[str, int]]:
         """``{"exclusive": {code: files}, "any": {code: files}}``: excluded files per reason code.
@@ -726,6 +733,8 @@ def _tags_of(item: Item) -> tags.Tags:
         return tags.redump_tags(_rom_name(item), getattr(item.rom, "category", "") or "")
     if item.dat in _image_set_dats() and item.rom.game:  # (an SPS image is "<release> - <file>.ipf": the release's name has the tags)
         return tags.parse_name(item.rom.game + ".ipf", _style(item))
+    if item.dat in _disc_dats() and item.rom.game:       # (a CD32 / CDTV disc's files - "(Track 01 of 02)" - are one game: the disc's name)
+        return tags.parse_name(item.rom.game + ".cue", _style(item))
     return tags.parse_name(_rom_name(item), _style(item))
 
 
@@ -763,6 +772,17 @@ def _image_set_dats() -> frozenset:
         from . import platforms
         _IMAGE_SETS = frozenset(d for p in platforms.PLATFORMS.values() for d in p.image_set_dats)
     return _IMAGE_SETS
+
+
+_DISC_DATS: Optional[frozenset] = None
+
+
+def _disc_dats() -> frozenset:
+    global _DISC_DATS
+    if _DISC_DATS is None:
+        from . import platforms
+        _DISC_DATS = frozenset(d for p in platforms.PLATFORMS.values() for d in p.disc_dats)
+    return _DISC_DATS
 
 
 _DISC_FILES: dict[str, dict[str, frozenset]] = {}
@@ -1066,11 +1086,12 @@ class _Borrow:
 
 def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
                 profile: Optional[LibraryProfile] = None,
-                borrow: Optional[_Borrow] = None) -> tuple[list[_Set], list[_Set]]:
+                borrow: Optional[_Borrow] = None, complete_totals: Iterable[int] = ()) -> tuple[list[_Set], list[_Set]]:
     """``(complete sets, incomplete sets)`` of one identity group.
 
-    With ``borrow`` an anchored incomplete set whose disk count has no complete set in the group is completed
-    by disks of other editions (every missing slot must be fillable)."""
+    With ``borrow`` an anchored incomplete set whose disk count has no complete set in the group - nor in
+    ``complete_totals``: the disk counts other editions of a combined game have complete - is completed by disks of
+    other editions (every missing slot must be fillable)."""
     from . import m3u
 
     parsed = {it.key: tags.parse_name(it.rom.name, STYLE_TOSEC) for it in group}
@@ -1115,7 +1136,7 @@ def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
             first.setdefault(it.rom.name, it)
         cands = [m3u.DiskCand(ref=it.key, name=name) for name, it in first.items()]
         found = m3u.resolve_slots(cands, vkeys)
-        have_complete = {ss.total for ss in found if ss.complete}
+        have_complete = {ss.total for ss in found if ss.complete} | set(complete_totals)
         for ss in found:
             slots = {i: by_key[c.ref] for i, c in ss.slots.items()}
             anchor = by_key[ss.anchor.ref] if ss.anchor is not None else slots[min(slots)]
@@ -1194,8 +1215,9 @@ def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Pl
     for it in items:
         if _style(it) not in OTHER_LANGUAGE_STYLES or it.dat not in scope.language:
             continue
-        if not eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
-                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP or it.dat in _image_set_dats() else None):
+        info = eligibility(_rom_name(it), _style(it), profile, languages=True, flags=scope.flags(it.dat),
+                           parsed=_tags_of(it) if _style(it) == STYLE_REDUMP or it.dat in _image_set_dats() else None)
+        if all(code == "budget" for code, _x in info):         # (a budget re-release in your language is one: the budget rule decides it)
             out.add(game_key(it, profile.combine_alt_titles))
     return frozenset(out)
 
@@ -1232,6 +1254,22 @@ def content_names(item: Item) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _release_of_parts(it: Item) -> Optional[tuple]:
+    """The release ``it`` is one disk / disc / image of, when it is one of several (a TOSEC "Disk N of M", a Redump "(Disc N)", an
+    image of an SPS release): what is kept or set aside as a whole. None for a game of one file."""
+    if it.dat in _image_set_dats() and it.rom.game:
+        return ("sps", it.dat, it.rom.game)
+    t = _tags_of(it)
+    if _style(it) == STYLE_TOSEC:
+        d = tags._disk(t)
+        return (("disk", it.dat, tags._set_key(t, d[0]), t.version, tags.date_key(t.date))    # (a release: its version and date too)
+                if d is not None and d[2] >= 2 else None)
+    if tags.disc_number(t):
+        return ("disc", it.dat, t.title.casefold(), t.regions, () if t.languages_implied else t.languages, t.status,
+                tuple(f for f in t.flags if tags.flag_kind(f) != "disk"), tuple(f for f in t.dump_flags if f != "!"))
+    return None
+
+
 def apply_prefer_saved(sel: Selection, items: Sequence[Item], saved: frozenset) -> None:
     """Of the releases / versions of a game, keep the one you have saves for: a release the rules set aside for another one (a newer
     version, a release of a region higher in your list) that has saves, while the one they keep has none, is kept instead, and the other
@@ -1244,13 +1282,17 @@ def apply_prefer_saved(sel: Selection, items: Sequence[Item], saved: frozenset) 
     by_name: dict[str, list[Item]] = {}
     for it in items:
         by_name.setdefault(_rom_name(it), []).append(it)
+        if _style(it) == STYLE_TOSEC and _stem(_rom_name(it)) != _rom_name(it):
+            by_name.setdefault(_stem(_rom_name(it)), []).append(it)     # (a TOSEC winner is named by its stem: _winner_name)
     losers: dict[str, list[Item]] = {}
     for it in items:
         d = sel.decisions.get(it.key)
-        if d is not None and d.action == SUPERSEDED and d.superseded_by and d.set_id is None and not it.link and has(it):
+        if d is not None and d.action == SUPERSEDED and d.superseded_by and d.set_id is None and not it.link and has(it) \
+                and _release_of_parts(it) is None:
             losers.setdefault(d.superseded_by, []).append(it)
     for win_name, cands in losers.items():
-        winners = [w for w in by_name.get(win_name, ()) if (wd := sel.decisions.get(w.key)) is not None and wd.action == KEEP and wd.set_id is None]
+        winners = [w for w in by_name.get(win_name, ()) if (wd := sel.decisions.get(w.key)) is not None and wd.action == KEEP and wd.set_id is None
+                   and _release_of_parts(w) is None]
         if not winners or any(has(w) for w in winners):
             continue
         pick = max(cands, key=lambda i: (_rom_name(i).casefold(), i.key))   # (of several with saves: the last by name, the newest revision)
@@ -1278,13 +1320,24 @@ def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile
                 platform_name: str = "") -> None:
     """Keep the games the rules set aside (excluded or superseded) when RetroArch has saves or states for them and their
     choice is ``keep`` (``profile.saved_games``, or the game's own in ``profile.saved_overrides``; without a profile: all).
-    A user's own "always exclude" still wins (it is applied after this). Files that are part of a multi-disk set, symbolic
-    links and incomplete games are left to their rules."""
+    A user's own "always exclude" still wins (it is applied after this). Files of a kept multi-disk set, symbolic links and incomplete
+    games are left to their rules; a save named after one disk of a release of several (disk 1, launched without a playlist) keeps
+    every disk of it (:func:`_release_of_parts`), never half a game."""
     from .retroarch import fold_name
+
+    parts: dict[tuple, list[Item]] = {}
+    for it in items:
+        rel = _release_of_parts(it)
+        if rel is not None:
+            parts.setdefault(rel, []).append(it)
+
+    def set_aside(it: Item) -> bool:
+        d = sel.decisions.get(it.key)
+        return d is not None and d.action in (EXCLUDED, SUPERSEDED) and d.set_id is None and not it.link
 
     for it in items:
         d = sel.decisions.get(it.key)
-        if d is None or d.action not in (EXCLUDED, SUPERSEDED) or d.set_id is not None or it.link:
+        if not set_aside(it):
             continue
         choice = saved_choice(profile, *override_game(it.dat, it.rom)) if profile is not None else "keep"
         if choice not in ("keep", "carry", "convert"):
@@ -1295,7 +1348,10 @@ def apply_saved(sel: Selection, items: Sequence[Item], saved: frozenset, profile
             continue                                                  # it goes: its saves are copied to the version that replaces it
         if d.action == SUPERSEDED and _same_code(sel, items, it, d, platform_name):
             continue                                                  # it goes: the version that replaces it has the same game code, the saves work there as they are
-        sel.decisions[it.key] = Decision(key=it.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)
+        rel = _release_of_parts(it)
+        for m in (parts[rel] if rel is not None else [it]):
+            if m is it or set_aside(m):
+                sel.decisions[m.key] = Decision(key=m.key, action=KEEP, codes=(SAVED_KEEP,), reason=SAVED_KEEP_TEXT)
 
 
 def _same_code(sel: Selection, items: Sequence[Item], it: Item, d: Decision, platform_name: str) -> bool:
@@ -1336,7 +1392,8 @@ def override_game(dat: str, rom: Any) -> tuple[str, str]:
 
 def apply_overrides(sel: Selection, items: Sequence[Item], profile: LibraryProfile) -> None:
     """The user's per-game choices beat every rule: ``keep`` keeps the file (whatever excluded / superseded / left it
-    out), ``exclude`` sets it aside. A playlist is dropped when one of its disks is excluded this way."""
+    out), ``exclude`` sets it aside. A playlist is dropped when one of its disks is excluded this way, and a disk it borrowed from
+    another edition goes back to its own decision (the language filter's, say): it was only kept for that set."""
     if not profile.overrides:
         return
     wanted = {(d, n): a for d, n, a in profile.overrides}
@@ -1353,7 +1410,36 @@ def apply_overrides(sel: Selection, items: Sequence[Item], profile: LibraryProfi
                                              reason="excluded because you chose to always exclude it")
             excluded_keys.add(it.key)
     if excluded_keys:
-        sel.sets = [cs for cs in sel.sets if not excluded_keys & set(cs.slots.values())]
+        dropped = [cs for cs in sel.sets if excluded_keys & set(cs.slots.values())]
+        sel.sets = [cs for cs in sel.sets if cs not in dropped]
+        for cs in dropped:
+            for note in cs.borrowed.values():
+                key = note["key"]
+                d = sel.decisions.get(key)
+                if key in excluded_keys or d is None or BORROWED_CODE not in d.codes or d.set_id != cs.id:
+                    continue
+                still = next((o for o in sel.sets if key in o.slots.values()), None)
+                if still is not None:                         # (another kept set borrows it too: it stays, part of that one)
+                    d.set_id = still.id
+                elif sel.before_borrow.get(key) is not None:
+                    sel.decisions[key] = sel.before_borrow[key]
+            # its other disks are a set that lacks one now, as when that disk is not there (reported; "Complete multi-disk sets only":
+            # set aside) - never a whole game of yours
+            miss = tuple(sorted(slot for slot, k in cs.slots.items() if k in excluded_keys))
+            present = {slot: k for slot, k in sorted(cs.slots.items()) if k not in excluded_keys
+                       and (dd := sel.decisions.get(k)) is not None and dd.action == KEEP and dd.set_id == cs.id}
+            if not present:
+                continue
+            text = f"incomplete set: disk {', '.join(str(m) for m in miss)} excluded because you chose to always exclude it"
+            for k in present.values():
+                dd = sel.decisions[k]
+                dd.set_id, dd.missing = None, miss
+                if profile.complete_only:
+                    dd.action, dd.codes, dd.reason = INCOMPLETE, (), text
+                else:
+                    dd.reason = text + " - kept, no playlist"
+            sel.incomplete.append(IncompleteSet(dat=cs.dat, name=cs.name, total=cs.total, present=present, missing=miss,
+                                                kept=not profile.complete_only))
 
 
 def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
@@ -1389,21 +1475,29 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     # a game that has no version in the selected languages at all: keep what exists of it (No-Intro / Redump)
     rescued: dict[int, str] = {}
     if profile.keep_other_language and profile.languages:
-        only_lang = [(it, info) for it, info in excluded
-                     if _style(it) in OTHER_LANGUAGE_STYLES and all(code == LANGUAGE_CODE for code, _x in info)]
+        only_lang = [(it, info) for it, info in excluded       # (a budget re-release in another language: the budget rule below decides it)
+                     if _style(it) in OTHER_LANGUAGE_STYLES and {code for code, _x in info} & {LANGUAGE_CODE}
+                     and {code for code, _x in info} <= {LANGUAGE_CODE, "budget"}]
         if only_lang:
             known = lang_games if lang_games is not None else language_games(items, profile, platform)
             back = {it.key: info for it, info in only_lang if game_key(it, profile.combine_alt_titles) not in known}
             if back:
-                excluded = [(it, info) for it, info in excluded if it.key not in back]
+                excluded = [(it, info) if it.key not in back else (it, [x for x in info if x[0] != LANGUAGE_CODE])
+                            for it, info in excluded]
+                excluded = [(it, info) for it, info in excluded if info]
                 for it, info in only_lang:
-                    if it.key in back:
+                    if it.key in back and all(code == LANGUAGE_CODE for code, _x in info):
                         alive.append(it)
                         rescued[it.key] = (f"kept although it only exists in {info[0][1]}: no version in your languages exists")
     # a budget re-release is set aside only when another release of its game is there: the only release of a game stays
     only_budget = [(it, info) for it, info in excluded if {code for code, _x in info} == {"budget"}]
-    if only_budget:
-        others = {game_key(it, profile.combine_alt_titles) for it in alive}
+    if only_budget:                                   # (a release that lacks a disc is no other release: the complete budget set stays)
+        parts: dict[tuple, list[Item]] = {}
+        for it in alive:
+            if (rel := _release_of_parts(it)) is not None and rel[0] == "disc":
+                parts.setdefault(rel, []).append(it)
+        others = {game_key(it, profile.combine_alt_titles) for it in alive
+                  if (rel := _release_of_parts(it)) is None or rel[0] != "disc" or not _discs_missing(parts[rel])}
         back = {it.key for it, _info in only_budget if game_key(it, profile.combine_alt_titles) not in others}
         if back:
             excluded = [(it, info) for it, info in excluded if it.key not in back]
@@ -1454,9 +1548,11 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
             _select_discs(dat, dat_items, profile, decide)
             continue
         if all(_style(i) == STYLE_REDUMP for i in dat_items):
-            if dat in latest_dats and (profile.latest_only or (dat in scope.region and profile.one_per_game)):
-                _select_redump(dat, dat_items, profile, dat in scope.region and profile.one_per_game, sel,
-                               decide, next_id, complete_only=profile.complete_only and getattr(platform, "layout", "") == "game_folder")
+            if dat in latest_dats:                     # (discs of a game stay together and become a playlist, whatever keeps the versions)
+                one = dat in scope.region and profile.one_per_game
+                _select_redump(dat, dat_items, profile, one, sel, decide, next_id,
+                               complete_only=profile.complete_only and getattr(platform, "layout", "") == "game_folder",
+                               every_revision=not (profile.latest_only or one))
             else:
                 for it in dat_items:
                     decide(it, KEEP)
@@ -1495,7 +1591,7 @@ _SHEETS = (".cue", ".ccd", ".mds")
 def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, decide: Callable[..., None]) -> None:
     """A CD DAT's games: each a disc of several files (a cue sheet, its ISO and audio tracks; a CloneCD set) decided as one; a game
     of several discs ("(Disc 1 of 2)") as one release. Incomplete: a file of a disc or a disc of the release is not there. One
-    release per game kept (``best_variant``): a good dump ([!]) first, then the newest, then the fewest flags."""
+    release per game kept (``best_variant``): the best of your languages first, then a good dump ([!]), the newest, the fewest flags."""
     files = _DISC_FILES.get(dat, {})
     discs: dict[str, list[Item]] = {}
     for it in dat_items:
@@ -1507,6 +1603,23 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
         rkey = _DISC_RE.sub("", game) if m else game
         releases.setdefault(rkey, {})[int(m.group(1)) if m else 1] = game
         totals[rkey] = max(totals.get(rkey, 1), int(m.group(2)) if m else 1)
+
+    # discs of one release whose names differ after the disc token ("(Disc 1 of 2)[!]" / "(Disc 2 of 2)", a per-disc label
+    # "(Disc 1 of 2)(Game Disc)"): one release when together they are every disc, once each
+    bases: dict[tuple, list[str]] = {}
+    for rkey, by_no in releases.items():
+        first = by_no[min(by_no)]
+        m = _DISC_RE.search(first)
+        if m and len(by_no) < totals[rkey]:
+            bases.setdefault((first[:m.start()], totals[rkey]), []).append(rkey)
+    for (_base, total), rkeys in bases.items():
+        nums = [n for r in rkeys for n in releases[r]]
+        if len(rkeys) > 1 and sorted(nums) == list(range(1, total + 1)):
+            keep = min(rkeys, key=lambda r: min(releases[r]))
+            for r in rkeys:
+                if r != keep:
+                    releases[keep].update(releases.pop(r))
+                    totals.pop(r)
 
     def whole(game: str) -> bool:
         want = files.get(game)
@@ -1550,6 +1663,7 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
         rkeys.sort(key=lambda r: len(parsed(r).dump_flags))
         rkeys.sort(key=lambda r: tags.date_key(parsed(r).date), reverse=True)
         rkeys.sort(key=lambda r: not verified(r))
+        rkeys.sort(key=lambda r: _lang_rank(tags.variant_languages(parsed(r)), profile))   # (first: your language order)
         win = rkeys[0]
         for rkey in rkeys:
             for g in releases[rkey].values():
@@ -1562,7 +1676,7 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
 
 def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
     """One release per game across the system's DATs: a game kept both as a disc (a CD DAT's) and on floppies (its games DAT) keeps
-    the best by :data:`tags.PLATFORM_ORDER` - a CD32 disc, an AGA floppy, a CDTV disc, an ECS floppy, the rest; the others are
+    the best of your languages, then the best by :data:`tags.PLATFORM_ORDER` - a CD32 disc, an AGA floppy, a CDTV disc, an ECS floppy, the rest; the others are
     superseded. Two discs of a game in two CD DATs ([ISO] and [IMG]): the one of the DAT listed first."""
     from .platforms import disc_class
     disc_dats = set(_dats(platform, "disc_dats"))
@@ -1573,8 +1687,9 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
         d = sel.decisions.get(it.key)
         if d is None or d.action != KEEP or (it.dat not in disc_dats and it.dat != gdat):
             continue
-        if it.dat in disc_dats:
-            rel = (it.dat, _DISC_RE.sub("", it.rom.game))
+        if it.dat in disc_dats:                               # (the discs of the one release _select_discs kept: the name before the disc token)
+            m = _DISC_RE.search(it.rom.game)
+            rel = (it.dat, it.rom.game[:m.start()] if m else it.rom.game)
         else:
             rel = (it.dat, d.set_id if d.set_id is not None else it.rom.name)
         releases.setdefault(game_key(it, profile.combine_alt_titles), {}).setdefault(rel, []).append(it)
@@ -1585,7 +1700,8 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
     for _g, rels in releases.items():
         if len(rels) < 2 or not any(r[0] in disc_dats for r in rels):
             continue
-        ranked = sorted(rels.items(), key=lambda kv: (tags.PLATFORM_ORDER.index(cls(*kv)), order.get(kv[0][0], 99)))
+        ranked = sorted(rels.items(), key=lambda kv: (_lang_rank(tags.variant_languages(_tags_of(kv[1][0])), profile),   # (your language order first)
+                                                      tags.PLATFORM_ORDER.index(cls(*kv)), order.get(kv[0][0], 99)))
         best_rel, best_members = ranked[0]
         best_cls = cls(best_rel, best_members)
         winner = best_rel[1] if best_rel[0] in disc_dats else _stem(best_members[0].rom.name)
@@ -1623,8 +1739,9 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
     image_sets = set(_dats(platform, "image_set_dats"))
     gdat = getattr(platform, "game_dat", "")
     originals: dict[tuple, dict[str, list[Item]]] = {}     # game -> release -> its kept images (one zip: the library has one of them)
-    cracks: dict[tuple, dict[Any, list[Item]]] = {}        # game -> kept set of the games DAT -> its disks
+    cracks: dict[tuple, dict[Any, list[Item]]] = {}        # game -> kept set of the games DAT with a cracked disk -> its disks
     titles: dict[tuple, set[str]] = {}                     # game -> the titles of every version of it (is an install known?)
+    kept: dict[tuple, dict[Any, list[Item]]] = {}
     for it in items:
         if it.dat not in image_sets and it.dat != gdat:
             continue
@@ -1635,8 +1752,12 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
             continue
         if it.dat in image_sets:
             originals.setdefault(g, {}).setdefault(it.rom.game, []).append(it)
-        elif tags.is_cracked(_tags_of(it)):
-            cracks.setdefault(g, {}).setdefault(d.set_id if d.set_id is not None else it.rom.name, []).append(it)
+        else:
+            kept.setdefault(g, {}).setdefault(d.set_id if d.set_id is not None else it.rom.name, []).append(it)
+    for g, sets in kept.items():                           # (a set is a crack when any disk is: TOSEC often tags disk 1 only)
+        for sid, members in sets.items():
+            if any(tags.is_cracked(_tags_of(m)) for m in members):
+                cracks.setdefault(g, {})[sid] = members
     gone: set[int] = set()
     for g, releases in originals.items():
         kept_cracks = list((cracks.get(g) or {}).values())
@@ -1714,7 +1835,9 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
     units: dict[tuple, _Unit] = {}
     for it in items:
         d = sel.decisions.get(it.key)
-        if d is None or d.action != KEEP or it.dat not in rdats:
+        if d is None or d.action != KEEP or (it.dat not in rdats and game_dat(it.dat) not in rdats):   # (a CD32 disc, an SPS release: the games DAT's)
+            continue
+        if _tags_of(it).bios:                              # (a [BIOS] set is no game: never rated, never counted as one)
             continue
         owner = owner_of.get(it.key, it)
         key = game_key(owner, profile.combine_alt_titles)
@@ -1821,16 +1944,22 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
 
 
 def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
-    """Titles of which no local variant is kept, with the reason (language first, then flags, rules)."""
+    """Titles of which no local variant is kept, with the reason (language first, then flags, rules). A title whose game is kept in
+    another form (another publisher's release under "Combine alternate titles", its CD32 disc, its floppies next to an SPS release:
+    ``game_key``) has not vanished."""
     groups: dict[tuple, list[Item]] = {}
+    kept_games: set[tuple] = set()
     for it in items:
         groups.setdefault((it.dat, tags.title_key(_tags_of(it))), []).append(it)
+        d = sel.decisions.get(it.key)
+        if d is not None and d.action == KEEP:
+            kept_games.add(game_key(it, sel.combine_alt))
     out: list[Vanished] = []
     # (a rating code only ever hits a variant that passed every other rule: it is the real blocker, so it ranks first)
     priority = {c: i for i, c in enumerate(RATING_CODES + (LANGUAGE_CODE,) + FLAG_CODES + RULES + (INCOMPLETE,))}
     for (dat, _k), members in groups.items():
         decs = [sel.decisions.get(m.key) for m in members]
-        if any(d is None or d.action == KEEP for d in decs):
+        if any(d is None or d.action == KEEP for d in decs) or any(game_key(m, sel.combine_alt) in kept_games for m in members):
             continue
         blockers: list[tuple[str, ...]] = []
         for d in decs:
@@ -1880,7 +2009,7 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
 
 
 def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one_per_game: bool,
-                   sel: Selection, decide: Any, next_id: list[int], complete_only: bool = False) -> None:
+                   sel: Selection, decide: Any, next_id: list[int], complete_only: bool = False, every_revision: bool = False) -> None:
     """Redump (Sega Dreamcast): ONE release per game, discs of a game always stay together.
 
     A *game* = ``tags.redump_game_key`` (title + status + product tags; the disc number is not part of
@@ -1888,7 +2017,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
     that edition. Per game the best edition is kept (selected language order, region priority, newest
     revision, fewest extra tags, name) with ALL its discs - for every disc number the newest revision
     of that edition; everything else is ``superseded``. With ``one_per_game`` off every edition is kept
-    (still only the newest revision of each disc). A kept multi-disc edition becomes a :class:`ChosenSet`
+    (still only the newest revision of each disc; ``every_revision``: every revision too - "Latest versions only" off). A kept multi-disc edition becomes a :class:`ChosenSet`
     (a playlist) when all of its discs (``Item.disc_total`` or the highest disc number) are present,
     else an :class:`IncompleteSet` that is only reported (the discs stay), or, with ``complete_only``, set aside as ``incomplete``.
     """
@@ -1910,12 +2039,14 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
         def newest_of(members: list[Item]) -> tuple:
             return max(vkeys[_rom_name(i)] for i in members)
 
+        most = max(tags.disc_number(_tags_of(i)) for i in group)
         if one_per_game:
-            # best edition: selected language, region priority, then the newest revision (over its
+            # best edition: every disc there, selected language, region priority, then the newest revision (over its
             # discs), fewest extra tags, name
-            def lr(members: list[Item]) -> tuple:
+            def lr(members: list[Item]) -> tuple:                # (an edition with every disc before one that lacks a disc)
                 t = _tags_of(first_of(members))
-                return (_lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t), tags.region_rank(t.regions, order))
+                return (_discs_missing(members, most) > 0, _lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t),
+                        tags.region_rank(t.regions, order))
 
             best = min(lr(m) for m in editions.values())
             pool = {k: m for k, m in editions.items() if lr(m) == best}
@@ -1942,7 +2073,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
             for disc, cands in by_disc.items():
                 win = chosen[disc]
                 for it in cands:
-                    if it.key == win.key or _rom_name(it) == _rom_name(win):
+                    if it.key == win.key or _rom_name(it) == _rom_name(win) or every_revision:
                         decide(it, KEEP)
                     else:
                         decide(it, SUPERSEDED, superseded_by=_rom_name(win),
@@ -1966,10 +2097,11 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                     sel.incomplete.append(IncompleteSet(
                         dat=dat, name=stem, total=total, present={d: chosen[d].key for d in discs},
                         missing=miss, kept=not complete_only))
-                    for d in discs:
-                        dec = sel.decisions[chosen[d].key]
+                    text = "incomplete set (missing disc " + ", ".join(str(m) for m in miss) + ")"
+                    for dec in (sel.decisions[it.key] for d in discs for it in by_disc[d]):   # (every revision kept: "Latest versions only" off)
+                        if dec.action != KEEP:
+                            continue
                         dec.missing = miss
-                        text = "incomplete set (missing disc " + ", ".join(str(m) for m in miss) + ")"
                         if complete_only:                      # (the rule Complete multi-disk sets only: set aside until the set is complete)
                             dec.action, dec.reason = INCOMPLETE, text
                         else:
@@ -1981,6 +2113,19 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                 for it in members:
                     decide(it, SUPERSEDED, superseded_by=winner_name,
                            reason=f"one version per game: kept {winner_name}")
+
+
+def _discs_missing(members: Iterable[Item], least: int = 0) -> int:
+    """How many discs a Redump edition / release lacks (0: a game of one disc, or every disc of ``Item.disc_total`` - the DAT's count for
+    the release - else of the highest number, or ``least``: the highest disc number of any release of the game - a lone "Disc 1" next to
+    another release's "Disc 2" lacks one, where the DAT says nothing: No-Intro)."""
+    nums = {tags.disc_number(_tags_of(i)): i for i in members}
+    discs = {n for n in nums if n > 0}
+    if not discs:
+        return 0
+    known = max(nums[n].disc_total for n in discs)
+    total = max(known, max(discs)) if known else max(max(discs), least)   # (a release of the DAT has its own count: a bonus disc elsewhere is not its)
+    return sum(1 for d in range(1, total + 1) if d not in discs)
 
 
 _DISC_TOKEN_RE = re.compile(r"\s*\(Dis[ck] (?:\d+|[A-Z])\)")
@@ -2013,7 +2158,7 @@ def _other_discs(winner: Item, group: list[Item], vkeys: Mapping[str, tuple]) ->
 
 
 def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str], decide: Any) -> None:
-    """Keep ONE variant per game: best selected language, best region (``order``), newest version of
+    """Keep ONE variant per game: a release with every disc, best selected language, best region (``order``), newest version of
     that region, fewest extra tags, then name."""
     games: dict[tuple, list[Item]] = {}
     for it in members:
@@ -2021,13 +2166,21 @@ def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str]
     for group in games.values():
         names = list(dict.fromkeys(_rom_name(i) for i in group))
         vkeys = tags.group_version_keys(names, STYLE_NOINTRO)
+        releases: dict[tuple, list[Item]] = {}
+        for it in group:
+            rel = _release_of_parts(it)
+            if rel is not None:
+                releases.setdefault(rel, []).append(it)
+        most = max(tags.disc_number(_tags_of(i)) for i in group)
         info = {}
         for it in group:
             t = _tags_of(it)
-            info[it.key] = (_lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t),     # (a pirate copy after the licensed game)
+            rel = _release_of_parts(it)
+            info[it.key] = (rel is not None and _discs_missing(releases[rel], most) > 0,             # (a release with every disc first)
+                            _lang_rank(tags.variant_languages(t), profile), tags.unlicensed(t),     # (a pirate copy after the licensed game)
                             tags.region_rank(t.regions, order))
         pool = group
-        for idx in (0, 1, 2):
+        for idx in (0, 1, 2, 3):
             best = min(info[i.key][idx] for i in pool)
             pool = [i for i in pool if info[i.key][idx] == best]
         rank = min(tags.edition_rank(_tags_of(i), profile.prefer_editions) for i in pool)      # (a premium edition, the plain release, a store edition, a budget one)
@@ -2082,8 +2235,9 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
         for it in group:
             editions.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
         complete, partial = [], []
+        totals = _complete_totals(editions, vkeys) if borrow is not None and len(editions) > 1 else frozenset()
         for members in editions.values():
-            c, p = _build_sets(members, vkeys, profile, borrow)
+            c, p = _build_sets(members, vkeys, profile, borrow, totals)
             complete += c
             partial += p
         kept_sets: list[_Set]
@@ -2172,6 +2326,7 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
     for key, sid, set_name, slot, note in borrowed_uses:
         text = f"borrowed as disk {slot} of {set_name} ({note['text']})"
         d = sel.decisions.get(key)
+        sel.before_borrow.setdefault(key, dataclasses.replace(d) if d is not None else None)
         if d is None or d.action != KEEP:
             sel.decisions[key] = Decision(key=key, action=KEEP, codes=(BORROWED_CODE,), set_id=sid, reason=text)
         else:
@@ -2180,6 +2335,22 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             if d.set_id is None:
                 d.set_id = sid
             d.reason = (d.reason + "; " if d.reason else "") + text
+
+
+def _complete_totals(editions: Mapping[tuple, list[Item]], vkeys: Mapping[str, tuple]) -> frozenset:
+    """The disk counts of the multi-disk sets the editions of a combined game have complete of their own: an edition's natural
+    complete set always wins, so no disk is borrowed for such a count (Amendment 12 B)."""
+    from . import m3u
+    out: set[int] = set()
+    for members in editions.values():
+        first: dict[str, Item] = {}
+        for it in sorted(members, key=lambda i: (i.rom.name, i.key)):
+            if m3u.parse_disk_name(it.rom.name) is not None:
+                first.setdefault(it.rom.name, it)
+        if first:
+            out |= {ss.total for ss in m3u.resolve_slots([m3u.DiskCand(ref=it.key, name=n) for n, it in first.items()], vkeys)
+                    if ss.complete}
+    return frozenset(out)
 
 
 def variant_sets(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> list[tuple[str, list[list[Item]]]]:
@@ -2193,15 +2364,23 @@ def variant_sets(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     for it in sorted(alive, key=lambda i: (i.rom.name, i.key)):
         groups.setdefault((it.dat, combined_key(it.dat, tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)),
                                                 profile.combine_alt_titles)), []).append(it)
+    borrows: dict[str, _Borrow] = {}
+    if profile.borrow_other_editions:                     # (the sets the library may complete with another edition's disks: as select does)
+        lang_only = [it for it in items if it.dat in best and _style(it) == STYLE_TOSEC and (d := sel.decisions.get(it.key)) is not None
+                     and d.action == EXCLUDED and d.codes and all(c == LANGUAGE_CODE for c in d.codes)]
+        for dat in {it.dat for it in alive}:
+            borrows[dat] = _Borrow(profile, [it for it in (*alive, *lang_only) if it.dat == dat])
     out: list[tuple[str, list[list[Item]]]] = []
-    for group in groups.values():
+    for (dat, _gk), group in groups.items():
         vkeys = tags.group_version_keys([i.rom.name for i in group], STYLE_TOSEC)
         editions: dict[tuple, list[Item]] = {}
         for it in group:
             editions.setdefault(tags.identity_key(tags.parse_name(it.rom.name, STYLE_TOSEC)), []).append(it)
+        borrow = borrows.get(dat)
+        totals = _complete_totals(editions, vkeys) if borrow is not None and len(editions) > 1 else frozenset()
         sets: list[list[Item]] = []
         for members in editions.values():
-            complete, _partial = _build_sets(members, vkeys, profile, None)
+            complete, _partial = _build_sets(members, vkeys, profile, borrow, totals)
             sets += [[s.slots[n] for n in sorted(s.slots)] for s in complete]
         if sets:
             out.append((tags.parse_name(group[0].rom.name, STYLE_TOSEC).title, sets))
@@ -2530,7 +2709,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None,
         "available": {
             "latest_only": bool(_dats(platform, "latest_dats")),
             "best_variant": bool(_dats(platform, "best_variant_dats")),
-            "complete_only": bool(_dats(platform, "m3u_dats")),
+            "complete_only": bool(complete_dats(platform)),
             "one_per_game": bool(_dats(platform, "region_dats")),
             "region_priority": bool(_dats(platform, "region_dats")),
             "languages": has_langs,
@@ -2545,7 +2724,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None,
         "scopes": {
             "latest_dats": list(_dats(platform, "latest_dats")),
             "best_variant_dats": list(_dats(platform, "best_variant_dats")),
-            "complete_dats": list(_dats(platform, "m3u_dats")),
+            "complete_dats": list(complete_dats(platform)),
             "language_dats": list(_dats(platform, "language_dats")),
             "region_dats": list(_dats(platform, "region_dats")),
             "exclude_dats": list(getattr(platform, "dats", ()) or ()),

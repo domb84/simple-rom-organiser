@@ -138,6 +138,7 @@ class Target:
     coverage: Optional[dict] = None             # library.rating_coverage of the games the other rules keep (None = no ratings installed)
     rated_all: Optional[dict] = None            # {games, rated} of EVERY title of the DAT, whatever the rules say (None = no ratings / not rated)
     rated_target: Optional[dict] = None         # {games, rated} of the titles that stay after ALL the rules, the rating filter too
+    borrowed: dict[tuple, frozenset] = field(default_factory=dict)   # game key -> the disks of other editions its kept set borrows
 
     @property
     def count(self) -> int:
@@ -215,7 +216,19 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target)
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel))
+
+
+def _borrowed(items: list[Item], sel: library.Selection) -> dict[tuple, frozenset]:
+    """Game key -> the rom names of the disks its kept set borrows from other editions (a disk of the game: missing while you lack it)."""
+    by_key = {it.key: it for it in items}
+    out: dict[tuple, set[str]] = {}
+    for cs in sel.sets:
+        lent = {b["key"] for b in cs.borrowed.values()}
+        own = [by_key[k] for _s, k in sorted(cs.slots.items()) if k not in lent and k in by_key]
+        if own and lent:
+            out.setdefault(library.game_key(own[0], sel.combine_alt), set()).update(library._rom_name(by_key[k]) for k in lent if k in by_key)
+    return {k: frozenset(v) for k, v in out.items()}
 
 
 def compute_user(result: Any, platform: Any, profile: library.LibraryProfile,
@@ -377,8 +390,8 @@ class TotalsManager:
     def _compute_insights(self, platform: Any, wants: list[str], target: Target, user: Optional[UserPart],
                           lookup: Optional[Callable[[str], Any]]) -> dict[str, Any]:
         roms: dict[tuple[str, str], Any] = {}
-        for it in target_items(platform, self._load_dats(platform)):
-            roms.setdefault((it.dat, library._rom_name(it)), it.rom)
+        for it in target_items(platform, self._load_dats(platform)):    # (a CD32 disc, an SPS release: under its games DAT, as game_key)
+            roms.setdefault((library.game_dat(it.dat), library._rom_name(it)), it.rom)
         owned: dict[tuple, frozenset] = {}
         if user is not None:
             owned = {k: names for k, (st, names) in user.games.items() if st == HAVE and k in target.games}
@@ -390,22 +403,22 @@ class TotalsManager:
                     return r
             return None
 
-        def size(key: tuple, names: Any) -> int:
-            r = rom_of(key, names)
-            return int(r.size or 0) if r is not None else 0
+        def size(key: tuple, names: Any) -> int:            # (every file of the game: the disks of a set, a disc's tracks)
+            return sum(int(r.size or 0) for n in names if (r := roms.get((key[0], n))) is not None)
 
         def rating(key: tuple, names: Any) -> Optional[tuple[float, int, str]]:
             r = rom_of(key, names)
             if r is None or lookup is None:
                 return None
-            title = library.rom_title(r, key[0])
+            title = library.rom_title(r, getattr(r, "dat", "") or key[0])
             hit = lookup(title)
             return (hit[0], hit[1], title) if hit else None
 
         out: dict[str, Any] = {}
         if "space" in wants:
-            out["space"] = {"target": sum(size(k, n) for k, n in target.games.items()),
-                            "have": sum(size(k, n) for k, n in owned.items()) if user is not None else None}
+            lent = target.borrowed                        # (a kept set's disk of another edition is kept too: an owned game has it)
+            out["space"] = {"target": sum(size(k, n | lent.get(k, frozenset())) for k, n in target.games.items()),
+                            "have": sum(size(k, n | lent.get(k, frozenset())) for k, n in owned.items()) if user is not None else None}
         if "best_missing" in wants:
             # the best EVIDENCED rating: a 10 from five voters does not beat a 9.2 from four hundred (the rating is pulled towards the
             # library's average by a weight of 25 votes, the way film sites rank their lists)
@@ -464,7 +477,16 @@ class TotalsManager:
             if want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
                 return None
             owned = u[1].games
-            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE for n in names)
+            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE
+                             for n in (*names, *t[1].borrowed.get(key, ())))
+
+    def borrowed_names(self, name: str) -> frozenset:
+        """The disks of other editions the kept sets borrow (``Target.borrowed``): a disk of its set's game, never a game of its own."""
+        with self._cv:
+            want, t = self._want.get(name), self._targets.get(name)
+            if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
+                return frozenset()
+            return frozenset(n for names in t[1].borrowed.values() for n in names)
 
     def problems(self, name: str, state: str) -> Optional[list[dict[str, Any]]]:
         """The owned games that are not kept (``state``: EXCLUDED_OWNED or INCOMPLETE_OWNED): title, the names you own, and why."""
@@ -489,7 +511,7 @@ class TotalsManager:
         for it in target_items(platform, dats):
             n = library._rom_name(it)
             if n in wanted:
-                reps.setdefault((it.dat, n), it.rom)
+                reps.setdefault((library.game_dat(it.dat), n), it.rom)          # (the key's DAT: a disc's / SPS release's games DAT)
         for dat in dats:
             if getattr(dat, "name", "") in tags.REDUMP_DAT_NAMES:
                 for g in discsys.get_index(dat).games.values():
@@ -498,7 +520,8 @@ class TotalsManager:
         out = []
         for key, have, better in rows:
             found = [(n, files.get((key[0], n)) or [reps[(key[0], n)]]) for n in better if (key[0], n) in reps]
-            title = library.rom_title(reps[(key[0], found[0][0])], key[0]) if found else have[0]
+            rep = reps[(key[0], found[0][0])] if found else None
+            title = library.rom_title(rep, getattr(rep, "dat", "") or key[0]) if rep is not None else have[0]
             out.append({"title": title, "dat": key[0], "have": have,
                         "better": [{"name": n, "files": [{"name": r.name, "size": r.size, "crc": r.crc, "md5": r.md5, "sha1": r.sha1}
                                                          for r in roms]} for n, roms in found]})

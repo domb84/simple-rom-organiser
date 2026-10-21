@@ -494,11 +494,15 @@ class LibraryTest(unittest.TestCase):
         for p in list(self.w.root.glob("big2/*")):
             p.unlink()
         (self.w.root / "big2").rmdir()
-        plan = self.plan()
+        plan = self.plan(dataclasses.replace(self.profile, complete_only=False))
         c = self.codes(plan)
         self.assertEqual(c["Big Game (USA) (Disc 1)"], "kept")
         self.assertEqual(plan.playlists, [])
         self.assertEqual([(i.name, i.missing) for i in plan.selection.incomplete], [("Big Game (USA)", (2,))])
+        # the default, "Complete multi-disk sets only" (as your defaults say: it reaches the disc systems too), sets it aside
+        self.assertTrue(library.default_profile(platforms.get_platform("Sega Dreamcast")).complete_only)
+        self.assertEqual(self.codes(self.plan(library.default_profile(platforms.get_platform("Sega Dreamcast"))))["Big Game (USA) (Disc 1)"],
+                         "incomplete")
 
     def test_old_playlist_is_removed_when_a_disc_goes_away(self) -> None:
         plan = self.plan()

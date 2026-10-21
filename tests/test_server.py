@@ -832,6 +832,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(server._primary(match, ["A", "B"]), [high])
         self.assertEqual(server._primary(Match(None, [low, high], [low]), ["A", "B"]), [low])  # type: ignore[arg-type]
 
+    def test_the_tree_counts_an_image_by_its_release_and_a_disc_s_files_as_its_disc(self) -> None:
+        from romorg import library as real_library, platforms as real_platforms, tags as real_tags
+        amiga = real_platforms.get_platform("Commodore Amiga")
+        adf, sps, cd = "Commodore Amiga - Games - [ADF]", "Commodore Amiga - Games - [Unofficial IPF]", "Commodore Amiga CD32 - Games - [BIN]"
+
+        def unit(name: str, dat: str, game: str) -> Any:
+            entry = {"parts": ("x", name), "row": {"rom_name": name, "dat": dat, "game_ref": {"dat": dat, "game": name, "release": game}},
+                     "state": "same", "side": "library"}
+            return server.App._game_unit(entry, amiga)
+        tower = unit("Alien Breed - Tower Assault (1994)(Team17)(de).ipf", sps, "Alien Breed - Tower Assault (1994)(Team17)(de)")
+        self.assertNotEqual(tower, unit("Alien Breed (1991)(Team17).adf", adf, "Alien Breed (1991)(Team17)"))
+        self.assertEqual(tower[1][1][1], "alien breed - tower assault")
+        g = "Akira (1995)(Ice)(M3)[!]"
+        self.assertEqual(unit(g + "(Track 01 of 02).bin", cd, g), unit(g + ".cue", cd, g))
+        # the language filter reads the languages the rules do: TOSEC's untagged release is English
+        t = real_tags.to_json(real_tags.parse_name("Aaa (1990)(Pub).adf", real_library.STYLE_TOSEC))
+        entry = {"parts": ("Aaa (1990)(Pub).adf",), "row": {"tags": t}, "state": "same", "side": "library", "text": "aaa"}
+        self.assertTrue(server.App._tree_pass(entry, {"language": "En"}))
+        from romorg.datfile import Rom as DatRom
+        rel = "Turrican II (1991)(Rainbow Arts)(de)"                                         # (an SPS image: its release's languages)
+        rom = DatRom(name=f"{rel} - Disk1.ipf", size=1, crc="", md5="", sha1="", game=rel, dat="Commodore Amiga - Games - SPS")
+        self.assertEqual(server._tags_json(rom, real_tags)["variant_languages"], ["De"])
+
     def test_undo_log_count(self) -> None:
         self.assertEqual(server._undo_log_count([1, 2]), 2)
         self.assertEqual(server._undo_log_count({"moves": [1], "removed_dirs": ["x"]}), 1)
@@ -1436,6 +1459,115 @@ class RealModulesIntegrationTests(unittest.TestCase):
         saved = self.call("GET", "/api/status")["library_export"]
         self.assertEqual(saved, {"enabled": True, "dest": "/x/y", "mode": "move", "sidecars": False, "sync": False,
                                  "aside": True})
+
+
+class TreeTotalsAgreementTests(unittest.TestCase):
+    """The Files tree's show facets (have / missing) are the tiles' have_games / missing_games, end to end with the real modules: a set
+    made with a disk borrowed from another edition, CD32 discs (a cue and its tracks: one game, with its floppy) and SPS releases (the
+    images of a release: one game)."""
+
+    CD32, SPS = "Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga - Games - SPS"
+    FOO = ["Foo (1991)(Pub)(Disk 1 of 3)", "Foo (1991)(Pub)(Disk 3 of 3)"]
+    FOO_DE2 = "Foo (1991)(Pub)(DE)(Disk 2 of 3)"                       # (the disk 2 of Foo: only in the German edition)
+    ADF = [*FOO, FOO_DE2, "Bar (1990)(Pub)(Disk 1 of 2)", "Bar (1990)(Pub)(Disk 2 of 2)", "Solo (1992)(Pub)", "Solo (1992)(Pub)(de)",
+           "Zool (1993)(Gremlin)", "Qux v1.0 (1990)(Pub)", "Qux v1.1 (1990)(Pub)", "Turrican (1990)(Rainbow Arts)"]
+    DISCS = {g: [g + f for f in (".cue", "[Track 01 of 02].iso", "[Track 02 of 02].wav")]
+             for g in ("Zool (1993)(Gremlin)", "Cdonly (1994)(Pub)")}
+    RELEASES = {"Turrican (1990)(Rainbow Arts)[0123]": ["Turrican_Disk1.ipf", "Turrican_Disk2.ipf"], "Lone (1991)(Pub)[0456]": ["Lone.ipf"],
+                "Lone (1991)(Pub)(DE)[0457]": ["Lone.ipf"]}
+
+    call = RealModulesIntegrationTests.call
+    job = RealModulesIntegrationTests.job
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="romorg-treecount-test-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(self.tmp / "data"), "ROMORG_OFFLINE": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.root = self.tmp / "amiga"
+        dats_dir = self.tmp / "data" / "dats"
+        dats_dir.mkdir(parents=True)
+        rng = random.Random(77)
+        self.blobs: dict[str, bytes] = {}                              # file name -> its bytes (every file of every game)
+
+        def write(dat: str, version: str, games: dict[str, list[str]]) -> None:
+            lines = ['<?xml version="1.0"?>', "<datafile>",
+                     f"<header><name>{dat}</name><description>{dat}</description><version>{version}</version></header>"]
+            for game, files in games.items():
+                lines.append(f'<game name="{game}"><description>{game}</description>')
+                for f in files:
+                    data = self.blobs[f if dat != self.SPS else f"{game} - {f}"] = bytes(rng.getrandbits(8) for _ in range(512))
+                    lines.append(f'<rom name="{f}" size="{len(data)}" crc="{zlib.crc32(data):08x}" '
+                                 f'md5="{hashlib.md5(data).hexdigest()}" sha1="{hashlib.sha1(data).hexdigest()}"/>')
+                lines.append("</game>")
+            lines.append("</datafile>")
+            (dats_dir / f"{dat} (TOSEC-v{version}_CM).dat").write_text("\n".join(lines))
+
+        write(GAMES, "2025-01-30", {g: [g + ".adf"] for g in self.ADF})
+        write(self.CD32, "2019-09-07", self.DISCS)
+        write(self.SPS, "2025-01-13", self.RELEASES)
+        self.srv = server.make_server("127.0.0.1", 0, token="t", auto_update=False)
+        self.port = self.srv.port
+        threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        self.call("POST", "/api/settings/archive", {"dir": str(self.tmp / "rom-archive")})
+
+    def own(self, names: list[str]) -> None:
+        """The folder holds exactly these files (under other names: the scan matches them by their checksums) and is scanned."""
+        shutil.rmtree(self.root, True)
+        (self.root / "in").mkdir(parents=True)
+        for i, n in enumerate(names):
+            (self.root / "in" / f"f{i}{Path(n).suffix}").write_bytes(self.blobs[n])
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+
+    def totals(self) -> dict[str, Any]:
+        end = time.time() + 30
+        while True:
+            out = self.call("GET", "/api/library/totals?platform=Commodore%20Amiga")
+            if (not out.get("calculating") and out.get("have_games") is not None) or time.time() > end:
+                return out
+            time.sleep(0.05)
+
+    def files(self, show: str, path: str = "") -> list[str]:
+        """The names of the files of the library tree under this show filter, every folder walked."""
+        page = self.call("GET", f"/api/tree?platform=Commodore%20Amiga&show={show}&path=" + urllib.request.quote(path))
+        out = [f["name"] for f in page.get("files", [])]
+        for d in page.get("dirs", []):
+            out += self.files(show, f"{path}/{d['name']}" if path else d["name"])
+        return out
+
+    def agree(self, owned: list[str]) -> tuple[dict[str, Any], dict[str, int]]:
+        self.own(owned)
+        out = self.totals()
+        self.assertFalse(out["calculating"])
+        tree = self.call("GET", "/api/tree?platform=Commodore%20Amiga&show=")
+        self.assertTrue(tree["ready"])
+        show = tree["facets"]["show"]
+        self.assertEqual((show["have"], show["missing"]), (out["have_games"], out["missing_games"]), owned)
+        self.assertEqual(show["have"] + show["missing"], out["target_games"])
+        return out, show
+
+    def test_tree_have_and_missing_are_the_totals_with_a_borrowed_disk_a_cd32_disc_and_an_sps_release(self) -> None:
+        sps = lambda rel: [f"{rel} - {f}" for f in self.RELEASES[rel]]          # noqa: E731
+        # Foo without its borrowed German disk 2: missing, and the tree lists that disk; the CD32-only game and an SPS release: have
+        out, show = self.agree([*(n + ".adf" for n in self.FOO), *self.DISCS["Cdonly (1994)(Pub)"],
+                                *sps("Turrican (1990)(Rainbow Arts)[0123]"), "Solo (1992)(Pub).adf"])
+        self.assertEqual(out["owned_incomplete"], 1)
+        missing = self.files("missing")
+        for n in (self.FOO_DE2, "Lone (1991)(Pub)[0456]", "Zool (1993)(Gremlin)", "Bar (1990)(Pub)(Disk 1 of 2)"):
+            self.assertTrue(any(m.startswith(n) for m in missing), (n, missing))
+        # the whole borrowed set, the Zool CD32 disc (one game with the floppy), the Lone SPS release, half of Bar
+        out, show = self.agree([*(n + ".adf" for n in (*self.FOO, self.FOO_DE2)), *self.DISCS["Zool (1993)(Gremlin)"],
+                                *sps("Lone (1991)(Pub)[0456]"), "Bar (1990)(Pub)(Disk 1 of 2).adf", "Qux v1.0 (1990)(Pub).adf"])
+        self.assertFalse(any(m.startswith(self.FOO_DE2) for m in self.files("missing")))
+        self.assertEqual((out["owned_incomplete"], out["not_preferred"]), (1, 1))
+        # random folders of these files (seeded): the tree and the tiles always agree
+        rng = random.Random(3)
+        every = sorted(self.blobs)
+        for _ in range(4):
+            self.agree([n for n in every if rng.random() < 0.5])
 
 
 class ReviewFixTests(ServerTestCase):

@@ -1167,10 +1167,12 @@ class BorrowTests(unittest.TestCase):
         _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De"), combine_alt_titles=False))
         self.assertEqual({d.action for d in by.values()}, {KEEP})
         self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)", "Foo (1991)(Pub)(DE)"])
-        # ... with "Combine alternate titles" the two are one game: the English set (first language) is kept, the German one goes
+        # ... with "Combine alternate titles" the two are one game, and a complete set of its own beats one made with a borrowed disk
+        # (Amendment 12 B): the German set is kept, the English disks go
         _i, sel, by = self.go(names, replace(self.EN, languages=("En", "De")))
-        self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)"])
-        self.assertEqual([by[n].action for n in de], [SUPERSEDED, KEEP, SUPERSEDED])     # (disk 2 is borrowed by the English set)
+        self.assertEqual(sorted(s.name for s in sel.sets), ["Foo (1991)(Pub)(DE)"])
+        self.assertEqual([by[n].action for n in de], [KEEP, KEEP, KEEP])
+        self.assertEqual((by[self.D1].action, by[self.D3].action), (SUPERSEDED, SUPERSEDED))
 
     def test_own_edition_comes_first(self) -> None:
         d2 = "Foo (1991)(Pub)(Disk 2 of 3)"
@@ -1398,3 +1400,365 @@ class OriginalDisksCountWithTheFloppies(unittest.TestCase):
         floppy = amiga_items(["Zool (1993)(Gremlin)"])[0]
         keys = {library.game_key(it, True) for it in [*ipfs, floppy]}
         self.assertEqual(len(keys), 1)                                         # (one game: counted once, whichever you own)
+
+
+# --------------------------------------------------------------------------- the bug check of the library build (Amendment 54)
+
+SPS_DAT = "Commodore Amiga - Games - SPS"
+CD32_DAT = "Commodore Amiga CD32 - Games - [ISO]"
+CDTV_DAT = "Commodore Amiga CDTV - Games - [ISO]"
+AMIGA_DP = library.default_profile(AMIGA)
+
+
+def sps_items(rel: str, files: list[str], start: int = 50, sha1: str = "") -> list[Item]:
+    return [Item(key=start + i, dat=SPS_DAT, rom=Rom(name=f"{rel} - {f}.ipf", size=1, crc="", md5="", sha1=sha1, game=rel, dat=SPS_DAT),
+                 style="tosec", path=Path(f"/x/{rel} - {f}.ipf"), member=None) for i, f in enumerate(files)]
+
+
+def cd_items(game: str, dat: str = CD32_DAT, files: tuple = (".cue", "[Track 01 of 02].iso", "[Track 02 of 02].wav"),
+               start: int = 100) -> list[Item]:
+    roms = [Rom(name=game + f, size=1, crc="", md5="", sha1="", game=game, dat=dat) for f in files]
+    known = dict(library._DISC_FILES.get(dat, {}))
+    library.register_disc_files(dat, roms)
+    library._DISC_FILES[dat] = {**known, **library._DISC_FILES[dat]}
+    return [Item(key=start + i, dat=dat, rom=r, style="tosec", path=Path(r.name), member=None) for i, r in enumerate(roms)]
+
+
+def redump_items(names: list[str], dat: str, style: str = "redump", ext: str = ".chd", total: int = 0) -> list[Item]:
+    return [Item(key=i, dat=dat, rom=Rom(name=n + ext, size=1, crc="", md5="", sha1="", game=n, dat=dat, set_name=n),
+                 style=style, path=Path(n + ext), member=None, disc_total=total) for i, n in enumerate(names)]
+
+
+def acts(items: list[Item], sel: library.Selection) -> dict[str, str]:
+    return {it.rom.name: sel.decisions[it.key].action for it in items}
+
+
+class AmigaSelectionBugCheckTests(unittest.TestCase):
+    def test_a_complete_set_of_a_combined_edition_beats_one_made_with_a_borrowed_disk(self) -> None:
+        names = ["Game (1990)(Pub)(Disk 1 of 2)", "Game (1990)(Pub)(Disk 2 of 2)", "Game (1990)(Pub)(DE)(Disk 1 of 2)"]
+        for langs in (("En", "De"), ()):
+            items = amiga_items(names)
+            sel = library.select(items, replace(AMIGA_DP, languages=langs), AMIGA)
+            self.assertEqual([(s.name, s.borrowed) for s in sel.sets], [("Game (1990)(Pub)", {})])
+            self.assertEqual(acts(items, sel)[names[2] + ".adf"], SUPERSEDED)
+
+    def test_the_vanish_list_leaves_out_a_game_kept_in_another_form(self) -> None:
+        items = amiga_items(["Robocop 3 (1992)(Ocean)", "Robocop 3 (1993)(Hit Squad, The)"])     # (another publisher's: combined)
+        self.assertEqual(library.select(items, AMIGA_DP, AMIGA).vanished, [])
+        items = amiga_items(["Zool (1993)(Gremlin)(AGA)"]) + cd_items("Zool (1993)(Gremlin)")    # (its CD32 disc)
+        sel = library.select(items, AMIGA_DP, AMIGA)
+        self.assertEqual(acts(items, sel)["Zool (1993)(Gremlin)(AGA).adf"], SUPERSEDED)
+        self.assertEqual(sel.vanished, [])
+        items = amiga_items(["Dune (1992)(Virgin)"]) + sps_items("Dune (1992)(Virgin)(DE)[0459]", ["Disk1", "Disk2"])
+        self.assertEqual(library.select(items, AMIGA_DP, AMIGA).vanished, [])                       # (the floppies, next to an SPS release)
+
+    def test_the_version_with_saves_is_preferred_on_the_amiga_too(self) -> None:
+        from romorg import retroarch
+        names = ["Game v1.0 (1990)(Pub)", "Game v1.1 (1991)(Pub)"]
+        items = [replace(it, path=Path(it.rom.name)) for it in amiga_items(names)]
+        sel = library.select(items, replace(AMIGA_DP, saved_games="archive"), AMIGA, saved=retroarch.save_name_keys([names[0] + ".state1"]))
+        self.assertEqual(acts(items, sel), {names[0] + ".adf": KEEP, names[1] + ".adf": SUPERSEDED})
+        self.assertEqual(sel.decisions[1].codes, (library.SAVED_PREFER,))
+
+    def test_a_save_of_disk_1_keeps_every_disk_of_the_set_and_of_an_sps_release(self) -> None:
+        from romorg import retroarch
+        names = ["Spiel (1990)(Pub)(DE)(Disk 1 of 2)", "Spiel (1990)(Pub)(DE)(Disk 2 of 2)"]
+        items = amiga_items(names) + sps_items("Dune (1992)(Virgin)(DE)[0459]", ["Disk1", "Disk2"])
+        saved = retroarch.save_name_keys([names[0] + ".srm", "Dune (1992)(Virgin)(DE)[0459] - Disk1.srm"])
+        sel = library.select(items, replace(AMIGA_DP, saved_games="keep"), AMIGA, saved=saved)
+        self.assertEqual(set(acts(items, sel).values()), {KEEP})
+        self.assertEqual({d.codes for d in sel.decisions.values()}, {(library.SAVED_KEEP,)})
+
+    def test_a_crack_tagged_on_disk_1_only_is_a_crack_for_the_original_that_asks_for_the_manual(self) -> None:
+        from unittest import mock
+        from romorg import whdready
+        rel, d1, d2 = "Zap (1993)(Acme)[0042]", "Zap (1993)(Acme)(Disk 1 of 2)[cr FLT]", "Zap (1993)(Acme)(Disk 2 of 2)"
+        items = sps_items(rel, ["Zap"], start=1, sha1="aa") + [replace(it, key=it.key + 1) for it in amiga_items([d1, d2])]
+        shipped = {whdready.key_of([d1 + ".adf", d2 + ".adf"]): [whdready.BOOTS, "Zap.lha"],
+                   whdready.key_of([f"{rel} - Zap.ipf"]): [whdready.BOOTS, "Zap.lha"]}
+
+        class Db:
+            games: dict = {}
+
+            def release(self, sha1s):
+                return {"protection": "Code Wheel"} if "aa" in sha1s else {}
+
+        with mock.patch("romorg.openretro.database", return_value=Db()), mock.patch.object(whdready, "known", return_value=shipped), \
+                mock.patch.object(whdready, "leaves_manual", return_value=True):
+            whdready.clear_cache()
+            sel = library.select(items, replace(AMIGA_DP, languages=()), AMIGA)
+        whdready.clear_cache()
+        self.assertEqual(acts(items, sel)[f"{rel} - Zap.ipf"], SUPERSEDED)
+        self.assertEqual({acts(items, sel)[n + ".adf"] for n in (d1, d2)}, {KEEP})
+
+    def test_the_rating_filter_covers_cd32_discs_and_sps_releases(self) -> None:
+        ctx = library.RatingContext(lambda title: (3.0, 100), None)
+        prof = replace(AMIGA_DP, min_rating=8.0)
+        for items in (amiga_items(["Zool (1993)(Gremlin)(AGA)"]) + cd_items("Zool (1993)(Gremlin)"),
+                      amiga_items(["Zool (1993)(Gremlin)"]) + sps_items("Zool (1993)(Gremlin)[0816]", ["Disk1", "Disk2"])):
+            sel = library.select(items, prof, AMIGA, ratings=ctx)
+            self.assertNotIn(KEEP, set(acts(items, sel).values()))
+            self.assertEqual(sel.rating["games"], 1)
+
+    def test_the_language_rules_apply_to_cd32_and_cdtv_discs(self) -> None:
+        items = amiga_items(["Zool (1993)(Gremlin)(AGA)"]) + cd_items("Zool (1993)(Gremlin)(DE)")
+        sel = library.select(items, AMIGA_DP, AMIGA)
+        self.assertEqual(acts(items, sel)["Zool (1993)(Gremlin)(AGA).adf"], KEEP)
+        self.assertEqual({sel.decisions[it.key].codes for it in items[1:]}, {("language",)})
+        # both languages selected: your order still comes first, before the disc
+        sel = library.select(items, replace(AMIGA_DP, languages=("En", "De")), AMIGA)
+        self.assertEqual(acts(items, sel)["Zool (1993)(Gremlin)(AGA).adf"], KEEP)
+        self.assertEqual({sel.decisions[it.key].action for it in items[1:]}, {SUPERSEDED})
+        items = cd_items("Game (1994)(Pub)") + cd_items("Game (1995)(Pub)(DE)", start=200)
+        sel = library.select(items, replace(AMIGA_DP, languages=("En", "De")), AMIGA)
+        self.assertEqual({sel.decisions[it.key].action for it in items[:3]}, {KEEP})               # (the older English disc)
+
+    def test_always_exclude_on_a_disk_gives_its_borrowed_disk_back_its_own_decision(self) -> None:
+        from romorg import totals
+        names = ["Game (1990)(Pub)(Disk 1 of 2)", "Game (1990)(Pub)(DE)(Disk 1 of 2)", "Game (1990)(Pub)(DE)(Disk 2 of 2)"]
+        items = amiga_items(names)
+        self.assertEqual(library.select(items, AMIGA_DP, AMIGA).decisions[3].codes, (library.BORROWED_CODE,))
+        sel = library.select(items, replace(AMIGA_DP, overrides=((GAMES, names[0] + ".adf", "exclude"),)), AMIGA)
+        self.assertEqual(sel.sets, [])
+        self.assertEqual((sel.decisions[3].action, sel.decisions[3].codes), (EXCLUDED, ("language",)))
+        self.assertEqual(totals._kept(items, sel), {})
+
+    def test_a_cd_game_of_several_discs_whose_names_differ_after_the_disc_token_is_whole(self) -> None:
+        for a, b in (("Duo (1992)(P)(Disc 1 of 2)[!]", "Duo (1992)(P)(Disc 2 of 2)"),
+                     ("Duo (1992)(P)(Disc 1 of 2)(Game Disc)", "Duo (1992)(P)(Disc 2 of 2)(Data Disc)")):
+            items = cd_items(a, CDTV_DAT, (".cue", ".iso"), 100) + cd_items(b, CDTV_DAT, (".cue", ".iso"), 300)
+            sel = library.select(items, AMIGA_DP, AMIGA)
+            self.assertEqual(set(acts(items, sel).values()), {KEEP}, a)
+
+    def test_the_whdload_check_list_has_the_set_made_with_a_borrowed_disk(self) -> None:
+        names = ["Game (1990)(Pub)[cr X]", "Game (1990)(Pub)(Disk 1 of 2)", "Game (1990)(Pub)(DE)(Disk 2 of 2)"]
+        out = library.variant_sets(amiga_items(names), AMIGA_DP, AMIGA)
+        self.assertEqual([[it.rom.name for it in s] for _t, sets in out for s in sets],
+                         [[names[0] + ".adf"], [names[1] + ".adf", names[2] + ".adf"]])
+
+
+class DiscSystemSelectionBugCheckTests(unittest.TestCase):
+    DC = platforms.get_platform("Sega Dreamcast")
+    GC = platforms.get_platform("Nintendo GameCube")
+
+    def test_an_edition_with_every_disc_beats_a_better_region_that_lacks_one(self) -> None:
+        items = redump_items(["Game (Europe) (Disc 1)", "Game (USA) (Disc 1)", "Game (USA) (Disc 2)"], "Sega - Dreamcast", total=2)
+        for co in (False, True):
+            sel = library.select(items, replace(library.default_profile(self.DC), complete_only=co), self.DC)
+            self.assertEqual(acts(items, sel), {"Game (Europe) (Disc 1).chd": SUPERSEDED, "Game (USA) (Disc 1).chd": KEEP,
+                                                "Game (USA) (Disc 2).chd": KEEP})
+            self.assertEqual([s.name for s in sel.sets], ["Game (USA)"])
+        items = redump_items(["Resident Evil 4 (Europe) (En,Fr,De,Es,It) (Disc 1)", "Resident Evil 4 (USA) (Disc 1)",
+                              "Resident Evil 4 (USA) (Disc 2)"], "Nintendo - GameCube", "nointro", ".rvz")
+        sel = library.select(items, library.default_profile(self.GC), self.GC)
+        self.assertEqual([n for n, a in acts(items, sel).items() if a == KEEP],
+                         ["Resident Evil 4 (USA) (Disc 1).rvz", "Resident Evil 4 (USA) (Disc 2).rvz"])
+
+    def test_saves_never_split_the_discs_of_two_releases(self) -> None:
+        from romorg import retroarch
+        items = redump_items(["Game (Europe) (Disc 1)", "Game (Europe) (Disc 2)", "Game (USA) (Disc 1)", "Game (USA) (Disc 2)"],
+                             "Nintendo - GameCube", "nointro", ".rvz")
+        saved = retroarch.save_name_keys(["Game (USA) (Disc 1).srm"])
+        for choice in ("convert", "keep"):
+            sel = library.select(items, replace(library.default_profile(self.GC), saved_games=choice), self.GC, saved=saved)
+            a = acts(items, sel)
+            self.assertEqual(a["Game (USA) (Disc 1).rvz"], a["Game (USA) (Disc 2).rvz"], choice)
+            self.assertEqual(a["Game (Europe) (Disc 1).rvz"], a["Game (Europe) (Disc 2).rvz"], choice)
+
+    def test_a_save_for_one_disc_keeps_every_disc_of_its_release(self) -> None:
+        from romorg import retroarch
+        psx = platforms.get_platform("Sony PlayStation")
+        names = [f"Final Fantasy VII ({r}) (Disc {n})" for r in ("Europe", "USA") for n in (1, 2, 3)]
+        items = redump_items(names, "Sony - PlayStation", total=3)
+        sel = library.select(items, replace(library.default_profile(psx), saved_games="keep"), psx,
+                             saved=retroarch.save_name_keys(["Final Fantasy VII (USA) (Disc 1).srm"]))
+        self.assertEqual({acts(items, sel)[n + ".chd"] for n in names}, {KEEP})
+
+    def test_the_only_release_a_budget_one_in_another_language_stays(self) -> None:
+        items = redump_items(["Game (Japan) (Dorikore)"], "Sega - Dreamcast")
+        sel = library.select(items, library.default_profile(self.DC), self.DC)
+        self.assertEqual(acts(items, sel), {"Game (Japan) (Dorikore).chd": KEEP})
+        self.assertEqual(sel.vanished, [])
+
+    def test_a_complete_budget_set_is_not_set_aside_for_a_release_that_lacks_a_disc(self) -> None:
+        psx = platforms.get_platform("Sony PlayStation")
+        items = redump_items(["Game (USA) (Disc 1)", "Game (USA) (Greatest Hits) (Disc 1)", "Game (USA) (Greatest Hits) (Disc 2)"],
+                             "Sony - PlayStation", total=2)
+        sel = library.select(items, library.default_profile(psx), psx)
+        self.assertEqual(sel.vanished, [])
+        self.assertEqual(len(sel.sets), 1)
+        self.assertNotIn(INCOMPLETE, set(acts(items, sel).values()))
+
+    def test_an_english_budget_release_beats_the_japanese_one(self) -> None:
+        psx = platforms.get_platform("Sony PlayStation")
+        items = redump_items(["Game (Japan)", "Game (USA) (Greatest Hits)"], "Sony - PlayStation")
+        sel = library.select(items, library.default_profile(psx), psx)
+        self.assertEqual(acts(items, sel), {"Game (Japan).chd": EXCLUDED, "Game (USA) (Greatest Hits).chd": KEEP})
+
+    def test_a_bios_set_is_never_rated(self) -> None:
+        gba = platforms.get_platform("Nintendo Game Boy Advance")
+        items = ni_items(["[BIOS] Game Boy Advance (World)", "Good Game (USA)"], "Nintendo - Game Boy Advance")
+        ctx = library.RatingContext(lambda title: (9.0, 100) if title == "Good Game" else None, None)
+        sel = library.select(items, replace(library.default_profile(gba), min_rating=7.0, keep_unrated=False), gba, ratings=ctx)
+        self.assertEqual(set(acts(items, sel).values()), {KEEP})
+        self.assertEqual(sel.rating["games"], 1)
+
+    def test_multi_disc_games_get_a_playlist_with_every_version_kept(self) -> None:
+        psx = platforms.get_platform("Sony PlayStation")
+        items = redump_items([f"Final Fantasy VII (USA) (Disc {n})" for n in (1, 2, 3)], "Sony - PlayStation", total=3)
+        sel = library.select(items, replace(library.default_profile(psx), latest_only=False, one_per_game=False), psx)
+        self.assertEqual([s.name for s in sel.sets], ["Final Fantasy VII (USA)"])
+        items = redump_items(["Game (USA) (Disc 1)", "Game (USA) (Disc 1) (Rev 1)", "Game (USA) (Disc 2)"], "Sony - PlayStation", total=2)
+        sel = library.select(items, replace(library.default_profile(psx), latest_only=False, one_per_game=False), psx)
+        self.assertEqual(set(acts(items, sel).values()), {KEEP})                                    # (every revision stays)
+
+
+class DiscRankingAndDatOrder(unittest.TestCase):
+    """Of the discs of a game in one CD DAT the library keeps one (``_select_discs``): a good dump ([!]) first, then the newest, then the
+    fewest flags; the same disc in two CD DATs ([ISO] and [IMG]) keeps the one of the DAT the platform lists first (``_rank_across``)."""
+
+    IMG, CDTV_MDF = "Commodore Amiga CD32 - Games - [IMG]", "Commodore Amiga CDTV - Games - [MDF]"
+
+    def kept(self, items: list[Item], profile: LibraryProfile = AMIGA_DP) -> set[str]:
+        sel = library.select(items, profile, AMIGA)
+        return {it.rom.game for it in items if sel.decisions[it.key].action == KEEP}
+
+    def test_a_good_dump_beats_a_newer_disc_which_beats_one_with_more_flags(self) -> None:
+        items = cd_items("Gd (1994)(Pub)[!]") + cd_items("Gd (1995)(Pub)", start=200)             # ([!] before the newest)
+        sel = library.select(items, AMIGA_DP, AMIGA)
+        self.assertEqual({it.rom.game for it in items if sel.decisions[it.key].action == KEEP}, {"Gd (1994)(Pub)[!]"})
+        self.assertEqual({sel.decisions[it.key].superseded_by for it in items[3:]}, {"Gd (1994)(Pub)[!]"})
+        self.assertEqual(self.kept(cd_items("Ge (1994)(Pub)[!]") + cd_items("Ge (1994)(Pub)", start=200)), {"Ge (1994)(Pub)[!]"})
+        self.assertEqual(self.kept(cd_items("Gn (1994)(Pub)") + cd_items("Gn (1995)(Pub)", start=200)), {"Gn (1995)(Pub)"})
+        self.assertEqual(self.kept(cd_items("Gx (1995)(Pub)[a]") + cd_items("Gx (1994)(Pub)", start=200)), {"Gx (1995)(Pub)[a]"})   # (newest before flags)
+        for flagged in ("Gf (1995)(Pub)[a]", "Gf (1995)(Pub)[h X]"):
+            self.assertEqual(self.kept(cd_items(flagged) + cd_items("Gf (1995)(Pub)", start=200)), {"Gf (1995)(Pub)"}, flagged)
+
+    def test_the_same_disc_in_two_cd_dats_keeps_the_one_of_the_dat_listed_first(self) -> None:
+        self.assertLess(AMIGA.dats.index(CD32_DAT), AMIGA.dats.index(self.IMG))
+        iso = cd_items("Gi (1994)(Pub)", start=200)
+        img = cd_items("Gi (1994)(Pub)", self.IMG, (".ccd", ".img", ".sub"))
+        for items in (img + iso, iso + img):                                    # (whichever comes first in the items)
+            sel = library.select(items, AMIGA_DP, AMIGA)
+            self.assertEqual({it.dat: sel.decisions[it.key].action for it in items}, {CD32_DAT: KEEP, self.IMG: SUPERSEDED})
+            self.assertEqual({sel.decisions[it.key].superseded_by for it in img}, {"Gi (1994)(Pub)"})
+        items = cd_items("Gz (1994)(Pub)", self.CDTV_MDF, (".mds", ".mdf"), start=10) + cd_items("Gz (1994)(Pub)", CDTV_DAT, (".cue", ".iso"), 200)
+        sel = library.select(items, AMIGA_DP, AMIGA)
+        self.assertEqual({it.dat: sel.decisions[it.key].action for it in items}, {CDTV_DAT: KEEP, self.CDTV_MDF: SUPERSEDED})
+
+    def test_your_language_order_comes_before_the_order_of_the_dats(self) -> None:
+        items = cd_items("Gl (1994)(Pub)", self.IMG, (".ccd", ".img", ".sub")) + cd_items("Gl (1994)(Pub)(DE)", start=200)
+        self.assertEqual(self.kept(items, replace(AMIGA_DP, languages=("En", "De"))), {"Gl (1994)(Pub)"})       # (the [IMG] one: English)
+
+
+class RedumpOverrides(unittest.TestCase):
+    PSX = platforms.get_platform("Sony PlayStation")
+    NAMES = ["Game (USA) (Disc 1)", "Game (USA) (Disc 1) (Rev 1)", "Game (USA) (Disc 2)"]
+
+    def test_always_exclude_on_one_disc_of_a_redump_set_drops_its_playlist(self) -> None:
+        items = redump_items(self.NAMES, "Sony - PlayStation", total=2)
+        prof = library.default_profile(self.PSX)
+        self.assertEqual([s.name for s in library.select(items, prof, self.PSX).sets], ["Game (USA) (Rev 1)"])
+        sel = library.select(items, replace(prof, overrides=(("Sony - PlayStation", "Game (USA) (Disc 2)", "exclude"),)), self.PSX)
+        self.assertEqual(sel.sets, [])
+        self.assertEqual((sel.decisions[2].action, sel.decisions[2].codes), (EXCLUDED, (library.OVERRIDE_EXCLUDE,)))
+        # (the older disc 1 is still superseded; the newest is a set that lacks a disc now: reported, and with "Complete multi-disk sets
+        #  only" - the default - set aside, as when disc 2 is not there; never a whole game of yours)
+        self.assertEqual(acts(items, sel), {"Game (USA) (Disc 1).chd": SUPERSEDED, "Game (USA) (Disc 1) (Rev 1).chd": INCOMPLETE,
+                                            "Game (USA) (Disc 2).chd": EXCLUDED})
+        self.assertEqual([(i.name, i.present, i.missing) for i in sel.incomplete], [("Game (USA) (Rev 1)", {1: 1}, (2,))])
+        from romorg import totals
+        self.assertEqual(totals._kept(items, sel), {})
+        sel = library.select(items, replace(prof, complete_only=False, overrides=(("Sony - PlayStation", "Game (USA) (Disc 2)", "exclude"),)),
+                             self.PSX)
+        self.assertEqual((sel.decisions[1].action, sel.decisions[1].missing), (KEEP, (2,)))      # (kept, no playlist)
+
+    def test_always_exclude_on_a_dreamcast_disc_drops_the_playlist_and_leaves_other_games_alone(self) -> None:
+        dc = platforms.get_platform("Sega Dreamcast")
+        items = redump_items(["Skies (USA) (Disc 1)", "Skies (USA) (Disc 2)", "Other (USA) (Disc 1)", "Other (USA) (Disc 2)"],
+                             "Sega - Dreamcast", total=2)
+        sel = library.select(items, replace(library.default_profile(dc), overrides=(("Sega - Dreamcast", "Skies (USA) (Disc 1)", "exclude"),)), dc)
+        self.assertEqual([s.name for s in sel.sets], ["Other (USA)"])
+        self.assertEqual(acts(items, sel), {"Skies (USA) (Disc 1).chd": EXCLUDED, "Skies (USA) (Disc 2).chd": INCOMPLETE,
+                                            "Other (USA) (Disc 1).chd": KEEP, "Other (USA) (Disc 2).chd": KEEP})
+
+
+class KeepApart(unittest.TestCase):
+    """"Combine alternate titles" makes the releases of a TOSEC title by other publishers one game; a title of :data:`library.KEEP_APART`
+    is split by its publishers instead (``library._apart`` in ``combined_key``): in the selection and in the totals."""
+
+    NAMES = ["Overlord (1990)(Virgin Mastertronic)", "Overlord (1994)(Virgin)", "Overlord (1990)(Melbourne House)",
+             "Overlord (1993)(Someone Else)", "Legend (1989)(CRL)", "Legend (1992)(Mindscape)", "Legend (1992)(Mindscape - Future Publishing)",
+             "Tetris (1988)(Mirrorsoft)", "Tetris (1989)(Infogrames)"]
+
+    def test_which_game_of_a_shared_title_a_publisher_is(self) -> None:
+        self.assertEqual([library._apart("overlord", p) for p in ("virgin mastertronic", "melbourne house", "virgin", "someone else")],
+                         ["#0", "#0", "#1", "#0"])                       # (a publisher in no list: the first game)
+        self.assertEqual(library._apart("legend", "mindscape - future publishing"), "#1")       # (a cover disk of Mindscape's)
+        self.assertEqual(library._apart("tetris", "mirrorsoft"), "")
+        key = ("tosec", "overlord", ("us",), "virgin", (), ())
+        self.assertEqual(library.combined_key(GAMES, key, True)[3], "#1")
+        self.assertEqual(library.combined_key(GAMES, key, False), key)
+
+    def test_select_keeps_one_release_of_each_game_of_a_shared_title(self) -> None:
+        items, sel, by = run(self.NAMES)
+        kept = sorted(n for n, d in by.items() if d.action == KEEP)
+        self.assertEqual(len(kept), 5)
+        self.assertIn("Overlord (1994)(Virgin)", kept)
+        self.assertIn("Legend (1989)(CRL)", kept)
+        group0 = {"Overlord (1990)(Virgin Mastertronic)", "Overlord (1990)(Melbourne House)", "Overlord (1993)(Someone Else)"}
+        self.assertEqual(sorted(by[n].action for n in group0), [KEEP, SUPERSEDED, SUPERSEDED])
+        self.assertTrue({by[n].superseded_by for n in group0 if by[n].action == SUPERSEDED} <= group0)    # (never Virgin's other game)
+        self.assertEqual(sorted(by[n].action for n in self.NAMES[5:7]), [KEEP, SUPERSEDED])
+        self.assertEqual(sorted(by[n].action for n in self.NAMES[7:]), [KEEP, SUPERSEDED])             # (not a title kept apart: one game)
+        _i, _s, by = run(self.NAMES, replace(AMIGA_DP, combine_alt_titles=False))
+        self.assertEqual({d.action for d in by.values()}, {KEEP})                                      # (off: every publisher's is a game)
+
+    def test_the_totals_count_each_game_of_a_shared_title(self) -> None:
+        from types import SimpleNamespace
+        from romorg import totals
+        dat = SimpleNamespace(name=GAMES, roms=[it.rom for it in amiga_items(self.NAMES)])
+        on = totals.compute_target(AMIGA, [dat], AMIGA_DP)
+        off = totals.compute_target(AMIGA, [dat], replace(AMIGA_DP, combine_alt_titles=False))
+        self.assertEqual((on.count, off.count), (5, 9))
+        self.assertEqual(sorted(k[1][3] for k in on.games if k[1][1] in ("overlord", "legend")), ["#0", "#0", "#1", "#1"])
+        self.assertIn(frozenset({"Overlord (1994)(Virgin).adf"}), set(on.games.values()))
+
+
+class ReviewOfTheFixesTests(unittest.TestCase):
+    """What the review of the bug check's fixes found (Amendment 54)."""
+
+    def test_a_complete_edition_is_not_short_of_another_region_s_bonus_disc(self) -> None:
+        dc = platforms.get_platform("Sega Dreamcast")
+        items = redump_items(["Game (Europe) (Disc 1)", "Game (Europe) (Disc 2)"], "Sega - Dreamcast", total=2) + \
+            [replace(it, key=it.key + 10) for it in redump_items([f"Game (USA) (Disc {n})" for n in (1, 2, 3)], "Sega - Dreamcast", total=3)]
+        sel = library.select(items, library.default_profile(dc), dc)
+        self.assertEqual([s.name for s in sel.sets], ["Game (Europe)"])
+
+    def test_a_disk_two_sets_borrow_stays_with_the_one_left(self) -> None:
+        names = ["Game (1990)(Pub)(Disk 2 of 2)", "Game (1990)(Pub)(DE)(Disk 1 of 2)", "Game (1990)(Pub)(FR)(Disk 1 of 2)"]
+        prof = replace(AMIGA_DP, languages=("De", "Fr"), best_variant=False, latest_only=False,
+                       overrides=((GAMES, names[1] + ".adf", "exclude"),))
+        items = amiga_items(names)
+        sel = library.select(items, prof, AMIGA)
+        self.assertEqual([s.name for s in sel.sets], ["Game (1990)(Pub)(FR)"])
+        self.assertEqual({sel.decisions[k].action for s in sel.sets for k in s.slots.values()}, {KEEP})
+
+    def test_a_save_keeps_the_disks_of_its_own_release_only(self) -> None:
+        from romorg import retroarch
+        names = [f"Game ({y})(Pub)(Disk {n} of 2)" for y in (1989, 1990, 1991) for n in (1, 2)]
+        items = [replace(it, path=Path(it.rom.name)) for it in amiga_items(names)]
+        sel = library.select(items, AMIGA_DP, AMIGA, saved=retroarch.save_name_keys([names[0] + ".srm"]))
+        self.assertEqual([n for n in names if sel.decisions[names.index(n) + 1].action == KEEP], [*names[:2], *names[4:]])
+
+    def test_every_revision_of_an_incomplete_set_is_set_aside(self) -> None:
+        psx = platforms.get_platform("Sony PlayStation")
+        items = redump_items(["Game (USA) (Disc 1)", "Game (USA) (Disc 1) (Rev 1)"], "Sony - PlayStation", total=2)
+        sel = library.select(items, replace(library.default_profile(psx), latest_only=False, one_per_game=False), psx)
+        self.assertEqual(set(acts(items, sel).values()), {INCOMPLETE})
+
+    def test_complete_sets_only_is_shown_on_the_disc_systems_it_applies_to(self) -> None:
+        for name in ("Sega Dreamcast", "Sony PlayStation", "Sony PlayStation 2"):
+            info = library.profile_info(platforms.get_platform(name))
+            self.assertTrue(info["available"]["complete_only"], name)
+            self.assertTrue(info["scopes"]["complete_dats"], name)

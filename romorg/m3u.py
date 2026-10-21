@@ -770,7 +770,22 @@ def plan_m3us(result: "ScanResult", savedisk: bool = False, labels: bool = True,
 def _stale_ops(root: Path, ops: list[M3UOp], moving: Collection[str] = ()) -> list[M3UOp]:
     """Our playlists not in the plan that point at missing (or moving) files or duplicate a planned one."""
     moving_set = {_fold(Path(p)) for p in moving}
-    planned = {_fold(op.path) for op in ops}
+    planned: dict[str, list[Path]] = {}
+    for op in ops:
+        planned.setdefault(_fold(op.path), []).append(Path(op.path))
+
+    def is_planned(path: Path) -> bool:
+        """``path`` IS a planned playlist: its name, or another case of it on a file system that ignores case (exFAT). An old one whose
+        name differs only in case on one that does not is a file of its own."""
+        for q in planned.get(_fold(path), ()):
+            if str(q) == str(path):
+                return True
+            try:
+                if os.path.exists(q) and os.path.samefile(q, path):
+                    return True
+            except OSError:
+                pass
+        return False
     planned_sets = {frozenset(_fold(p) for p in entry_paths(op.lines, op.path.parent)): op.path
                     for op in ops if op.status in ("write", "ok")}
     out: list[M3UOp] = []
@@ -779,7 +794,7 @@ def _stale_ops(root: Path, ops: list[M3UOp], moving: Collection[str] = ()) -> li
     except OSError:
         return out
     for path in found:
-        if _fold(path) in planned:
+        if is_planned(path):
             continue
         info = read_m3u(path)
         if info is None or not info[0]:

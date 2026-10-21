@@ -3245,3 +3245,45 @@ extension. The Overview card says *found*, the Library card *kept*.
 * Rule `build_whdload` ("Build WHDLoad games", Amiga, on): after Build library the page starts `POST /api/whdload/build` - a job of
   its own, cancellable; also a button on the WHDLoad panel. On the user's folders: 1,984 games (1,885 known to boot, 54 + 45 that
   install), about 1.2 s and 1.4 MB a game in a sample of 12 (all 12 built; Dennis, Hook, Shadowgate, Castles booted in PUAE).
+
+
+**AMENDMENT 54 (v0.3) — A bug check of the library build, Amiga and the other systems.**
+* The user: "run a bug check over the amiga and other platform library build features. ensure good test coverage". A workflow of
+  finders and skeptics: 44 bugs confirmed with repros, then a review of the fixes (13 more) and tests for the coverage gaps it named.
+* Amiga selection (`library`): an edition's own complete set beats one made with a borrowed disk when titles are combined - the
+  disk counts of every edition are looked at (`_complete_totals`; Amendment 12 B); `variant_sets` borrows as `select` does; the vanish
+  list leaves out a title whose game is kept in another form (another publisher, its CD32 disc, its floppies next to an SPS release);
+  "Prefer the release you have saves for" finds a TOSEC winner by its stem; a save of one disk keeps every disk of its release
+  (`_release_of_parts`: a TOSEC set with its version and date, a Redump release, an SPS release) and a disk of several is never
+  "preferred" on its own; a crack tagged on disk 1 only is a crack (`_prefer_unprotected` by set); the rating filter covers discs and
+  SPS releases (`game_dat`) and never a [BIOS] set; the CD32 / CDTV discs follow the language rules (`language_dats`) and your
+  language order comes first among discs and floppies; "always exclude" on a disk gives a disk its set borrowed back its own decision
+  (`Selection.before_borrow`; one another kept set borrows stays) and the set's other disks are a set that lacks one (reported; with
+  "Complete multi-disk sets only" set aside), never a whole game; a CD game whose disc names differ after "(Disc N of M)" ([!], a
+  label) is one release; a disc's files are one game (`_tags_of` reads `rom.game`).
+* Disc systems: an edition with every disc beats a better region that lacks one (`_discs_missing`: the DAT's own count, else the
+  game's highest disc number - No-Intro); "Latest versions only" and "One version per game" both off still make playlists and keep
+  every revision (an incomplete set sets them all aside); a budget re-release in another language that is the only release stays, a
+  complete budget set is not set aside for a release that lacks a disc, a budget release in your language is one; "Complete
+  multi-disk sets only" (on) reaches Dreamcast, PlayStation and PlayStation 2 and is shown on their pages (`library.complete_dats`);
+  an older config's converted lists get the newer rules.
+* `tags`: the other version forms read their leading "vX.Y<letter>" as the plain form does (v855e < v855e.01, v2.0c < v2.0f i2.202,
+  v1.05 < v1.1+); the TOSEC country codes SK SI YU CS RO BG LT LV EE IL IS TH SG MY PH VN ID EG LU CL PE and the No-Intro regions
+  they name are regions with their languages; `to_json` gives `variant_languages` (what the rules read).
+* Counts: a borrowed disk you lack is missing (`Target.borrowed`); the space, rating and upgrade tiles read discs and SPS releases
+  under their games DAT and count every file of a game (a borrowed disk too); the tree reads an SPS image or a disc's file by its
+  release (`game_ref.release`, row tags from it) and filters languages as the rules do; a borrowed disk kept for its saves is
+  "kept for its saves". Tree = totals on the user's folders: Amiga 3,305 owned / 163 missing, Dreamcast 47 / 3, PlayStation 4 / 4,849.
+* `organiser`: a symbolic link and a zip of several BIOS files take no part in BIOS duplicates or exclusion; an archive that holds a
+  game next to other files is an item of the selection (a disk fills its slot and its playlist names zip#member, your choice for it
+  holds, a kept one comes back out of a reserved folder; never renamed, a link never touched); an app-made playlist whose name
+  differs only in case is another file on a case-sensitive file system (removed), the same one on exFAT; undo keeps a playlist it
+  restores when only case changed, and never moves back a file a later build put in the place (a move's size and time are logged);
+  a hard link in another folder is not the file in place.
+* WHDLoad: an SPS release is built from loose images or a zip / 7z read whole; a rebuild that fails keeps (or moves with its disks)
+  the archive it had; a failed write leaves nothing (`scanner.WHDLOAD_BUILD_TEMP`: "safe to delete", removed by the next build); an
+  archive of ours that cannot be read is made again; one game a target as the library counts games (`combine_alt`); the disks of a
+  release kept without a playlist are one version; a demo's install is no full game's unless the list knows it boots from its disks;
+  a built archive is a WHDLoad file in the tree, no unmatched one; "Check which versions WHDLoad can install" never records a failed
+  XFD download as a result. `whdinstalls.Matcher`: one filter on both ways of finding an install - not another game's, no Arcadia
+  board's, demo's or preview's for a game.

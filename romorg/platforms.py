@@ -107,8 +107,10 @@ PLATFORMS: dict[str, Platform] = {
         folder_hint="amiga",
         latest_dats=("Commodore Amiga - Games - [ADF]",),
         best_variant_dats=("Commodore Amiga - Games - [ADF]",),
-        # (the SPS / IPF releases too: their release's name has the languages - Dune's German, French and Italian originals)
-        language_dats=("Commodore Amiga - Games - [ADF]", "Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]"),
+        # (the SPS / IPF releases and the CD32 / CDTV discs too: their names have the languages - Dune's German, French and Italian
+        #  originals, Zool's German CD32 disc)
+        language_dats=("Commodore Amiga - Games - [ADF]", "Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]",
+                       *_CD32_DATS, *_CDTV_DATS),
     ),
     "Nintendo Game Boy Advance": _nointro(
         "Nintendo Game Boy Advance", "Nintendo - Game Boy Advance",

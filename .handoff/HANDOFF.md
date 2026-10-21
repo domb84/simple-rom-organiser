@@ -312,6 +312,15 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
   - 7 are in `_excluded` (non-English, a bad dump, a virus-tagged copy): the user decides.
 - 101 games have no kept copy, but an archived one builds. Mostly non-English or betas.
 
+## Bug check of the library build (2026-10-21, not committed yet)
+- The user asked for a bug check of the Amiga and other-platform library build, with good test coverage. Results and repros:
+  `/tmp/claude-1000/bugcheck/result.json` (44 confirmed); the review of the fixes: the session scratchpad's `wf_result.json`.
+- Everything is fixed with a regression test: see Amendment 54 in `docs/ARCHITECTURE.md`. Full suite: 1,819 tests, 51 skipped, OK.
+  Packaging and smoke test pass. Tree = totals on a copy of the real data (Amiga, Dreamcast, PlayStation).
+- Behaviour the user may notice: with combined titles, an edition's own complete set beats a set with a borrowed disk; Amiga
+  "prefer saved" now works; CD32 / CDTV discs follow the language rules; "Complete multi-disk sets only" now on for Dreamcast /
+  PlayStation / PlayStation 2 (as Settings always said); an "always exclude" on one disk makes the rest of its set incomplete.
+
 ## Work files (outside the repo)
 `~/.cache/whdwork/`:
 - `drive.py`: an in-process server on `~/.cache/rtest/data`.

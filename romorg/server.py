@@ -544,6 +544,13 @@ def _tags_json(rom: Any, tags_mod: Any) -> dict[str, Any] | None:
     if tags_mod is None or rom is None:
         return None
     try:
+        lib = _optional_mod("library")
+        dat, release = getattr(rom, "dat", "") or "", getattr(rom, "game", "") or ""
+        if lib is not None and release and hasattr(lib, "_disc_dats"):      # (an SPS image, a disc's file: its release's tags, as the rules read them)
+            if dat in lib._image_set_dats():
+                return dict(tags_mod.to_json(tags_mod.parse_name(release + ".ipf", "tosec")))
+            if dat in lib._disc_dats():
+                return dict(tags_mod.to_json(tags_mod.parse_name(release + ".cue", "tosec")))
         parsed = getattr(rom, "tags", None)
         if parsed is None:
             set_name = getattr(rom, "set_name", "") or ""
@@ -1145,12 +1152,12 @@ class App:
             "available": {
                 "latest_only": bool(getattr(platform, "latest_dats", ())),
                 "best_variant": bool(getattr(platform, "best_variant_dats", ())),
-                "complete_only": bool(getattr(platform, "m3u_dats", ())),
+                "complete_only": bool(library.complete_dats(platform)),
             },
             "scopes": {
                 "latest_dats": list(getattr(platform, "latest_dats", ()) or ()),
                 "best_variant_dats": list(getattr(platform, "best_variant_dats", ()) or ()),
-                "complete_dats": list(getattr(platform, "m3u_dats", ()) or ()),
+                "complete_dats": list(library.complete_dats(platform)),
                 "exclude_dats": list(platform.dats),
             },
             "style": SOURCE_TOSEC, "catalog": [], "regions": [], "language_names": {},
@@ -2178,7 +2185,8 @@ class App:
                        "files": [_entry_rel(f, state.root) if hasattr(f, "path") else _rel(f, state.root)
                                  for f in g.get("files") or ()],
                        "tags": _tags_json(rom, tags_mod), "title": self._game_title(rom, g.get("dat", "")),
-                       "year": _year_of(rom), "size": getattr(rom, "size", None)}
+                       "year": _year_of(rom), "size": getattr(rom, "size", None),
+                       "release": getattr(rom, "game", "") or ""}         # (the DAT's game: an SPS image's release, a disc file's disc)
                 if g["name"] in levels:
                     row["level"], row["kind"] = levels[g["name"]]
                 rows.append(row)
@@ -2644,9 +2652,14 @@ class App:
         xfd_state: dict[str, Any] = {}
 
         def decruncher() -> Any:
-            """The XFD package's xfdmaster.library, for an install that runs xfdDecrunch: fetched from Aminet once, loaded once."""
+            """The XFD package's xfdmaster.library, for an install that runs xfdDecrunch: fetched from Aminet once, loaded once. One that
+            cannot be fetched is counted (``fails``): the version is not checked then, never "does not install"."""
             if "x" not in xfd_state:
-                xfd_state["x"] = _mod("xfd").Decruncher(whd.xfd_package())
+                try:
+                    xfd_state["x"] = _mod("xfd").Decruncher(whd.xfd_package())
+                except Exception:
+                    xfd_state["fails"] = xfd_state.get("fails", 0) + 1
+                    raise
             return xfd_state["x"]
 
         def work(job: Job) -> Any:
@@ -2674,12 +2687,16 @@ class App:
                 with pkg:
                     for s in todo:
                         key = ready.key_of(it.rom.name for it in s)
+                        fails = xfd_state.get("fails", 0)
                         try:
                             pkg.install([disk_bytes(it) for it in s], cd=False, decruncher=decruncher,   # (floppies: never a CD
                                         hints=inst.chipset_hints(it.rom.name for it in s))                 #  version, a "CD32 rip" too)
                             rows[key] = {"ok": True, "archive": install["archive"], "reason": ""}
                             any_ok = True
                         except Exception as exc:  # noqa: BLE001 - the reason is the result
+                            if xfd_state.get("fails", 0) > fails:            # (the XFD package could not be fetched: not checked, try again later)
+                                failed.append({"title": title, "error": (str(exc) or type(exc).__name__)[:300]})
+                                continue
                             rows[key] = {"ok": False, "archive": install["archive"], "reason": (str(exc) or type(exc).__name__)[:300]}
                         n_checked += 1
                 n_ready += any_ok
@@ -3809,7 +3826,7 @@ class App:
             game = game_of_file.get(src) or game_of_name.get(item.get("game") or "")
             item["rating"], item["votes"] = (game.get("rating"), game.get("votes")) if game else (None, None)
             item["year"], item["size"] = (game.get("year"), game.get("size")) if game else (None, None)
-            item["game_ref"] = {"dat": game["dat"], "game": game["name"]} if game else None
+            item["game_ref"] = {"dat": game["dat"], "game": game["name"], "release": game.get("release", "")} if game else None
             item["tags"] = game.get("tags") if game else None
             ref = by_file.get(src)
             if ref is None and game is not None:
@@ -5127,7 +5144,7 @@ class App:
         for item, _t in games:                                   # the games the folder lacks (of those the rules want): listed where they would be, no file
             if not item.get("have"):
                 entries.append({"side": treeview.LIBRARY, "parts": (item["name"],), "size": 0, "state": treeview.MISSING, "from": "",
-                                "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"]},
+                                "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"], "release": item.get("release", "")},
                                         "cs_kind": "games", "cs_id": item.get("id")},
                                 "text": (item["name"] + " " + (item.get("title") or "")).casefold()})
         report = self._saves_report(state) if self._saves_available(state.platform.name) else None
@@ -5137,10 +5154,12 @@ class App:
             except Exception:  # noqa: BLE001 - the saves are a courtesy of the tree
                 traceback.print_exc()
         keep_text = self._library_mod().SAVED_KEEP_TEXT
+        # (a borrowed disk you lack is missing for its set's game; one you have, kept for its saves, is no game of the rules' own)
+        lent = getattr(self._totals(), "borrowed_names", lambda _n: frozenset())(state.platform.name) if wanted is not None else frozenset()
         for e in entries:              # a game the rules set aside but its saves keep: a count of its own, not one of the rules' games
             row = e["row"] or {}
             name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
-            e["saved_keep"] = keep_text in str(row.get("reason") or "") and (wanted is None or name not in wanted)
+            e["saved_keep"] = keep_text in str(row.get("reason") or "") and (wanted is None or name not in wanted or name in lent)
         self._saved_keep_why(state, entries)
         if wanted is not None:        # a game you lack is "missing" only when the rules want it (and a game of yours that has saves is listed with them)
             entries = [e for e in entries if not (e["state"] == treeview.MISSING and e["row"].get("name") not in wanted
@@ -5492,7 +5511,7 @@ class App:
         tags = row.get("tags") or {}
         if skip != "region" and f.get("region") and f["region"] not in (tags.get("regions") or ()):
             return False
-        if skip != "language" and f.get("language") and f["language"] not in (tags.get("languages") or ()):
+        if skip != "language" and f.get("language") and f["language"] not in (tags.get("variant_languages", tags.get("languages")) or ()):
             return False
         if skip != "rated" and f.get("rated"):
             if not row or (row.get("rating") is not None) != (f["rated"] == "1"):
@@ -5550,7 +5569,7 @@ class App:
                 for r in tags.get("regions") or ():
                     regions.setdefault(r, set()).add(u)
             if self._tree_pass(e, f, "language"):
-                for lang in tags.get("languages") or ():
+                for lang in tags.get("variant_languages", tags.get("languages")) or ():   # (as the rules read them: an untagged TOSEC game is English)
                     languages.setdefault(lang, set()).add(u)
             if row and self._tree_pass(e, f, "rated"):
                 rated["1" if row.get("rating") is not None else "0"].add(u)
@@ -5578,8 +5597,11 @@ class App:
         try:
             category = str((row.get("tags") or {}).get("category") or "")
             raw_dat = (row.get("game_ref") or {}).get("dat") or row.get("dat", "")
-            if raw_dat in _mod("library")._image_set_dats() and " - " in name:
-                name = name.rsplit(" - ", 1)[0] + ".ipf"       # (an SPS image "<release> - <file>.ipf": its release's name)
+            release = (row.get("game_ref") or {}).get("release") or ""
+            if raw_dat in _mod("library")._image_set_dats():  # (an SPS image: its release's name has the tags, as library._tags_of reads it)
+                name = release + ".ipf" if release else (name.rsplit(" - ", 1)[0] + ".ipf" if " - " in name else name)
+            elif release and raw_dat in _mod("library")._disc_dats():
+                name = release + ".cue"                        # (a CD32 / CDTV disc's files: the disc's name)
             t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
             dat = _mod("library").game_dat(raw_dat)                                                   # (a disc: its games DAT's)

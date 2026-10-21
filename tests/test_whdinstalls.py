@@ -99,6 +99,33 @@ class CatalogueAndMatching(unittest.TestCase):
         self.assertIsNone(self.match("Nonesuch"))
 
 
+class InstallsThatAreNotTheGame(unittest.TestCase):
+    """A demo's, a preview's, an Arcadia board's or another game's install is never a game's, by its name or by its Hall of Light page."""
+
+    INSTALLS = [{"archive": "ZapPreview.lha", "title": "Zap (Preview)", "hol": "500"}, {"archive": "Xenon.lha", "title": "Xenon - Arcadia", "hol": "77"},
+                {"archive": "BlobDemo.lha", "title": "Blob Demo", "hol": "88"}, {"archive": "HuntForRedOctober.lha", "title": "Hunt for Red October", "hol": "9"},
+                {"archive": "Lotus2.lha", "title": "Lotus 2", "hol": "12"}, {"archive": "XmasLemmings91.lha", "title": "Lemmings - X-Mas 1991", "hol": "13"}]
+
+    def test_by_name(self) -> None:
+        from unittest import mock
+        m = whdinstalls.Matcher(self.INSTALLS)
+        with mock.patch.object(m, "_hols", return_value={}):
+            for title in ("Zap", "Xenon", "Blob", "Hunt for Red October"):
+                self.assertIsNone(m.match(title, strict=True), title)
+            self.assertEqual(m.match("Xenon - Arcadia", strict=True)[0]["archive"], "Xenon.lha")
+            self.assertEqual(m.match("Zap (Preview)", strict=True)[0]["archive"], "ZapPreview.lha")
+            self.assertEqual(m.match("Lotus Turbo Challenge 2", strict=True)[0]["archive"], "Lotus2.lha")             # (_ALIASES)
+            self.assertEqual(m.match("Lemmings - Xmas Lemmings 1991", strict=True)[0]["archive"], "XmasLemmings91.lha")
+
+    def test_by_its_hall_of_light_page(self) -> None:
+        from unittest import mock
+        from romorg.alttitles import node
+        m = whdinstalls.Matcher(self.INSTALLS)
+        with mock.patch.object(m, "_hols", return_value={node("Zap"): {"500"}, node("Xenon"): {"77"}, node("Hunt for Red October"): {"9"}}):
+            for title in ("Zap", "Xenon", "Hunt for Red October"):
+                self.assertIsNone(m.match(title, strict=True), title)
+
+
 class WordsInAnotherOrder(unittest.TestCase):
     """A nickname in quotes, a possessive, the same words in another order (TOSEC's article at the end of a title)."""
 

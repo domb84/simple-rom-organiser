@@ -72,6 +72,7 @@ import os
 import re
 import stat
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -411,7 +412,8 @@ def bios_out_of(kept: RenameOp, root: Path) -> Optional[RenameOp]:
 def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
     """The same BIOS twice (any folder) is a ROM twice: one copy stays, the spares go to ``_duplicates`` as the spare copies of a ROM
     do, and the copy that stays is chosen as for a ROM (``scanner.group_duplicate_units``): the one already in place and named right, then
-    one outside the reserved folders, loose before a zip, then the fewest folders, the shortest path."""
+    one outside the reserved folders, loose before a zip, then the fewest folders, the shortest path. A symbolic link is never touched,
+    and a zip of several BIOS files is no copy of any one of them."""
     from . import scanner
 
     def rank(o: RenameOp) -> tuple:
@@ -421,7 +423,7 @@ def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
 
     by_name: dict[tuple[str, str], list[RenameOp]] = {}
     for op in ops:
-        if op.bios and op.rom_name and op.status in ("ok", "move", "skip"):
+        if op.bios and op.rom_name and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
             by_name.setdefault((op.rom_name.casefold(), op.bios_game), []).append(op)
     for group in by_name.values():
         if len(group) < 2:
@@ -435,8 +437,22 @@ def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
                 _send_to_reason(op, root, "duplicate", f"duplicate of {text}", keeper=text)
 
 
+def _one_bios(path: Path) -> bool:
+    """True unless ``path`` is a zip of more than one file (a BIOS zip holds BIOS files only: ``bios.identify_archive``)."""
+    if path.suffix.lower() != ".zip":
+        return True
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return sum(1 for i in zf.infolist() if not i.is_dir()) <= 1
+    except (OSError, zipfile.BadZipFile, ValueError, NotImplementedError):
+        return True
+
+
 def bios_exclude(op: RenameOp, root: Path, profile: Optional["library.LibraryProfile"]) -> bool:
-    """:func:`bios_exclusion`, carried out on ``op`` (to ``_excluded``). True when it was."""
+    """:func:`bios_exclusion`, carried out on ``op`` (to ``_excluded``). True when it was (never a symbolic link, never a zip of several
+    BIOS files: it is judged by one of them, and the others may be good)."""
+    if os.path.islink(op.src) or not _one_bios(op.src):
+        return False
     hit = bios_exclusion(op, profile)
     if hit is None:
         return False
@@ -448,7 +464,7 @@ def bios_exclude(op: RenameOp, root: Path, profile: Optional["library.LibraryPro
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
                unmatched: bool) -> RenameOp:
     # str(): on Windows Path equality ignores case, which would hide a case-only rename
-    at_target = str(src) == str(dst) or (src.name == dst.name and _same_file(src, dst))
+    at_target = str(src) == str(dst) or (src.name == dst.name and _fold(src.parent) == _fold(dst.parent) and _same_file(src, dst))   # (a hard link elsewhere is not it)
     status = "ok" if at_target else "move"
     kind = "rename" if _fold(src.parent) == _fold(dst.parent) else "move"
     if at_target:
@@ -746,8 +762,9 @@ def partial_archives(result: "ScanResult") -> list[MatchedUnit]:
         via = getattr(matches[0], "matched_via", "raw") or "raw"
         from .tags import style_of_rom
         op = RenameOp(p, p, "skip", "", roms[0].name)
+        member = next(e.member for e, m in members if m is not None)          # (the game's file in it: a playlist names that one)
         out.append(MatchedUnit(p, op, roms[0], frozenset(), _header_form(roms[0], via), roms[0].dat, via == "raw", True,
-                               os.path.islink(p), members[0][0].member, len(members), style_of_rom(roms[0])))
+                               os.path.islink(p), member, len(members), style_of_rom(roms[0])))
     return out
 
 
@@ -851,10 +868,27 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
             key = len(items)
             owners[key] = (u.op, u)
             items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
+        # an archive that holds a game next to other files (a readme, scans) is never moved or renamed, but its game is yours: the
+        # rules decide it like any file (a disk of a set fills its slot, a language sets it aside, your own choice for it holds)
+        partial: set[int] = set()
+        if platform is not None:
+            skips = {_fold(op.src): op for op in others if op.status == "skip" and not op.code}
+            for u in partial_archives(result):
+                op = skips.get(_fold(u.path))
+                if op is None:
+                    continue
+                key = len(items)
+                owners[key] = (op, dataclasses.replace(u, op=op))
+                partial.add(key)
+                items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
         selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games,
                                    saved=saved)
         for key, (op, u) in owners.items():
             d = selection.decisions.get(key)
+            if key in partial:
+                if not u.link:                                 # (a symbolic link fills its slot, but is never touched)
+                    _partial_decided(op, d, root)
+                continue
             if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
                 _add_reason(op, d.reason.split("; ")[-1])      # "borrowed as disk N of <set> (...)"
             if d is not None and d.action == library.KEEP and library.SAVED_KEEP in d.codes:
@@ -967,7 +1001,6 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     core = _plan_core(result, missing_dats, False, layout, profile, platform, ratings, lang_games, saved)
     root = result.root
     ops = core.ops
-    _rule_partial_archives(result, ops, profile, platform)
     sel = core.selection if core.selection is not None else library.Selection()
 
     specs: list["m3u.PlaylistSpec"] = []
@@ -990,47 +1023,52 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     playlists = m3u.plan_playlists(specs, root, savedisk=savedisk, labels=labels, member_counts=counts)
 
     moving = [str(op.src) for op in ops if op.status in MOVE_STATUSES]
-    rewritten = {_fold(p.path) for p in playlists if p.status in ("write", "ok")}
+    written = {_fold(p.path): Path(p.path) for p in playlists if p.status in ("write", "ok")}
+
+    def rewritten(old: Path) -> bool:
+        """True when a planned playlist IS ``old`` (its name, or another case of it on a file system that ignores case): writing it
+        replaces it. An old one whose name differs only in case on one that does not is another file, removed on its own."""
+        new = written.get(_fold(old))
+        return new is not None and (str(new) == str(old) or (os.path.exists(new) and _same_file(Path(old), new)))
+
     kept_ops: list[RenameOp] = []
     deleting: set[str] = set()
     by_src = {_fold(o.src): o for o in ops if o.kind != "m3u"}
     for op in ops:
         if op.status == DELETE_STATUS and op.kind == "m3u":
-            if _fold(op.src) in rewritten:
+            if rewritten(op.src):
                 continue
             deleting.add(_fold(op.src))
             op.reason = _library_delete_reason(op, by_src)
         kept_ops.append(op)
     for st in m3u.plan_stale(root, playlists, moving):
-        if _fold(st.path) in deleting or _fold(st.path) in rewritten:
+        if _fold(st.path) in deleting or rewritten(st.path):
             continue
         deleting.add(_fold(st.path))
         kept_ops.append(RenameOp(st.path, st.path, DELETE_STATUS, st.reason, "", "m3u"))
     return LibraryPlan(kept_ops, playlists, sel, profile, core.owners)
 
 
-def _rule_partial_archives(result: "ScanResult", ops: list[RenameOp], profile: "library.LibraryProfile", platform: Any) -> None:
-    """An archive that holds a game next to other files stays where it is (the build cannot rename it), but the rules still say
-    whether the game is one to have: one they set aside (a language, a bad dump ...) is ``excluded`` - Fatal Heritage's German SPS
-    release, with its scans - not counted as yours."""
+def _partial_decided(op: RenameOp, d: Any, root: Path) -> None:
+    """What the rules decided for an archive that holds a game next to other files: it stays where it is (the build cannot rename it).
+    One they set aside (a language, a bad dump, your "always exclude" ...) gets their code - Fatal Heritage's German SPS release, with
+    its scans - and is not counted as yours; one they keep that lies in a reserved folder (``_unmatched``, from before its DAT knew it)
+    goes back to where it came from, under its own name."""
     from . import library
-    if platform is None:
+    if d is None:
         return
-    units = {_fold(u.path): u for u in partial_archives(result)}
-    if not units:
+    if d.action != library.KEEP:
+        op.code = d.action if d.action in CODE_DIRS else "excluded"
+        op.reasons = tuple(d.codes)
+        op.reason = f"{d.reason or d.action} - left where it is (the archive holds other files too)"
         return
-    scope = library._Scope(platform)
-    for op in ops:
-        u = units.get(_fold(op.src)) if op.status == "skip" and not op.code else None
-        if u is None:
-            continue
-        item = library.Item(key=0, dat=u.dat, rom=u.rom, style=u.style, path=u.path, member=None)
-        info = library.eligibility(library._rom_name(item), u.style, profile, languages=u.dat in scope.language,
-                                   flags=scope.flags(u.dat), parsed=library._tags_of(item))
-        if info:
-            op.code = "excluded"
-            op.reasons = tuple(code for code, _x in info)
-            op.reason = f"excluded: {library._describe(info)} - left where it is (the archive holds other files too)"
+    parts = _parts_of(op.src, root)
+    if folders.reserved_of(parts) is None:
+        return
+    dst = root.joinpath(*folders.core_parts(parts))
+    if dst != op.src and not os.path.lexists(dst):
+        op.dst, op.status, op.kind = dst, "move", "move"
+        op.reason = (op.reason + "; " if op.reason else "") + "back out of its reserved folder (its game is kept)"
 
 
 def _library_delete_reason(op: RenameOp, by_src: dict[str, RenameOp]) -> str:
@@ -1575,7 +1613,10 @@ def read_undo_log(log_path: Path) -> dict[str, Any]:
                 out["rejected"] += 1
             else:
                 out["moves"].append({"src": src, "dst": dst})
-                out["steps"].append({"op": "move", "src": src, "dst": dst})
+                step: dict[str, Any] = {"op": "move", "src": src, "dst": dst}
+                if isinstance(rec.get("size"), int) and isinstance(rec.get("mtime_ns"), int):
+                    step["size"], step["mtime_ns"] = rec["size"], rec["mtime_ns"]
+                out["steps"].append(step)
         elif op == "create":
             p = _resolve_logged(rec.get("path"), root, old_root, seen)
             sha1, size = rec.get("sha1"), rec.get("size")
@@ -1631,8 +1672,8 @@ def _write_log(log_path: Path, root: Path, steps: list[dict[str, Any]], created:
             lines.append(json.dumps({"op": "create", "path": _rel_str(m["path"], root),
                                      "sha1": m["sha1"], "size": m["size"]}))
         else:
-            lines.append(json.dumps({"op": "move", "src": _rel_str(m["src"], root),
-                                     "dst": _rel_str(m["dst"], root)}))
+            lines.append(json.dumps({"op": "move", "src": _rel_str(m["src"], root), "dst": _rel_str(m["dst"], root),
+                                     **{k: m[k] for k in ("size", "mtime_ns") if k in m}}))
     for d in deleted:
         lines.append(json.dumps({"op": "delete", "path": _rel_str(d["path"], root), "content": d["content"]}))
     lines.append(json.dumps({"op": "end"}))
@@ -1810,7 +1851,14 @@ def apply_renames(ops: Iterable[RenameOp], root: Path, progress: Optional[Progre
             progress(len(done) + len(deleted) + len(written) + len(failed), total, name)
 
     def move(op: RenameOp, src: Path, dst: Path) -> None:
-        seq = journal.record({"op": "move", "src": _rel_str(src, root), "dst": _rel_str(dst, root)})
+        rec: dict[str, Any] = {"op": "move", "src": _rel_str(src, root), "dst": _rel_str(dst, root)}
+        try:
+            st = os.lstat(src)
+            if stat.S_ISREG(st.st_mode):                      # (which file it was: undo never moves another one back in its place)
+                rec["size"], rec["mtime_ns"] = st.st_size, st.st_mtime_ns
+        except OSError:
+            pass
+        seq = journal.record(rec)
         try:
             _rename_no_overwrite(src, dst)
         except BaseException:
@@ -1955,6 +2003,15 @@ def _file_matches(path: Path, size: int, sha1: str) -> bool:
     return h.hexdigest() == sha1.lower()
 
 
+def _is_the_moved(path: Path, item: Mapping[str, Any]) -> bool:
+    """True when ``path`` is still the file a logged move put there (its size and modification time: a rename keeps both)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return st.st_size == item["size"] and st.st_mtime_ns == item["mtime_ns"]
+
+
 def undo(log_path: Path, root: Optional[Path] = None) -> dict[str, Any]:
     """Reverse the steps recorded in ``log_path`` (last first).
 
@@ -2021,6 +2078,10 @@ def undo(log_path: Path, root: Optional[Path] = None) -> dict[str, Any]:
             skipped.append({**info, "reason": "original path is taken"})
             remaining.append(item)
             continue
+        if "size" in item and not _is_the_moved(dst, item):
+            skipped.append({**info, "reason": "the file there now is not the one this build moved (a later build put another there)"})
+            remaining.append(item)
+            continue
         try:
             src.parent.mkdir(parents=True, exist_ok=True)
             _rename_no_overwrite(dst, src)
@@ -2070,7 +2131,8 @@ def undo(log_path: Path, root: Optional[Path] = None) -> dict[str, Any]:
             if _fold(path) in changed:
                 continue
             info2 = m3u.read_m3u(path)
-            if info2 and info2[0] and any(_fold(e) in gone for e in info2[1]):
+            if info2 and info2[0] and any(_fold(e) in gone and not os.path.lexists(e) for e in info2[1]):   # (a disk there now is no gone one:
+                #                                                                        a case-only rename put it back under its old name)
                 try:
                     os.unlink(path)
                     m3us_removed += 1

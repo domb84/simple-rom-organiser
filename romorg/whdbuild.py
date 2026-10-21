@@ -19,18 +19,18 @@ import json
 import os
 import re
 import time
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .scanner import WHDLOAD_BUILD_MARKER, is_built_whdload
+from .scanner import WHDLOAD_BUILD_MARKER, WHDLOAD_BUILD_TEMP, is_built_whdload
 
 __all__ = ["MARKER", "Target", "targets", "build", "marker_of"]
 
 MARKER = WHDLOAD_BUILD_MARKER
 _BAD_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DISK_RE = re.compile(r"\s*\(Dis[ck] \d+ of \d+\)")
+_DEMO_ARC_RE = re.compile(r"(?:demo|preview)\d*\.lha$", re.IGNORECASE)     # (an install of a game's demo: "AgonyDemo.lha")
 
 
 @dataclass
@@ -41,7 +41,7 @@ class Target:
     archive: str                          # the install (``...lha`` on whdload.de)
     level: int                            # ``whdready`` level: 3 boots, 2 installs the files, 1 disk images
     dest: Path                            # <the version's folder>/<release>.lha
-    disks: list[tuple[Path, Optional[str]]] = field(default_factory=list)   # (file, member) in disk order; an SPS zip: (zip, None)
+    disks: list[tuple[Path, Optional[str]]] = field(default_factory=list)   # (file, member) in disk order; a whole SPS zip / 7z: (it, None)
     sps: bool = False
 
     def key(self, date: str = "") -> dict[str, Any]:
@@ -75,10 +75,11 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         parts = [unit_item(k) for k in keys]
         op0, u0, it0 = parts[0]
         sps = u0.dat in image_sets
-        if sps:
+        if sps:                                               # (its images: loose, in a zip / 7z of their own, or one of several)
             entry = whdready.release(u0.rom.game) or [None, None]
             level, arc, names = entry[0], entry[1] if len(entry) > 1 else None, [u0.rom.game]
-            disks = [(_final(op0), None)]
+            found = {_final(op) for op, _u, _it in parts}           # (a zip / 7z of the release is one unit: every image in it)
+            disks = sorted(((f, None) for f in found), key=lambda d: (d[0].name.casefold(), str(d[0])))
         else:
             names = [u.rom.name for _op, u, _it in parts]
             level = whdready.level(names)
@@ -86,10 +87,12 @@ def targets(plan: Any, platform: Any) -> list[Target]:
             disks = [(_final(op), u.member) for op, u, _it in parts]
         if not arc or level is None or level < whdready.IMAGES:
             return
+        if _DEMO_ARC_RE.search(arc) and level < whdready.BOOTS and not any(re.search(r"\b(?:demo|preview)\b", n, re.IGNORECASE) for n in names):
+            return                                            # (the full game's disks with a demo's install it does not boot from: not the game)
         title = library._tags_of(it0).title
         stem = _BAD_NAME_RE.sub("", name).strip(" .") or title
         t = Target(title=title, names=names, archive=arc, level=int(level), dest=disks[0][0].parent / f"{stem}.lha", disks=disks, sps=sps)
-        versions.append((library.game_key(it0, True), t))
+        versions.append((library.game_key(it0, getattr(sel, "combine_alt", True)), t))   # (one a game, as the library counts games)
 
     for cs in sel.sets:                                       # (the kept multi-disk sets: their slots in disk order)
         keys = [k for _s, k in sorted(cs.slots.items())]
@@ -97,6 +100,7 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         if cs.dat == games_dat:
             add(keys, cs.name)
     by_release: dict[str, list[int]] = {}
+    loose_sets: dict[tuple, list[int]] = {}                   # (the disks of a release kept with no playlist - for its saves, say: one version)
     for key, d in sel.decisions.items():
         if d.action != library.KEEP or key in in_sets or key not in owners:
             continue
@@ -104,9 +108,17 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         if u.dat in image_sets:
             by_release.setdefault(u.rom.game, []).append(key)
         elif u.dat == games_dat:
-            add([key], _DISK_RE.sub("", Path(u.rom.name).stem))
+            rel = library._release_of_parts(unit_item(key)[2])
+            if rel is None:
+                add([key], _DISK_RE.sub("", Path(u.rom.name).stem))
+            else:
+                loose_sets.setdefault(rel, []).append(key)
+    for keys in loose_sets.values():
+        keys.sort(key=lambda k: ((library.tags._disk(library.tags.parse_name(owners[k][1].rom.name, library.STYLE_TOSEC)) or (0, 0))[1],
+                                 owners[k][1].rom.name))
+        add(keys, _DISK_RE.sub("", Path(owners[keys[0]][1].rom.name).stem))
     for release, keys in by_release.items():
-        add(keys[:1], release)
+        add(keys, release)
     best: dict[tuple, Target] = {}
     for g, t in versions:
         cur = best.get(g)
@@ -128,26 +140,33 @@ def marker_of(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _ours(root: Path) -> dict[Path, dict[str, Any]]:
+    """The WHDLoad games built here under ``root`` with what each was made from (``{}``: one whose marker cannot be read - ours, made
+    again or removed). What an interrupted build left half written is deleted."""
     out: dict[Path, dict[str, Any]] = {}
     for dp, dn, fn in os.walk(root):
         dn[:] = [d for d in dn if not d.startswith(".")]
         for f in fn:
             if f.lower().endswith(".lha"):
                 p = Path(dp) / f
-                m = marker_of(p)
-                if m is not None:
-                    out[p] = m
+                if is_built_whdload(p):
+                    out[p] = marker_of(p) or {}
+            elif f.endswith(WHDLOAD_BUILD_TEMP):
+                try:
+                    (Path(dp) / f).unlink()
+                except OSError:
+                    pass
     return out
 
 
 def _disk_data(t: Target) -> list[bytes]:
-    if t.sps:
-        with zipfile.ZipFile(t.disks[0][0]) as z:
-            return [z.read(n) for n in sorted(z.namelist()) if n.lower().endswith(".ipf")]
+    from .discarchive import list_members, open_member
     out = []
     for path, member in t.disks:
-        if member:
-            from .discarchive import open_member
+        if t.sps and Path(path).suffix.lower() in (".zip", ".7z"):     # (a release's zip / 7z: its images in order)
+            for m in sorted((m.name for m in list_members(Path(path)) if m.name.lower().endswith(".ipf")), key=str.casefold):
+                with open_member(path, m) as f:
+                    out.append(f.read())
+        elif member:
             with open_member(path, member) as f:
                 out.append(f.read())
         else:
@@ -161,7 +180,6 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
     """Make ``todo`` real under ``root``: ``{"built", "moved", "kept", "removed", "failed": [{title, error}]}``. An archive that is the
     same is kept, one whose disks moved is moved, the others are made (atomically); ours that no target wants any more are removed."""
     from . import amigainstall as ai
-    from .organiser import TEMP_MARKER
     by_arc = {i["archive"]: i for i in installs}
     if fetch is None:
         from . import whdinstalls
@@ -180,6 +198,18 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
     out: dict[str, Any] = {"built": [], "moved": [], "kept": 0, "removed": [], "failed": []}
     wanted: set[Path] = set()
     packages: dict[str, bytes] = {}
+    def keep_old(t: Target) -> None:
+        """A target that cannot be made now keeps the archive it had (its disks moved: moved with them), never loses it."""
+        old = t.dest if t.dest in have else next((p for p, m in have.items() if m.get("source") == list(t.names) and p.exists()), None)
+        if old is None:
+            return
+        if old != t.dest and not t.dest.exists() and old not in wanted:
+            os.replace(old, t.dest)
+            have[t.dest] = have.pop(old)
+            out["moved"].append(str(t.dest))
+        else:
+            wanted.add(old)
+
     for n, t in enumerate(todo):
         if stopped():
             break
@@ -187,12 +217,13 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
         inst = by_arc.get(t.archive)
         if inst is None:
             out["failed"].append({"title": t.title, "error": f"{t.archive} is not in the list of installs"})
+            keep_old(t)
             continue
         key = json.dumps(t.key(inst.get("date", "")), sort_keys=True)
         if t.dest in have and json.dumps({k: have[t.dest].get(k) for k in ("source", "install", "install_date")}, sort_keys=True) == key:
             out["kept"] += 1
             continue
-        if t.dest.exists() and t.dest not in have:
+        if t.dest.exists() and t.dest not in have:            # (one of another's: never touched)
             out["failed"].append({"title": t.title, "error": f"{t.dest.name} is there already and is not one this app built"})
             continue
         if progress:
@@ -212,16 +243,21 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
             files = ai.alias_icons(res.files)
             files[MARKER] = json.dumps({"app": "simple-rom-organiser", **t.key(inst.get("date", "")), "built": time.time()},
                                        indent=1).encode()
-            tmp = t.dest.with_name(f"{t.dest.name}{TEMP_MARKER}whd")
-            ai.write_lha(tmp, files, res.dirs)
-            os.replace(tmp, t.dest)
+            tmp = t.dest.with_name(f"{t.dest.name}{WHDLOAD_BUILD_TEMP}")
+            try:
+                ai.write_lha(tmp, files, res.dirs)
+                os.replace(tmp, t.dest)
+            except BaseException:
+                tmp.unlink(missing_ok=True)                   # (a disk that filled up: nothing half written is left)
+                raise
             have[t.dest] = {}
             out["built"].append(str(t.dest))
         except Exception as exc:  # noqa: BLE001 - one game that cannot be built does not stop the others
             out["failed"].append({"title": t.title, "error": (str(exc) or type(exc).__name__)[:300]})
+            keep_old(t)
     if not stopped():
         for p in list(have):
-            if p not in wanted and p.exists() and marker_of(p) is not None:
+            if p not in wanted and p.exists() and is_built_whdload(p):
                 p.unlink()                                    # (its game is no longer kept, or its version changed: ours, made again at will)
                 out["removed"].append(str(p))
     if progress:

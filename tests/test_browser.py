@@ -816,6 +816,7 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
     # ---- with one
     def test_the_page_says_how_many_saves_and_which_titles_they_match(self) -> None:
         self.retroarch_with_saves()
+        self.api("POST", "/api/library/profile", {"platform": "Commodore Amiga", "prefer_saved": False})   # (else v1.0 is kept instead of v1.1)
         self.open()
         self.scan()
         self.library_open()
@@ -873,6 +874,7 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
 
     def test_the_rules_wording_the_saves_of_a_file_the_filter_and_the_per_game_choice(self) -> None:
         self.retroarch_with_saves()
+        self.api("POST", "/api/library/profile", {"platform": "Commodore Amiga", "prefer_saved": False})   # (else v1.0 is kept instead of v1.1)
         self.open()
         self.scan()
         self.settings_of()

@@ -1101,6 +1101,7 @@ def is_hidden(name: str) -> bool:
 
 
 WHDLOAD_BUILD_MARKER = ".romorg-whdload-build.json"   # the first entry of a WHDLoad game this app built from the user's disks
+WHDLOAD_BUILD_TEMP = TEMP_MARKER + "whd"               # "<release>.lha" + this: one being written (whdbuild.build)
 
 
 def is_built_whdload(path: Any) -> bool:
@@ -1143,6 +1144,10 @@ def collect_files(root: Path, recursive: bool = True,
                                 and not is_hidden(de.name)):
                             problems.append((Path(de.path), "partial output of an interrupted convert - the "
                                                             "original is kept (run Undo); safe to delete"))
+                        elif (problems is not None and de.name.endswith(WHDLOAD_BUILD_TEMP)
+                                and not is_hidden(de.name)):
+                            problems.append((Path(de.path), "part of a WHDLoad game an interrupted build was writing - safe to "
+                                                            "delete (the next build makes it again)"))
                         elif (problems is not None and TEMP_MARKER in de.name
                                 and not is_hidden(de.name)):
                             original = de.name.split(TEMP_MARKER, 1)[0]

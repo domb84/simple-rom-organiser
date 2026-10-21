@@ -26,7 +26,7 @@ MISSING = "missing"            # (a game the folder lacks: no file, listed where
 CONVERTED = "converted"        # (the CHD a build makes of a raw disc: a new file, its size not known before)
 DELETED = "deleted"            # (an original the build deletes after converting it)
 SAVEONLY = "saveonly"          # (saves of a game that is not in the database's list: no file, listed by the title the saves are known by)
-WHDLOAD = "whdload"            # (a file of a WHDLoad install downloaded next to a game's disks: stays, belongs to no game)
+WHDLOAD = "whdload"            # (a file of a WHDLoad install downloaded next to a game's disks, a WHDLoad game built from them: stays, no game of its own)
 LIBRARY, ARCHIVE = "library", "archive"
 _MOVE = ("move", "rename")
 
@@ -202,7 +202,8 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
             if os.fspath(f) not in known and os.fspath(f) not in moving:
                 parts = _rel(f, root)
                 if parts:
-                    out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if _in_install(f.parent, root, whd) else IGNORED, "", -1))
+                    ours = f.suffix.lower() == ".lha" and _built_whdload(f)
+                    out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if ours or _in_install(f.parent, root, whd) else IGNORED, "", -1))
     for p in playlists:                                             # the playlists the build writes
         if getattr(p, "status", "") == "write":
             parts = _rel(Path(p.path), root)
@@ -226,6 +227,11 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
                 if parts:
                     out.append(Entry(ARCHIVE, tuple(parts), _size(f), EXISTING, "", -1))
     return out
+
+
+def _built_whdload(path: Path) -> bool:
+    from .scanner import is_built_whdload
+    return is_built_whdload(path)
 
 
 def index(entries: Iterable[Any], root: str = "", ref: Any = None) -> Index:

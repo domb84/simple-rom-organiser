@@ -334,17 +334,22 @@ class Matcher:
     def _found(self, title: str, strict: bool, others: Optional[set[str]]) -> Optional[tuple[list[dict[str, Any]], str, str]]:
         """:meth:`_find`, first by the game's Hall of Light page (OpenRetro's, for this title: one game's page, an install that has
         it - no demo install for a game; "Indiana Jones and the Last Crusade - The Action Game" is not the adventure's install),
-        never an install that is another game's (``_NOT_ITS_INSTALL``), nor an Arcadia board's for a title that is not."""
+        never an install that is another game's (``_NOT_ITS_INSTALL``), nor an Arcadia board's for a title that is not, nor a demo's or
+        a preview's for a game ("Zap (Preview)" is no install of Zap) - whichever way it is found."""
         t = _plain(title or "")
         k = self._node(t)
+        arcadia, demo = "arcadia" in (title or "").casefold(), bool(_DEMO_RE.search(title or ""))
+
+        def its(i: dict[str, Any]) -> bool:                # (an Arcadia install wants the arcade board's ROMs, not the floppies)
+            return (i["archive"] not in _NOT_ITS_INSTALL.get(k, ()) and (arcadia or "arcadia" not in i["title"].casefold())
+                    and (demo or not _DEMO_RE.search(i["title"])))
         hols = self._hols().get(k) or set()
-        cands = [i for h in sorted(hols) for i in self.byhol.get(h, ()) if _DEMO_RE.search(t) or not _DEMO_RE.search(i["title"])]
+        cands = [i for h in sorted(hols) for i in self.byhol.get(h, ()) if its(i)]
         if cands and len({str(i["hol"]) for i in cands}) == 1:
             return cands, "Hall of Light", t
         hit = self._find(title, strict, others)
-        if hit is not None:                              # (an Arcadia install wants the arcade board's ROMs, not the floppies)
-            arcadia = "arcadia" in t.casefold()
-            keep = [i for i in hit[0] if i["archive"] not in _NOT_ITS_INSTALL.get(k, ()) and (arcadia or "arcadia" not in i["title"].casefold())]
+        if hit is not None:
+            keep = [i for i in hit[0] if its(i)]
             hit = (keep, hit[1], hit[2]) if keep else None
         return hit
 

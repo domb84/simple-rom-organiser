@@ -567,5 +567,71 @@ class PreferWhdloadVersions(unittest.TestCase):
         self.assertEqual(sorted(len(s) for s in sets), [1, 2])
 
 
+    def test_the_language_rules_take_an_unofficial_ipf_release_by_its_name(self) -> None:
+        ipf = "Commodore Amiga - Games - [Unofficial IPF]"
+        mk = lambda k, game, f: Item(key=k, dat=ipf, rom=Rom(name=f, size=1, crc="", md5="", sha1="", game=game, dat=ipf),
+                                     style="tosec", path=Path(f"{k}.ipf"), member=None)
+        de, en = "Alien Breed - Tower Assault (1994)(Team17)(DE)", "Alien Breed - Tower Assault (1994)(Team17)"
+        items = [mk(1, de, f"{de}(Disk 1 of 2).ipf"), mk(2, de, f"{de}(Disk 2 of 2).ipf"),     # (its images' names start with the release's)
+                 mk(3, en, f"{en}(Disk 1 of 2).ipf"), mk(4, en, f"{en}(Disk 2 of 2).ipf")]
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA)           # (English, the default)
+        self.assertEqual([sel.decisions[k].action for k in (1, 2, 3, 4)], [library.EXCLUDED, library.EXCLUDED, KEEP, KEEP])
+        self.assertEqual(sel.decisions[1].codes, ("language",))
+        self.assertEqual({library._tags_of(it).title for it in items}, {"Alien Breed - Tower Assault"})   # (not "Alien Breed")
+        self.assertIn(ipf, AMIGA.language_dats)
+
+
+class ShippedListLookups(unittest.TestCase):
+    """What the shipped list (``whdknown.json.gz``) answers: a version by its disks, an SPS release by its name, a title, an install."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(self.tmp)})
+        env.start()
+        self.addCleanup(env.stop)
+        whdready.clear_cache()
+        self.addCleanup(whdready.clear_cache)
+
+    def test_an_sps_release_by_its_name(self) -> None:
+        rel = "'Allo 'Allo! Cartoon Fun! (1993)(Alternative)[1005]"
+        self.assertEqual(whdready.release(rel), [whdready.BOOTS, "AlloAllo.lha"])
+        self.assertEqual(whdready.level([f"{rel} - AlloAlloCartoonFun_Disk2of2.ipf", f"{rel} - AlloAlloCartoonFun_Disk1of2.ipf"]),
+                         whdready.BOOTS)                                             # (its images, in any order)
+        self.assertIsNone(whdready.release(f"{rel} - AlloAlloCartoonFun_Disk1of2.ipf"))   # (an image's name is no release)
+        self.assertIsNone(whdready.release("'Allo 'Allo! Cartoon Fun! (1993)(Alternative)(Disk 1 of 2)[cr CSL]"))   # (floppies: by their disks)
+        self.assertIsNone(whdready.release("Zap (1993)(Acme)[0042]"))
+        failed = whdready.release("A320 Airbus Vol. 2 v1.0 (1995)(Games 4 Europe)[1592]")
+        self.assertEqual(failed, [whdready.NONE, ""])                               # (listed: its install was run, and did not install)
+
+    def test_floppies_by_their_disks(self) -> None:
+        ok = [f"'Allo 'Allo! Cartoon Fun! (1993)(Alternative)(Disk {n} of 2)[cr CSL].adf" for n in (2, 1)]
+        self.assertEqual((whdready.level(ok), whdready.archive(ok), whdready.is_ready(ok)), (whdready.BOOTS, "AlloAllo.lha", True))
+        self.assertIsNone(whdready.level(ok[:1]))                                    # (one disk of the set: another version)
+        no_boot = ["1869 - History Experience Part I (1993)(Flair)(Disk 1 of 3)(A)[cr FLT].adf",
+                   "1869 - History Experience Part I (1993)(Flair)(Disk 2 of 3)(B).adf",
+                   "1869 - History Experience Part I (1993)(Flair)(Disk 3 of 3)(C).adf"]
+        self.assertEqual((whdready.level(no_boot), whdready.archive(no_boot), whdready.is_ready(no_boot)),
+                         (whdready.NO_BOOT, "1869.lha", False))                      # (installs, does not boot: its install known)
+        none = ["1000cc Turbo (1990)(Energize)[cr CSL][a].adf"]
+        self.assertEqual((whdready.level(none), whdready.archive(none), whdready.is_ready(none)), (whdready.NONE, None, False))
+        whdready.record({whdready.key_of(no_boot): {"ok": True, "archive": "1869.lha", "reason": ""},
+                         whdready.key_of(none): {"ok": True, "archive": "1000ccTurbo.lha", "reason": ""}})
+        self.assertEqual(whdready.level(no_boot), whdready.NO_BOOT)                  # (whether it boots: only the shipped list knows)
+        self.assertEqual(whdready.level(none), whdready.FILES)                       # (your own check: it installs here)
+
+    def test_a_title_has_an_install(self) -> None:
+        self.assertTrue(whdready.has_install("'Allo 'Allo! Cartoon Fun!"))
+        self.assertTrue(whdready.has_install("'NAM 1965-1975 v1.0"))                  # (any case, without its version)
+        self.assertTrue(whdready.has_install("A320 Airbus Vol. 2"))                   # (an SPS release's title)
+        self.assertTrue(whdready.has_install("1000cc Turbo"))                         # (listed as 0: its game has an install, none installed)
+        self.assertFalse(whdready.has_install("No Such Game At All"))
+
+    def test_the_installs_that_leave_the_manual_check(self) -> None:
+        self.assertTrue(whdready.leaves_manual("1000ccTurbo.lha"))
+        self.assertFalse(whdready.leaves_manual("1869.lha"))
+        self.assertFalse(whdready.leaves_manual(""))
+
+
 if __name__ == "__main__":
     unittest.main()

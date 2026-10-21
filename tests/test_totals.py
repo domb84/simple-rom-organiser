@@ -569,3 +569,157 @@ class UiContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BugCheckTotalsTests(unittest.TestCase):
+    """The tiles count what the library keeps (Amendment 54): a borrowed disk you lack is missing, the discs and SPS releases of the
+    games DAT's games have their size and rating, a game is all of its files."""
+
+    def manager(self, dats: list[DatFile]) -> totals.TotalsManager:
+        m = totals.TotalsManager(lambda platform: dats)
+        m.request(AMIGA, EN, "sig")
+        self.assertTrue(m.wait_idle(30))
+        return m
+
+    def test_the_borrowed_disk_you_lack_is_missing(self) -> None:
+        t = target([FOO1, FOO3, FOO2_DE, "Solo (1992)(Pub)"])
+        self.assertEqual(list(t.borrowed.values()), [frozenset({FOO2_DE + ".adf"})])
+        state = ManagerTests.state(None, [FOO1, FOO3, "Solo (1992)(Pub)"])        # (you have disks 1 and 3)
+        m = totals.TotalsManager(lambda platform: [dat_of([FOO1, FOO3, FOO2_DE, "Solo (1992)(Pub)"])])
+        with mock.patch.object(totals, "compute_user", lambda result, platform, profile, *rest: totals.compute_user_items(state.items, platform, profile)):
+            m.request(AMIGA, EN, "d", state)
+            self.assertTrue(m.wait_idle(30))
+            m.request(AMIGA, EN, "d", state)
+            self.assertTrue(m.wait_idle(30))
+            self.assertIn(FOO2_DE + ".adf", m.missing_names(AMIGA.name))
+
+    def test_a_borrowed_disk_is_part_of_its_set_s_space_and_no_game_of_its_own(self) -> None:
+        m = self.manager([dat_of([FOO1, FOO3, FOO2_DE])])
+        self.assertEqual(m.insights(AMIGA, ["space"], None)["space"]["target"], 3)              # (three disks of one byte each)
+        self.assertEqual(m.borrowed_names(AMIGA.name), frozenset({FOO2_DE + ".adf"}))
+
+    def test_space_and_ratings_count_every_file_of_discs_sps_releases_and_sets(self) -> None:
+        cd, sps = "Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga - Games - SPS"
+        r = lambda name, game, dat, size: Rom(name=name, size=size, crc="", md5="", sha1="", game=game, dat=dat)   # noqa: E731
+        trio = [r(f"Trio (1991)(Pub)(Disk {i} of 3).adf", f"Trio (1991)(Pub)(Disk {i} of 3)", GAMES, 1000) for i in (1, 2, 3)]
+        g = "Zool (1993)(Gremlin)"
+        cd_roms = [r(g + ".cue", g, cd, 100), r(g + "[Track 01 of 02].iso", g, cd, 600_000), r(g + "[Track 02 of 02].wav", g, cd, 50_000)]
+        library.register_disc_files(cd, cd_roms)
+        rel = "Turrican (1990)(Rainbow Arts)[0123]"
+        sps_roms = [r(f"{rel} - Turrican_Disk{i}.ipf", rel, sps, 10_000) for i in (1, 2)]
+        dats = [DatFile(name=GAMES, description=GAMES, version="1", roms=[r("Zool (1993)(Gremlin).adf", g, GAMES, 1), *trio]),
+                DatFile(name=sps, description=sps, version="1", roms=sps_roms), DatFile(name=cd, description=cd, version="1", roms=cd_roms)]
+        m = self.manager(dats)
+        lookup = {"Zool": (9.0, 500), "Turrican": (8.5, 400), "Trio": (6.0, 60)}.get
+        out = m.insights(AMIGA, ["space", "best_missing", "avg_rating"], lookup)
+        self.assertEqual(out["space"]["target"], 3 * 1000 + 650_100 + 2 * 10_000)
+        self.assertEqual(out["best_missing"]["title"], "Zool")
+        self.assertEqual(out["avg_rating"]["target"], round((9.0 + 8.5 + 6.0) / 3, 1))
+        # you have the floppy: the better version is the CD32 disc, with its files
+        u = totals.compute_user_items([Item(key=0, dat=GAMES, rom=dats[0].roms[0], style="tosec", path=Path("z.adf"), member=None)], AMIGA, EN)
+        t = m._targets[AMIGA.name][1]
+        rows = [(k, sorted(n), sorted(t.games[k])) for k, (st, n) in u.games.items() if k in t.games and not (n & t.games[k])]
+        up = m.describe_upgrades(AMIGA, rows)
+        self.assertEqual((up[0]["title"], len(up[0]["better"])), ("Zool", 3))
+
+    def test_a_cd_game_whose_tracks_carry_their_own_tag_is_one_game(self) -> None:
+        cd = "Commodore Amiga CD32 - Games - [BIN]"
+        g = "Akira (1995)(Ice)(M3)[!]"
+        roms = [Rom(name=g + f, size=1, crc="", md5="", sha1="", game=g, dat=cd) for f in (".cue", "(Track 01 of 02).bin", "(Track 02 of 02).bin")]
+        library.register_disc_files(cd, roms)
+        t = totals.compute_target(AMIGA, [DatFile(name=cd, description=cd, version="1", roms=roms)], EN)
+        self.assertEqual(t.count, 1)
+
+
+class MissingNamesTests(unittest.TestCase):
+    """``TotalsManager.missing_names`` (what the Files tree lists as missing) on random ADF / CD32 / SPS databases and random owned files:
+    a name of a game you have is never in it, and its games are the totals' missing games, a borrowed disk with its set."""
+
+    CD, SPS = "Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga - Games - SPS"
+
+    def setUp(self) -> None:
+        known = library._DISC_FILES.get(self.CD)
+        self.addCleanup(lambda: library._DISC_FILES.__setitem__(self.CD, known) if known is not None else library._DISC_FILES.pop(self.CD, None))
+
+    def databases(self, rng: random.Random) -> list[DatFile]:
+        """Titles of one disk (with a newer version, a German and a cracked release), sets of 2-3 disks (one disk only in the German
+        edition: a set made with a borrowed disk; sometimes a whole German set too), CD32 discs (cue + tracks; the floppy as well) and
+        SPS releases of 1-3 images (some German)."""
+        r = lambda name, game, dat: Rom(name=name, size=1, crc="", md5="", sha1="", game=game, dat=dat)     # noqa: E731
+        adf: set[str] = set()
+        cd: list[Rom] = []
+        sps: list[Rom] = []
+        for i in range(rng.randint(3, 8)):
+            title, year = f"T{i}", 1990 + rng.randint(0, 4)
+            base = f"{title} ({year})(Pub)"
+            kind = rng.choice(["one", "one", "set", "borrow", "cd", "sps"])
+            if kind == "one":
+                adf.add(base)
+                for extra, p in ((f"{title} v1.1 ({year})(Pub)", 0.4), (base + "(de)", 0.3), (base + "[cr FLT]", 0.3)):
+                    if rng.random() < p:
+                        adf.add(extra)
+            elif kind in ("set", "borrow"):
+                n = rng.randint(2, 3)
+                lent = rng.randint(1, n) if kind == "borrow" else 0
+                adf.update(f"{base}(Disk {d} of {n})" for d in range(1, n + 1) if d != lent)
+                if lent:
+                    adf.add(f"{base}(DE)(Disk {lent} of {n})")
+                if rng.random() < 0.3:
+                    adf.update(f"{base}(DE)(Disk {d} of {n})" for d in range(1, n + 1))
+            if kind == "cd" or rng.random() < 0.2:
+                g = base + ("(M3)" if rng.random() < 0.3 else "")
+                cd += [r(g + f, g, self.CD) for f in (".cue", "[Track 01 of 02].iso", "[Track 02 of 02].wav")]
+                if rng.random() < 0.3:
+                    adf.add(base)
+            if kind == "sps" or rng.random() < 0.2:
+                rel = f"{base}{'(DE)' if rng.random() < 0.3 else ''}[{1000 + i}]"
+                sps += [r(f"{rel} - {title}_Disk{d}.ipf", rel, self.SPS) for d in range(1, rng.randint(1, 3) + 1)]
+        dats = [DatFile(name=GAMES, description=GAMES, version="1", roms=[r(n + ".adf", n, GAMES) for n in sorted(adf)])]
+        if cd:
+            library.register_disc_files(self.CD, cd)
+            dats.append(DatFile(name=self.CD, description=self.CD, version="1", roms=cd))
+        if sps:
+            dats.append(DatFile(name=self.SPS, description=self.SPS, version="1", roms=sps))
+        return dats
+
+    def answer(self, dats: list[DatFile], owned: list[Item], profile: library.LibraryProfile) -> tuple[dict, frozenset]:
+        m = totals.TotalsManager(lambda platform: dats)
+        state = ManagerTests.state(None, [])
+        with mock.patch.object(totals, "compute_user", lambda result, platform, prof, *rest: totals.compute_user_items(owned, platform, prof)):
+            m.request(AMIGA, profile, "d", state)
+            self.assertTrue(m.wait_idle(30))
+            m.request(AMIGA, profile, "d", state)
+            self.assertTrue(m.wait_idle(30))
+            return m.request(AMIGA, profile, "d", state), m.missing_names(AMIGA.name)
+
+    def test_missing_names_never_hold_a_game_you_have_on_random_libraries(self) -> None:
+        rng = random.Random(11)
+        lent_seen = owned_lent_seen = 0
+        for _ in range(120):
+            dats = self.databases(rng)
+            owned = [Item(key=i, dat=x.dat, rom=x, style="tosec", path=Path(x.name), member=None)
+                     for i, x in enumerate(x for d in dats for x in d.roms if rng.random() < 0.6)]
+            profile = replace(EN, languages=rng.choice([("En",), ("En", "De"), ()]), borrow_other_editions=rng.random() < 0.7,
+                              latest_only=rng.random() < 0.8, combine_alt_titles=rng.random() < 0.7)
+            answer, missing = self.answer(dats, owned, profile)
+            self.assertIsNotNone(missing)
+            self.assertFalse(answer["calculating"])
+            t = totals.compute_target(AMIGA, dats, profile)
+            u = totals.compute_user_items(owned, AMIGA, profile)
+            have = {k for k, (st, _n) in u.games.items() if st == totals.HAVE}
+            lacking = [k for k in t.games if k not in have]
+            lent = {n for k in lacking for n in t.borrowed.get(k, ())}
+            self.assertEqual(len(lacking), answer["missing_games"])
+            # a name of a game you have is never missing (a disk it shares with a set you lack, lent to that set, excepted) ...
+            yours = {n for k in have for n in (*u.games[k][1], *t.games.get(k, ()))}
+            self.assertEqual((missing & yours) - lent, frozenset())
+            # ... so a file you own that is missing is one of a game you do not have: half a set, a version the rules leave out
+            for it in owned:
+                n = library._rom_name(it)
+                if n in missing and n not in lent:
+                    self.assertNotEqual((u.games.get(library.game_key(it, profile.combine_alt_titles)) or ("",))[0], totals.HAVE, n)
+            # every file of every game you lack is missing (the disks its set borrows too), and nothing else
+            self.assertEqual(missing, frozenset(n for k in lacking for n in (*t.games[k], *t.borrowed.get(k, ()))))
+            lent_seen += bool(lent)
+            owned_lent_seen += bool(lent & {library._rom_name(it) for it in owned})
+        self.assertTrue(lent_seen and owned_lent_seen)                  # (the borrowed sets were drawn, owned and not)
