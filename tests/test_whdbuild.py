@@ -89,6 +89,8 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(todo[0].dest.read_bytes(), b"the user's own archive")
         with mock.patch.object(whdready, "level", return_value=whdready.NONE):
             self.assertEqual(whdbuild.targets(self.plan(), AMIGA), [])
+        with mock.patch.object(whdready, "archive", return_value="ZapArcadia.lha"):           # (an Arcadia board's: never floppies)
+            self.assertEqual(whdbuild.targets(self.plan(), AMIGA), [])
         with mock.patch.object(whdready, "archive", return_value="ZapDemo.lha"):             # (a demo's install: not the full game's ...
             self.assertEqual(len(whdbuild.targets(self.plan(), AMIGA)), 1)                      #  unless the list knows it boots from them)
             with mock.patch.object(whdready, "level", return_value=whdready.IMAGES):

@@ -321,6 +321,16 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
   "prefer saved" now works; CD32 / CDTV discs follow the language rules; "Complete multi-disk sets only" now on for Dreamcast /
   PlayStation / PlayStation 2 (as Settings always said); an "always exclude" on one disk makes the rest of its set incomplete.
 
+## WHDLoad games not known to boot (2026-10-22, not committed yet)
+- User: fix what can be fixed of the ~95 WHDLoad games a build makes that were not seen booting. Amendment 55.
+- Work dir `~/.cache/whdwork/fix90/`: `targets.py` (the build's targets from a scan of a data copy in ~/.cache/rtest/data),
+  `boot95.py [out.jsonl] [titles]` (built with the app's whdbuild, booted in PUAE; env PUAE_MODEL, PUAE_OPTS), `look.py`, `steps.py`,
+  `trace_dos.py` (DOS calls of an install's programs), results `boot95*.jsonl`, shots in `shots/`.
+- `make_whdknown.py` now reads fix90's results and re-keys renamed names by SHA-1 - it needs a data dir with the current DATs
+  (ROMORG_DATA_DIR, default ~/.cache/rtest/data: copy the real one there first).
+- 1,964 of 1,980 known to boot. Left (16) in the amendment. Then (user, Amendment 56): another language when nothing in yours runs,
+  and the shipped list by checksum: 2,080 of 2,088 targets known to boot. Left: King's Quest II's UnADF step and 7 cracks.
+
 ## Work files (outside the repo)
 `~/.cache/whdwork/`:
 - `drive.py`: an in-process server on `~/.cache/rtest/data`.

@@ -173,6 +173,22 @@ class RunTests(unittest.TestCase):
         self.assertEqual(amigados.run(exe, "", DictFs({"WORK:there": b"x"}))[0], 0)
         self.assertEqual(amigados.run(exe, "", DictFs({}))[0], 20)
 
+    def test_a_name_from_exnext_opens_as_it_is(self) -> None:
+        a = Asm()                                                           # (as DecrunchCIV walks a drawer: Lock, Examine, ExNext, CurrentDir,
+        a.hex("2c78 0004 43fa"); a.pcrel("dosname"); a.hex("7000 4eae fdd8 2c40")          #  then Open(fib_FileName) - a C string)
+        a.hex("41fa"); a.pcrel("dir"); a.hex("2208 74fe 4eae ffac 2800")                     # Lock("WORK:Game", SHARED) -> d4
+        a.hex("2204 41fa"); a.pcrel("fib"); a.hex("2408 4eae ff9a")                          # Examine(d4, fib)
+        a.hex("2204 41fa"); a.pcrel("fib"); a.hex("2408 4eae ff94 4a80 6700"); a.pcrel("fail")   # ExNext(d4, fib)
+        a.hex("2204 4eae ff82")                                                              # CurrentDir(d4)
+        a.hex("41fa"); a.pcrel("fib"); a.hex("5088 2208 243c 000003ed 4eae ffe2 4a80 6700"); a.pcrel("fail")   # Open(fib+8)
+        a.hex("7000 4e75")
+        a.label("fail"); a.hex("7014 4e75")
+        a.label("dosname"); a.raw(b"dos.library\0")
+        a.label("dir"); a.raw(b"WORK:Game\0")
+        a.align(); a.ptr("dir")
+        a.label("fib"); a.raw(bytes(260))
+        self.assertEqual(amigados.run(a.hunks(), "", DictFs({"WORK:Game/Crystal": b"x"}))[0], 0)
+
     def test_not_a_program(self) -> None:
         with self.assertRaises(amigados.AmigaDosError):
             amigados.run(b"plain data", "", DictFs({}))

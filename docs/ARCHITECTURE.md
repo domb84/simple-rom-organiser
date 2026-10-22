@@ -3287,3 +3287,40 @@ extension. The Overview card says *found*, the Library card *kept*.
   a built archive is a WHDLoad file in the tree, no unmatched one; "Check which versions WHDLoad can install" never records a failed
   XFD download as a result. `whdinstalls.Matcher`: one filter on both ways of finding an install - not another game's, no Arcadia
   board's, demo's or preview's for a game.
+
+
+**AMENDMENT 55 (v0.3) — The WHDLoad games the library builds that were not known to boot.**
+* The user: of the WHDLoad games a build makes (1,990 then), fix what can be fixed of the 95 not seen booting. Each was built by
+  `whdbuild.build` itself and booted headless in PUAE (A1200), the screens looked at.
+* `amigainstall`: a choice the Installer does not show (an empty text: Explora's RawDIC / Patcher / DIC slots) is never an answer
+  (`_hidden`; Chrono Quest's own version installs, not disk images; 43 installs have them); `askfile` finds the file asked for on the
+  disks (Treasure Island Dizzy: "DIZZY.DAT, Tid ..."); the shell's `Copy` (it was ignored: Rockford's `Copy Rockford:~(.fastdir|l|s)
+  TO <dest> ALL`, Strider II's `copy df0:#? to data`); `askoptions` with no default ticks every option, another try the first only
+  (Test Drive II's program disk without the data disks no one has); xadUnFile reads a zip (Tubular Worlds' AGA "code");
+  `repair_current_dir`: a slave that reads a drawer of its own its older script does not make gets its files there (Maniax's v17
+  slave; not when an icon says `Data=`: Lost Vikings' data-en); a slave no icon starts gets a `load` script (Bomb'X's package has none).
+* `amigados`: `fib_FileName` is a NUL-terminated string (it was length-prefixed: DecrunchCIV opened "\x07Crystal" - Civilization's
+  data was left crunched).
+* `whdbuild.targets`: never an Arcadia board's install for floppies (the shipped list paired Space Ranger, World Cup Soccer so).
+* The shipped list (`whdknown.json.gz`, `~/.cache/whdwork/make_whdknown.py`): the runs' verdicts, and every name a TOSEC update
+  changed since the boot runs copied to its current name by the file's SHA-1 (1,833 names, 1,384 sets: Ingrid's Back! "(Rainbird)" is
+  "(Level 9)", Hole-In-One is "- Miniature Golf"; 304 booting sets the library could not see). A name it changes again is not found
+  until the list is made again - keying it by checksum in the app is the lasting answer (not done).
+* Result: of 1,980 games the build makes, 1,964 are known to boot (1,895 of 1,990 before). Left: 16 - unsupported versions of cracks
+  (1943, A-Train, Arena, Epic, Locomotion, Rainbow Islands, Strip Poker Three ...: the slave's checks reject their data), a crack
+  repacked in one file (Dark Fusion, Mean Machine), Spike's renamed SPIKE.DATA, Black Gold (the US release the Oil Imperium slave
+  does not know), Zeewolf 2 (needs WHDLoad 20; PUAE has 19.1), King's Quest II (its UnADF step). Many have a booting copy in another
+  language the user's English-only rule sets aside.
+
+
+**AMENDMENT 56 (v0.3) — Another language when WHDLoad runs nothing in yours; the shipped list by checksum.**
+* The user: "if there's no English version then another language is OK, if it's known working". `library._whdload_language`
+  (Amiga, with "Prefer versions WHDLoad can install" and a language filter): a game none of whose kept versions the shipped list knows
+  to boot keeps, as well, a version set aside only for its language that it does - an ADF set all of whose disks are here (a playlist
+  of its own) or an SPS release; code `whdload_language`, "kept although in De: no version in your languages is known to run with
+  WHDLoad, this one is". On the user's folders: 112 games that exist only in another language (Diabolik, Dylan Dog, German-only
+  titles) come into the library, and 9 whose English copies do not run get a German / French one beside them. Build targets 2,088, 2,080
+  known to boot.
+* The user: "add checksums if it makes it more reliable". `whdknown.json.gz` has `sha1` (the first 16 hex digits of every disk's
+  SHA-1); `whdready.shipped_name` / `names_of` / `release_of` find a disk a TOSEC update renamed by its DAT checksum, and the library
+  (`_pick_best`, `_prefer_unprotected`, `_whdload_language`) and `whdbuild.targets` ask through them. The list: 863 KB.

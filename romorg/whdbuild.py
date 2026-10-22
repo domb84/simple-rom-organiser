@@ -76,17 +76,19 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         op0, u0, it0 = parts[0]
         sps = u0.dat in image_sets
         if sps:                                               # (its images: loose, in a zip / 7z of their own, or one of several)
-            entry = whdready.release(u0.rom.game) or [None, None]
+            entry = whdready.release_of(u0.rom) or [None, None]
             level, arc, names = entry[0], entry[1] if len(entry) > 1 else None, [u0.rom.game]
             found = {_final(op) for op, _u, _it in parts}           # (a zip / 7z of the release is one unit: every image in it)
             disks = sorted(((f, None) for f in found), key=lambda d: (d[0].name.casefold(), str(d[0])))
         else:
-            names = [u.rom.name for _op, u, _it in parts]
+            names = whdready.names_of(u.rom for _op, u, _it in parts)      # (the names the list knows them by: by checksum if renamed)
             level = whdready.level(names)
             arc = whdready.archive(names) or (whdready.load().get(whdready.key_of(names)) or {}).get("archive")
             disks = [(_final(op), u.member) for op, u, _it in parts]
         if not arc or level is None or level < whdready.IMAGES:
             return
+        if "arcadia" in arc.casefold() and not any("arcadia" in n.casefold() for n in names):
+            return                                            # (an Arcadia board's install wants its ROMs: never floppies - Space Ranger)
         if _DEMO_ARC_RE.search(arc) and level < whdready.BOOTS and not any(re.search(r"\b(?:demo|preview)\b", n, re.IGNORECASE) for n in names):
             return                                            # (the full game's disks with a demo's install it does not boot from: not the game)
         title = library._tags_of(it0).title

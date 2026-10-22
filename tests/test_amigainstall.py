@@ -170,7 +170,7 @@ class InstallTests(unittest.TestCase):
 
     def test_the_script_installs_the_game_from_the_disks(self) -> None:
         res = ai.install(self.pkg, [self.disk1, self.disk2])
-        self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/data/game", "Game/data/level1", "Game/data/level2"])
+        self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/data/game", "Game/data/level1", "Game/data/level2", "load"])   # (no icon: load starts it)
         self.assertEqual(res.files["Game/data/level2"], b"L2")
         out = self.tmp / "Game.lha"
         ai.write_lha(out, res.files)
@@ -208,13 +208,76 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(pkg.install([], hints=("AGA",)).files["Game/Game.slave"], b"AGA")
             self.assertEqual(pkg.install([]).files["Game/Game.slave"], b"SLAVE")              # (no hint: the default)
 
+    def test_a_hidden_choice_is_never_an_answer(self) -> None:
+        (self.pkg / "Images.slave").write_bytes(b"IMAGES")     # (Explora's install: "" for the RawDIC / Patcher / DIC slots it does not have)
+        script = ('(set #multiple-versions ">")\n(procedure P_SelectVersion (set #version (askchoice (prompt "Which version?") '
+                  '(default 0) (choices "" "" "Explora" "Chrono Quest"))))\n(P_SelectVersion)\n'
+                  '(select #version (copyfiles (source "Images.slave") (dest "WORK:Game") (newname "Game.slave")) (abort "no")'
+                  ' (askdisk (dest "Explora.Game.Disk")) (copyfiles (source "Game.slave") (dest "WORK:Game")))\n')
+        (self.pkg / "Install").write_text(script)
+        self.assertEqual(ai.install(self.pkg, []).files["Game/Game.slave"], b"SLAVE")         # (not the hidden first slot's images)
+
+    def test_a_game_file_asked_for_is_found_on_the_disks(self) -> None:
+        (self.pkg / "Install").write_text(          # (Treasure Island Dizzy: "select the game file (DIZZY.DAT, Tid ...)" on an unknown disk)
+            '(set #f (askfile (prompt "Please select the game file (DIZZY.DAT, Tid or treasure)") (default "DIZZY.DAT")))'
+            '(copyfiles (source "Game.slave") (dest "WORK:Game")) (copyfiles (source #f) (dest "WORK:Game/data"))')
+        disk = make_adf("TRESURE_ISLAND_DIZZY", {"dizzy.dat": b"the game", "s/startup-sequence": b"dizzy"})
+        self.assertEqual(ai.install(self.pkg, [disk]).files["Game/data/dizzy.dat"], b"the game")
+
+    def test_the_shell_copy_command(self) -> None:
+        (self.pkg / "Install").write_text(          # (Rockford: everything but .fastdir, l and s; Strider II: df0:#? into data)
+            '(copyfiles (source "Game.slave") (dest "WORK:Game"))'
+            '(run "Copy Rockford:~(.fastdir|l|s) TO \\"WORK:Game\\" ALL CLONE")'
+            '(makedir "WORK:Game/data") (run "copy df0:rf to \\"WORK:Game/data\\" QUIET")')   # (into a drawer that is there)
+        disk = make_adf("Rockford", {".fastdir": b"x", "rf": b"RF", "LEV/astr": b"A", "s/startup-sequence": b"rf", "l/Disk-Validator": b"v"})
+        files = ai.install(self.pkg, [disk]).files
+        self.assertEqual(sorted(k for k in files if k.startswith("Game/")),
+                         ["Game/Game.slave", "Game/LEV/astr", "Game/data/rf", "Game/rf"])
+
+    def test_every_option_the_installer_ticks_and_else_the_first(self) -> None:
+        (self.pkg / "Install").write_text(          # (Test Drive II: the program disk and data disks no one has - the program disk then)
+            '(set #o (askoptions (prompt "What do you want to install?") (choices "Program Disk" "Scenery Disk")))'
+            '(copyfiles (source "Game.slave") (dest "WORK:Game"))'
+            '(if (BITAND #o 1) (copyfiles (source "Game1:game") (dest "WORK:Game")))'
+            '(if (BITAND #o 2) (askdisk (dest "SceneryDisk")))')
+        self.assertIn("Game/game", ai.install(self.pkg, [self.disk1]).files)
+
+    def test_a_slave_s_data_drawer_its_old_script_does_not_make(self) -> None:
+        import struct
+        slave = bytearray(b"\x70\xff\x4e\x75WHDLOADS" + bytes(40) + b"data\0")
+        struct.pack_into(">H", slave, 4 + 26 - 4, len(slave) - 5)               # (ws_CurrentDir: "data", as Maniax's v17 slave)
+        files = {"Maniax/maniax.slave": bytes(slave), "Maniax/Maniax.info": make_icon(["SLAVE=maniax.slave"], "WHDLoad"),
+                 "Maniax/Readme": b"r", "Maniax/Readme.info": make_icon([], "MultiView"), "Maniax/Athens.pic": b"p", "Maniax/Maniax": b"exe",
+                 "Maniax/C/run": b"c"}
+        self.assertEqual(len(ai.repair_current_dir(files)), 1)
+        self.assertEqual(sorted(files), ["Maniax/Maniax.info", "Maniax/Readme", "Maniax/Readme.info", "Maniax/data/Athens.pic",
+                                         "Maniax/data/C/run", "Maniax/data/Maniax", "Maniax/maniax.slave"])
+        self.assertEqual(ai.repair_current_dir(files), [])                      # (there now)
+        files["Maniax/data/maniax.slave"] = bytes(slave)                         # (a stray copy of the slave in data: Magicland Dizzy's
+        self.assertEqual(ai.repair_current_dir(files), [])                      #  old script copies the package there - never data/data)
+
+    def test_a_slave_no_icon_starts_gets_a_load_script(self) -> None:
+        self.assertEqual(ai.puae_launcher({"BombX/BombX.slave": b"S", "BombX/data/x": b"x"}), b'CD "BombX"\nC:WHDLoad "BombX.slave" Preload\n')
+        self.assertIsNone(ai.puae_launcher({"BombX/BombX.slave": b"S", "BombX/BombX.info": b"I"}))
+
+    def test_xadunfile_unpacks_a_zip(self) -> None:
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("tube", b"the game")
+        (self.pkg / "Install").write_text(          # (Tubular Worlds' AGA "code")
+            '(copyfiles (source "Game.slave") (dest "WORK:Game")) (copyfiles (source "TW1:code") (dest "WORK:Game/data"))'
+            '(run "xadUnFile WORK:Game/data/code WORK:Game/data")')
+        self.assertEqual(ai.install(self.pkg, [make_adf("TW1", {"code": buf.getvalue()})]).files["Game/data/tube"], b"the game")
+
     def test_a_kickstart_the_emulator_gives_whdload(self) -> None:
         (self.pkg / "Install").write_text(          # (Subwar 2050's check: the slave boots the real Kickstart 3.1)
             '(if (exists "DEVS:Kickstarts/Kick40068.A1200") (set #k 1) (if (exists "DEVS:Kickstarts/Kick40068.A4000") (set #k 1)'
             ' (abort "No 3.1 kickstart file found in DEVS:Kickstarts, cannot continue")))'
             '(if (exists "DEVS:Kickstarts/kick99999.A9000") (abort "not one there is"))'
             '(copyfiles (source "Game.slave") (dest "WORK:Game"))')
-        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave"])
+        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave", "load"])
 
     def test_an_icon_naming_a_slave_that_is_not_there(self) -> None:
         files = {"ShadowOfTheBeast3/ShadowOfTheBeast3.slave": b"S", "ShadowOfTheBeast3/ShadowOfTheBeast3.info": make_icon(["SLAVE=Beast3.slave", "PRELOAD"], "WHDLoad"),
@@ -280,10 +343,10 @@ class InstallTests(unittest.TestCase):
     def test_the_script_named_install_is_the_one_run(self) -> None:
         (self.pkg / "Install.").write_text('(abort "an old script")')                 # (a stray copy: ConanTheCimmerian has one)
         (self.pkg / "Install").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game"))')
-        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave"])
+        self.assertEqual(sorted(ai.install(self.pkg, []).files), ["Game/Game.slave", "load"])
         ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
         with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
-            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave"])
+            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave", "load"])
 
     def test_without_a_plain_install_each_script_is_tried(self) -> None:
         (self.pkg / "Install").unlink()
@@ -293,7 +356,7 @@ class InstallTests(unittest.TestCase):
         ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
         with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
             self.assertEqual([p.name for p in pkg.scripts], ["Install_AGA", "Install_OCS"])
-            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave"])
+            self.assertEqual(sorted(pkg.install([]).files), ["Game/Game.slave", "load"])
 
     def test_a_missing_normal_icon_falls_back_to_another_of_the_package(self) -> None:
         (self.pkg / "Game.GlowIcon").write_bytes(make_icon(["SLAVE=Game.slave"], "WHDLoad"))      # (no Game.inf: only the GlowIcon)
@@ -342,7 +405,7 @@ class InstallTests(unittest.TestCase):
                                           '(askdisk (dest "Work")) (copyfiles (source "Work:") (dest #dest) (pattern "~(#?.info)"))')
         for label in ("Work", "Ninja"):                                    # (labelled "Work", or the only disk)
             res = ai.install(self.pkg, [make_adf(label, {"game": b"exe", "game.info": b"i"})])
-            self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/game"])
+            self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/game", "load"])
 
     def _ask(self, volumes: list[str], disks: list[bytes]) -> "ai.InstallResult":
         """An install that asks for ``volumes`` in turn and copies each disk's ``f`` to a file of its own."""
@@ -547,7 +610,8 @@ class PreferWhdloadVersions(unittest.TestCase):
         mk = lambda k, game, f: Item(key=k, dat=sps, rom=Rom(name=f"{game} - {f}.ipf", size=1, crc="", md5="", sha1="", game=game, dat=sps),
                                      style="tosec", path=Path(f"{k}.ipf"), member=None)
         items = [mk(1, "Dune (1992)(Virgin)(DE)[0459]", "Dune_Disk1"), mk(2, "Dune (1992)(Virgin)[1156]", "Dune_Disk1")]
-        sel = library.select(items, library.default_profile(AMIGA), AMIGA)          # (English, the default)
+        with mock.patch.object(whdready, "known", return_value={}):              # (what WHDLoad runs: another rule - WhdloadOtherLanguageTests)
+            sel = library.select(items, library.default_profile(AMIGA), AMIGA)      # (English, the default)
         self.assertEqual(sel.decisions[1].action, library.EXCLUDED)
         self.assertEqual(sel.decisions[2].action, KEEP)
 

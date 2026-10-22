@@ -1762,3 +1762,41 @@ class ReviewOfTheFixesTests(unittest.TestCase):
             info = library.profile_info(platforms.get_platform(name))
             self.assertTrue(info["available"]["complete_only"], name)
             self.assertTrue(info["scopes"]["complete_dats"], name)
+
+
+class WhdloadOtherLanguageTests(unittest.TestCase):
+    """No version in your languages WHDLoad is known to run: one in another language it is known to run is kept too (Amendment 56)."""
+
+    def run_with(self, names: list[str], shipped: dict) -> tuple[list[Item], library.Selection]:
+        from unittest import mock
+        from romorg import whdready
+        items = amiga_items(names)
+        with mock.patch.object(whdready, "known", return_value=shipped):
+            whdready.clear_cache()
+            whdready._WITH = whdready._NAMES = None
+            sel = library.select(items, AMIGA_DP, AMIGA)
+        whdready.clear_cache()
+        whdready._WITH = whdready._NAMES = None
+        return items, sel
+
+    def test_a_german_set_known_to_run_is_kept_when_no_english_one_is(self) -> None:
+        from romorg import whdready
+        en, de = "Game (1990)(Pub)[cr X]", ["Game (1990)(Pub)(DE)(Disk 1 of 2)", "Game (1990)(Pub)(DE)(Disk 2 of 2)"]
+        boots = {whdready.key_of([n + ".adf" for n in de]): [3, "Game.lha"], whdready.key_of([en + ".adf"]): [-1, "Game.lha"]}
+        items, sel = self.run_with([en, *de], boots)
+        self.assertEqual(acts(items, sel), {en + ".adf": KEEP, de[0] + ".adf": KEEP, de[1] + ".adf": KEEP})
+        self.assertEqual(sel.decisions[2].codes, (library.WHDLOAD_LANGUAGE,))
+        self.assertEqual([s.name for s in sel.sets], ["Game (1990)(Pub)(DE)"])
+        # an English version known to run: the German one stays out
+        items, sel = self.run_with([en, *de], {**boots, whdready.key_of([en + ".adf"]): [3, "Game.lha"]})
+        self.assertEqual(acts(items, sel)[de[0] + ".adf"], EXCLUDED)
+
+    def test_a_renamed_disk_is_found_by_its_checksum(self) -> None:
+        from unittest import mock
+        from romorg import whdready
+        with mock.patch.object(whdready, "_names", return_value=frozenset({"Ingrid's Back! (1989)(Rainbird).adf"})), \
+                mock.patch.object(whdready, "_SHA", {"0123456789abcdef": "Ingrid's Back! (1989)(Rainbird).adf"}), \
+                mock.patch.object(whdready, "known", return_value={}):
+            rom = Rom(name="Ingrid's Back! (1989)(Level 9).adf", size=1, crc="", md5="", sha1="0123456789ABCDEF0011", game="", dat=GAMES)
+            self.assertEqual(whdready.names_of([rom]), ["Ingrid's Back! (1989)(Rainbird).adf"])
+            self.assertEqual(whdready.shipped_name("Other (1990)(X).adf", ""), "Other (1990)(X).adf")

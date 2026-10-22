@@ -399,7 +399,7 @@ class InstallTests(unittest.TestCase):
     def test_rawdic_images_the_ipf(self) -> None:
         blob = write_ipf({t: self.disk.track(t) for t in range(4)}, split=False)
         res = ai.install(self.pkg, [blob])
-        self.assertEqual(sorted(res.files), ["Game/Disk.1", "Game/Game.slave", "Game/boot.bin", "Game/tail.bin"])
+        self.assertEqual(sorted(res.files), ["Game/Disk.1", "Game/Game.slave", "Game/boot.bin", "Game/tail.bin", "load"])   # (no icon: load starts it)
         self.assertEqual(res.files["Game/Disk.1"], self.disk.image())
         self.assertTrue(any(line.startswith("RawDIC Game.islave") for line in res.log))
 

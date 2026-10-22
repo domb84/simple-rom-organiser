@@ -447,8 +447,7 @@ class _Machine:
             size = len(data)
         t = 2 if kind == 2 else 0xFFFFFFFD
         cpu.w32(fib + 4, t)
-        cpu.w8(fib + 8, len(name))
-        cpu.load(fib + 9, name)
+        cpu.load(fib + 8, name)                               # (fib_FileName: a NUL-terminated string - DecrunchCIV opens it as it is)
         cpu.w32(fib + 120, t)
         cpu.w32(fib + 124, size)
         cpu.w32(fib + 128, (size + 487) // 488)

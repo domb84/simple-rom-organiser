@@ -830,7 +830,20 @@ class _Interp:
 
     def f_askfile(self, a: list) -> Any:
         _p, o = self.opts(a)
-        return (o.get("default") or [""])[0]
+        default = str((o.get("default") or [""])[0])
+        if ":" in default or not default:
+            return default
+        # ("Please select the game file (DIZZY.DAT, Tid, tidizzy.dat or treasure)": a file on an unknown disk - the one of the disks
+        #  that has it, by the default's name or one the question names; AmigaDOS names ignore case)
+        named = re.findall(r"\(([^()]*)\)", str((o.get("prompt") or [""])[0]))
+        wanted = [default.casefold()] + [w.strip().casefold() for n in named for w in re.split(r",|\bor\b", n) if w.strip()]
+        for want in wanted:
+            for d in self.fs.disks.values():
+                hit = next((f for f, _s in (d.files() if hasattr(d, "files") else ()) if f.rsplit("/", 1)[-1].casefold() == want), None)
+                if hit is not None:
+                    self.log.append(f"chose the file {hit} (asked: {default})")
+                    return ":" + hit
+        return default
 
     def f_askstring(self, a: list) -> Any:
         _p, o = self.opts(a)
@@ -862,6 +875,8 @@ class _Interp:
 
     def _choice(self, choices: list[str], prompt: str, o: dict) -> Any:
         default = (o.get("default") or [0])[0]
+        if isinstance(default, int) and 0 <= default < len(choices) and _hidden(choices, default):
+            default = next(k for k, c in enumerate(choices) if c.strip())     # (a hidden choice is no answer: the first one shown)
         no = next((k for k, c in enumerate(choices) if re.match(r"\s*no\b", c, re.IGNORECASE)), None)
         if no is not None and _SAVE_DISK_RE.search(prompt):
             self.log.append("no save disk")              # ("Do you want install your DuneII Save Games Disk?": none is among the disks)
@@ -874,7 +889,12 @@ class _Interp:
 
     def f_askoptions(self, a: list) -> Any:
         _p, o = self.opts(a)
-        return (o.get("default") or [0])[0]
+        if o.get("default"):
+            return o["default"][0]
+        n = len(o.get("choices", []))                     # (the Installer's own default: every option - else, another try, the first
+        every = (1 << n) - 1 if n else 0                  #  only: Test Drive II's "Program Disk + WHDLoad slave" without the data
+        got = self._answer(2, 0, ["every option", "the first option"], str((o.get("prompt") or [""])[0]))   # disks no one has)
+        return every if got == 0 else (1 if n else 0)
 
     def f_askdisk(self, a: list) -> Any:
         _p, o = self.opts(a)
@@ -1100,6 +1120,50 @@ class _Interp:
             raise InstallError(f"Patcher: {exc}") from None
         self.log.append(f"Patcher {mod}" + (f": {' / '.join(said)[:200]}" if said else ""))
 
+    def _sh_copy(self, cwd: str, args: list[str]) -> int:
+        """The shell's Copy: ``Copy [FROM] src ... [TO] dest [ALL] [CLONE] [QUIET]`` - a source may end in a pattern (Rockford's
+        ``Copy Rockford:~(.fastdir|l|s) TO <dest> ALL CLONE``); a drawer's files (with ALL its drawers too) go into ``dest``. 20 (FAIL)
+        when a source is not there."""
+        flags = {"all", "clone", "quiet", "dates", "nopro", "com", "noreq", "buf", "force", "interactive"}
+        words = [x for x in args if not x.startswith((">", "<")) and x.casefold() not in flags and not x.casefold().startswith("buf=")]
+        everything = any(x.casefold() == "all" for x in args)
+        k = next((i for i, x in enumerate(words) if x.casefold() == "to"), None)
+        srcs = [x for x in (words[:k] if k is not None else words[:-1]) if x.casefold() != "from"]
+        dests = words[k + 1:] if k is not None else words[-1:]
+        if not srcs or not dests:
+            return 20
+        dest, n, rc = _join(cwd, dests[0]), 0, 0
+        for src in srcs:
+            head, _, last = src.replace("\\", "/").rpartition("/") if "/" in src else (src.rpartition(":")[0] + ":" if ":" in src else "", "", src.rpartition(":")[2])
+            path = _join(cwd, src)
+            if any(c in last for c in "#?*|~[%"):              # (a pattern: the names it matches in its drawer)
+                d = _join(cwd, head) if head else cwd
+                rx = pattern_regex(last.replace("*", "#?"))
+                for name, is_dir in list(self.fs.listing(d)):
+                    if rx.fullmatch(name):
+                        if is_dir:
+                            n += self._copy_tree(_join(d, name), _join(dest, name)) if everything else 0
+                        else:
+                            self.fs.write(_join(dest, name), self.fs.read(_join(d, name)))
+                            n += 1
+                continue
+            kind = self.fs.exists(path)
+            if kind == 1:
+                name = re.split(r"[:/]", src)[-1]
+                self.fs.write(_join(dest, name) if self.fs.exists(dest) == 2 or len(srcs) > 1 else dest, self.fs.read(path))
+                n += 1
+            elif kind == 2:
+                for name, is_dir in list(self.fs.listing(path)):
+                    if is_dir:
+                        n += self._copy_tree(_join(path, name), _join(dest, name)) if everything else 0
+                    else:
+                        self.fs.write(_join(dest, name), self.fs.read(_join(path, name)))
+                        n += 1
+            else:
+                rc = 20
+        self.log.append(f"Copy: {n} to {dest}")
+        return rc
+
     def _shell(self, script: str) -> int:
         cwd = str(self.vars.get("@execute-dir") or "")     # (where the command runs: the script can set it)
         rc = 0
@@ -1130,7 +1194,9 @@ class _Interp:
                     else:
                         self.fs.assigns[key] = _join(cwd, rest_[0])
                 continue
-            elif word in ("which", "copy", "multiview", "more", "wait", "echo", "avail", "version", "resident",
+            elif word == "copy":
+                rc = self._sh_copy(cwd, args)
+            elif word in ("which", "multiview", "more", "wait", "echo", "avail", "version", "resident",
                           "whdload", "diskimagectrl", "diskchange", "opendrawer", "filenote", "protect", "makedir", "info", "list",
                           "type", "relabel", "setdate", "cpu", "setpatch", "stack", "failat", "path", "date", "ask"):
                 if word == "makedir":
@@ -1275,7 +1341,7 @@ class _Interp:
 
     def _xad(self, cwd: str, args: list[str], multi: bool) -> int:
         """xadUnFile[M] [FROM] archive [DEST] drawer [DIMG] [FILE pattern]: the files of an archive - an AmigaDOS disk image (DIMG),
-        an LhA archive - into the drawer; xadUnFileM: an archive split in parts (a pattern: the parts in name order). A file of a disk
+        an LhA archive, a zip - into the drawer; xadUnFileM: an archive split in parts (a pattern: the parts in name order). A file of a disk
         image that cannot be read is left out, as xadUnFile does (it goes on with the next one), and the return code is 10 (ERROR):
         Project-X's trackloader is written over the data blocks of a file of its disk."""
         from .lha import LhaError, LhaFile
@@ -1318,12 +1384,20 @@ class _Interp:
                     files.append((path, disk.read(path)))
                 except AdfError as exc:
                     bad.append(f"{path} ({exc})")
+        elif data[:4] == b"PK\x03\x04":                       # (a zip: Tubular Worlds' AGA "code")
+            import io
+            import zipfile
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    files = [(i.filename, z.read(i)) for i in z.infolist() if not i.is_dir()]
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError) as exc:
+                raise InstallError(f"xadUnFile: {src}: {exc}") from None
         else:
             try:
                 arc = LhaFile(data)
                 files = [(e.name.replace("\\", "/"), arc.read(e)) for e in arc.entries if not e.is_dir]
             except (LhaError, ValueError):
-                raise InstallError(f"xadUnFile: {src} is an archive this app does not read (an LhA or an AmigaDOS disk it reads)") from None
+                raise InstallError(f"xadUnFile: {src} is an archive this app does not read (an LhA, a zip or an AmigaDOS disk it reads)") from None
         n = 0
         for path, body in files:
             if want is not None and not want.match(path.rsplit("/", 1)[-1]):
@@ -1704,6 +1778,56 @@ def repair_data_tooltype(files: dict[str, bytes]) -> list[str]:
     return out
 
 
+def _data_tooltype(files: dict[str, bytes], pre: str, slave: str) -> bool:
+    """True when a WHDLoad icon of the drawer ``pre`` that starts ``slave`` has a ``Data=`` tooltype (it, not the slave, says where)."""
+    for k, v in files.items():
+        if not (k.startswith(pre) and "/" not in k[len(pre):] and k.casefold().endswith(".info")):
+            continue
+        try:
+            tool, tts, _a, _b = icon_info(v)
+        except ValueError:
+            continue
+        said = next((t.split("=", 1)[1].strip() for t in tts if t.replace(" ", "").casefold().startswith("slave=")), "")
+        if said.casefold() == slave.casefold() and any(t.replace(" ", "").casefold().startswith("data=") for t in tts):
+            return True
+    return False
+
+
+def repair_current_dir(files: dict[str, bytes]) -> list[str]:
+    """A slave that reads its files from a drawer of its own (``ws_CurrentDir``: "data") in a drawer that has none, whose game files
+    are at the top instead: they go into it. Maniax's slave (v17) reads "data"; its older script copies the disk to the top -
+    WHDLoad stops at "object not found on locking data". Docs (a file with an icon of its own that is not a WHDLoad one), slaves and
+    icons stay. ``files`` changed in place; what was changed."""
+    out = []
+    for k in [k for k in files if k.casefold().endswith(".slave") and k.count("/") == 1]:   # (the slaves a game drawer starts: never
+        d, _s, _n = k.rpartition("/")                                                         #  a stray copy in its data drawer - Magicland Dizzy's)
+        cur = slave_current_dir(files[k])
+        if not cur or "/" in cur or ":" in cur:
+            continue
+        pre = f"{d}/" if d else ""
+        if any(x.casefold().startswith(f"{pre}{cur}/".casefold()) for x in files) or _data_tooltype(files, pre, k[len(pre):]):
+            continue                                       # (its drawer is there, or an icon names another: Lost Vikings' Data=data-en)
+        top = [x for x in files if x.startswith(pre)]          # (its files and its drawers' files: Bomb'X's C/ and LEVEL/ too)
+        low = {x.casefold(): x for x in top if "/" not in x[len(pre):]}
+        def doc(x: str) -> bool:
+            icon = low.get(f"{x}.info".casefold())
+            if icon is None:
+                return False
+            try:
+                tool = icon_info(files[icon])[0] or ""
+            except ValueError:
+                return True
+            return bool(tool) and not tool.casefold().rstrip("/").endswith("whdload")   # (a program's own icon has no tool: Bomb'X's GAMEUK.EXE)
+        move = [x for x in top if "/" in x[len(pre):] or (not x.casefold().endswith((".slave", ".info")) and not doc(x)
+                                                         and x[len(pre):].casefold() != "load")]
+        if not move:
+            continue
+        for x in move:
+            files[f"{pre}{cur}/{x[len(pre):]}"] = files.pop(x)
+        out.append(f"{len(move)} files into {pre}{cur}/ (the slave reads them there)")
+    return out
+
+
 def alias_icons(files: dict[str, bytes]) -> dict[str, bytes]:
     """``files`` with an icon named like each slave ("<slave stem>.info") where the drawer has only icons of other names that run it
     (``Slave=``): PUAE's WHDLoad helper takes the tooltypes from the icon of the slave's name. A copy; ``files`` unchanged."""
@@ -1728,7 +1852,8 @@ def alias_icons(files: dict[str, bytes]) -> dict[str, bytes]:
 def puae_launcher(files: dict[str, bytes]) -> Optional[bytes]:
     """The ``load`` script for the archive's top (PUAE's WHDLoad helper runs ``DH0:load`` when there is one) when its own way of
     finding the game would go wrong: it takes every slave of the drawer (``List #?.slav#?``) - with several (Worms: The Director's
-    Cut's 8 MB and 12 MB ones, an intro, a CD32 version) whichever comes first - and a slave's name with a space breaks it. The
+    Cut's 8 MB and 12 MB ones, an intro, a CD32 version) whichever comes first -, a slave's name with a space breaks it, and with no
+    icon that starts the slave it shows a file picker. The
     script starts the game as a double-click on its icon would (``WBRun``: WHDLoad with the icon's tooltypes), else its slave."""
     drawers = {k.split("/", 1)[0] for k in files if "/" in k}
     if len(drawers) != 1 or "load" in files:
@@ -1736,11 +1861,13 @@ def puae_launcher(files: dict[str, bytes]) -> Optional[bytes]:
     drawer = drawers.pop()
     pre = drawer + "/"
     slaves = [k for k in files if k.startswith(pre) and "/" not in k[len(pre):] and k.casefold().endswith(".slave")]
-    if len(slaves) < 2 and not any(" " in k[len(pre):] for k in slaves):
-        return None
     icon, slave = main_slave(files, drawer)
     if slave is None:
         return None
+    stems = {f"{pre}{drawer}.info".casefold()} | {k[:-6].casefold() + ".info" for k in slaves}
+    if len(slaves) < 2 and not any(" " in k[len(pre):] for k in slaves) and any(k.casefold() in stems for k in files):
+        return None                                       # (no icon starts the slave - Bomb'X's package has none: the helper
+    #                                                        shows a file picker - its slave, as WHDLoad would run it)
     run = f'C:WBRun "{icon}" SYNC' if icon else f'C:WHDLoad "{slave}" Preload'
     return f'CD "{drawer}"\n{run}\n'.encode("latin-1")
 
@@ -1864,6 +1991,13 @@ def _is_ipf(d: Any) -> bool:
     return ipf.is_ipf(head)
 
 
+def _hidden(texts: list[str], k: int) -> bool:
+    """True when answer ``k`` is a choice the Installer does not show: an empty text among others ("" for the versions a WHDLoad
+    install does not have - Explora's RawDIC / Patcher / DIC slots; its own comment: "set choices which are not required to an
+    empty string")."""
+    return 0 <= k < len(texts) and not texts[k].strip() and any(t.strip() for t in texts)
+
+
 _MAX_TRIES = 8                                             # (runs of one script with other answers to its questions ...)
 _TRIES_SECONDS = 45.0                                      # (... while it takes no longer than this: RawDIC can be slow)
 _DISK_FAULT_RE = re.compile(r"the imager stopped|never finishes|not an ADF|cannot be read|bad OFS|no root block|bad header block"
@@ -1940,6 +2074,10 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
             files = dict(fs.work)
             it.log += repair_slave_tooltypes(files)
             it.log += repair_data_tooltype(files)
+            moved = repair_current_dir(files)
+            if moved:
+                it.log += moved
+                fs.work_dirs |= {k.rpartition("/")[0] for k in files if "/" in k}
             loader = puae_launcher(files)
             if loader:
                 files["load"] = loader
@@ -1959,7 +2097,8 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
                 continue                                     # (which icon: never why an install fails)
             for alt in range(n):
                 t = texts[alt] if alt < len(texts) else ""
-                if alt != given and not (_CD_RE.search(t) and not volumes) and not re.search(r"\b(demo|preview)\b", t, re.IGNORECASE):
+                if alt != given and not (_CD_RE.search(t) and not volumes) and not re.search(r"\b(demo|preview)\b", t, re.IGNORECASE) \
+                        and not _hidden(texts, alt):
                     queue.append(({**answers, **{q: x[1] for q, x in enumerate(it.asked[:k])}, k: alt}, level))
     first.progress = far  # type: ignore[union-attr]
     raise first  # type: ignore[misc]

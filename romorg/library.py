@@ -50,6 +50,7 @@ BORROWED_CODE = "borrowed"      # Decision.codes of a kept disk that completes a
 SAVED_GAMES = ("keep", "archive", "leave", "carry", "convert")
 SAVED_KEEP = "saved_keep"       # Decision.codes of a game kept because you have saves or save states for it
 SAVED_KEEP_TEXT = "kept: you have saves or save states for it"
+WHDLOAD_LANGUAGE = "whdload_language"   # Decision.codes of a version in another language kept: the only one WHDLoad is known to run
 SAVED_PREFER = "saved_prefer"   # Decision.codes of the release kept instead of the one the rules prefer, because you have saves for it
 
 _RULE_SHORT = {
@@ -1174,7 +1175,7 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     pool = sets
 
     def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
-        return -(whdready.level(it.rom.name for it in s.slots.values()) or 0) if prefer_whdload else 0
+        return -(whdready.level(whdready.names_of(it.rom for it in s.slots.values())) or 0) if prefer_whdload else 0
 
     for key in (lambda s: s.lang_rank, whd, lambda s: not s.cracked, lambda s: s.platform_rank):
         best = min(key(s) for s in pool)
@@ -1581,7 +1582,68 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
         _rank_across(items, sel, profile, platform)
     if profile.prefer_unprotected and profile.best_variant and _dats(platform, "image_set_dats"):
         _prefer_unprotected(items, sel, profile, platform)
+    if profile.prefer_whdload and profile.languages and _dats(platform, "best_variant_dats"):
+        _whdload_language(items, sel, profile, platform)
     return sel
+
+
+def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
+    """A game none of whose kept versions WHDLoad is known to run (the shipped list: boots in PUAE) keeps, as well, a version set aside
+    only for its language that it is known to run - an ADF set whose every disk is here, or an SPS release (the user: "if there's no
+    English version then another language is OK if it's known working")."""
+    from . import whdready
+    gdat = getattr(platform, "game_dat", "")
+    image_sets = set(_dats(platform, "image_set_dats"))
+    by_key = {it.key: it for it in items}
+    in_set = {k: cs for cs in sel.sets for k in cs.slots.values()}
+
+    def boots(members: list[Item]) -> bool:
+        if members[0].dat in image_sets:
+            return (whdready.release_of(members[0].rom) or [None])[0] == whdready.BOOTS
+        return whdready.level(whdready.names_of(m.rom for m in members)) == whdready.BOOTS
+
+    running: set[tuple] = set()
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is None or d.action != KEEP or (it.dat != gdat and it.dat not in image_sets):
+            continue
+        cs = in_set.get(it.key)
+        members = [by_key[k] for k in cs.slots.values() if k in by_key] if cs is not None else \
+            [m for m in items if m.dat in image_sets and m.dat == it.dat and m.rom.game == it.rom.game] if it.dat in image_sets else [it]
+        if boots(members):
+            running.add(game_key(it, profile.combine_alt_titles))
+    lang_out = [it for it in items if (it.dat == gdat or it.dat in image_sets) and (d := sel.decisions.get(it.key)) is not None
+                and d.action == EXCLUDED and d.codes == (LANGUAGE_CODE,) and not it.link]
+    by_name = {whdready.shipped_name(it.rom.name, it.rom.sha1 or ""): it for it in lang_out if it.dat == gdat}
+    done: set[tuple] = set()
+    for it in sorted(lang_out, key=lambda i: (i.rom.name.casefold(), i.key)):
+        g = game_key(it, profile.combine_alt_titles)
+        if g in running or g in done:
+            continue
+        if it.dat in image_sets:
+            members = [m for m in lang_out if m.dat == it.dat and m.rom.game == it.rom.game]
+            ok = boots(members)
+        else:
+            members, ok = [], False
+            for k in whdready.sets_with(whdready.shipped_name(it.rom.name, it.rom.sha1 or "")):
+                if (whdready.known().get(k) or [None])[0] == whdready.BOOTS and all(n in by_name for n in k.split("\n")):
+                    members, ok = [by_name[n] for n in k.split("\n")], True
+                    break
+        if not ok:
+            continue
+        langs = "/".join(sorted(tags.variant_languages(_tags_of(it)))) or "another language"
+        sid = None
+        disks = {(_disk_info(_tags_of(m)) or (0, 0))[0]: m for m in members}
+        if len(members) > 1 and it.dat == gdat and sorted(disks) == list(range(1, len(members) + 1)):   # (its disks a playlist)
+            sid = max([cs.id for cs in sel.sets] + [0]) + 1
+            name = _DISC_RE.sub("", _stem(disks[1].rom.name))
+            sel.sets.append(ChosenSet(id=sid, dat=gdat, name=name, total=len(members), slots={n: m.key for n, m in sorted(disks.items())},
+                                      labels={}, flags=(), cracked=any(tags.is_cracked(_tags_of(m)) for m in members)))
+        for m in members:
+            sel.decisions[m.key] = Decision(key=m.key, action=KEEP, codes=(WHDLOAD_LANGUAGE,), set_id=sid,
+                                            reason=f"kept although in {langs}: no version in your languages is known to run with "
+                                                   "WHDLoad, this one is")
+        done.add(g)
 
 
 _DISC_RE = re.compile(r"\s*\(Dis[ck] (\d+) of (\d+)\)")
@@ -1763,7 +1825,7 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
         kept_cracks = list((cracks.get(g) or {}).values())
         if not kept_cracks:
             continue
-        booting = [m for m in kept_cracks if whdready.level([x.rom.name for x in m]) == whdready.BOOTS]
+        booting = [m for m in kept_cracks if whdready.level(whdready.names_of(x.rom for x in m)) == whdready.BOOTS]
         installs = any(whdready.has_install(t) for t in titles.get(g, ()))
         crack = (booting or ([] if installs else kept_cracks))[:1]
         if not crack:
@@ -1774,7 +1836,7 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
             check = (release or {}).get("protection", "")
             if check not in MANUAL_CHECKS:
                 continue
-            lv, arc = (whdready.release(name) or [None, None])[:2]
+            lv, arc = (whdready.release_of(members[0].rom) or [None, None])[:2]
             if lv == whdready.BOOTS and not whdready.leaves_manual(arc):
                 continue                                   # (its install boots and takes the check out)
             how = "its WHDLoad install boots from the crack" if booting else "the game has no WHDLoad install"

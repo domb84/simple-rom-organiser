@@ -65,6 +65,7 @@ def load() -> dict[str, Any]:
 
 _KNOWN: Optional[dict[str, Any]] = None
 _MANUAL_KEPT: Optional[frozenset] = None
+_SHA: Optional[dict[str, str]] = None                     # the first 16 hex digits of a disk's SHA-1 -> its name in the list
 
 
 def _shipped() -> dict[str, Any]:
@@ -80,12 +81,63 @@ def _shipped() -> dict[str, Any]:
 
 def known() -> dict[str, Any]:
     """The shipped list: ``{disk names: [level, install archive]}`` (empty when it is missing)."""
-    global _KNOWN, _MANUAL_KEPT
+    global _KNOWN, _MANUAL_KEPT, _SHA
     if _KNOWN is None:
         data = _shipped()
         _KNOWN = data.get("sets") or {}
         _MANUAL_KEPT = frozenset(data.get("manual_kept") or ())
+        _SHA = {str(h).lower(): n for n, h in (data.get("sha1") or {}).items()}
     return _KNOWN
+
+
+_NAMES: Optional[tuple[int, frozenset]] = None
+
+
+def _names() -> frozenset:
+    global _NAMES
+    sets = known()
+    if _NAMES is None or _NAMES[0] != id(sets):
+        _NAMES = (id(sets), frozenset(n for k in sets for n in k.split("\n")))
+    return _NAMES[1]
+
+
+def shipped_name(name: str, sha1: str = "") -> str:
+    """The name the shipped list knows a disk by: its own, or - when a TOSEC update renamed it ("Ingrid's Back! (1989)(Rainbird)" is
+    "(Level 9)" now) - the one of the same checksum (``sha1``: the DAT's)."""
+    if name in _names() or not sha1:
+        return name
+    known()
+    return (_SHA or {}).get(sha1[:16].lower(), name)
+
+
+def names_of(roms: Iterable[Any]) -> list[str]:
+    """:func:`shipped_name` of each DAT rom (``name``, ``sha1``): what :func:`level` and :func:`archive` take."""
+    return [shipped_name(r.name, getattr(r, "sha1", "") or "") for r in roms]
+
+
+def release_of(rom: Any) -> Optional[list]:
+    """:func:`release` of the image-set release a DAT rom (an image "<release> - <file>.ipf") is of, by its name or its checksum."""
+    hit = release(getattr(rom, "game", "") or "")
+    if hit is not None:
+        return hit
+    n = shipped_name(rom.name, getattr(rom, "sha1", "") or "")
+    return release(n.rsplit(" - ", 1)[0]) if n != rom.name and " - " in n else None
+
+
+def sets_with(name: str) -> list[str]:
+    """The keys of the shipped sets that have the disk ``name``."""
+    global _WITH
+    sets = known()
+    if _WITH is None or _WITH[0] != id(sets):
+        idx: dict[str, list[str]] = {}
+        for k in sets:
+            for n in k.split("\n"):
+                idx.setdefault(n, []).append(k)
+        _WITH = (id(sets), idx)
+    return _WITH[1].get(name, [])
+
+
+_WITH: Optional[tuple[int, dict[str, list[str]]]] = None
 
 
 def archive(names: Iterable[str]) -> Optional[str]:
