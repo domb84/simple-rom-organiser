@@ -3353,3 +3353,11 @@ extension. The Overview card says *found*, the Library card *kept*.
   drawer. 150 booting games built before and after: identical. The shipped list records the 9 that did not boot from the copy the
   build chose and the next copies tried (cracks the installs reject): the build makes 2,111 games, 2,109 known to boot (1943 and
   Rainbow Islands still fall back to an untried crack).
+
+
+**AMENDMENT 58 (v0.3) — A CD32 disc in one archive is whole.**
+* The user added real CD32 discs: 207 .7z archives (a .bin and a .cue each, or an ISO set), read with the app's own 7z reader (no
+  7-Zip needed). All 207 match the TOSEC CD32 DATs by checksum ([ISO] 179, [IMG] 24, [BIN] 4). The library counted an archive as one
+  file of its disc, so 203 were "incomplete": `library.Item.holds` (the DAT rom names the file holds - the archive's members, from the
+  unit's key; organiser and totals alike) and `_select_discs` counts them. On the user's folder: 162 kept, 42 superseded by the
+  verified [!] dump of the same game, 3 excluded (two German-only, a bad dump). Tree = totals: 3,454 owned, 114 missing.

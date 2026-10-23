@@ -608,6 +608,7 @@ class Item:
     form: str = ""                # organiser._header_form
     link: bool = False            # a symlink: takes part in the selection but is never moved
     disc_total: int = 0           # Redump multi-disc games: discs of this release in the DAT (0 = unknown)
+    holds: frozenset = frozenset()  # the DAT rom names the file holds (an archive of a whole CD32 disc: its .bin and .cue)
 
 
 @dataclass
@@ -1683,9 +1684,12 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
                     releases[keep].update(releases.pop(r))
                     totals.pop(r)
 
+    def held(game: str) -> set[str]:                       # (the files of a disc that are here: one by one, or in an archive of them)
+        return {it.rom.name for it in discs[game]} | {n for it in discs[game] for n in it.holds}
+
     def whole(game: str) -> bool:
         want = files.get(game)
-        have = {it.rom.name for it in discs[game]}
+        have = held(game)
         return want <= have if want else any(n.lower().endswith(_SHEETS) for n in have)
 
     complete, partial = [], []
@@ -1697,7 +1701,7 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
         if len(releases[rkey]) < totals[rkey]:
             why.append(f"{totals[rkey] - len(releases[rkey])} of its {totals[rkey]} discs are not here")
         for g in releases[rkey].values():
-            want, have = files.get(g, frozenset()), {it.rom.name for it in discs[g]}
+            want, have = files.get(g, frozenset()), held(g)
             if want and not want <= have:
                 why.append(f"{len(want - have)} of the {len(want)} files of {g} are not here")
             elif not want and not any(n.lower().endswith(_SHEETS) for n in have):

@@ -867,7 +867,8 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
                 have_rom.add((u.dat, u.rom.name))
             key = len(items)
             owners[key] = (u.op, u)
-            items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
+            items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link,
+                                      holds=frozenset(n for _d, n in u.key) if u.archive else frozenset()))
         # an archive that holds a game next to other files (a readme, scans) is never moved or renamed, but its game is yours: the
         # rules decide it like any file (a disk of a set fills its slot, a language sets it aside, your own choice for it holds)
         partial: set[int] = set()
@@ -880,7 +881,8 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
                 key = len(items)
                 owners[key] = (op, dataclasses.replace(u, op=op))
                 partial.add(key)
-                items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link))
+                items.append(library.Item(key, u.dat, u.rom, u.style, u.path, u.member, u.form, u.link,
+                                      holds=frozenset(n for _d, n in u.key) if u.archive else frozenset()))
         selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games,
                                    saved=saved)
         for key, (op, u) in owners.items():

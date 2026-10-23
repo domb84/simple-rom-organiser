@@ -118,7 +118,7 @@ def user_items(result: Any) -> list[Item]:
             continue
         seen.add(sig)
         items.append(Item(key=len(items), dat=u.dat, rom=u.rom, style=u.style, path=u.path, member=u.member,
-                          form=u.form, link=u.link))
+                          form=u.form, link=u.link, holds=frozenset(n for _d, n in u.key) if u.archive else frozenset()))
     return _no_bios(items)
 
 

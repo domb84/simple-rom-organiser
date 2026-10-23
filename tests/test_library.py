@@ -1800,3 +1800,18 @@ class WhdloadOtherLanguageTests(unittest.TestCase):
             rom = Rom(name="Ingrid's Back! (1989)(Level 9).adf", size=1, crc="", md5="", sha1="0123456789ABCDEF0011", game="", dat=GAMES)
             self.assertEqual(whdready.names_of([rom]), ["Ingrid's Back! (1989)(Rainbird).adf"])
             self.assertEqual(whdready.shipped_name("Other (1990)(X).adf", ""), "Other (1990)(X).adf")
+
+
+class DiscInOneArchive(unittest.TestCase):
+    """A CD32 disc in one archive (a .7z of its .bin and .cue): the archive holds every file of the disc - kept, not "incomplete"."""
+
+    def test_an_archive_of_a_whole_disc_is_whole(self) -> None:
+        dat = "Commodore Amiga CD32 - Games - [BIN]"
+        g = "Alien Breed 3D (1995)(Ocean - Team 17)[cp code]"
+        roms = [Rom(name=g + ext, size=1, crc="", md5="", sha1="", game=g, dat=dat) for ext in (".bin", ".cue")]
+        library.register_disc_files(dat, roms)
+        one = Item(key=1, dat=dat, rom=roms[0], style="tosec", path=Path(g + ".7z"), member=g + ".bin")
+        sel = library.select([one], AMIGA_DP, AMIGA)
+        self.assertEqual(sel.decisions[1].action, INCOMPLETE)                 # (the .bin alone: the .cue is not here)
+        whole = replace(one, holds=frozenset(r.name for r in roms))
+        self.assertEqual(library.select([whole], AMIGA_DP, AMIGA).decisions[1].action, KEEP)
