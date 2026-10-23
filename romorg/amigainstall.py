@@ -247,14 +247,15 @@ _CD_RE = re.compile(r"\bCD(?:TV|32)?(?![a-z])", re.IGNORECASE)    # ("CD version
 _HD = "RomorgHD:"                                      # (the hard disk the game is installed to: no floppy has that name)
 # The commands an install expects in C: (WHDLoad's, the Installer's): done here or by the emulator - a script's check finds them
 _TOOLS = {"whdload", "rawdic", "dic", "patcher", "xfddecrunch", "xadunfile", "xadunfilem", "lha", "lhx", "lhex", "unlzx", "assign",
-          "copy", "delete", "rename", "makedir", "join", "setenv", "which", "protect", "filenote", "cd", "list", "echo", "execute"}
+          "unadf", "copy", "delete", "rename", "makedir", "join", "setenv", "which", "protect", "filenote", "cd", "list", "echo", "execute"}
 
 # What the emulator puts in WHDLoad's DEVS:Kickstarts from the Kickstart ROMs in its system folder (PUAE does): the files of an install
 # whose slave runs the real Kickstart ("No 3.1 kickstart file found in DEVS:Kickstarts" - Subwar 2050 checks for one before it installs)
 _PUAE_KICKSTARTS = {n.casefold() for k in ("kick33180.A500", "kick34005.A500", "kick40063.A600", "kick40068.A1200")
                     for n in (k, k + ".RTB")} | {"kick40068.a4000.rtb"}
 
-_HD_NAMES = {"romorghd", "work", "sys", "ram", "t", "dh0", "dh1", "hd0", "hd1"}       # (ENV:, ENVARC: are of their own: not installed)
+_HD_NAMES = {"romorghd", "work", "sys", "ram", "dh0", "dh1", "hd0", "hd1"}       # (ENV:, ENVARC: are of their own: not installed; T: is
+#                                                                                     scratch too - read again, never installed: King's Quest's T:disk.1)
 _SYSTEM_VOLS = {"env", "envarc", "c", "libs", "devs", "s", "l", "fonts", "locale", "keymaps", "printers"}   # (never a floppy by
 #   another name - a game disk called otherwise is not C: - unless a disk is labelled so)
 
@@ -1027,8 +1028,12 @@ class _Interp:
 
     def f_rename(self, a: list) -> Any:
         old, new = str(self.ev(a[0])), str(self.ev(a[1]))
-        if self.fs.exists(old) == 1:
+        kind = self.fs.exists(old)
+        if kind == 1:
             self.fs.rename(old, new)
+        elif kind == 2 and self.fs.exists(new) == 0:          # (a drawer: Adventure Construction Set's "ACS" UnADF made, renamed "data")
+            self._copy_tree(old, new)
+            self.fs.delete(old, everything=True)
         return 1
 
     def _other_icon(self, src: str) -> Optional[str]:
@@ -1297,6 +1302,8 @@ class _Interp:
                 self._rawdic(cwd, args)
             elif word in ("xadunfile", "xadunfilem"):
                 rc = self._xad(cwd, args, multi=word == "xadunfilem")
+            elif word == "unadf":                           # (UnADF image DEST drawer: King's Quest, Adventure Construction Set)
+                rc = self._unadf(cwd, args)
             elif word == "join":                            # (Join a b ... AS|TO c: the files one after another)
                 names = [x for x in args if not x.startswith(">")]
                 k = next((i for i, x in enumerate(names) if x.casefold() in ("as", "to")), None)
@@ -1480,6 +1487,42 @@ class _Interp:
             n += 1
         self.log.append(f"xadUnFile {src}: {n} files" + (f"; not readable, left out: {', '.join(bad)}" if bad else ""))
         return 10 if bad else 0
+
+    def _unadf(self, cwd: str, args: list[str]) -> int:
+        """UnADF image [DEST drawer]: the files of an AmigaDOS disk image into a drawer named like the disk in the drawer (the current one
+        by default: King's Quest's "T:KQ1/sierra", Adventure Construction Set's "<dest>/ACS") - what an install
+        made with DIC from a disk whose files cannot be read by name (King's Quest: "T:unadf T:disk.1 DEST=T:"). A file that cannot be
+        read is left out and UnADF goes on (return code 0: Adventure Construction Set's script needs 0, its image has the protection
+        track DIC was told to skip); not an AmigaDOS image: 20 (FAIL)."""
+        plain, dest = [], ""
+        it = iter(a for a in args if not a.startswith(">"))
+        for x in it:
+            k, eq, v = x.partition("=")
+            if k.casefold() in ("dest", "to") and eq:
+                dest = v
+            elif x.casefold() in ("dest", "to"):
+                dest = next(it, "")
+            elif x.casefold() not in ("quiet", "list"):
+                plain.append(x)
+        if not plain:
+            raise InstallError("UnADF: no disk image named")
+        out = _join(cwd, dest) if dest else cwd
+        try:
+            disk = AdfDisk(self.fs.read(_join(cwd, plain[0])))
+            listing = disk.files()
+        except (AdfError, InstallError) as exc:
+            self.log.append(f"UnADF {plain[0]}: {exc}")
+            return 20
+        out = _join(out, disk.label.strip()) if disk.label.strip() else out
+        n, bad = 0, []
+        for path, _size in listing:
+            try:
+                self.fs.write(_join(out, path), disk.read(path))
+                n += 1
+            except AdfError as exc:
+                bad.append(f"{path} ({exc})")
+        self.log.append(f"UnADF {plain[0]}: {n} files" + (f"; not readable, left out: {', '.join(bad)}" if bad else ""))
+        return 0
 
     def _rawdic(self, cwd: str, args: list[str]) -> None:
         """RawDIC: the install's imager (``SLAVE=x.islave``) run on the disks' tracks (disk 1, 2 ... in the order the set has them);

@@ -815,3 +815,16 @@ class MoreInstallFixes(unittest.TestCase):
         with ai.Package((self.tmp / "sim.lha").read_bytes()) as pkg:
             res = pkg.install([make_adf("SimCity512K", {"SimCity": b"exe"})])
         self.assertIn("SimCity512K/SimCity512K.slave", res.files)
+
+    def test_unadf_unpacks_an_image_into_a_drawer_named_like_its_disk_and_t_is_never_installed(self) -> None:
+        (self.pkg / "disk.1").write_bytes(make_adf("KQ1", {"Sierra": b"exe", "Data/vol.0": b"v0"}))   # (King's Quest: DIC's image in T:,
+        res = self.install('(copyfiles (source "disk.1") (dest "T:"))'                                   #  UnADF into T:, copied from T:KQ1)
+                           '(run "T:unadf T:disk.1 DEST=T:")'
+                           '(copyfiles (source "T:KQ1") (dest "WORK:Game/data") (pattern "(data|sierra)"))', [])
+        self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/data/Data/vol.0", "Game/data/Sierra", "load"])
+
+    def test_a_drawer_is_renamed(self) -> None:
+        disk = make_adf("ACS", {"ACS": b"exe", "c/x": b"c"})             # (Adventure Construction Set: "ACS" renamed "data", then ACS.EXE)
+        res = self.install('(copyfiles (source "ACS:") (dest "WORK:Game/ACS") (all))'
+                           '(rename "WORK:Game/ACS" "WORK:Game/data") (rename "WORK:Game/data/ACS" "WORK:Game/data/ACS.EXE")', [disk])
+        self.assertEqual(sorted(k for k in res.files if k.startswith("Game/data")), ["Game/data/ACS.EXE", "Game/data/c/x"])

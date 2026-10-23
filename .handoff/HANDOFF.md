@@ -368,7 +368,7 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
 - Round 1 and round 2 install fixes (Amendment 57) and the user's own check by checksum: committed (see git log).
 - The 25 'levels 3, no target' were all built under another region's title (Bad Dudes as Bad Dudes vs. Dragon Ninja ...): not missing;
   the real count of kept games with an install and no build is ~285.
-- Build: 2,115 WHDLoad games, 2,106 known to boot; 310 kept games with an install and no build left (`fix90/targets.json` no_target).
+- Build: 2,111 WHDLoad games, 2,109 known to boot (after UnADF + recording the failures); 310 kept games with an install and no build left (`fix90/targets.json` no_target).
 - Left to try: the 310's other groups (installs but never boots 77, does not install 92 - mostly cracks; "levels 3" 25 likely title
   mismatches in my count), Perihelion/Conqueror (a WHDLoad install-slave runner), Fears (Patcher cycles), WHDLoad 20 for Oilmania and
   Piracy (user's PUAE setup). `make_whdknown.py` reads all fix90 jsonl files; rebuild it with a fresh ~/.cache/rtest/data copy.

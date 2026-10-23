@@ -3348,3 +3348,8 @@ extension. The Overview card says *found*, the Library card *kept*.
 * The user's own check ("Check which versions WHDLoad can install", `ready.json`) keeps each version's `sha1` (`whdready.sha_key`):
   `whdready.checked` / `level(names, sha)` / `level_of(roms)` find a result by checksum when a TOSEC update renamed the disks, as the
   shipped list's lookups do (Amendment 56).
+* Later the same day: UnADF done here (`_Interp._unadf`: an image's files into a drawer named like its disk; a file it cannot read left
+  out, return code 0 as UnADF's - King's Quest I and II, Adventure Construction Set); T: is scratch, never installed; `rename` of a
+  drawer. 150 booting games built before and after: identical. The shipped list records the 9 that did not boot from the copy the
+  build chose and the next copies tried (cracks the installs reject): the build makes 2,111 games, 2,109 known to boot (1943 and
+  Rainbow Islands still fall back to an untried crack).
