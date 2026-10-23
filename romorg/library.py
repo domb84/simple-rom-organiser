@@ -1175,7 +1175,7 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     pool = sets
 
     def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
-        return -(whdready.level(whdready.names_of(it.rom for it in s.slots.values())) or 0) if prefer_whdload else 0
+        return -(whdready.level_of(it.rom for it in s.slots.values()) or 0) if prefer_whdload else 0
 
     for key in (lambda s: s.lang_rank, whd, lambda s: not s.cracked, lambda s: s.platform_rank):
         best = min(key(s) for s in pool)
@@ -1600,7 +1600,7 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
     def boots(members: list[Item]) -> bool:
         if members[0].dat in image_sets:
             return (whdready.release_of(members[0].rom) or [None])[0] == whdready.BOOTS
-        return whdready.level(whdready.names_of(m.rom for m in members)) == whdready.BOOTS
+        return whdready.level_of(m.rom for m in members) == whdready.BOOTS
 
     running: set[tuple] = set()
     for it in items:
@@ -1825,7 +1825,7 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
         kept_cracks = list((cracks.get(g) or {}).values())
         if not kept_cracks:
             continue
-        booting = [m for m in kept_cracks if whdready.level(whdready.names_of(x.rom for x in m)) == whdready.BOOTS]
+        booting = [m for m in kept_cracks if whdready.level_of(x.rom for x in m) == whdready.BOOTS]
         installs = any(whdready.has_install(t) for t in titles.get(g, ()))
         crack = (booting or ([] if installs else kept_cracks))[:1]
         if not crack:

@@ -11,6 +11,7 @@ the disks by their labels, the drawer being installed (``RomorgHD:``) - what the
 
 from __future__ import annotations
 
+import re
 import struct
 from typing import Any, Callable, Optional
 
@@ -312,6 +313,7 @@ class _Machine:
         self.heap = _HEAP
         self.out = bytearray()
         self.key_waiting = True
+        self.inserted: Any = None                             # (the disk a requester asked for: "Insert your original disk #2")
         self.ioerr = 0
         self.handles: dict[int, _Handle] = {}
         self.locks: dict[int, str] = {}
@@ -675,6 +677,8 @@ class _Machine:
     def _disk(self, unit: int) -> Any:
         if not self.disks:
             return None
+        if unit == 0 and self.inserted is not None:
+            return self.inserted
         cur = getattr(self.fs, "current", None)
         if unit == 0 and cur is not None:
             d = getattr(self.fs, "disks", {}).get(cur)
@@ -1318,7 +1322,24 @@ class _Machine:
     def _yes(self, cpu: Cpu) -> None:
         cpu.d[0] = 1
 
-    _intuition_348 = _intuition_588 = _reqtools_66 = _yes    # AutoRequest, EasyRequestArgs, rtEZRequestA
+    _intuition_348 = _reqtools_66 = _yes                     # AutoRequest, rtEZRequestA
+
+    def _intuition_588(self, cpu: Cpu) -> None:              # EasyRequestArgs(a0 window, a1 easystruct, a2 idcmp, a3 args)
+        args = [cpu.a[3]]                                     # (its text asks for disk N - "Insert your original disk #%ld": it is
+        def arg(n: int) -> int:                               #  put in the drive, as the user would)
+            v = cpu.r32(args[0]) if n == 4 else cpu.r16(args[0])
+            args[0] += n
+            return v
+        fmt = cpu.r32(cpu.a[1] + 12)
+        text = raw_do_fmt(self._cbytes(fmt), arg, self._cbytes, self._bstr).decode("latin-1", "replace") if fmt else ""
+        self.asked(text)
+        cpu.d[0] = 1
+
+    def asked(self, text: str) -> None:
+        """A message asking for disk N ("Insert your original disk #2", "insert the Fears disk two"): it is put in the drive."""
+        n = asked_disk(text)
+        if n and n <= len(self.disks):
+            self.inserted = self.disks[n - 1]
 
     def _intuition_96(self, cpu: Cpu) -> None:               # DisplayBeep
         cpu.d[0] = 0
@@ -1357,6 +1378,18 @@ class _Machine:
         return rc
 
 
+_NUMBERS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+
+
+def asked_disk(text: str) -> Optional[int]:
+    """The disk number a message asks to insert ("Please insert ... disk 2 in the source drive", "disk two"), or None."""
+    got = re.search(r"\binsert\b.*?\bdisk\s*(?:#|no\.?|number)?\s*(\d+|" + "|".join(_NUMBERS) + r")\b", text, re.I | re.S)
+    if not got:
+        return None
+    w = got.group(1).casefold()
+    return int(w) if w.isdigit() else _NUMBERS.index(w) + 1
+
+
 def run(exe: bytes, args: str, fs: Any, cwd: str = "", disks: Optional[list[Any]] = None, name: str = "program",
         shell: Optional[Callable[[str, str], int]] = None, max_steps: int = _MAX_STEPS) -> tuple[int, str]:
     """Run the program ``exe`` (an AmigaDOS executable) with the arguments ``args``, in the drawer ``cwd`` of ``fs`` (the
@@ -1384,12 +1417,15 @@ def crc16(data: bytes) -> int:
     return c
 
 
-def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher module", unit: int = 0) -> list[str]:
+def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher module", unit: int = 0,
+                cwd: str = "") -> list[str]:
     """Patcher's run of a module ("-p<Game>.Imager -sDF0:"): its tags read, then the cycles as Patcher makes them - a disk name
     (the volume the file goes to: an Assign), the module's load routine (PCH_SPECIAL: an imager reading the disk with
     trackdisk.device - TD_RAWREAD), processing, the changes table, and the file saved; or a file of the disk loaded, changed and
-    saved; or data saved. Cycle k reads disk k (one disk: always it). What the module displays is returned."""
-    m = _Machine(fs, "", disks, name)
+    saved; or data saved. Cycle k reads disk k (one disk: always it) unless its text or a requester names one ("insert ... disk
+    two"); ``cwd``: the drawer Patcher runs in (a file without a volume goes there, as the files a load routine writes itself).
+    What the module displays is returned."""
+    m = _Machine(fs, cwd, disks, name)
     cpu = m.cpu
     try:
         addrs = load_hunks(module, cpu, _CODE, seglist=True)
@@ -1427,6 +1463,10 @@ def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher m
     def zero(c: Cpu) -> None:
         c.d[0] = 0
 
+    def request(c: Cpu) -> None:                               # (a0 / a1 its two lines; "Insert Fears disk" "two in source drive.")
+        m.asked(" ".join(m._cstr(r) for r in (c.a[0], c.a[1]) if r))
+        c.d[0] = 0
+
     def fail(c: Cpu) -> None:
         c.d[0] = 0xFFFFFFFF
 
@@ -1443,13 +1483,18 @@ def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher m
     cpu.w32(ptb + 0x24, routine(opendevice))
     cpu.w32(ptb + 0x30, space)
     cpu.w32(ptb + 0x34, routine(fail))                         # (format the destination: there is none)
-    cpu.w32(ptb + 0x38, routine(zero))                         # (a requester: "Ok")
+    cpu.w32(ptb + 0x38, routine(request))                      # (a requester: "Ok" - one asking for a disk gets it put in)
     cpu.w32(ptb + 0x44, routine(zero))
     cpu.w32(ptb + 0x48, routine(zero))
     cpu.w32(ptb + 0x4C, routine(crc))
     cpu.w32(ptb + 0x50, routine(display))
     real_disk = m._disk
-    m._disk = lambda u: cur["disk"] if u == unit and cur["disk"] is not None else real_disk(u)   # type: ignore[method-assign]
+
+    def disk(u: int) -> Any:                                   # (the cycle's disk, or the one a requester asked for)
+        if u != unit or cur["disk"] is None:
+            return real_disk(u)
+        return cur["disk"] if m.inserted is None else m.inserted
+    m._disk = disk                                             # type: ignore[method-assign]
 
     def call(at: int, cycle: int) -> int:
         cpu.d[6] = cycle
@@ -1474,7 +1519,9 @@ def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher m
     n = tags.get(PCH_FILECOUNT, 0)
     for k in range(n):
         if disks:
-            cur["disk"] = disks[min(k, len(disks) - 1)]
+            cur["disk"], m.inserted = disks[min(k, len(disks) - 1)], None
+            if entry(PCH_STATE, k):                            # (the cycle's text names its disk: "insert ... disk two" - Fears
+                m.asked(m._cstr(entry(PCH_STATE, k)))          #  reads disk 1 in cycles 1 and 2)
         vol = m._cstr(entry(PCH_DISKNAME, k)) if entry(PCH_DISKNAME, k) else ""
         fname = m._cstr(entry(PCH_FILENAME, k)) if entry(PCH_FILENAME, k) else ""
         full = f"{vol}:{fname}" if vol else fname
@@ -1502,7 +1549,7 @@ def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher m
         elif entry(PCH_BOOTBLOCK, k):
             raise fault("it writes a bootblock to a disk (not done here)")
         else:
-            data = m._read(full)
+            data = m._read(join_path(cwd, full))
             if data is None:
                 raise fault(f"no file {full}")
             off = entry(PCH_LOADOFFSET, k) if PCH_LOADOFFSET in tags else 0
@@ -1524,7 +1571,7 @@ def run_patcher(module: bytes, fs: Any, disks: list[Any], name: str = "Patcher m
                 raise fault(f"cycle {k + 1}: its save routine failed")
         if fname:
             buf, size = cpu.r32(ptb + 0x04), cpu.r32(ptb + 0x1C)
-            fs.write(m._cstr(cpu.r32(ptb + 0x18)), bytes(cpu.m[buf:buf + size]))
+            fs.write(join_path(cwd, m._cstr(cpu.r32(ptb + 0x18))), bytes(cpu.m[buf:buf + size]))
     if PCH_FINISH in tags:
         call(tags[PCH_FINISH], n)
     m.flush()

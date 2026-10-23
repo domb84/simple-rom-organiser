@@ -190,14 +190,45 @@ def leaves_manual(arc: Optional[str]) -> bool:
     return bool(arc) and arc in (_MANUAL_KEPT or ())
 
 
-def level(names: Iterable[str]) -> Optional[int]:
-    """How well a WHDLoad install works from these disks (``BOOTS`` .. ``NO_BOOT``), None: nothing known."""
+def sha_key(roms: Iterable[Any]) -> str:
+    """The disks of a version by checksum (the first 16 hex digits of each DAT rom's SHA-1, sorted, one per line); "" when one has none."""
+    shas = [str(getattr(r, "sha1", "") or "")[:16].lower() for r in roms]
+    return "\n".join(sorted(shas)) if shas and all(shas) else ""
+
+
+_BY_SHA: Optional[tuple[int, dict[str, str]]] = None
+
+
+def checked(names: Iterable[str], sha: str = "") -> Optional[dict[str, Any]]:
+    """The user's own check of a version (``record``): by its disks' names, else - a TOSEC update renamed them - by their checksums."""
+    global _BY_SHA
+    rows = load()
+    row = rows.get(key_of(names))
+    if row is not None or not sha:
+        return row
+    if _BY_SHA is None or _BY_SHA[0] != id(rows):
+        _BY_SHA = (id(rows), {v["sha1"]: k for k, v in rows.items() if isinstance(v, dict) and v.get("sha1")})
+    k = _BY_SHA[1].get(sha)
+    return rows.get(k) if k is not None else None
+
+
+def level_of(roms: Iterable[Any]) -> Optional[int]:
+    """:func:`level` of a version given as its DAT roms (``name``, ``sha1``): a renamed disk found by its checksum, in the shipped
+    list and in the user's own check."""
+    roms = list(roms)
+    return level(names_of(roms), sha_key(roms))
+
+
+def level(names: Iterable[str], sha: str = "") -> Optional[int]:
+    """How well a WHDLoad install works from these disks (``BOOTS`` .. ``NO_BOOT``), None: nothing known. ``sha``: their
+    :func:`sha_key`, to find the user's own check when the names changed."""
+    names = list(names)
     key = key_of(names)
     ship = known().get(key)
     shipped = ship[0] if isinstance(ship, list) and ship else None
     if shipped in (BOOTS, NO_BOOT):
         return shipped                                     # (booted - or not - in PUAE: what a check here cannot tell)
-    row = load().get(key)
+    row = checked(names, sha)
     if row is not None:
         if not row.get("ok"):
             return NONE
@@ -205,14 +236,14 @@ def level(names: Iterable[str]) -> Optional[int]:
     return shipped
 
 
-def is_ready(names: Iterable[str]) -> Optional[bool]:
+def is_ready(names: Iterable[str], sha: str = "") -> Optional[bool]:
     """True: a WHDLoad install can be made from these disks; False: it cannot; None: never checked."""
-    lv = level(names)
+    lv = level(names, sha)
     return None if lv is None else lv > NONE
 
 
 def record(rows: dict[str, dict[str, Any]]) -> None:
-    """Add (or replace) the results of a check: ``{key_of(names): {"ok", "archive", "reason"}}``."""
+    """Add (or replace) the results of a check: ``{key_of(names): {"ok", "archive", "reason", "sha1": sha_key(roms)}}``."""
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
     with _LOCK:

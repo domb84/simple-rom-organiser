@@ -372,7 +372,7 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 APP_MODULES = (
     "adf", "alttitles", "amigados", "whdbuild", "amigahw", "amigainstall", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
-    "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "keyfiles", "lha", "libexport", "library", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
+    "bios", "biosdata", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "keyfiles", "lha", "libexport", "library", "lzx", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",

@@ -296,7 +296,7 @@ class MultiDiskSetTests(unittest.TestCase):
         with zipfile.ZipFile(self.zip, "w") as zf:
             zf.writestr(self.names[1], make_adf("Zap2", {"more": b"more of it"}))
         self.seen: list = []
-        patch = mock.patch.multiple(whdready, level=mock.Mock(side_effect=lambda names: self.seen.append(list(names)) or whdready.BOOTS),
+        patch = mock.patch.multiple(whdready, level=mock.Mock(side_effect=lambda names, sha="": self.seen.append(list(names)) or whdready.BOOTS),
                                     archive=mock.Mock(return_value="Zap.lha"))
         patch.start()
         self.addCleanup(patch.stop)

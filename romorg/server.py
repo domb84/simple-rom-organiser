@@ -2670,7 +2670,7 @@ class App:
                 if job.cancel.is_set():
                     break
                 job.report(n, len(games), f"WHDLoad: {title}")
-                todo = [s for s in sets if force or ready.is_ready(it.rom.name for it in s) is None]
+                todo = [s for s in sets if force or ready.is_ready([it.rom.name for it in s], ready.sha_key(it.rom for it in s)) is None]
                 if not todo:
                     continue
                 try:
@@ -2691,13 +2691,14 @@ class App:
                         try:
                             pkg.install([disk_bytes(it) for it in s], cd=False, decruncher=decruncher,   # (floppies: never a CD
                                         hints=inst.chipset_hints(it.rom.name for it in s))                 #  version, a "CD32 rip" too)
-                            rows[key] = {"ok": True, "archive": install["archive"], "reason": ""}
+                            rows[key] = {"ok": True, "archive": install["archive"], "reason": "", "sha1": ready.sha_key(it.rom for it in s)}
                             any_ok = True
                         except Exception as exc:  # noqa: BLE001 - the reason is the result
                             if xfd_state.get("fails", 0) > fails:            # (the XFD package could not be fetched: not checked, try again later)
                                 failed.append({"title": title, "error": (str(exc) or type(exc).__name__)[:300]})
                                 continue
-                            rows[key] = {"ok": False, "archive": install["archive"], "reason": (str(exc) or type(exc).__name__)[:300]}
+                            rows[key] = {"ok": False, "archive": install["archive"], "reason": (str(exc) or type(exc).__name__)[:300],
+                                         "sha1": ready.sha_key(it.rom for it in s)}       # (found by checksum when TOSEC renames the disks)
                         n_checked += 1
                 n_ready += any_ok
                 if fetched:

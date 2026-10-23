@@ -3324,3 +3324,27 @@ extension. The Overview card says *found*, the Library card *kept*.
 * The user: "add checksums if it makes it more reliable". `whdknown.json.gz` has `sha1` (the first 16 hex digits of every disk's
   SHA-1); `whdready.shipped_name` / `names_of` / `release_of` find a disk a TOSEC update renamed by its DAT checksum, and the library
   (`_pick_best`, `_prefer_unprotected`, `_whdload_language`) and `whdbuild.targets` ask through them. The list: 863 KB.
+
+
+**AMENDMENT 57 (v0.3) — Kept games whose WHDLoad install did not build: never tried, SPS originals with no result.**
+* The user: check the 67 never tried and the 76 SPS originals with no result (of the 337 kept games with an install and no build) and
+  fix what can be. Each built by the app and booted in PUAE; the failures went to read-only investigators by cause, their patches
+  checked here.
+* `romorg/lzx.py` (new): Amiga LZX archives (methods 0 and 2), for xadUnFile[M] - Dungeon Master II's and Pinball BrainDamage's
+  archives split over their disks. `amigainstall`: xfdDecrunch's keyword and value apart ("SOURCE <dir>"); DIC numbering disks from 0
+  (Heimdall); a CD version's script never for floppies, nor a CD answer the default for them (The Humans); `system_volumes`: LIBS: of
+  the user's Workbench 3.x disk (`whdbuild.workbench_disk`, the library's own; Gunbee F99); saved settings an unused original lacks
+  skipped (Thomas Pinball); a volume known only by a number in its name, or a label several disks share, is the disk that has the file
+  (Abandoned Places 2, Fury of the Furries, Alien Breed 3D 2); a quoted "" is an argument (Wrath of the Demon); Patcher runs in the
+  drawer the shell is in and puts in the disk a requester asks for (`amigados.asked_disk`; Untouchables, RoboCop 2, Dragonflight,
+  Fatman); `repair_current_dir` renames an old slave's own data drawer (The Godfather); `repair_slave_files`: a package file the slave
+  reads and the script forgets (Killing Cloud's reloc; 28 games of the build get a default high-score / save file this way - all still
+  boot); of several installs in one package the one whose script names these disks (SimCity Deluxe).
+* Result: 54 more games boot (of 137 tried), Dungeon Master II by eye (its first run asks to Restart). The build: 2,115 games, 2,106
+  known to boot; kept games with an install and no build 337 -> 310. Not fixable: other releases and repacks (Castles II, Gloom SE97,
+  Continuum, Amberstar, Caesar Deluxe, Evil's Doom, Super Ski II, Rise of the Robots - its package has a CD32 script only), cracks the
+  imagers cannot read (about 25), Perihelion (its package installs with a WHDLoad install slave: not run here). Oilmania and Piracy on
+  the High Seas need WHDLoad 20 (PUAE has 19.1).
+* The user's own check ("Check which versions WHDLoad can install", `ready.json`) keeps each version's `sha1` (`whdready.sha_key`):
+  `whdready.checked` / `level(names, sha)` / `level_of(roms)` find a result by checksum when a TOSEC update renamed the disks, as the
+  shipped list's lookups do (Amendment 56).

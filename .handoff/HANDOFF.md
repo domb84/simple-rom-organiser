@@ -331,6 +331,48 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
 - 1,964 of 1,980 known to boot. Left (16) in the amendment. Then (user, Amendment 56): another language when nothing in yours runs,
   and the shipped list by checksum: 2,080 of 2,088 targets known to boot. Left: King's Quest II's UnADF step and 7 cracks.
 
+## The 337 kept games with an install but no WHDLoad build (2026-10-22, IN PROGRESS - pick up here)
+- Committed before this: 5546f74. Nothing in the repo changed since. All the work below is in `~/.cache/whdwork/fix90/`.
+- User asked: check the 67 "never tried" and the 76 "SPS with no result" (of the 337, from `targets.json` "no_target") and fix what can be.
+- Jobs: `jobs143.py` -> `targets143.json` (123 found); `jobs20.py` -> `targets20.json` (14 more via the library's .m3u / SPS number).
+  6 not found at all: ABC's Wide World of Sports - Boxing, Goblins 3, Hole-In-One, Inertia Drive, Holiday Lemmings 1993, Mikro Mortal
+  Tennis (disks probably in archives).
+- Boot runs: `TARGETS=<json> python3 boot95.py <out.jsonl>` (3 workers; setsid nohup for long runs). Results: `boot143.jsonl`,
+  `boot20.jsonl`; 63 of those failed only because my cache cleanup deleted the PNG `rerun.py` reads (fixed: boot95.py builds the
+  decruncher itself) - rerun of those 64 in `boot_redo.jsonl` was STOPPED at 27/64: rerun the rest
+  (`targets_redo.json`, the harness skips titles already in the jsonl).
+- Real failures so far (~73): RawDIC on cracks (needs originals: not fixable) and on 5 SPS originals (Borobodur, Carthage, Dragon's
+  Lair III, Future Bike, Nippon Safes - our IPF reading / RawDIC); Patcher imagers (Encounter, Fears, Rainbow Warrior); one-offs that may
+  be the interpreter: Dungeon Master II split archive "dm2_arcsplit#?" (xadUnFileM), installs copying `libs:` / `EmeticSkimmer:c/joke` /
+  `EVIL:REALSAVE` / `Ap2-Install:AP2`, FateFC and the Roger Rabbit imager crash in amigados, "DIC: images disk 0", disk label Desert3,
+  a CD version chosen for floppies (CD32_TEST:), Mafdet bad OFS block, Quantox.lha missing from ~/.cache/whdpkgs; 7 wait for a disk the
+  user lacks. Plan was: finish the rerun, list all failures, fan the interpreter one-offs out to read-only investigators, apply fixes,
+  boot again, rebuild the shipped list (`make_whdknown.py` - add the new jsonl files; needs ~/.cache/rtest/data, a copy of the data dir).
+- Disk: /home was full (host-side writer, unknown); the user freed it (360 GB free on 2026-10-22).
+- UPDATE (later 2026-10-22, stopped by the user again): the rerun finished, but 63 games still show "FileNotFoundError ...
+  spscheck/shots/BMX_Simulator-0-4000.png": the screen classifier (`puae/shot.py classify3`, `_REF`) needs two reference shots my
+  cache cleanup deleted - so those games BUILT and BOOTED, only the screen check failed. The two shots are regenerated now
+  (`spscheck/shots/BMX_Simulator-0-4000.png` from Epic's WHDLoad requester, `Deathbringer_The_Sword_of_Abaddon-0-4000.png` from an
+  archive with no slave: PUAE's file picker) - CHECK them by eye, then rerun just those 63 (delete their rows from boot_redo.jsonl, or
+  write a new jsonl) to get their real verdicts. Never delete `*.png` under ~/.cache/whdwork again: `_REF` and `puae/ref_shell.png`
+  are inputs.
+- Real failures so far (137 games tried, 1 boots: A.G.E.; 6 black screens: Chaos Engine, Operation Stealth, Leading Lap, Space Hulk,
+  Star Trek 25th, RoboCop 3D): RawDIC ~30 (no sync on cracks; checksums on SPS originals: Borobodur, Carthage, Dragon's Lair III,
+  Future Bike, Nippon Safes, SkidMarks 1/2, Utopia); Patcher 9 (load routine failed; "Disk imaging was not successful"); DIC "images
+  disk 0" (Heimdall, Behind the Iron Gate); xadUnFile split archives (Dungeon Master II dm2_arcsplit#?, Pinball BrainDamage
+  PinballBD.00#?); copies from other volumes (libs:, EVIL:REALSAVE, EmeticSkimmer:c/joke, Thomas Pinball prefs, Ap2-Install:AP2);
+  a CD version chosen for floppies (Rise of the Robots: CD32_TEST:); FateFC runs too long; Roger Rabbit imager calls an unknown
+  dos.library vector; xfdDecrunch fails (Xmas Lemmings 91, Caesar); 7 wait for a disk the user lacks; Quantox.lha not cached.
+
+## STATE AT THE END OF 2026-10-23
+- Round 1 and round 2 install fixes (Amendment 57) and the user's own check by checksum: committed (see git log).
+- The 25 'levels 3, no target' were all built under another region's title (Bad Dudes as Bad Dudes vs. Dragon Ninja ...): not missing;
+  the real count of kept games with an install and no build is ~285.
+- Build: 2,115 WHDLoad games, 2,106 known to boot; 310 kept games with an install and no build left (`fix90/targets.json` no_target).
+- Left to try: the 310's other groups (installs but never boots 77, does not install 92 - mostly cracks; "levels 3" 25 likely title
+  mismatches in my count), Perihelion/Conqueror (a WHDLoad install-slave runner), Fears (Patcher cycles), WHDLoad 20 for Oilmania and
+  Piracy (user's PUAE setup). `make_whdknown.py` reads all fix90 jsonl files; rebuild it with a fresh ~/.cache/rtest/data copy.
+
 ## Work files (outside the repo)
 `~/.cache/whdwork/`:
 - `drive.py`: an in-process server on `~/.cache/rtest/data`.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import shutil
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,49 @@ class LibraryTests(unittest.TestCase):
             xfd.Decruncher(b"not an archive")
 
 
+def make_lzx() -> bytes:
+    """An LZX archive of two files packed together (method 2: literals and matches, one of them at the last offset)."""
+    import zlib
+    acc, n, out = 0, 0, bytearray()
+
+    def put(v: int, k: int) -> None:                    # (unlzx's order: 16-bit big-endian words, each from its lowest bit up)
+        nonlocal acc, n
+        acc |= v << n
+        n += k
+        while n >= 16:
+            out.extend((acc & 0xFFFF).to_bytes(2, "big"))
+            acc >>= 16
+            n -= 16
+
+    def code(c: int, k: int) -> None:                   # (a Huffman code: its top bit first)
+        for i in reversed(range(k)):
+            put((c >> i) & 1, 1)
+
+    put(2, 3)
+    for b in (0, 0, 10):
+        put(b, 8)
+    for count, zeros in ((256, 0), (256, 256)):         # (symbols 0-511 9 bits long, 512-767 none: by a pretree of "8" and "0")
+        for i in range(20):
+            put(1 if i in (0, 8) else 0, 4)
+        for _ in range(count):
+            code(1, 1)
+        for _ in range(zeros):
+            code(0, 1)
+    for sym in (ord("a"), 256 + (2 << 5) + 1, ord("b"), 256):     # (a, 5 at offset 1, b, 3 at the last offset)
+        code(sym, 9)
+    put(0, 16)
+    data = bytes(out)
+
+    def entry(name: bytes, body: bytes, packed: bytes) -> bytes:
+        h = bytearray(31)
+        struct.pack_into("<II", h, 2, len(body), len(packed))
+        h[11], h[30] = 2, len(name)
+        struct.pack_into("<I", h, 22, zlib.crc32(body))
+        struct.pack_into("<I", h, 26, zlib.crc32(bytes(h) + name))
+        return bytes(h) + name + packed
+    return b"LZX" + bytes(7) + entry(b"x", b"aaaaaa", b"") + entry(b"d/y", b"bbbb", data)
+
+
 class FakeDecruncher:
     def decrunch(self, data: bytes):
         return (data[4:], "Fake") if data.startswith(b"FAKE") else None
@@ -138,6 +182,20 @@ class CommandTests(unittest.TestCase):
         files = ai.install(self.pkg, []).files
         self.assertEqual((files["Game/data/game"], files["Game/data/levels/l1"], files["Game/docs/readme"]), (b"exe", b"L1", b"hello"))
         self.assertNotIn("Game/data/game.info", files)
+
+    def test_source_a_keyword_apart(self) -> None:
+        files = self.run_script("xfdDecrunch SOURCE data ALL")                          # (Xmas Lemmings: "SOURCE dir ALL")
+        self.assertEqual((files["Game/data/level1"], files["Game/data/plain"]), (b"L1", b"P"))
+
+    def test_xadunfilem_an_lzx_split_in_parts(self) -> None:
+        (self.pkg / "arc.1").write_bytes(make_lzx()[:40])                                # (Dungeon Master II: split over the disks)
+        (self.pkg / "arc.2").write_bytes(make_lzx()[40:])
+        (self.pkg / "Install").write_text(
+            '(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest))'
+            ' (copyfiles (source "arc.1") (dest #dest)) (copyfiles (source "arc.2") (dest #dest))'
+            ' (if (<> 0 (run ("xadUnFileM \\"%s/arc.#?\\" DEST \\"%s/data\\"" #dest #dest))) (abort "failed"))')
+        files = ai.install(self.pkg, []).files
+        self.assertEqual((files["Game/data/x"], files["Game/data/d/y"]), (b"aaaaaa", b"bbbb"))
 
     def test_without_the_package(self) -> None:
         with self.assertRaisesRegex(ai.InstallError, "needs xfdDecrunch"):

@@ -255,6 +255,9 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(ai.repair_current_dir(files), [])                      # (there now)
         files["Maniax/data/maniax.slave"] = bytes(slave)                         # (a stray copy of the slave in data: Magicland Dizzy's
         self.assertEqual(ai.repair_current_dir(files), [])                      #  old script copies the package there - never data/data)
+        files = {"GodFather/GodFather.slave": bytes(slave), "GodFather/GodFatherData/GODFATHER": b"exe", "GodFather/GodFatherData/a.iff": b"a"}
+        self.assertEqual(len(ai.repair_current_dir(files)), 1)                  # (all in the old slave's drawer: renamed, not data/GodFatherData)
+        self.assertEqual(sorted(files), ["GodFather/GodFather.slave", "GodFather/data/GODFATHER", "GodFather/data/a.iff"])
 
     def test_a_slave_no_icon_starts_gets_a_load_script(self) -> None:
         self.assertEqual(ai.puae_launcher({"BombX/BombX.slave": b"S", "BombX/data/x": b"x"}), b'CD "BombX"\nC:WHDLoad "BombX.slave" Preload\n')
@@ -406,6 +409,19 @@ class InstallTests(unittest.TestCase):
         for label in ("Work", "Ninja"):                                    # (labelled "Work", or the only disk)
             res = ai.install(self.pkg, [make_adf(label, {"game": b"exe", "game.info": b"i"})])
             self.assertEqual(sorted(res.files), ["Game/Game.slave", "Game/game", "load"])
+
+    def test_disks_that_share_a_label_are_told_apart_by_their_files(self) -> None:
+        # (Fury of the Furries: disks 2-3 are both "FURY2", the script waits for the file that tells which; AB3D2: the 2 MB and 4 MB
+        #  program disks are both "TKG1", the 4 MB version copies "hqn" too - and the drawers that differ in case are one)
+        (self.pkg / "Install").write_text(
+            '(set #dest "WORK:Game") (makedir #dest) (copyfiles (source "Game.slave") (dest #dest))'
+            '(until (exists "G2:b/two") (message "insert disk 3")) (askdisk (dest "G2")) (copyfiles (source "G2:") (dest #dest) (pattern "~(#?.info)"))'
+            '(askdisk (dest "P1")) (copyfiles (source "P1:") (dest #dest) (pattern "(hqn|includes)"))'
+            '(askdisk (dest "L")) (copyfiles (source "L:") (dest #dest) (pattern "INCLUDES"))')
+        disks = [make_adf("G2", {"a/one": b"1"}), make_adf("G2", {"B/two": b"2"}), make_adf("P1", {"includes/s": b"small"}),
+                 make_adf("P1", {"hqn/h": b"H", "Includes/b": b"big"}), make_adf("L", {"INCLUDES/t": b"T"})]
+        res = ai.install(self.pkg, disks)
+        self.assertEqual(sorted(res.files), ["Game/B/two", "Game/Game.slave", "Game/Includes/b", "Game/Includes/t", "Game/hqn/h", "load"])
 
     def _ask(self, volumes: list[str], disks: list[bytes]) -> "ai.InstallResult":
         """An install that asks for ``volumes`` in turn and copies each disk's ``f`` to a file of its own."""
@@ -645,6 +661,29 @@ class PreferWhdloadVersions(unittest.TestCase):
         self.assertIn(ipf, AMIGA.language_dats)
 
 
+class OwnCheckByChecksum(unittest.TestCase):
+    """The user's own check (``whdready.record``) found by the disks' checksums when a TOSEC update renames them."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        env = mock.patch.dict(os.environ, {"ROMORG_DATA_DIR": str(self.tmp)})
+        env.start()
+        self.addCleanup(env.stop)
+        whdready.clear_cache()
+        self.addCleanup(whdready.clear_cache)
+
+    def test_a_renamed_disk_keeps_its_result(self) -> None:
+        old = Rom(name="Zap (1993)(Acme).adf", size=1, crc="", md5="", sha1="0123456789abcdef9999", game="", dat=GAMES)
+        new = Rom(name="Zap (1993)(Acme Software).adf", size=1, crc="", md5="", sha1="0123456789ABCDEF9999", game="", dat=GAMES)
+        whdready.record({whdready.key_of([old.name]): {"ok": True, "archive": "Zap.lha", "reason": "", "sha1": whdready.sha_key([old])}})
+        with mock.patch.object(whdready, "known", return_value={}):
+            self.assertEqual(whdready.level_of([new]), whdready.FILES)                     # (by checksum: the same disk)
+            self.assertIsNone(whdready.level([new.name]))                                  # (by name alone: never checked)
+            other = Rom(name="Zap (1993)(Acme)[cr X].adf", size=1, crc="", md5="", sha1="fedcba9876543210", game="", dat=GAMES)
+            self.assertIsNone(whdready.level_of([other]))
+
+
 class ShippedListLookups(unittest.TestCase):
     """What the shipped list (``whdknown.json.gz``) answers: a version by its disks, an SPS release by its name, a title, an install."""
 
@@ -699,3 +738,80 @@ class ShippedListLookups(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MoreInstallFixes(unittest.TestCase):
+    """The failures of the 337 kept games with no WHDLoad build (Amendment 57)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.pkg = self.tmp / "GameInstall"
+        self.pkg.mkdir()
+        (self.pkg / "Game.slave").write_bytes(b"SLAVE")
+        (self.pkg / "Install.info").write_bytes(b"\x00\x00APPNAME=Game\x00")
+
+    def install(self, script: str, disks: list, **kw):
+        (self.pkg / "Install").write_text('(copyfiles (source "Game.slave") (dest "WORK:Game"))' + script)
+        return ai.install(self.pkg, disks, **kw)
+
+    def test_a_quoted_empty_argument_is_one(self) -> None:
+        self.assertEqual(ai._split_args('assign WrathOfTheDemon: ""'), ["assign", "WrathOfTheDemon:", ""])   # (the current drawer)
+
+    def test_dic_numbers_disks_from_0_when_the_install_does(self) -> None:
+        disk = make_adf("Heimdall1", {"x": b"1"})
+        res = self.install('(run "cd WORK:Game\\nDIC DF0: FD=0 LD=0")', [disk])                 # (Heimdall's disk.0: the 1st floppy)
+        self.assertEqual(len(res.files["Game/Disk.0"]), 901120)
+
+    def test_libs_of_the_users_workbench(self) -> None:
+        wb = make_adf("Workbench3.1", {"libs/asl.library": b"ASL"})
+        res = self.install('(copyfiles (source "LIBS:asl.library") (dest "WORK:Game/libs"))', [], system=ai.system_volumes(wb))
+        self.assertEqual(res.files["Game/libs/asl.library"], b"ASL")                          # (Gunbee F99)
+
+    def test_saved_settings_an_unused_original_lacks(self) -> None:
+        disk = make_adf("Thomas Pinball - Disk 1", {"game": b"g"})
+        res = self.install('(copyfiles (source "Thomas Pinball - Disk 1:prefs/Env-Archive/Sys/nonvolatile/Pinball") (dest "WORK:Game") (pattern "TT#?"))'
+                           '(copyfiles (source "Thomas Pinball - Disk 1:game") (dest "WORK:Game"))', [disk])
+        self.assertIn("Game/game", res.files)
+
+    def test_a_volume_known_only_by_a_number_is_the_disk_that_has_the_file(self) -> None:
+        disks = [make_adf(f"Ap2-Disk{n}", {"data": b"%d" % n}) for n in (1, 2, 3, 4)] + [make_adf("Ap2-Disk5", {"AP2": b"install"})]
+        res = self.install('(askdisk (dest "Ap2-Install")) (copyfiles (source "Ap2-Install:AP2") (dest "WORK:Game"))', disks)
+        self.assertEqual(res.files["Game/AP2"], b"install")                                     # (Abandoned Places 2)
+
+    def test_the_disk_a_requester_asks_for(self) -> None:
+        from romorg import amigados
+        self.assertEqual(amigados.asked_disk("Insert your original disk #2"), 2)
+        self.assertEqual(amigados.asked_disk("Insert Fears disk two in source drive."), 2)
+        self.assertIsNone(amigados.asked_disk("Reading track 004."))
+
+    def test_a_cd_default_is_never_the_answer_for_floppies(self) -> None:
+        (self.pkg / "GameCD32.slave").write_bytes(b"CD32")         # (The Humans: "CD³² version" / "MFM disk version", default the CD)
+        (self.pkg / "Install").write_text(
+            '(set #v (askchoice (prompt "Which version would you like to install?") (default 0) (choices "CD³² version" "MFM disk version")))'
+            '(if (= #v 0) (copyfiles (source "GameCD32.slave") (dest "WORK:Game") (newname "Game.slave"))'
+            ' (copyfiles (source "Game.slave") (dest "WORK:Game")))')
+        self.assertEqual(ai.install(self.pkg, [make_adf("Game1", {"x": b"1"})]).files["Game/Game.slave"], b"SLAVE")
+
+    def test_a_package_file_the_slave_reads_and_the_script_forgets(self) -> None:
+        import struct
+        slave = bytearray(b"\x70\xff\x4e\x75WHDLOADS" + bytes(40) + b"data\0Game_v1.reloc\0")
+        struct.pack_into(">H", slave, 26, 52)                       # (ws_CurrentDir "data"; Killing Cloud's v2.4 slave reads the reloc)
+        (self.pkg / "Game.slave").write_bytes(bytes(slave))
+        (self.pkg / "Game_v1.reloc").write_bytes(b"RELOC")
+        files = {"Game/Game.slave": bytes(slave), "Game/data/Disk.1": b"d"}
+        self.assertEqual(len(ai.repair_slave_files(files, self.pkg, "(copyfiles (source \"Game.slave\"))")), 1)
+        self.assertEqual(files["Game/data/Game_v1.reloc"], b"RELOC")
+        self.assertEqual(ai.repair_slave_files(files, self.pkg), [])          # (there now)
+
+    def test_of_several_installs_the_one_for_these_disks(self) -> None:
+        for name, label in (("SimCity1.2", "SimCity1.2"), ("SimCity512K", "SimCity512K")):   # (SimCity's package: an install a release)
+            d = self.tmp / "pkg" / name
+            d.mkdir(parents=True)
+            (d / f"{name}.slave").write_bytes(name.encode())
+            (d / "Install").write_text(f'(askdisk (dest "{label}")) (copyfiles (source "{name}.slave") (dest "WORK:{name}"))')
+        files = {f"SimCityInstall/{p.relative_to(self.tmp / 'pkg')}": p.read_bytes() for p in (self.tmp / "pkg").rglob("*") if p.is_file()}
+        ai.write_lha(self.tmp / "sim.lha", files)
+        with ai.Package((self.tmp / "sim.lha").read_bytes()) as pkg:
+            res = pkg.install([make_adf("SimCity512K", {"SimCity": b"exe"})])
+        self.assertIn("SimCity512K/SimCity512K.slave", res.files)

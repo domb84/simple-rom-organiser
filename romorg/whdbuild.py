@@ -82,8 +82,9 @@ def targets(plan: Any, platform: Any) -> list[Target]:
             disks = sorted(((f, None) for f in found), key=lambda d: (d[0].name.casefold(), str(d[0])))
         else:
             names = whdready.names_of(u.rom for _op, u, _it in parts)      # (the names the list knows them by: by checksum if renamed)
-            level = whdready.level(names)
-            arc = whdready.archive(names) or (whdready.load().get(whdready.key_of(names)) or {}).get("archive")
+            sha = whdready.sha_key(u.rom for _op, u, _it in parts)
+            level = whdready.level(names, sha)
+            arc = whdready.archive(names) or (whdready.checked(names, sha) or {}).get("archive")
             disks = [(_final(op), u.member) for op, u, _it in parts]
         if not arc or level is None or level < whdready.IMAGES:
             return
@@ -176,12 +177,22 @@ def _disk_data(t: Target) -> list[bytes]:
     return out
 
 
+def workbench_disk(root: Path) -> Optional[Path]:
+    """The library's Workbench 3.x "Workbench" disk (TOSEC's Workbench DAT folder under ``root``): the system an install copies
+    libraries from (3.1 before 3.0, a verified dump first; not one set aside in a "_" folder)."""
+    found = [p for p in Path(root).glob("*/Workbench v3.[01] *(Workbench)*.adf") if not p.parent.name.startswith("_")]
+    return min(found, key=lambda p: ("v3.1" not in p.name, "[!]" not in p.name, len(p.name), p.name), default=None)
+
+
 def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progress: Optional[Callable[[int, int, str], None]] = None,
           cancel: Any = None, fetch: Optional[Callable[[dict[str, Any]], bytes]] = None,
-          decruncher: Optional[Callable[[], Any]] = None) -> dict[str, Any]:
+          decruncher: Optional[Callable[[], Any]] = None, workbench: Optional[Path] = None) -> dict[str, Any]:
     """Make ``todo`` real under ``root``: ``{"built", "moved", "kept", "removed", "failed": [{title, error}]}``. An archive that is the
-    same is kept, one whose disks moved is moved, the others are made (atomically); ours that no target wants any more are removed."""
+    same is kept, one whose disks moved is moved, the others are made (atomically); ours that no target wants any more are removed.
+    ``workbench``: the Workbench disk whose LIBS: an install may copy (default: the library's own - see :func:`workbench_disk`)."""
     from . import amigainstall as ai
+    wb = workbench or workbench_disk(Path(root))
+    system = ai.system_volumes(wb) if wb is not None else []
     by_arc = {i["archive"]: i for i in installs}
     if fetch is None:
         from . import whdinstalls
@@ -241,7 +252,7 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
                 packages.clear()                              # (one package held at a time: they are small, the list is not)
                 packages[t.archive] = fetch(inst)
             with ai.Package(packages[t.archive]) as pkg:
-                res = pkg.install(_disk_data(t), cd=False, decruncher=decruncher, hints=ai.chipset_hints(t.names))
+                res = pkg.install(_disk_data(t), cd=False, decruncher=decruncher, hints=ai.chipset_hints(t.names), system=system)
             files = ai.alias_icons(res.files)
             files[MARKER] = json.dumps({"app": "simple-rom-organiser", **t.key(inst.get("date", "")), "built": time.time()},
                                        indent=1).encode()
