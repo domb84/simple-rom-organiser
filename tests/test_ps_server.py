@@ -104,6 +104,7 @@ class Ps2EndpointTests(PsServerCase):
         fixture = self.base / "alpha.dvd.chd"
         T.build_dvd_chd(fixture, self.iso["Alpha (USA)"])
         self.use_fake_chdman()
+        self.call("/api/library/profile", {"platform": PS2, "delete_converted": False})     # this test keeps the original
         self.scan_ps2()
         with mock.patch.dict(os.environ, {"FAKE_DVD_CHD": str(fixture), "FAKE_ISO": str(iso_file)}):
             plan = self.call("/api/convert/plan", {})
@@ -523,6 +524,7 @@ class RawDiscTests(PsServerCase):
     def test_a_zip_of_an_iso_is_identified_by_its_checksums_and_named_after_its_game(self) -> None:
         self.zip_of("download (1).zip", "Alpha (USA)")
         (self.roms / "notes.zip").write_bytes(b"PK\x05\x06" + bytes(18))                       # an empty zip: no disc in it, as before
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": False})          # named, not converted
         self.scan_ps2()
         matched = {m["file"]: m for m in self.call("/api/scan/results?kind=matched")["items"]}
         self.assertEqual((matched["download (1).zip"]["game"], matched["download (1).zip"]["kind"]), ("Alpha (USA)", "raw"))
@@ -555,6 +557,7 @@ class RawDiscTests(PsServerCase):
 
     def test_a_loose_iso_is_renamed_with_its_game_into_its_folder(self) -> None:
         (self.roms / "VICE_CITY.iso").write_bytes(self.iso["Beta (Europe) (En,Fr,De)"])
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": False})          # renamed, not converted
         self.scan_ps2()
         row = self.row(self.plan(), "VICE_CITY.iso")
         self.assertEqual((row["to"], row["status"]), ("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).iso", "move"))
@@ -563,7 +566,8 @@ class RawDiscTests(PsServerCase):
 
     def test_the_rule_converts_a_zip_as_a_step_of_the_build_and_the_tree_says_so_first(self) -> None:
         self.zip_of("a.zip", "Alpha (USA)")
-        self.call("/api/library/profile", {"platform": PS2, "convert_first": True})
+        self.assertTrue(self.call("/api/library/profile?platform=" + PS2.replace(" ", "%20"))["profile"]["delete_converted"])   # on by default
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": False})
         self.scan_ps2()
         plan = self.plan()
         self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 1, "delete": False})
@@ -632,6 +636,22 @@ class RawDiscTests(PsServerCase):
         self.assertEqual(self.job()["status"], "done")
         self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())               # the CHD is all that is left of the game
 
+    def test_an_original_that_cannot_be_deleted_never_costs_the_checked_chd(self) -> None:
+        self.zip_of("a.zip", "Alpha (USA)")
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": True})
+        self.scan_ps2()
+        real = os.unlink
+
+        def unlink(path: Any, *a: Any, **k: Any) -> None:
+            if os.path.basename(path) == "a.zip":
+                raise PermissionError(13, "in use", str(path))
+            real(path, *a, **k)
+        with mock.patch("os.unlink", side_effect=unlink):
+            res = self.build()
+        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())                # (checked: it stays)
+        self.assertTrue((self.roms / "a.zip").is_file() or list(self.roms.rglob("a.zip")))       # (left where it is, reported)
+        self.assertEqual(res["converted"]["count"], 1)
+
     def test_a_game_that_already_has_a_chd_is_not_converted_and_its_zip_is_left_alone(self) -> None:
         self.put_iso("Alpha (USA)", "Alpha (USA)/Alpha (USA).chd", dvd=True)
         self.zip_of("Alpha (USA) copy.zip", "Alpha (USA)")
@@ -645,7 +665,7 @@ class RawDiscTests(PsServerCase):
     def test_a_7z_of_an_iso_is_read_like_a_zip(self) -> None:
         from tests.sevenzipmini import write_7z
         write_7z(self.roms / "b.7z", {"readme.txt": b"a note", "Some Folder/disc.iso": self.iso["Alpha (USA)"]})
-        self.call("/api/library/profile", {"platform": PS2, "convert_first": True})
+        self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": False})
         self.scan_ps2()
         matched = {m["file"]: m for m in self.call("/api/scan/results?kind=matched")["items"]}
         self.assertEqual((matched["b.7z"]["game"], matched["b.7z"]["kind"]), ("Alpha (USA)", "raw"))

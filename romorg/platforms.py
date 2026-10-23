@@ -100,9 +100,11 @@ PLATFORMS: dict[str, Platform] = {
             "Commodore Amiga - Kickstart-Disks",
         ),
         kickstart_dat="Commodore Amiga - Firmware",
-        extensions=(".adf", ".ipf", ".zip", ".7z", ".cue", ".iso", ".bin", ".wav", ".img", ".ccd", ".sub", ".mdf", ".mds"),
+        extensions=(".adf", ".ipf", ".zip", ".7z", ".cue", ".iso", ".bin", ".wav", ".img", ".ccd", ".sub", ".mdf", ".mds", ".chd"),
         image_set_dats=("Commodore Amiga - Games - SPS", "Commodore Amiga - Games - [Unofficial IPF]"),
         disc_dats=(*_CD32_DATS, *_CDTV_DATS),
+        containers=("chd",),                                   # a CD32 / CDTV disc as a CHD: matched by the files it rebuilds
+        convertible=True,                                      # CD32 / CDTV discs -> CHD (romorg.cdconvert)
         game_dat="Commodore Amiga - Games - [ADF]",
         folder_hint="amiga",
         latest_dats=("Commodore Amiga - Games - [ADF]",),

@@ -455,7 +455,8 @@ class ImageErrorTest(unittest.TestCase):
         good = 'FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
         self.assertEqual(cdimage.open_image(self.cue(good)).total_frames, 4)
         for text, word in (
-                (good.replace("BINARY", "WAVE"), "BINARY"),
+                (good.replace("BINARY", "MOTOROLA"), "BINARY and WAVE"),
+                (good.replace("BINARY", "WAVE"), "not a WAVE file"),
                 (good.replace("MODE1/2352", "CDG"), "mode"),
                 (good.replace("t.bin", "missing.bin"), "missing.bin"),
                 (good.replace("00:00:00", "00:00:02"), "beginning"),

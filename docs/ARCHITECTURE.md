@@ -3361,3 +3361,36 @@ extension. The Overview card says *found*, the Library card *kept*.
   file of its disc, so 203 were "incomplete": `library.Item.holds` (the DAT rom names the file holds - the archive's members, from the
   unit's key; organiser and totals alike) and `_select_discs` counts them. On the user's folder: 162 kept, 42 superseded by the
   verified [!] dump of the same game, 3 excluded (two German-only, a bad dump). Tree = totals: 3,454 owned, 114 missing.
+
+
+**AMENDMENT 59 (v0.3) — CD32 / CDTV discs become CHDs on Build library.**
+* The user: "convert on library build and delete the originals; archive the originals that won't go in the library; all the other
+  platforms should work the same way". The Amiga is now `convertible` with `containers=("chd",)`: "Convert when building" and
+  "Delete the originals after converting" apply to it as to the Redump systems (`library.applicable_fields`: a system with
+  `disc_dats`). Asked separately, the user chose: GameCube / Wii ISOs stay as they are (RVZ writing later), SNES / N64 originals stay
+  kept aside (`delete_converted` remains Redump + Amiga discs only).
+* `romorg.cdconvert`: a CHD is told by the files it rebuilds - each track decoded once and hashed as its own file (.iso / .bin: the
+  extracted sectors), as a .wav (the samples behind the standard 44-byte header) and all tracks together as the one file of a [BIN] /
+  [IMG] set; a DAT game whose track files are exactly those is the disc, its cue / ccd / sub taken as held (a CloneCD .sub is not kept:
+  no emulator of these discs reads it). `scanner.scan` with `containers` "chd" makes one entry per DAT file of the disc
+  (`container="chd"`), so the organiser sees the CHD as an archive holding the whole disc (Amendment 58's `holds`); the hashes are
+  cached per file (one hash-cache row, JSON). Conversion: kept discs only (the library plan's ops outside a reason folder; the rest
+  is archived as it is), a zip / 7z unpacked next to it, written with `chdwrite` from its cue (or its one .iso), then checked with the
+  same test the scan uses before anything of the original is touched; originals deleted or moved to `_converted_originals`, all
+  journalled. `cdimage.parse_cue` reads WAVE track files (the data chunk; 16-bit stereo 44.1 kHz, whole sectors) like BINARY audio.
+* Not converted (stay as they are): a disc whose files a CHD cannot rebuild exactly - 27 of the 1,702 .wav tracks in the CD32 / CDTV
+  DATs are not plain CD audio (Benefactor, Donk!), .mp3 tracks, a CloneCD set without a cue (Mutation Gold Compilation).
+* Real data (a copy, 11 discs of every layout): 8 converted and checked in 214 s (CHDs 25-35% smaller than the 7z files), 2 left as
+  they are, the superseded Cannon Fodder [a] archived as it is; rescan: tree = totals. PUAE boots the CHDs of Cannon Fodder (MODE1 +
+  MODE2 tracks), Arcade Pool ([IMG]), Alfred Chicken (ISO + 9 WAV tracks), Center Court Tennis 2 (ISO, no cue) and Alien Breed 3D
+  ([BIN]); ATR's CHD shows the same black screen as its original ISO (a disc of 646 used sectors out of 30,870).
+* Then the user: "those options should be on by default and be a global setting for all platforms with platform specific overrides".
+  `convert_first` and `delete_converted` default to True (`LibraryProfile`, the rule catalog); they were already global rules with
+  per-system overrides (Amendment 32). `default_profile` keeps them off where they do not apply (a system that converts nothing; SNES /
+  N64, whose originals are never deleted), and `server._delete_converted` also asks `applicable_fields`. An old per-system "convert
+  first" box that was off now follows the (on) default.
+* A review of the change found, and this fixed: a failed delete of one original (file in use) rolled back the conversion and deleted
+  the checked CHD - in `cdconvert` and `discsys` alike; now the CHD stays and what could not be deleted is reported (`not_deleted`). An
+  archive is converted only when every member is the disc (counted over all DATs and unmatched files, and listed again just before
+  converting), so deleting it cannot lose another game. Discs in a reason folder are never converted. A loose disc's files all show as
+  the CHD in the preview rows and tree.

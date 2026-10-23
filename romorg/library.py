@@ -173,8 +173,8 @@ class LibraryProfile:
     # BIOS / firmware / key files (told by checksum or name) stay with the ROMs; off: they are files like any other that matches no game.
     keep_bios: bool = True
     keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
-    convert_first: bool = False                  # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
-    delete_converted: bool = False               # ... and deletes the originals after (off: they are kept in _converted_originals)
+    convert_first: bool = True                   # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
+    delete_converted: bool = True                # ... and deletes the originals once checked (off: they are kept in _converted_originals)
     prefer_saved: bool = True                    # of the releases / versions of a game, the one you have saves for is kept (not a newer one, not another region)
     prefer_editions: bool = True                 # of a game's releases a special / limited / premium edition beats the plain release (off: after it)
     combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
@@ -310,7 +310,9 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         complete_only=bool(complete_dats(platform)),
         languages=("En",) if _dats(platform, "language_dats") else (),
         one_per_game=bool(_dats(platform, "region_dats")),
-        borrow_other_editions=_borrow_scope(platform))
+        borrow_other_editions=_borrow_scope(platform),
+        convert_first=bool(getattr(platform, "convertible", False)),               # (where a system converts nothing, or never deletes
+        delete_converted="delete_converted" in applicable_fields(platform))       #  an original - SNES / N64 - the rule is off, not on)
 
 
 # --------------------------------------------------------------------------- defaults and overrides
@@ -367,7 +369,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.update(("keep_extras", "complete_only"))                # (complete_only: a raw disc of a set with a disc missing is not converted yet)
     if getattr(platform, "convertible", False):                    # (raw discs to CHD; SNES / N64: clean up the dumps)
         out.add("convert_first")
-        if getattr(platform, "layout", "") == "game_folder":
+        if getattr(platform, "layout", "") == "game_folder" or getattr(platform, "disc_dats", ()):   # (and the Amiga's CD32 / CDTV discs)
             out.add("delete_converted")
     if _ratings_supported(platform):
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
@@ -2628,14 +2630,15 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "and the like) are not part of the game. Off: they are set aside like any file that matches no game (into _unmatched or the "
         "archive folder, with their path kept, and Undo brings them back); only the disc image stays. On: they stay with the game and "
         "are renamed with it.", [STYLE_REDUMP])
-    opt("convert_first", "convert_first", "Convert when building", False,
+    opt("convert_first", "convert_first", "Convert when building", True,
         "Build library first converts what this system can convert: raw disc images (an .iso, a .cue or .gdi with its tracks, also inside a "
         "zip or 7z) become a CHD named after the game; for the SNES and N64 the dumps are cleaned up (copier headers, byte order) so the "
-        "files equal the database's. Each result is checked against the database before the original is touched. It takes a while; "
+        "files equal the database's; the Amiga's CD32 and CDTV discs become CHDs too. Each result is checked against the database before "
+        "the original is touched. It takes a while; "
         "the preview says what will be converted. Settings for the CHDs are on the Disc images page.", _ALL)
-    opt("delete_converted", "delete_converted", "Delete the originals after converting", False,
+    opt("delete_converted", "delete_converted", "Delete the originals after converting", True,
         "Off: the originals (the .iso, the zip, the cue and its tracks) go to _converted_originals, nothing is deleted. On: they are deleted "
-        "once the CHD has been checked against the database. Undo cannot bring a deleted original back.", [STYLE_REDUMP])
+        "once the CHD has been checked against the database. Undo cannot bring a deleted original back.", [STYLE_REDUMP, STYLE_TOSEC])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])

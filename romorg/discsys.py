@@ -1899,7 +1899,8 @@ class DcConvertOp:
     mode: str = "createcd"          # chdman command: createcd (cue / gdi sheets) | createdvd (a single .iso)
     gdi_text: Optional[str] = None  # a GD-ROM set that has only a .cue: the .gdi generated from it (None = use ``src``)
     note: str = ""
-    deleted: list = field(default_factory=list)  # the originals that were deleted (``delete_originals``)
+    deleted: list = field(default_factory=list)
+    left: list = field(default_factory=list)     # originals that could not be deleted (``delete_originals``): left where they are  # the originals that were deleted (``delete_originals``)
     delete_originals: bool = False  # the originals are deleted once the CHD is checked (off: they go to _converted_originals)
     archive: bool = False           # ``src`` is a .zip / .7z: its disc is unpacked into a work folder first
 
@@ -2303,11 +2304,15 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         journal.useful = True
         if op.delete_originals:
             # the originals are deleted: the CHD was checked against Redump above. Undo could not bring them back, so it must never
-            # take the CHD away either: its record is marked as not done
-            for s, _d in op.moves:
-                os.unlink(s)
+            # take the CHD away either: its record is marked as not done. From here on the CHD stays whatever happens: an original that
+            # cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to undo the conversion
             journal.failed(seq)
-            op.deleted = [s for s, _d in op.moves]
+            for s, _d in op.moves:
+                try:
+                    os.unlink(s)
+                    op.deleted.append(s)
+                except OSError as exc:
+                    op.left.append(f"{s}: {exc}")
             op.moves = []
         # keep the originals: every raw file moves to _converted_originals/ (journalled one by one)
         for s, d in op.moves:
@@ -2422,7 +2427,7 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
             "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
             "temp": tempspace.report(), "verify_text": notes[-1] if notes else "",
             "generated_gdi": sum(1 for o in converted if o.gdi_text is not None),
-            "deleted": sum(len(o.deleted) for o in converted),
+            "deleted": sum(len(o.deleted) for o in converted), "not_deleted": [x for o in converted for x in o.left],
             "from_archives": sum(1 for o in converted if o.archive),
             "written_by": {v: sum(1 for o in converted if o.via == v) for v in ("builtin", "chdman")
                            if any(o.via == v for o in converted)},

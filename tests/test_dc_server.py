@@ -356,8 +356,12 @@ class DcEndpointTests(DcServerCase):
         self.discs["Epsilon (USA)"].write_raw(self.roms / "raw set", "e")
         self.scan()
         plan = self.call("/api/library/plan", {"limit": 5})
-        self.assertNotIn("convert", plan)                                                  # off by default
-        self.call("/api/library/profile", {"platform": PLAT, "convert_first": True})        # the rule "Convert when building"
+        self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 0, "delete": True})   # on by default
+        self.call("/api/library/profile", {"platform": PLAT, "convert_first": False})       # the rule "Convert when building", off
+        self.assertFalse({p["name"]: p for p in self.call("/api/platforms")}[PLAT]["convert_on_build"])
+        self.assertNotIn("convert", self.call("/api/library/plan", {"limit": 5}))
+        self.call("/api/library/profile", {"platform": PLAT, "convert_first": True,
+                                           "delete_converted": False})                     # on again, keeping the originals
         rows = {p["name"]: p for p in self.call("/api/platforms")}
         self.assertTrue(rows[PLAT]["convert_on_build"])
         plan = self.call("/api/library/plan", {"limit": 5})
@@ -381,6 +385,7 @@ class DcEndpointTests(DcServerCase):
         self.discs["Epsilon (USA)"].write_raw(self.roms / "raw set", "e")
         s = self.scan()
         self.assertEqual((s["raw"], s["convertible"]), (1, 1))
+        self.call("/api/library/profile", {"platform": PLAT, "delete_converted": False})    # this test keeps the originals
         plan = self.call("/api/convert/plan", {})
         self.assertTrue(plan["available"])
         self.assertTrue(plan["chdman"]["found"])
@@ -485,6 +490,7 @@ class LongPathConvertTest(DcServerCase):
     def test_convert_sets_deeper_than_260_characters(self) -> None:
         self.discs["Epsilon (USA)"].write_raw(self.roms / "gdi set", "e")
         self.discs["Gamma (Japan)"].write_raw(self.roms / "cue only set", "g", gdi_style=False, markers=True)
+        self.call("/api/library/profile", {"platform": PLAT, "delete_converted": False})    # the originals are checked below
         with mock.patch("romorg.chdtool.detect", return_value=None):
             self.call("/api/chdman?refresh=1")
             s = self.scan()

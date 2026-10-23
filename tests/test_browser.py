@@ -1095,18 +1095,23 @@ class ConvertDropdownTests(UiTestCase):
         self.open()
         self.scan(self.PLATFORM, str(self.psx))
         self.page.goto(self.fx.url + "#/settings")                                       # the rule "Convert when building": your default for every system
-        self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"convert_first\"]')", timeout=30)
-        self.assertFalse(self.page.eval("document.querySelector('#set-library-rules input[data-opt=\"convert_first\"]').checked"))
-        self.click("#set-library-rules input[data-opt=\"convert_first\"]")
+        box = "#set-library-rules input[data-opt=\"%s\"]"
+        self.page.wait(f"!!document.querySelector({box % 'delete_converted'!r})", timeout=30)
+        self.assertTrue(self.page.eval(f"document.querySelector({box % 'convert_first'!r}).checked"))    # (both on by default)
+        self.assertTrue(self.page.eval(f"document.querySelector({box % 'delete_converted'!r}).checked"))
+        self.click(box % "delete_converted")                                              # off: the originals are kept, so Undo can bring them back
         deadline = time.time() + 20
-        while time.time() < deadline and not self.api("GET", "/api/library/defaults")["profile"]["convert_first"]:
+        while time.time() < deadline and self.api("GET", "/api/library/defaults")["profile"]["delete_converted"]:
             time.sleep(0.1)
-        self.assertTrue(self.api("GET", "/api/library/defaults")["profile"]["convert_first"])
+        profile = self.api("GET", "/api/library/defaults")["profile"]
+        self.assertEqual((profile["convert_first"], profile["delete_converted"]), (True, False))
         self.assertFalse(self.page.eval("!!document.getElementById('lib-convert')"))               # (no box of its own on the system's page any more)
         self.page.goto(self.fx.url + f"#/system/{self.SLUG}/files")
         self.page.wait("document.getElementById('lib-cards').textContent.includes('Raw discs to convert to CHD first')", timeout=60)
         self.click("#lib-apply-btn")
-        self.assertIn("converted to CHD first", self.confirm_dialog())
+        said = self.confirm_dialog()
+        self.assertIn("converted to CHD first", said)
+        self.assertIn("kept in _converted_originals", said)
         self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('converted first'))", timeout=180)
         self.idle()
         chd = self.psx / "Solo (USA)" / "Solo (USA).chd"

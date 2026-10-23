@@ -4115,7 +4115,7 @@
         el("li", { text: plan.convert && plan.convert.count && plan.convert.delete ? "Existing files are never overwritten. Only the originals of the conversions are deleted (see below)." : "Nothing is deleted and existing files are never overwritten." }),
         ...(plan.aside ? [el("li", { text: `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is then moved out of this folder to ${plan.aside.path}.` })] : []),
       ...(plan.convert && plan.convert.count ? [el("li", { text: plan.convert.kind === "chd"
-        ? `${fmt(plan.convert.count)} raw disc(s)${plan.convert.archives ? ` (${fmt(plan.convert.archives)} in a zip or 7z)` : ""} are converted to CHD first (each is checked against Redump; this can take a long time). The library counts above are those before the conversion.`
+        ? `${fmt(plan.convert.count)} raw disc(s)${plan.convert.archives ? ` (${fmt(plan.convert.archives)} in a zip or 7z)` : ""} are converted to CHD first (each is checked against its database; this can take a long time). The library counts above are those before the conversion.`
           + (plan.convert.delete ? " THE ORIGINALS ARE DELETED once their CHD is checked: Undo cannot bring them back." : " The originals are kept in _converted_originals.")
         : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
         el("li", { text: "One undo log is saved as it goes - \"Undo last\" reverts the moves and removes / restores the playlists." }),

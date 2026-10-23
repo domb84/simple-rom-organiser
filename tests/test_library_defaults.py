@@ -266,7 +266,7 @@ class ConvertRules(unittest.TestCase):
         self.assertIn("convert_first", cart)                                 # (clean up the dumps)
         self.assertNotIn("delete_converted", cart)                           # (originals are only deleted after a CHD was checked)
         self.assertFalse({"convert_first", "delete_converted"} & none)
-        self.assertFalse(library.app_defaults().convert_first or library.app_defaults().delete_converted)   # off until you turn them on
+        self.assertTrue(library.app_defaults().convert_first and library.app_defaults().delete_converted)   # on for every system that can
 
     def test_the_old_per_system_box_becomes_an_override_of_the_rule(self) -> None:
         from romorg import library
@@ -276,7 +276,8 @@ class ConvertRules(unittest.TestCase):
         self.assertNotIn("convert_on_build", cfg)
         self.assertTrue(library.load_profile(cfg, psx).convert_first)
         self.assertEqual(library.overrides_of(cfg, psx).get("convert_first"), True)
-        self.assertFalse(library.load_profile(cfg, gba).convert_first)       # (a system that cannot convert keeps nothing of it)
+        self.assertNotIn("convert_first", library.overrides_of(cfg, gba))   # (a system that cannot convert keeps nothing of it)
+        self.assertTrue(library.load_profile(cfg, self.platform("Sega Dreamcast")).convert_first)   # (a box left off follows the default: on)
+        library.store_global(cfg, library.LibraryProfile(convert_first=False))  # and your default is for every system that can
         self.assertFalse(library.load_profile(cfg, self.platform("Sega Dreamcast")).convert_first)
-        library.store_global(cfg, library.LibraryProfile(convert_first=True))   # and your default is for every system that can
-        self.assertTrue(library.load_profile(cfg, self.platform("Sega Dreamcast")).convert_first)
+        self.assertTrue(library.load_profile(cfg, psx).convert_first)        # (but not one that overrides it)

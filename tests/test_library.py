@@ -757,7 +757,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
         opts = {e["id"]: e for e in cat if e["kind"] == "option" and e.get("group") != "ratings"}
         self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios", "convert_first",
-                                     "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"})
+                                     "delete_converted", "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])

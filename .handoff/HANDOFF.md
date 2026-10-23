@@ -365,6 +365,15 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
   dos.library vector; xfdDecrunch fails (Xmas Lemmings 91, Caesar); 7 wait for a disk the user lacks; Quantox.lha not cached.
 
 ## STATE AT THE END OF 2026-10-23
+
+### Later on 2026-10-23: CD32 / CDTV discs -> CHD on Build library (Amendment 59, not committed yet unless the log says so)
+* `romorg/cdconvert.py` (new): CHD identified by the files it rebuilds; plan / apply like discsys's conversions. Scanner `containers`
+  "chd" (Amiga). `cdimage` reads WAVE tracks. Server: `_convert_plan` adds disc ops (kept discs only), `_run_conversions` runs them,
+  preview rows / tree show the CHD. Tests: `tests/test_cdconvert.py` (12).
+* "Convert when building" and "Delete the originals after converting" are now ON by default for every system they apply to (global
+  rules with per-system overrides); the user's own defaults already had both on. Review fixes: see the end of Amendment 59.
+* Expect about an hour for all 162 kept discs (8 discs, 1.5 GB of 7z = 214 s on the Deck).
+
 - Round 1 and round 2 install fixes (Amendment 57) and the user's own check by checksum: committed (see git log).
 - The 25 'levels 3, no target' were all built under another region's title (Bad Dudes as Bad Dudes vs. Dragon Ninja ...): not missing;
   the real count of kept games with an install and no build is ~285.

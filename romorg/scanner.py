@@ -64,6 +64,7 @@ VIA_HEADERLESS = "headerless"
 VIA_BYTESWAPPED = "byteswapped"
 VIA_CONTAINER = "container"      # the disc image inside a compressed container (.rvz): hashed as the ISO it stands for
 CONTAINER_EXTS = {"rvz": ".rvz"}  # Platform.containers name -> file extension
+CD_CHD_EXT = ".chd"               # Platform.containers "chd": a TOSEC CD disc as a CHD (romorg.cdconvert)
 SNES_HEADER_SIZE = 512
 NES_HEADER_SIZE = 16
 NES_MAGIC = b"NES\x1a"
@@ -1305,6 +1306,7 @@ def scan(
     index = _Index(dat_list)
     exe = find_7z()
     container_exts = {CONTAINER_EXTS[c] for c in containers if c in CONTAINER_EXTS}
+    cd_chd = "chd" in containers         # CHDs of TOSEC CD discs (CD32 / CDTV), matched by the files they rebuild
     # Files told by an ID in their header when no checksum can be had: Wii / Wii U discs (``discid``, romorg.discmatch) and
     # Switch games (``titleid``, romorg.switchmatch, whose matcher the caller builds: it needs the user's keys)
     id_on = "discid" in containers or "titleid" in containers
@@ -1530,8 +1532,35 @@ def scan(
             unmatched.append(e)
         return True
 
+    def scan_cd_chd(path: Path) -> bool:
+        """A CHD of a TOSEC CD disc (``containers`` has ``chd``): matched by the files it rebuilds (:mod:`romorg.cdconvert`), one
+        entry per DAT file of the disc. False = no CD CHD, or none of the DATs' discs (hashed as a plain file)."""
+        from . import cdconvert
+        from . import chd as chdlib
+        st = path.stat()
+        hashes = cdconvert.cached(cache, path, st)
+        if hashes is None:
+            if not cdconvert.is_cd_chd(path):
+                return False
+            try:
+                hashes = cdconvert.hash_chd(path, cancel=lambda: _is_cancelled(cancel))
+            except InterruptedError:
+                raise ScanCancelled() from None
+            except chdlib.ChdError as exc:
+                errors.append((path, f"ChdError: {exc}"))
+                return True
+            cdconvert.store(cache, path, st, hashes)
+        roms = cdconvert.identify(hashes, dat_list)
+        if not roms:
+            return False
+        for r in roms:
+            matched.append(Match(Entry(path, r.name, r.size, r.crc, r.sha1 or None, root), [r], matched_via=VIA_CONTAINER, container="chd"))
+        return True
+
     def scan_loose(path: Path) -> None:
         if (container_exts or id_exts) and path.suffix.lower() in (container_exts | id_exts) and scan_container(path):
+            return
+        if cd_chd and path.suffix.lower() == CD_CHD_EXT and scan_cd_chd(path):
             return
         st = path.stat()
         key = _cache_key(path)
@@ -1612,7 +1641,8 @@ def scan(
             try:
                 if ext in SEVENZIP_EXTS:
                     pre_list[path] = pool.submit(list_archive, path)
-                elif ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS and ext not in container_exts and ext not in id_exts:
+                elif (ext not in ZIP_EXTS and ext not in SEVENZIP_EXTS and ext not in container_exts and ext not in id_exts
+                      and not (cd_chd and ext == CD_CHD_EXT)):
                     st0 = path.stat()
                     key0 = _cache_key(path)
                     if key0 is None or cache.get(key0, st0.st_size, st0.st_mtime_ns, file_ident(st0)) is None:

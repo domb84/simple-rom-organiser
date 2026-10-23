@@ -10,6 +10,8 @@ What the layout is (checked against chdman 0.289, see ``tests/fixtures/chdwrite`
 * cue: a track is the frames of its file from its ``INDEX 00`` (or ``INDEX 01`` without one) to the next track of
   the same file or the end of the file; ``INDEX 00`` makes the pregap part of the track (``PGTYPE`` with a ``V``),
   the ``PREGAP`` / ``POSTGAP`` commands only go into the metadata;
+* a ``WAVE`` track file (TOSEC's CD32 / CDTV discs) is its ``data`` chunk: 16-bit stereo PCM at 44100 Hz, little-endian
+  like a ``BINARY`` audio file (chdman reads it the same way); anything else in it is not part of the disc;
 * gdi: a track runs to the start of the next one; what its file does not fill is zero frames (``PAD``);
 * a DVD ISO is stored as it is (2048-byte units, no frames).
 
@@ -237,6 +239,48 @@ def _size(path: Path) -> int:
         raise ImageError(f"cannot read {Path(path).name}: {exc}") from exc
 
 
+def wave_data(path) -> Tuple[int, int]:
+    """``(offset, length)`` of the samples of a ``.wav`` track file: its ``data`` chunk, which must be 16-bit stereo PCM at 44100 Hz
+    (what a CD holds) and whole 2352-byte sectors."""
+    path = Path(path)
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+            if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+                raise ImageError(f"{path.name} is not a WAVE file")
+            fmt_ok = False
+            while True:
+                chunk = f.read(8)
+                if len(chunk) < 8:
+                    raise ImageError(f"{path.name} has no sound data")
+                kind, size = chunk[:4], int.from_bytes(chunk[4:], "little")
+                if kind == b"fmt ":
+                    body = f.read(size)
+                    if len(body) < 16:
+                        raise ImageError(f"{path.name}: bad WAVE format chunk")
+                    tag, channels, rate = (int.from_bytes(body[0:2], "little"), int.from_bytes(body[2:4], "little"),
+                                           int.from_bytes(body[4:8], "little"))
+                    bits = int.from_bytes(body[14:16], "little")
+                    if (tag, channels, rate, bits) != (1, 2, 44100, 16):
+                        raise ImageError(f"{path.name} is not CD audio (16-bit stereo PCM at 44100 Hz)")
+                    fmt_ok = True
+                    if size % 2:
+                        f.seek(1, os.SEEK_CUR)
+                elif kind == b"data":
+                    if not fmt_ok:
+                        raise ImageError(f"{path.name}: the sound data comes before its format")
+                    offset = f.tell()
+                    if offset + size > _size(path):
+                        raise ImageError(f"{path.name} is shorter than its sound data")
+                    if size == 0 or size % SECTOR:
+                        raise ImageError(f"{path.name} is not a whole number of {SECTOR}-byte sectors")
+                    return offset, size
+                else:
+                    f.seek(size + size % 2, os.SEEK_CUR)
+    except OSError as exc:
+        raise ImageError(f"cannot read {path.name}: {exc}") from exc
+
+
 def parse_cue(path) -> List[CdTrack]:
     """The tracks of a ``.cue``, read as chdman 0.289 reads it (see :func:`read_sheet` / :func:`tokenize`)."""
     path = Path(path)
@@ -248,6 +292,7 @@ def parse_cue(path) -> List[CdTrack]:
     tracks: List[CdTrack] = []
     starts: List[Tuple[Path, Optional[int], Optional[int]]] = []      # per track: file, INDEX 00, INDEX 01
     current: Optional[Path] = None
+    waves: dict = {}                    # WAVE track file -> (offset, length) of its samples
     for line in sheet_lines(text):
         parts = tokenize(line)
         if not parts:
@@ -255,12 +300,14 @@ def parse_cue(path) -> List[CdTrack]:
         word = parts[0]                     # case-sensitive, as in chdman: "file" / "pregap" are not commands
         if word == "FILE":
             kind = parts[2] if len(parts) > 2 else ""
-            if kind != "BINARY":
-                raise ImageError(f"{path.name}: only BINARY track files can be converted "
+            if kind not in ("BINARY", "WAVE"):
+                raise ImageError(f"{path.name}: only BINARY and WAVE track files can be converted "
                                  f"({kind or 'no type'} is not)")
             if not parts[1]:
                 raise ImageError(f"bad FILE line in {path.name}")
             current = base / parts[1]
+            if kind == "WAVE":
+                waves[current] = wave_data(current)
         elif word == "TRACK":
             if current is None or len(parts) < 2:
                 raise ImageError(f"bad TRACK line in {path.name}")
@@ -307,7 +354,9 @@ def parse_cue(path) -> List[CdTrack]:
             t.pregap = i1 - i0
             t.pgtype = "V" + t.type
         start = i1 if i0 is None else i0
-        size = _size(f)
+        if f in waves and t.type != "AUDIO":
+            raise ImageError(f"{path.name}: track {t.number} is data in a WAVE file")
+        base_at, size = waves[f] if f in waves else (0, _size(f))
         if size % t.sector:
             raise ImageError(f"{f.name} is not a whole number of {t.sector}-byte sectors")
         total = size // t.sector
@@ -325,7 +374,7 @@ def parse_cue(path) -> List[CdTrack]:
             end = total
         if not start < end <= total:
             raise ImageError(f"{path.name}: track {t.number} lies outside {f.name}")
-        t.offset = start * t.sector
+        t.offset = base_at + start * t.sector
         t.file_frames = t.frames = end - start
     return tracks
 

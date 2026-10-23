@@ -130,7 +130,7 @@ class PlatformTests(unittest.TestCase):
     def test_console_registry(self) -> None:
         amiga = get_platform("Commodore Amiga")
         self.assertEqual((amiga.source, amiga.layout, amiga.folder_hint, amiga.convertible),
-                         ("tosec", "per_dat", "amiga", False))
+                         ("tosec", "per_dat", "amiga", True))          # (its CD32 / CDTV discs become CHDs)
         self.assertEqual(amiga.alt_hashes, ())
         for name, (dat, alt, convertible, hint) in CONSOLES.items():
             with self.subTest(name):

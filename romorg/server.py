@@ -1714,6 +1714,14 @@ class App:
             if convert is None:
                 raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "Conversion is not available in this version")
             ops = list(_call(convert.plan_conversions, state.result, layout=state.layout, latest_only=latest_only))
+            disc_dats = tuple(getattr(state.platform, "disc_dats", ()) or ())
+            if disc_dats:                                                    # CD32 / CDTV discs -> CHD
+                keep = None
+                if self._convert_on_build(state.platform, self._config()):  # (a disc the rules set aside is not worth converting)
+                    lplan = self._library_plan(state)
+                    kept = {Path(o.src) for o in lplan.ops if not o.folder and not o.unmatched}
+                    keep = kept.__contains__
+                ops += _mod("cdconvert").plan_conversions(state.result, disc_dats, keep)
             ops.sort(key=_order_key(CONVERT_ORDER))
             state.convert_plans[latest_only] = ops
         return state.convert_plans[latest_only]
@@ -2072,14 +2080,22 @@ class App:
             items = [self._rename_item(op, state.root) for op in plan.ops]
             keep_bios = getattr(getattr(plan, "profile", None), "keep_bios", True)
             will = {}                                       # (a raw disc the build converts first: its row shows the CHD it becomes)
+            discs = {}                                      # (a CD32 / CDTV disc the build converts first: its row shows the CHD, where the game goes)
             if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
                 cplan = [c for c in self._convert_plan(state, self._latest_arg(state, {})) if getattr(c, "unit", None) is not None]
                 will = {id(c.unit): c for c in cplan if c.status == "convert"}
+            elif getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config()):
+                discs = {Path(f): c for c in self._convert_plan(state, self._latest_arg(state, {}))
+                         if c.status == "convert" and isinstance(c, _mod("cdconvert").CdConvertOp) for f, _d in c.moves}   # (each file of the disc)
             for item, op in zip(items, plan.ops):
                 cop = will.get(id(getattr(op, "unit", None))) if will and getattr(op, "unit_kind", "") == "raw" else None
                 if cop is not None:
                     to_rel = _rel(cop.dst, state.root)
                     item.update(to=to_rel, to_name=Path(cop.dst).name, dest=self._dest_of(to_rel))
+                dop = discs.get(Path(op.src)) if discs else None
+                if dop is not None:
+                    to_rel = _rel(Path(op.dst).parent / Path(dop.dst).name, state.root)
+                    item.update(to=to_rel, to_name=Path(dop.dst).name, dest=self._dest_of(to_rel))
                 if not keep_bios and not getattr(op, "bios", False):
                     item["bios"] = False              # (rule off: a Kickstart is a game of its DAT, like any other)
                 item["category"] = self._library_category(item)
@@ -2410,7 +2426,8 @@ class App:
 
     def _delete_converted(self, platform: Any, cfg: dict[str, Any] | None = None) -> bool:
         """The rule "Delete the originals after converting" (the originals go to ``_converted_originals`` when it is off)."""
-        return bool(getattr(platform, "convertible", False)) and bool(self._profile(platform, cfg).delete_converted)
+        return (bool(getattr(platform, "convertible", False)) and "delete_converted" in self._library_mod().applicable_fields(platform)
+                and bool(self._profile(platform, cfg).delete_converted))
 
     def platform_options(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Remember per-platform options right away (``latest_only``), not only on the next request - so a scan or DAT download in
@@ -3762,7 +3779,8 @@ class App:
         if self._convert_on_build(state.platform, self._config()):
             ops = self._convert_plan(state, self._latest_arg(state, {}))
             todo = [op for op in ops if op.status == "convert"]
-            page["convert"] = {"count": len(todo), "kind": "chd" if self._is_dc(state) else "clean",
+            discs = sum(1 for op in todo if isinstance(op, _mod("cdconvert").CdConvertOp))
+            page["convert"] = {"count": len(todo), "kind": "chd" if self._is_dc(state) or (todo and discs == len(todo)) else "clean",
                                "archives": sum(1 for op in todo if getattr(op, "archive", False)),
                                "delete": self._delete_converted(state.platform)}
         aside_raw = _str_arg(body.get("aside_to"))
@@ -5137,6 +5155,8 @@ class App:
                             "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
         if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
             self._add_conversions(state, entries, treeview)
+        elif getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config()):
+            self._add_disc_conversions(state, entries, treeview)
         games = self._kind_rows(state, "games")
         try:
             self._annotate_ratings(state, games)
@@ -5481,6 +5501,31 @@ class App:
                             "from": "/".join(parts(op.src)), "row": row,
                             "text": "/".join(parts(op.dst) + parts(op.src)).casefold()})
 
+    def _add_disc_conversions(self, state: ScanState, entries: list[dict[str, Any]], treeview: Any) -> None:
+        """The CD32 / CDTV discs the build converts, as the tree shows them: the game's file where it goes is its CHD, and the
+        original is set aside in ``_converted_originals`` (or deleted with the rule "Delete the originals after converting")."""
+        root = Path(state.root)
+        delete = self._delete_converted(state.platform)
+        cdconvert = _mod("cdconvert")
+        ops = {"/".join(Path(f).relative_to(root).parts): op for op in self._convert_plan(state, self._latest_arg(state, {}))
+               if op.status == "convert" and isinstance(op, cdconvert.CdConvertOp) for f, _d in op.moves}      # (each file of the disc)
+        done: set[int] = set()
+        for e in list(entries):
+            op = ops.get(e.get("from") or "") if e["side"] == treeview.LIBRARY else None
+            if op is None:
+                continue
+            if id(op) in done:                         # (a loose disc's other files: they become the same CHD - one entry for it)
+                entries.remove(e)
+                continue
+            done.add(id(op))
+            parts = tuple(e["parts"][:-1]) + (Path(op.dst).name,)
+            e.update(parts=parts, state=treeview.CONVERTED, size=0, text="/".join(parts).casefold() + " " + e["text"])
+            if not delete:
+                for s, d in op.moves:
+                    entries.append({"side": treeview.LIBRARY, "parts": tuple(Path(d).relative_to(root).parts), "size": 0,
+                                    "state": treeview.MOVED, "from": "/".join(Path(s).relative_to(root).parts), "row": e["row"],
+                                    "text": "/".join(Path(d).relative_to(root).parts).casefold()})
+
     TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves", "kept_saves")
 
     @staticmethod
@@ -5806,9 +5851,34 @@ class App:
                 engine=str(cfg.get("chd_engine") or "auto"), writer=self._chd_writer(cfg),
                 preset=self._chd_preset(cfg)))
         else:
-            res = dict(_call(_mod("convert").apply_conversions, ops, root, progress=rep, cancel=job.cancel))
+            cdconvert = _mod("cdconvert")
+            discs = [op for op in ops if isinstance(op, cdconvert.CdConvertOp)]
+            res = dict(_call(_mod("convert").apply_conversions, [op for op in ops if op not in discs], root, progress=rep,
+                             cancel=job.cancel))
+            if any(op.status == "convert" for op in discs) and not res.get("cancelled") and not res.get("error"):
+                cfg = self._config()
+                self._configure_temp(cfg)
+                done = cdconvert.apply_conversions(discs, root, progress=rep, cancel=job.cancel, preset=self._chd_preset(cfg),
+                                                   workers=_mod("chdsched").default_workers(cfg.get("chd_workers")))
+                res = self._merge_conversions(res, done)
         res["action"] = "convert"
         return res
+
+    @staticmethod
+    def _merge_conversions(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+        """One result of two conversion runs (cleaned-up dumps, then discs to CHD): counts added, both undo logs kept (the second is
+        the one Undo takes; the first is listed with the others)."""
+        out = dict(first)
+        for k, v in second.items():
+            if isinstance(v, bool):
+                out[k] = bool(out.get(k)) or v
+            elif isinstance(v, int):
+                out[k] = int(out.get(k) or 0) + v
+            elif isinstance(v, list):
+                out[k] = list(out.get(k) or []) + v
+            elif v or k not in out:
+                out[k] = v
+        return out
 
     def _apply_conversions(self, job: Job, state: ScanState, latest_only: bool, report: Callable[..., None] | None = None) -> dict[str, Any]:
         """Do the conversions of the state's plan (raw disc sets to CHD, or SNES / N64 dumps cleaned up); returns the result

@@ -1992,7 +1992,7 @@ class NoIntroServerTests(ServerTestCase):
         object.__setattr__(SNES_PLATFORM, "latest_dats", (SNES_DAT,))                    # (a system only has the rule when its DATs do)
         self.addCleanup(object.__setattr__, SNES_PLATFORM, "latest_dats", ())
         res = self.post("/api/platforms/options", {"platform": SNES, "latest_only": True})
-        self.assertEqual(res, {"platform": SNES, "latest_only": True, "convert": False})
+        self.assertEqual(res, {"platform": SNES, "latest_only": True, "convert": True})      # ("Convert when building" is on by default)
         self.assertTrue({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
         self.scan_snes()
         self.assertTrue({p["name"]: p for p in self.get("/api/platforms")}[SNES]["latest_only"])
