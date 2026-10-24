@@ -25,10 +25,8 @@ import datetime as _dt
 import errno
 import http.client
 import json
-import os
 import socket
 import ssl
-import tempfile
 import threading
 import time
 import urllib.error
@@ -220,17 +218,7 @@ class UpdateManager:
         target = self._state_file()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix=".updates-", suffix=".tmp", dir=str(target.parent))
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(data, fh, indent=2)
-                os.replace(tmp, target)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            paths.atomic_write(target, json.dumps(data, indent=2), ".updates-")
         except OSError:
             pass  # remembering the check time is a convenience only
 

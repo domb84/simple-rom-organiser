@@ -39,7 +39,6 @@ import re
 import shutil
 import sqlite3
 import time
-import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
@@ -50,6 +49,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import chd as chdlib
 from . import bios, cdimage, chdsched, discarchive, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
 from . import meter, winproc
+from .cancellation import is_cancelled
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, UNMATCHED_DIR
 from .organiser import RenameOp, safe_filename
@@ -507,8 +507,8 @@ def discover_units(root: Path, files: list[Path], system: Optional["DiscSystem"]
 
 
 def sheet_track_names(text: str, ext: str) -> Optional[list[str]]:
-    """The track file names of the text of a ``.gdi`` / ``.cue`` in track order (None when they cannot be listed per track): the
-    rules of :func:`sheet_track_files`, for a sheet read from somewhere else (an archive)."""
+    """The track file names of the text of a ``.gdi`` / ``.cue`` in track order (None when they cannot be listed per track); the
+    rules of :func:`sheet_track_files`, which adds the sheet's folder, for a sheet read from somewhere else (an archive)."""
     lines = cdimage.sheet_lines(text)
     out: list[str] = []
     if ext == ".gdi":
@@ -549,34 +549,8 @@ def sheet_track_files(sheet: Path) -> Optional[list[Path]]:
         text = cdimage.read_sheet(sheet)
     except OSError:
         return None
-    base = Path(sheet).parent
-    out: list[Path] = []
-    lines = cdimage.sheet_lines(text)
-    if Path(sheet).suffix.lower() == ".gdi":
-        count = cdimage.atoi(lines[0]) if lines else 0
-        for ln in lines[1:]:
-            parts = cdimage.tokenize(ln)
-            if not parts:
-                continue
-            if len(parts) < 6 or not parts[4]:
-                return None
-            out.append(base / parts[4])
-        return out if count > 0 and len(out) == count else None
-    files = 0
-    tracks = 0
-    for ln in lines:
-        parts = cdimage.tokenize(ln)
-        word = parts[0] if parts else ""
-        if word == "FILE":
-            files += 1
-            if len(parts) < 2 or not parts[1]:
-                return None
-            out.append(base / parts[1])
-        elif word == "TRACK":
-            tracks += 1
-    if not out or files != tracks:     # one bin holding several tracks: cannot be matched per file
-        return None
-    return out
+    names = sheet_track_names(text, Path(sheet).suffix.lower())          # (one bin holding several tracks: None, it cannot be matched per file)
+    return None if names is None else [Path(sheet).parent / n for n in names]
 
 
 GD_HD_START = 45000          # first LBA of the high-density area of a GD-ROM (every GDI puts track 3 here)
@@ -748,7 +722,7 @@ class _Progress:
         return ", ".join(bits)
 
     def check(self) -> None:
-        if self.cancel is not None and (self.cancel.is_set() if hasattr(self.cancel, "is_set") else self.cancel()):
+        if is_cancelled(self.cancel):
             raise scanner.ScanCancelled()
 
     def add(self, n: int) -> None:
@@ -770,7 +744,7 @@ class _Progress:
             self.report(min(self.done, self.total) // _MIB, self.total // _MIB, text)
 
     def cancelled(self) -> bool:
-        return self.cancel is not None and bool(self.cancel.is_set() if hasattr(self.cancel, "is_set") else self.cancel())
+        return is_cancelled(self.cancel)
 
     def engine_stats(self, sched: Optional["chdsched.Scheduler"] = None) -> dict[str, Any]:
         """Which engine ran and how fast (for the Dreamcast / PlayStation bar)."""
@@ -2193,15 +2167,13 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
     # on the file system that will hold it. Only the verification extract below uses scratch space elsewhere.
     chdtool.check_space(op.dst.parent if op.dst.parent.exists() else root, op.raw_bytes * (2 if op.archive else 1))
     new = op.dst.with_name(op.dst.name + PART_SUFFIX)
-    placed = False
-    moved: list[tuple[Path, Path]] = []
+    place = organiser.Placement(op.dst, created)
     gdi_work = None
     unpacked: Optional[Path] = None
     archive_path = op.src
     try:
         organiser.make_dirs(op.dst.parent, created)
-        if new.is_file() and not new.is_symlink():
-            new.unlink()                      # a leftover of a crashed run (our own distinctive name)
+        organiser.discard_part(new, strict=True)          # a leftover of a crashed run (our own distinctive name)
         if op.archive:                        # the disc is taken out of its zip / 7z next to where the CHD goes (the same file system)
             unpacked = op.dst.parent / (chdtool.TEMP_PREFIX + "unpack")
             if unpacked.exists():
@@ -2290,36 +2262,10 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         if bad:
             raise chdtool.ChdmanError(f"verification failed: track {', '.join(bad)} of the new CHD does not "
                                       f"match Redump - nothing was changed")
-        organiser.move_exclusive(new, op.dst)
-        placed = True
-        if op.delete_originals:
-            # the originals are deleted: the CHD was checked against Redump above. From here on the CHD stays whatever happens: an
-            # original that cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to roll back
-            for s, _d in op.moves:
-                try:
-                    os.unlink(s)
-                    op.deleted.append(s)
-                except OSError as exc:
-                    op.left.append(f"{s}: {exc}")
-            op.moves = []
-        # keep the originals: every raw file moves to _converted_originals/
-        for s, d in op.moves:
-            organiser.make_dirs(d.parent, created)
-            organiser.rename_no_overwrite(s, d)
-            moved.append((s, d))
+        # the CHD was checked against Redump: placed, and the originals deleted or kept in _converted_originals/
+        place.commit(new, op)
     except BaseException:
-        # roll back what was done: originals back, new CHD removed
-        for s, d in list(reversed(moved)):
-            try:
-                organiser.rename_no_overwrite(d, s)
-                moved.remove((s, d))            # back in place: only what could not be restored stays listed
-            except (OSError, ValueError):
-                pass
-        if placed and not moved:
-            try:
-                os.unlink(op.dst)
-            except OSError:
-                pass
+        place.rollback()
         raise
     finally:
         op.src = archive_path
@@ -2327,11 +2273,7 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
             chdtool.remove_workdir(gdi_work)
         if unpacked is not None:
             shutil.rmtree(unpacked, ignore_errors=True)
-        try:
-            if new.is_file() and not new.is_symlink():
-                new.unlink()                   # failed / cancelled: no half-written CHD stays behind
-        except OSError:
-            pass
+        organiser.discard_part(new)                    # failed / cancelled: no half-written CHD stays behind
 
 
 def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[chdtool.Chdman], index: DcIndex,
@@ -2378,16 +2320,9 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
             except (OSError, ValueError, chdlib.ChdError) as exc:
                 failed.append({"src": str(op.src), "dst": str(op.dst),
                                "error": winproc.long_path_hint(exc, op.src, op.dst)})
-        protected = organiser.protected_dirs(root, [], set())
-        sources = ([Path(s).parent for op in converted for s, _d in op.moves] + [Path(s).parent for op in converted for s in op.deleted]
-                   + [Path(c) for c in created])
-        mine = set(created)
-        for d in organiser.remove_empty_dirs(sources, root, protected):
-            if d in mine:
-                created.remove(d)
-                mine.discard(d)
-            else:
-                removed.append(d)
+        removed += organiser.tidy_after(root, [Path(s).parent for op in converted for s, _d in op.moves]
+                                        + [Path(s).parent for op in converted for s in op.deleted], created,
+                                        organiser.protected_dirs(root, [], set()))
     finally:
         sched.close()
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": error,

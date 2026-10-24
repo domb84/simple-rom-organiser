@@ -305,6 +305,7 @@ OTHER_SYSTEM_DIRS = {
 }
 CONVERT_ORDER = ("convert", "conflict", "skip")
 MAX_TITLE = 120
+DEFAULT_PLATFORM = "Commodore Amiga"        # the system the app opens on, and the one an endpoint assumes when none is named
 LAYOUT_PER_DAT, LAYOUT_FLAT = "per_dat", "flat"
 LAYOUT_GAME_FOLDER = "game_folder"   # disc systems: <root>/<Redump name>/<Redump name>.chd
 CHDMAN_TTL = 60.0                    # seconds a chdman detection result is reused
@@ -2633,7 +2634,7 @@ class App:
 
     def whdload_installs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """The Amiga games you have and their WHDLoad installs (``available``: the list of installs has been fetched)."""
-        platform = self._resolve_platform(query.get("platform") or "Commodore Amiga")
+        platform = self._resolve_platform(query.get("platform") or DEFAULT_PLATFORM)
         cat, rows = self._whd_games(platform)
         return {"available": cat is not None, "fetched": (cat or {}).get("fetched", ""), "installs": len((cat or {}).get("installs", ())),
                 "games": rows, "counts": {"games": len(rows), "with_install": sum(1 for r in rows if r["install"]),
@@ -2643,7 +2644,7 @@ class App:
     def whdload_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """Download the installs of some games (``titles``) or of every game that has one and lacks it (``all``), next to their disks."""
         body = body if isinstance(body, dict) else {}
-        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        platform = self._resolve_platform(body.get("platform") or DEFAULT_PLATFORM)
         whd = _mod("whdinstalls")
         cat, rows = self._whd_games(platform)
         if cat is None:
@@ -2680,7 +2681,7 @@ class App:
         install"): for every game with an install and more than one complete version, the install is fetched (kept in a cache) and run
         here on each version's disks. ``force``: check versions checked before again."""
         body = body if isinstance(body, dict) else {}
-        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        platform = self._resolve_platform(body.get("platform") or DEFAULT_PLATFORM)
         whd, ready, inst, library = _mod("whdinstalls"), _mod("whdready"), _mod("amigainstall"), self._library_mod()
         state = self._state_of(platform)
         if state is None:
@@ -2773,7 +2774,7 @@ class App:
         """Build WHDLoad games: every game the library keeps that a WHDLoad install works from, a ``<release>.lha`` beside its disks
         (``romorg.whdbuild``); the same one again is left as it is. A job (cancellable): the first run can take an hour or more."""
         body = body if isinstance(body, dict) else {}
-        platform = self._resolve_platform(body.get("platform") or "Commodore Amiga")
+        platform = self._resolve_platform(body.get("platform") or DEFAULT_PLATFORM)
         state = self._state_of(platform)
         if state is None:
             raise ApiError(HTTPStatus.CONFLICT, f"Scan the {platform.name} folder first.", "scan_needed")
@@ -4147,6 +4148,14 @@ class App:
                     return inst
         return installs[0] if installs else None
 
+    def _ra_required(self) -> tuple[Any, Any, dict[str, Any]]:
+        """``(retroarch module, the selected install, saved settings)``; 409 ``no_retroarch`` when none is known."""
+        ra, installs, saved = self._ra_state()
+        sel = self._ra_selected(installs, saved)
+        if sel is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        return ra, sel, saved
+
     def _ra_dirs(self, saved: dict[str, Any]) -> Path:
         """The folder of the backups of saves (and of a save file rewritten in place)."""
         return Path(saved.get("backup_dir") or (_mod("paths").data_dir() / "save-backups"))
@@ -4192,10 +4201,7 @@ class App:
         return self._ra_info()
 
     def _ra_relocation(self, body: dict[str, Any]) -> tuple[Any, Any, Any]:
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         save_dir = _str_arg(body.get("save_dir"))
         state_dir = _str_arg(body.get("state_dir")) or save_dir
         if not save_dir:
@@ -4729,28 +4735,19 @@ class App:
     def retroarch_shared(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/shared {base?}``: the asset folders RetroArch uses against those in ``base`` (default: the
         folder that holds its playlists / saves now)."""
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         base = _str_arg(body.get("base")) or saved.get("shared_base") or ra.shared_base(sel)
         return {"base": base, "rows": ra.shared_folders(sel, base)}
 
     def retroarch_assets(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/assets``: RetroArch's asset settings (playlists, thumbnails, cheats ...) and the folder each uses now."""
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         return {"rows": ra.asset_folders(sel)}
 
     def retroarch_assets_set(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/assets/set {key, folder}``: point one asset setting at a folder you chose ("" = RetroArch's own). Only
         retroarch.cfg changes (backed up first)."""
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         folder = _str_arg(body.get("folder")).strip()
         if folder and not os.path.isdir(os.path.expanduser(folder)):
             raise ApiError(HTTPStatus.BAD_REQUEST, "That folder does not exist.", "bad_folder")
@@ -4764,10 +4761,7 @@ class App:
         return res
 
     def retroarch_shared_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         base = _str_arg(body.get("base"))
         rows = ra.shared_folders(sel, base)
         raw_keys = body.get("keys")
@@ -4790,10 +4784,7 @@ class App:
     def _ra_bios_scope(self, body: dict[str, Any]) -> tuple[Any, Any, list[dict[str, Any]], list[Path], list[Any], str]:
         """``(retroarch module, install, cores, folders to search, systems, label)`` for ``platform``: a system's name, or
         ``""`` / ``*configured`` (every system that has a ROM folder: the default), or ``*all`` (every installed core)."""
-        ra, installs, saved = self._ra_state()
-        sel = self._ra_selected(installs, saved)
-        if sel is None:
-            raise ApiError(HTTPStatus.CONFLICT, "No RetroArch was found. Choose its retroarch.cfg first.", "no_retroarch")
+        ra, sel, saved = self._ra_required()
         scope = _str_arg(body.get("platform"))
         folders = self._folders()
         platforms = list(_mod("platforms").list_platforms())

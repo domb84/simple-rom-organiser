@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import winproc
+from . import emudata, winproc
 
 __all__ = ["NinSave", "detect_dolphin", "detect_cemu", "find_dolphin_wii", "find_dolphin_gc", "find_cemu", "read_title_list",
            "read_gci_header", "dolphin_game_dirs", "cemu_game_dirs"]
@@ -45,21 +45,6 @@ class NinSave:
                 "files": self.files, "bytes": self.bytes, "mtime": self.mtime, "note": self.note, "region": self.region}
 
 
-def _measure(folder: Path) -> tuple[int, int, float]:
-    files = total = 0
-    newest = 0.0
-    for dirpath, _dirs, names in os.walk(folder):
-        for name in names:
-            try:
-                st = (Path(dirpath) / name).stat()
-            except OSError:
-                continue
-            files += 1
-            total += st.st_size
-            newest = max(newest, st.st_mtime)
-    return files, total, newest
-
-
 # --------------------------------------------------------------------------- Dolphin
 def find_dolphin_wii(user: Path) -> List[NinSave]:
     """The Wii saves under ``<user>/Wii/title/00010000``: one per game ID that has files in ``data``."""
@@ -76,7 +61,7 @@ def find_dolphin_wii(user: Path) -> List[NinSave]:
             continue
         if not code.isprintable() or not code.strip():
             continue
-        files, total, newest = _measure(folder / "data")
+        files, total, newest, _ = emudata.measure(folder / "data")
         if files:
             out.append(NinSave("dolphin", "wii", code.upper(), "save", folder / "data", files, total, newest))
     return out
@@ -130,13 +115,10 @@ def find_dolphin_gc(user: Path) -> List[NinSave]:
 def dolphin_game_dirs(config: Path) -> List[str]:
     """The game folders in Dolphin's ``Dolphin.ini`` (``ISOPath0`` ...)."""
     out: List[str] = []
-    try:
-        for line in Path(config).read_text(encoding="utf-8", errors="replace").splitlines():
-            key, sep, value = line.partition("=")
-            if sep and key.strip().startswith("ISOPath") and key.strip() != "ISOPaths" and value.strip():
-                out.append(value.strip())
-    except OSError:
-        pass
+    for line in emudata.read_lines(config):
+        key, sep, value = line.partition("=")
+        if sep and key.strip().startswith("ISOPath") and key.strip() != "ISOPaths" and value.strip():
+            out.append(value.strip())
     return out
 
 
@@ -174,7 +156,7 @@ def find_cemu(mlc: Path) -> List[NinSave]:
         except OSError:
             continue
         for user in users:
-            files, total, newest = _measure(user)
+            files, total, newest, _ = emudata.measure(user)
             if files:
                 out.append(NinSave("cemu", "wiiu", "00050000" + title.name.upper(), "common" if user.name == "common" else "profile",
                                    user, files, total, newest, note=user.name))

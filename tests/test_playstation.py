@@ -22,7 +22,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
-from romorg import cdecc, chd as chdlib, chdtool, datfile, discsys, library, organiser, platforms, redump, tags  # noqa: E402
+tree = T.tree  # noqa: E402  (the sha1 of every file below a folder)
+from romorg import cdecc, chd as chdlib, chdtool, datfile, discsys, library, platforms, redump, tags  # noqa: E402
 
 PSX_DAT, PS2_DAT = "Sony - PlayStation", "Sony - PlayStation 2"
 # Real data (read-only; RealDatTest is skipped without it): the folder holding the Redump "Sony - PlayStation - *.dat"
@@ -31,19 +32,6 @@ PSX_DAT, PS2_DAT = "Sony - PlayStation", "Sony - PlayStation 2"
 SCRATCH = Path(os.environ.get("ROMORG_REAL_SONY_DATS")
                or "/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
                   "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad/redump_sony")
-
-
-def tree(root: Path) -> dict:
-    out = {}
-    for dp, dns, fns in os.walk(root):
-        for d in dns:
-            out[(Path(dp) / d).relative_to(root).as_posix()] = "DIR"
-        for f in fns:
-            if f.startswith(".romorg-undo-"):
-                continue
-            p = Path(dp) / f
-            out[p.relative_to(root).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
-    return out
 
 
 def sha1(data: bytes) -> str:

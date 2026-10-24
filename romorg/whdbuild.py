@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .cancellation import is_cancelled
 from .scanner import WHDLOAD_BUILD_MARKER, WHDLOAD_BUILD_TEMP, is_built_whdload
 
 __all__ = ["MARKER", "Target", "targets", "build", "marker_of"]
@@ -209,7 +210,7 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
                 from . import whdinstalls, xfd
                 state["x"] = xfd.Decruncher(whdinstalls.xfd_package())
             return state["x"]
-    stopped = lambda: cancel is not None and (cancel() if callable(cancel) else cancel.is_set())   # noqa: E731
+    stopped = lambda: is_cancelled(cancel)   # noqa: E731
     have = _ours(Path(root))
     by_key = {json.dumps({k: m.get(k) for k in ("source", "install", "install_date")}, sort_keys=True): p for p, m in have.items()}
     out: dict[str, Any] = {"built": [], "moved": [], "kept": 0, "removed": [], "failed": []}

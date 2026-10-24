@@ -20,11 +20,11 @@ import ctypes.util
 import itertools
 import os
 import struct
-import sys
 import threading
 from array import array
-from pathlib import Path
 from typing import Optional
+
+from . import nativelib
 
 ENV_LIB = "ROMORG_SNDFILE"
 ENV_ENABLE = "ROMORG_NATIVE_FLAC"
@@ -93,25 +93,13 @@ def _tell(key) -> int:
 # the callbacks are created once (creating them per hunk would cost more than the decode)
 _CALLBACKS = _VirtualIO(_GETLEN(_getlen), _SEEK(_seek), _READ(_read), _WRITE(_write), _TELL(_tell))
 
-_lib: Optional[ctypes.CDLL] = None
-_tried = False
-_lock = threading.Lock()
-
-
 def _candidates():
     env = os.environ.get(ENV_LIB)
     if env:
         yield env
     names = ("libsndfile-1.dll", "libsndfile_x64.dll", "libsndfile.dll", "libsndfile.so.1", "libsndfile.so",
              "libsndfile.dylib")
-    folders = []
-    if getattr(sys, "frozen", False):
-        if getattr(sys, "_MEIPASS", None):       # a PyInstaller onefile exe unpacks bundled binaries here
-            folders.append(Path(sys._MEIPASS))
-        folders.append(Path(sys.executable).resolve().parent)
-    folders += [Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd(),
-                Path(__file__).resolve().parent.parent]
-    for f in folders:
+    for f in nativelib.app_folders():
         for sub in ("", "native", "_soundfile_data"):
             for n in names:
                 p = f / sub / n if sub else f / n
@@ -144,15 +132,11 @@ def _load() -> Optional[ctypes.CDLL]:
     return None
 
 
+_once = nativelib.Once(lambda: _load() if os.environ.get(ENV_ENABLE, "1") != "0" else None)
+
+
 def _get() -> Optional[ctypes.CDLL]:
-    global _lib, _tried
-    if not _tried:
-        with _lock:
-            if not _tried:
-                if os.environ.get(ENV_ENABLE, "1") != "0":
-                    _lib = _load()
-                _tried = True
-    return _lib
+    return _once.get()
 
 
 def available() -> bool:

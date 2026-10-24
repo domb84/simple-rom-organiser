@@ -118,14 +118,18 @@ def load_config() -> dict[str, Any]:
         return _read_config_file()[0]
 
 
-def _write_config(config: dict[str, Any]) -> None:
-    target = config_path()
-    fd, tmp = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=str(target.parent))
+def atomic_write(target: Path, data: bytes | str, prefix: str = ".tmp-", fsync: bool = False) -> None:
+    """Write ``data`` (text as UTF-8) to ``target`` so that a reader sees the old file or the whole new one, never half: a temporary
+    file in the same folder, renamed over it. The temporary file is removed when anything fails."""
+    target = Path(target)
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    fd, tmp = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=str(target.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(config, fh, indent=2, ensure_ascii=False)
-            fh.flush()
-            os.fsync(fh.fileno())
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+            if fsync:
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp, target)
     except BaseException:
         try:
@@ -133,6 +137,10 @@ def _write_config(config: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def _write_config(config: dict[str, Any]) -> None:
+    atomic_write(config_path(), json.dumps(config, indent=2, ensure_ascii=False), ".config-", fsync=True)
 
 
 def update_config(mutate: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:

@@ -22,28 +22,20 @@ frame CRCs, so damaged audio raises :class:`FlacError` instead of decoding to ga
 from __future__ import annotations
 
 import ctypes
-import ctypes.util
 import os
 import struct
 import sys
 import threading
 from array import array
-from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import bundle, flacdec, nativeflac
+from . import bundle, flacdec, nativelib, nativeflac
 from .flacdec import FlacError
 
 __all__ = ["FlacError", "available", "library_path", "decode_frames", "decode_pcm", "status", "reload"]
 
 ENV_LIB = "ROMORG_LIBFLAC"
 _BIG = sys.byteorder == "big"
-
-_lock = threading.Lock()
-_lib = None
-_lib_path: Optional[str] = None
-_tried = False
-_note = ""
 
 _VOID = ctypes.c_void_p
 _READ = ctypes.CFUNCTYPE(ctypes.c_int, _VOID, ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_size_t), _VOID)
@@ -55,61 +47,13 @@ _ST_END_OF_STREAM = 4
 
 
 def _candidates() -> List[str]:
-    out: List[str] = []
-    env = os.environ.get(ENV_LIB)
-    if env:
-        out.append(env)
-    d = bundle.lib_dir()
-    if d is not None:
-        try:
-            out += sorted(str(p) for p in d.glob("libFLAC.so*") if p.is_file() or p.is_symlink())
-        except OSError:
-            pass
-    if sys.platform.startswith("win"):      # a libFLAC DLL next to the app / in its "native" folder, then the system's
-        folders = []
-        if getattr(sys, "frozen", False):
-            if getattr(sys, "_MEIPASS", None):
-                folders.append(Path(sys._MEIPASS))
-            folders.append(Path(sys.executable).resolve().parent)
-        folders += [Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd(),
-                    Path(__file__).resolve().parent.parent]
-        for folder in folders:
-            for sub in ("", "native"):
-                for name in ("libFLAC.dll", "FLAC.dll", "libFLAC-14.dll", "libFLAC-12.dll", "libFLAC-8.dll"):
-                    cand = folder / sub / name if sub else folder / name
-                    try:
-                        if cand.is_file():
-                            out.append(str(cand))
-                    except OSError:
-                        pass
-        out += ["libFLAC.dll", "FLAC.dll"]
-    found = ctypes.util.find_library("FLAC")
-    if found:
-        out.append(found)
-    out += ["libFLAC.so.14", "libFLAC.so.12", "libFLAC.so.8", "libFLAC.so"]
-    for folder in ("/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/lib64", "/usr/local/lib",
-                   "/run/host/usr/lib", "/run/host/usr/lib64"):
-        try:
-            out += sorted(str(p) for p in Path(folder).glob("libFLAC.so.*") if ".so." in p.name)
-        except OSError:
-            pass
-    seen, uniq = set(), []
-    for c in out:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
+    return nativelib.candidates("libFLAC", "FLAC", ENV_LIB, names=("libFLAC.so.14", "libFLAC.so.12", "libFLAC.so.8", "libFLAC.so"),
+                                win_names=("libFLAC.dll", "FLAC.dll"),
+                                win_files=("libFLAC.dll", "FLAC.dll", "libFLAC-14.dll", "libFLAC-12.dll", "libFLAC-8.dll"))
 
 
 def _load():
-    global _lib, _lib_path, _tried, _note
-    if _tried:
-        return _lib
-    with _lock:
-        if not _tried:
-            _lib, _lib_path, _note = _find()
-            _tried = True               # last: another thread must never see "tried" before the result is there
-        return _lib
+    return _once.get()[0]
 
 
 def _find() -> tuple:
@@ -134,6 +78,9 @@ def _find() -> tuple:
             continue
         return lib, cand, ""
     return None, None, "libFLAC not found" + (f" ({errors[0]})" if errors else "")
+
+
+_once = nativelib.Once(lambda: _find())          # (library, its path, note)
 
 
 def _bind(lib) -> None:
@@ -162,23 +109,20 @@ def available() -> bool:
 
 
 def library_path() -> Optional[str]:
-    _load()
-    return _lib_path
+    return _once.get()[1]
 
 
 def status() -> dict:
     """``{"native": bool, "library": path | None, "note": why not}`` for the UI / self-check."""
-    _load()
-    if _lib is None and _sndfile():
+    lib, path, note = _once.get()
+    if lib is None and _sndfile():
         return {"native": True, "library": "libsndfile", "note": "libFLAC not found: CD audio is decoded through libsndfile"}
-    return {"native": _lib is not None, "library": _lib_path, "note": _note}
+    return {"native": lib is not None, "library": path, "note": note}
 
 
 def reload() -> None:
     """Forget the loaded library (tests that change the environment)."""
-    global _lib, _lib_path, _tried, _note
-    with _lock:
-        _lib, _lib_path, _tried, _note = None, None, False, ""
+    _once.reset()
     _local.__dict__.clear()
 
 

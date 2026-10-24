@@ -77,7 +77,8 @@ if TYPE_CHECKING:
     from .scanner import Entry, Match, ScanResult
 
 UNDO_PREFIX = ".romorg-undo-"          # the undo logs of versions before 0.4 (removed by purge_undo_logs)
-from . import folders, winproc  # noqa: E402  (the reserved folder names live in folders.py only)
+from . import folders, winproc  # noqa: E402
+from .cancellation import is_cancelled  # noqa: E402  (the reserved folder names live in folders.py only)
 from .folders import (CODE_DIRS, CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, INCOMPLETE_DIR,  # noqa: E402,F401
                       REASON_DIRS, RESERVED_DIRS, SUPERSEDED_DIR, UNMATCHED_DIR)
 
@@ -1382,8 +1383,8 @@ def _rel_str(path: Path, root: Path) -> str:
 # --------------------------------------------------------------------------- applying
 
 
-def _make_dirs(directory: Path, created: list[str], journal: Any = None) -> None:
-    """mkdir -p, recording each directory we actually create (outermost first). (``journal``: no longer used.)"""
+def _make_dirs(directory: Path, created: list[str]) -> None:
+    """mkdir -p, recording each directory we actually create (outermost first)."""
     missing: list[Path] = []
     d = directory
     while not _exists(d):
@@ -1447,12 +1448,7 @@ def _remove_empty_dirs(candidates: Iterable[Path], root: Path, protected: set[st
     return removed
 
 
-def _is_cancelled(cancel: Any) -> bool:
-    if cancel is None:
-        return False
-    if hasattr(cancel, "is_set"):
-        return bool(cancel.is_set())
-    return bool(cancel())
+_is_cancelled = is_cancelled           # (others call it as ``organiser._is_cancelled``)
 
 
 def _cycle_member(blocked: list[RenameOp]) -> Optional[RenameOp]:
@@ -1693,6 +1689,73 @@ def recover_leftovers(root: Path, keep_dirs: Iterable[str] = ()) -> dict[str, An
                 except (OSError, ValueError) as exc:
                     out["left"].append({"path": str(p), "reason": f"cannot be renamed back to {original.name}: {exc}"})
     return out
+
+
+class Placement:
+    """A converted file put in place of the files it replaces (its sources), shared by every conversion (a cartridge dump, a disc to
+    a CHD): :meth:`commit` moves the checked new file to its name, then deletes the sources or keeps each in its new place;
+    :meth:`rollback` (after any failure) puts the sources back and takes the new file away again. (Through the public names below,
+    which are the seam tests patch.)"""
+
+    def __init__(self, dst: Path, created: list[str]) -> None:
+        self.dst = Path(dst)
+        self.created = created                      # the folders made so far (the job's), added to by what is kept
+        self.placed = False
+        self.moved: list[tuple[Path, Path]] = []
+
+    def commit(self, new: Path, op: Any) -> None:
+        """``new`` -> ``dst`` (never over a file). Then each ``(source, kept place)`` of ``op.moves`` is deleted (``op.delete_originals``:
+        the new file was checked, so from here on it stays whatever happens - a source that cannot be deleted, open elsewhere or
+        read-only, is left where it is and reported in ``op.left``; the deleted ones are in ``op.deleted``) or moved to its kept
+        place (``op.moves`` stays as it is, for the rollback)."""
+        move_exclusive(new, self.dst)
+        self.placed = True
+        for s, d in list(op.moves):
+            if op.delete_originals:
+                try:
+                    os.unlink(s)
+                    op.deleted.append(s)
+                except OSError as exc:
+                    op.left.append(f"{s}: {exc}")
+            else:
+                make_dirs(d.parent, self.created)
+                rename_no_overwrite(s, d)
+                self.moved.append((s, d))
+        if op.delete_originals:
+            op.moves = []
+
+    def rollback(self) -> None:
+        for s, d in list(reversed(self.moved)):
+            try:
+                rename_no_overwrite(d, s)
+                self.moved.remove((s, d))           # back in place: only what could not be restored stays listed
+            except (OSError, ValueError):
+                pass
+        if self.placed and not self.moved:
+            try:
+                os.unlink(self.dst)
+            except OSError:
+                pass
+
+
+def discard_part(path: Path, strict: bool = False) -> None:
+    """Remove the half-written ``.part`` file of a conversion (never a link). A leftover of a crashed run is removed before the new one
+    is written (``strict``: a file that cannot be removed is an error); what a failed or cancelled run left, afterwards (never an
+    error)."""
+    try:
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+    except OSError:
+        if strict:
+            raise
+
+
+def tidy_after(root: Path, parents: Iterable[Path], created: Iterable[str], protected: set[str]) -> list[str]:
+    """The end of a job that moved or deleted files: the folders it emptied (``parents`` of what it moved) and those it made and left
+    empty go. Returns the removed folders that were there before the job (one it made itself is no change)."""
+    made = list(created)
+    gone = remove_empty_dirs([*parents, *(Path(c) for c in made)], root, protected)
+    return [d for d in gone if d not in set(made)]
 
 
 # --------------------------------------------------------------------------- public aliases

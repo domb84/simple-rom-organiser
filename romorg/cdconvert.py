@@ -362,13 +362,11 @@ def _convert_one(op: CdConvertOp, root: Path, created: list[str], progress: Opti
     chdtool.check_space(op.dst.parent, op.raw_bytes * (2 if op.archive else 1))
     new = op.dst.with_name(op.dst.name + PART_SUFFIX)
     unpacked: Optional[Path] = None
-    placed = False
-    moved: list[tuple[Path, Path]] = []
+    place = organiser.Placement(op.dst, created)
     label = op.rom_name
     is_cancelled = lambda: organiser._is_cancelled(cancel)  # noqa: E731
     try:
-        if new.is_file() and not new.is_symlink():
-            new.unlink()                      # a leftover of a crashed run (our own distinctive name)
+        organiser.discard_part(new, strict=True)          # a leftover of a crashed run (our own distinctive name)
         sheet = Path(op.sheet)
         if op.archive:
             if prepared is not None:
@@ -401,43 +399,15 @@ def _convert_one(op: CdConvertOp, root: Path, created: list[str], progress: Opti
             raise chdtool.ChdmanError("cancelled", cancelled=True) from None
         if not matches_game(got, op.roms):
             raise chdtool.ChdmanError("verification failed: the new CHD does not rebuild the DAT's files - nothing was changed")
-        organiser.move_exclusive(new, op.dst)
-        placed = True
-        if op.delete_originals:
-            # the originals are deleted: the CHD was checked against the DAT above. From here on the CHD stays whatever happens: an
-            # original that cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to roll back
-            for s, _d in op.moves:
-                try:
-                    os.unlink(s)
-                    op.deleted.append(s)
-                except OSError as exc:
-                    op.left.append(f"{s}: {exc}")
-            op.moves = []
-        for s, d in op.moves:                 # keep the originals: each moves to _converted_originals/
-            organiser.make_dirs(d.parent, created)
-            organiser.rename_no_overwrite(s, d)
-            moved.append((s, d))
+        # the CHD was checked against the DAT: placed, and the originals deleted or kept in _converted_originals/
+        place.commit(new, op)
     except BaseException:
-        for s, d in list(reversed(moved)):    # roll back: originals back, new CHD removed
-            try:
-                organiser.rename_no_overwrite(d, s)
-                moved.remove((s, d))
-            except (OSError, ValueError):
-                pass
-        if placed and not moved:
-            try:
-                os.unlink(op.dst)
-            except OSError:
-                pass
+        place.rollback()
         raise
     finally:
         if unpacked is not None:
             shutil.rmtree(unpacked, ignore_errors=True)
-        try:
-            if new.is_file() and not new.is_symlink():
-                new.unlink()                   # failed / cancelled: no half-written CHD stays behind
-        except OSError:
-            pass
+        organiser.discard_part(new)                    # failed / cancelled: no half-written CHD stays behind
 
 
 def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional[ProgressFn] = None, cancel: Any = None,
@@ -477,16 +447,9 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
                 failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
             except (OSError, ValueError, chdlib.ChdError) as exc:
                 failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
-        protected = organiser.protected_dirs(root, [], set())
-        sources = ([Path(s).parent for op in converted for s, _d in op.moves] + [Path(s).parent for op in converted for s in op.deleted]
-                   + [Path(c) for c in created])
-        mine = set(created)
-        for d in organiser.remove_empty_dirs(sources, root, protected):
-            if d in mine:
-                created.remove(d)
-                mine.discard(d)
-            else:
-                removed.append(d)
+        removed += organiser.tidy_after(root, [Path(s).parent for op in converted for s, _d in op.moves]
+                                        + [Path(s).parent for op in converted for s in op.deleted], created,
+                                        organiser.protected_dirs(root, [], set()))
     finally:
         for fut in ahead.values():                     # (unpacked ahead for discs that were not converted: their work folders go)
             fut.cancel()

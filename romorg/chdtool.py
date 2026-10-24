@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from . import bundle, tempspace, winproc
+from .cancellation import is_cancelled
 
 TEMP_PREFIX = ".romorg-chd-"
 ENV_VAR = "ROMORG_CHDMAN"
@@ -422,7 +423,7 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
     done_reading = False
     last_pct = -1.0
     while not done_reading:
-        if cancel is not None and (cancel.is_set() if hasattr(cancel, "is_set") else cancel()):
+        if is_cancelled(cancel):
             cancelled = True
             _terminate(proc)
             break
@@ -622,7 +623,7 @@ def hash_range(path: Path, offset: int, size: int, progress: Optional[Callable[[
     with open(path, "rb") as f:
         f.seek(offset)
         while left > 0:
-            if cancel is not None and (cancel.is_set() if hasattr(cancel, "is_set") else cancel()):
+            if is_cancelled(cancel):
                 raise ChdmanError("cancelled", cancelled=True)
             block = f.read(min(1 << 20, left))
             if not block:

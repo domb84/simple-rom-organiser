@@ -16,13 +16,13 @@ list knows. It also lists the installs whose ReadMe does not say they take the g
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from . import paths
 
 __all__ = ["path", "key_of", "is_ready", "level", "known", "archive", "release", "has_install", "leaves_manual", "record", "load",
            "clear_cache"]
@@ -34,8 +34,7 @@ _CACHE: dict[str, tuple[Any, dict[str, Any]]] = {}
 
 
 def path() -> Path:
-    from .paths import data_dir
-    return data_dir() / "whdinstalls" / "ready.json"
+    return paths.data_dir() / "whdinstalls" / "ready.json"
 
 
 def key_of(names: Iterable[str]) -> str:
@@ -265,10 +264,7 @@ def record(rows: dict[str, dict[str, Any]]) -> None:
         now = time.time()
         for k, v in rows.items():
             sets[k] = {**v, "at": now}
-        fd, tmp = tempfile.mkstemp(prefix=".ready-", dir=p.parent)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"sets": sets}, fh, ensure_ascii=False)
-        os.replace(tmp, p)
+        paths.atomic_write(p, json.dumps({"sets": sets}, ensure_ascii=False), ".ready-")
         _CACHE.pop(str(p), None)
 
 

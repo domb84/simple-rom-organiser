@@ -21,9 +21,9 @@ import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from . import winproc
+from . import emudata, winproc
 
 __all__ = ["Ps2Save", "detect_pcsx2", "read_serial", "serial_from_cnf", "save_serial", "find_cards", "find_states", "read_card_image",
            "parse_game_index", "ini_value", "PS2_DISC_EXTS"]
@@ -211,23 +211,6 @@ def save_serial(dirname: str) -> str:
     return m.group(1) if m else ""
 
 
-def _measure(folder: Path) -> Tuple[int, int, float]:
-    files = total = 0
-    newest = 0.0
-    for dirpath, _dirs, names in os.walk(folder):
-        for name in names:
-            if name.startswith("_pcsx2_"):                                       # (PCSX2's own bookkeeping, not part of the save)
-                continue
-            try:
-                st = (Path(dirpath) / name).stat()
-            except OSError:
-                continue
-            files += 1
-            total += st.st_size
-            newest = max(newest, st.st_mtime)
-    return files, total, newest
-
-
 def find_cards(cards: Iterable[Path]) -> List[Ps2Save]:
     """The saves of the given memory cards: folder cards (a save = a folder in it) and card images."""
     out: List[Ps2Save] = []
@@ -239,7 +222,7 @@ def find_cards(cards: Iterable[Path]) -> List[Ps2Save]:
             except OSError:
                 continue
             for folder in saves:
-                files, total, newest = _measure(folder)
+                files, total, newest, _ = emudata.measure(folder, skip_prefix="_pcsx2_")      # (PCSX2's own bookkeeping is not part of the save)
                 out.append(Ps2Save("save", save_serial(folder.name), folder.name, folder, card.name, files, total, newest))
         elif card.is_file():
             out.extend(read_card_image(card))
@@ -390,21 +373,22 @@ def read_card_image(path: Path) -> List[Ps2Save]:
 
 
 # --------------------------------------------------------------------------- where PCSX2 is
+def _ini_values(ini: Path, section: str, key: str) -> Iterator[str]:
+    """Every value of ``key`` in ``[section]`` of a PCSX2 ini, in file order (an empty one too)."""
+    current = ""
+    for line in emudata.read_lines(ini):
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+        elif current == section and "=" in line:
+            k, _sep, v = line.partition("=")
+            if k.strip() == key:
+                yield v.strip()
+
+
 def ini_value(ini: Path, section: str, key: str) -> str:
     """``key`` of ``[section]`` in a PCSX2 ini ("" when absent)."""
-    current = ""
-    try:
-        for line in Path(ini).read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                current = line[1:-1]
-            elif current == section and "=" in line:
-                k, _sep, v = line.partition("=")
-                if k.strip() == key:
-                    return v.strip()
-    except OSError:
-        pass
-    return ""
+    return next(_ini_values(ini, section, key), "")
 
 
 def _resolve(root: Path, text: str, default: str) -> Path:
@@ -463,20 +447,7 @@ def detect_pcsx2(home: Optional[Path] = None, root: Optional[Path] = None) -> Di
 
 
 def _ini_lines(ini: Path, section: str, key: str) -> List[str]:
-    out: List[str] = []
-    current = ""
-    try:
-        for line in Path(ini).read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                current = line[1:-1]
-            elif current == section and "=" in line:
-                k, _sep, v = line.partition("=")
-                if k.strip() == key and v.strip():
-                    out.append(v.strip())
-    except OSError:
-        pass
-    return out
+    return [v for v in _ini_values(ini, section, key) if v]
 
 
 def parse_game_index(text: str) -> Dict[str, str]:

@@ -16,14 +16,10 @@ second, so :func:`native` is False and the self-check says so. ``ROMORG_NO_ZSTD=
 from __future__ import annotations
 
 import ctypes
-import ctypes.util
 import os
-import sys
-import threading
-from pathlib import Path
 from typing import Callable, List, Optional
 
-from . import bundle, zstddec
+from . import nativelib, zstddec
 
 __all__ = ["ZstdError", "available", "native", "decompress", "compress", "can_compress", "status", "reload"]
 
@@ -35,58 +31,9 @@ class ZstdError(Exception):
     """The data is not a valid Zstandard frame of the expected size."""
 
 
-_lock = threading.Lock()
-_tried = False
-_decode: Optional[Callable[[bytes, int], bytes]] = None
-_source: Optional[str] = None
-_note = ""
-
-
 def _candidates() -> List[str]:
-    out: List[str] = []
-    env = os.environ.get(ENV_LIB)
-    if env:
-        out.append(env)
-    d = bundle.lib_dir()
-    if d is not None:
-        try:
-            out += sorted(str(p) for p in d.glob("libzstd.so*") if p.is_file() or p.is_symlink())
-        except OSError:
-            pass
-    if sys.platform.startswith("win"):
-        folders = []
-        if getattr(sys, "frozen", False):
-            if getattr(sys, "_MEIPASS", None):
-                folders.append(Path(sys._MEIPASS))
-            folders.append(Path(sys.executable).resolve().parent)
-        folders += [Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd(),
-                    Path(__file__).resolve().parent.parent]
-        for folder in folders:
-            for sub in ("", "native"):
-                for name in ("libzstd.dll", "zstd.dll"):
-                    cand = folder / sub / name if sub else folder / name
-                    try:
-                        if cand.is_file():
-                            out.append(str(cand))
-                    except OSError:
-                        pass
-        out += ["libzstd.dll", "zstd.dll"]
-    found = ctypes.util.find_library("zstd")
-    if found:
-        out.append(found)
-    out += ["libzstd.so.1", "libzstd.so", "libzstd.1.dylib"]
-    for folder in ("/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/lib64", "/usr/local/lib",
-                   "/run/host/usr/lib", "/run/host/usr/lib64"):
-        try:
-            out += sorted(str(p) for p in Path(folder).glob("libzstd.so.*"))
-        except OSError:
-            pass
-    seen, uniq = set(), []
-    for c in out:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
+    return nativelib.candidates("libzstd", "zstd", ENV_LIB, names=("libzstd.so.1", "libzstd.so", "libzstd.1.dylib"),
+                                win_names=("libzstd.dll", "zstd.dll"))
 
 
 def _stdlib() -> Optional[Callable[[bytes, int], bytes]]:
@@ -161,15 +108,11 @@ def _find() -> tuple:
     return None, None, "libzstd not found" + (f" ({errors[0]})" if errors else "")
 
 
+_once = nativelib.Once(lambda: _find())          # (decoder, where it comes from, note)
+
+
 def _load() -> Optional[Callable[[bytes, int], bytes]]:
-    global _tried, _decode, _source, _note
-    if _tried:
-        return _decode
-    with _lock:
-        if not _tried:
-            _decode, _source, _note = _find()
-            _tried = True               # last: another thread must never see "tried" before the result is there
-        return _decode
+    return _once.get()[0]
 
 
 def native() -> bool:
@@ -185,15 +128,13 @@ def available() -> bool:
 def status() -> dict:
     """``{"available": True, "native": bool, "library": "compression.zstd" | path | None, "note": why not
     native}``."""
-    _load()
-    return {"available": True, "native": _decode is not None, "library": _source, "note": _note}
+    decode, source, note = _once.get()
+    return {"available": True, "native": decode is not None, "library": source, "note": note}
 
 
 def reload() -> None:
     """Forget what was loaded (tests that change the environment)."""
-    global _tried, _decode, _source, _note
-    with _lock:
-        _tried, _decode, _source, _note = False, None, None, ""
+    _once.reset()
 
 
 def can_compress() -> bool:
@@ -205,7 +146,7 @@ def compress(data: bytes, level: int = 3) -> bytes:
     """One Zstandard frame holding ``data`` (what chdman's ``zstd`` / ``cdzs`` codecs store)."""
     fn = _load()
     if fn is None:
-        raise ZstdError(_note or "no Zstandard library")
+        raise ZstdError(_once.get()[2] or "no Zstandard library")
     return fn.compress(data, level)     # type: ignore[attr-defined]
 
 

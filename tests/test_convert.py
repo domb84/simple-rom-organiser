@@ -7,7 +7,6 @@ import tempfile as _tempfile
 _os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
 
 import hashlib
-import json
 import random
 import tempfile
 import unittest

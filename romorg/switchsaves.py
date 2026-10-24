@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from . import emudata
+
 __all__ = ["SwitchSave", "find_eden", "find_ryujinx", "group_by_title", "read_extra_data", "read_ini_value", "detect_eden", "detect_ryujinx", "eden_game_dirs", "SAVE_TYPES"]
 
 _HEX16 = re.compile(r"^[0-9A-Fa-f]{16}$")
@@ -47,27 +49,6 @@ class SwitchSave:
                 "files": self.files, "bytes": self.bytes, "mtime": self.mtime, "save_id": self.save_id}
 
 
-def _measure(folder: Path) -> Tuple[int, int, float, Tuple[Tuple[str, int], ...]]:
-    files = 0
-    total = 0
-    newest = 0.0
-    listing = []
-    for dirpath, _dirs, names in os.walk(folder):
-        for name in names:
-            p = Path(dirpath) / name
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            files += 1
-            total += st.st_size
-            newest = max(newest, st.st_mtime)
-            listing.append((p.relative_to(folder).as_posix(), st.st_size))
-    listing.sort()
-    return files, total, newest, tuple(listing)
-
-
-# --------------------------------------------------------------------------- Eden / yuzu
 def find_eden(nand: Path) -> List[SwitchSave]:
     """Every game save under ``<nand>/user/save/0000000000000000``."""
     base = Path(nand) / "user" / "save" / "0000000000000000"
@@ -83,7 +64,7 @@ def find_eden(nand: Path) -> List[SwitchSave]:
             continue
         device = int(user.name, 16) == 0
         for title in titles:
-            files, total, newest, listing = _measure(title)
+            files, total, newest, listing = emudata.measure(title, listing=True)
             out.append(SwitchSave("eden", title.name.upper(), "" if device else user.name.upper(), "device" if device else "account",
                                   title, files, total, newest, listing=listing))
     return out
@@ -120,7 +101,7 @@ def find_ryujinx(data: Path) -> List[SwitchSave]:
         title, user, kind = attr
         if int(title, 16) == 0:
             continue
-        files, total, newest, listing = _measure(committed)
+        files, total, newest, listing = emudata.measure(committed, listing=True)
         zero = int(user, 16) == 0
         out.append(SwitchSave("ryujinx", title, "" if zero else user, SAVE_TYPES.get(kind, str(kind)), committed, files, total,
                               newest, save_id=folder.name, listing=listing))
@@ -140,27 +121,21 @@ def group_by_title(*lists: Iterable[SwitchSave]) -> Dict[str, List[SwitchSave]]:
 # --------------------------------------------------------------------------- where the emulators keep things
 def read_ini_value(path: Path, key: str) -> str:
     """``key=value`` from a Qt ``.ini`` (the first line with exactly that key), or ""."""
-    try:
-        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
-            k, sep, v = line.partition("=")
-            if sep and k.strip() == key:
-                return v.strip()
-    except OSError:
-        pass
+    for line in emudata.read_lines(path):
+        k, sep, v = line.partition("=")
+        if sep and k.strip() == key:
+            return v.strip()
     return ""
 
 
 def eden_game_dirs(ini: Path) -> List[str]:
     """The game folders in Eden's ``qt-config.ini`` (``Paths\\gamedirs\\N\\path``; SDMC / UserNAND / SysNAND are not folders)."""
     out: List[str] = []
-    try:
-        for line in Path(ini).read_text(encoding="utf-8", errors="replace").splitlines():
-            key, sep, value = line.partition("=")
-            key = key.strip()
-            if sep and key.startswith("Paths\\gamedirs\\") and key.endswith("\\path") and value.strip() not in ("SDMC", "UserNAND", "SysNAND", ""):
-                out.append(value.strip())
-    except OSError:
-        pass
+    for line in emudata.read_lines(ini):
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key.startswith("Paths\\gamedirs\\") and key.endswith("\\path") and value.strip() not in ("SDMC", "UserNAND", "SysNAND", ""):
+            out.append(value.strip())
     return out
 
 

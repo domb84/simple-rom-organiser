@@ -9,7 +9,6 @@ import os
 import sys
 import threading
 import unittest
-import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 

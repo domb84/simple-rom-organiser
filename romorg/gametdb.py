@@ -17,7 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from . import meter
+from . import cancellation, kept, meter
+from .kept import USER_AGENT
 
 OPTIONAL = ("wiiu_nointro",)
 __all__ = ["URLS", "OPTIONAL", "nointro_names", "better_names", "WIIU_DAT", "build_dat", "GameTdb", "db_path", "db_info", "build", "check_update", "download_and_build", "MAX_AGE_DAYS"]
@@ -28,7 +29,6 @@ URLS = {"wiiu": "https://www.gametdb.com/wiiutdb.txt",
         "wiiu_nointro": "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/Nintendo%20-%20Wii%20U%20(Digital).dat",
         "wiiu_xml": "https://www.gametdb.com/wiiutdb.zip",       # the same list with the type (disc / eShop / Virtual Console), region and languages
         "ps2": "https://raw.githubusercontent.com/PCSX2/pcsx2/master/bin/resources/GameIndex.yaml"}   # (PCSX2's own serial list)
-USER_AGENT = "simple-rom-organiser"
 WIIU_DAT = "Nintendo - Wii U"          # the DAT made from GameTDB's list: Redump has none for the Wii U (no checksums, a catalogue of the games)
 MAX_AGE_DAYS = 3
 ProgressFn = Callable[[int, int, str], None]
@@ -39,30 +39,13 @@ def db_path() -> Path:
     return data_dir() / "nintendo" / "gametdb.sqlite"
 
 
-class GameTdb:
+class GameTdb(kept.ReadOnlyDb):
     """Read access (a missing file is an empty database)."""
 
+    probe = "SELECT 1 FROM names LIMIT 1"
+
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path = Path(path) if path else db_path()
-        self.conn: Optional[sqlite3.Connection] = None
-        if self.path.is_file():
-            try:
-                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
-                self.conn.execute("SELECT 1 FROM names LIMIT 1")
-            except sqlite3.Error:
-                self.close()
-
-    @property
-    def available(self) -> bool:
-        return self.conn is not None
-
-    def close(self) -> None:
-        if self.conn is not None:
-            try:
-                self.conn.close()
-            except sqlite3.Error:
-                pass
-            self.conn = None
+        super().__init__(Path(path) if path else db_path())
 
     def name(self, kind: str, game_id: str) -> str:
         """The official title of a disc ID (``kind``: ``wii`` | ``gc`` | ``wiiu``); "" when unknown. A 6-character ID is tried first,
@@ -284,7 +267,7 @@ def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = 
             made = 0
         if not made:
             return {"status": "update_available"}                # (a list fetched before the DAT existed: fetch it again)
-    if gate and (now if now is not None else time.time()) - float(info.get("fetched_at") or 0) < MAX_AGE_DAYS * 86400:
+    if kept.is_fresh(info, MAX_AGE_DAYS, gate, now):
         return {"status": "up_to_date", "skipped": True}
     return {"status": "update_available"}
 
@@ -296,8 +279,7 @@ def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None
     files: Dict[str, Path] = {}
     try:
         for kind, url in URLS.items():
-            if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-                raise InterruptedError("cancelled")
+            cancellation.check(cancel)
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
             try:
                 with urllib.request.urlopen(req, timeout=60) as resp:

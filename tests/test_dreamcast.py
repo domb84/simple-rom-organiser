@@ -20,24 +20,11 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
+tree = T.tree  # noqa: E402  (the sha1 of every file below a folder)
 from romorg import chd as chdlib  # noqa: E402
 from romorg import chdtool, datfile, discsys, dreamcast, library, organiser, platforms  # noqa: E402
 
 DAT = "Sega - Dreamcast"
-
-
-def tree(root: Path) -> dict[str, str]:
-    """{relative path: sha1 or 'DIR'} of everything below root (hidden undo logs excluded)."""
-    out: dict[str, str] = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        for d in dirnames:
-            out[(Path(dirpath) / d).relative_to(root).as_posix()] = "DIR"
-        for f in filenames:
-            if f.startswith(".romorg-undo-"):
-                continue
-            p = Path(dirpath) / f
-            out[p.relative_to(root).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
-    return out
 
 
 class World:

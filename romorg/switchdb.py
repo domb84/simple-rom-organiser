@@ -27,7 +27,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
-from . import meter
+from . import cancellation, kept, meter
+from .kept import USER_AGENT
 
 __all__ = ["SWITCH_DAT", "SWITCH_DATS", "SWITCH_UPDATES_DAT", "SWITCH_DLC_DAT", "VERSIONS_URL", "REGION_FILES", "build_dat", "TITLES_URL", "CNMTS_URL", "SwitchDb", "db_path", "db_info", "build", "download", "update", "check_update",
            "download_and_build", "MAX_AGE_DAYS"]
@@ -37,7 +38,6 @@ MAX_AGE_DAYS = 3        # a database younger than this is not even asked about (
 BASE_URL = "https://raw.githubusercontent.com/blawar/titledb/master/"
 TITLES_URL = BASE_URL + "US.en.json"
 CNMTS_URL = BASE_URL + "cnmts.json"
-USER_AGENT = "simple-rom-organiser"
 SWITCH_DAT = "Nintendo - Switch"        # made from the title database (no checksums): the games, a catalogue to have / miss against
 SWITCH_UPDATES_DAT = "Nintendo - Switch (Updates)"
 SWITCH_DLC_DAT = "Nintendo - Switch (DLC)"
@@ -62,30 +62,13 @@ def db_path() -> Path:
     return data_dir() / "switch" / "titles.sqlite"
 
 
-class SwitchDb:
+class SwitchDb(kept.ReadOnlyDb):
     """Read access to the title database (a missing file is an empty database)."""
 
+    probe = "SELECT 1 FROM titles LIMIT 1"
+
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path = Path(path) if path else db_path()
-        self.conn: Optional[sqlite3.Connection] = None
-        if self.path.is_file():
-            try:
-                self.conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
-                self.conn.execute("SELECT 1 FROM titles LIMIT 1")
-            except sqlite3.Error:
-                self.close()
-
-    @property
-    def available(self) -> bool:
-        return self.conn is not None
-
-    def close(self) -> None:
-        if self.conn is not None:
-            try:
-                self.conn.close()
-            except sqlite3.Error:
-                pass
-            self.conn = None
+        super().__init__(Path(path) if path else db_path())
 
     def info(self) -> Dict[str, Any]:
         """``{available, titles, ncas, fetched, source}``."""
@@ -348,8 +331,7 @@ def download(url: str, dest: Path, progress: Optional[ProgressFn] = None, cancel
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while True:
-            if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-                raise InterruptedError("cancelled")
+            cancellation.check(cancel)
             chunk = resp.read(1 << 18)
             if not chunk:
                 break
@@ -405,7 +387,7 @@ def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = 
             made = 0
         if not made:
             return {"status": "update_available"}                    # (a database built before it held the catalogue: fetch it again)
-    if gate and (now if now is not None else time.time()) - float(info.get("fetched_at") or 0) < MAX_AGE_DAYS * 86400:
+    if kept.is_fresh(info, MAX_AGE_DAYS, gate, now):
         return {"status": "up_to_date", "skipped": True}
     try:
         remote = {"titles": _head_etag(TITLES_URL, timeout), "cnmts": _head_etag(CNMTS_URL, timeout),

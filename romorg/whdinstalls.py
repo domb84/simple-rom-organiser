@@ -18,18 +18,15 @@ import json
 import os
 import re
 import tempfile
-import threading
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import meter
+from . import cancellation, kept, paths
 from .folders import WHDLOAD_MARKER
 
 BASE_URL = "https://www.whdload.de/games/"
 CATALOGUE_URL = BASE_URL + "all.html"
-USER_AGENT = "simple-rom-organiser"
 MAX_AGE_DAYS = 7
 MARKER = WHDLOAD_MARKER                  # in a downloaded install's folder: what it is (the scanner skips such a folder)
 FOLDER_SUFFIX = " (WHDLoad install)"
@@ -44,8 +41,7 @@ class WhdInstallError(Exception):
 
 
 def db_path() -> Path:
-    from .paths import data_dir
-    return data_dir() / "whdinstalls" / "installs.json"
+    return paths.data_dir() / "whdinstalls" / "installs.json"
 
 
 # --------------------------------------------------------------------------- the list
@@ -69,31 +65,12 @@ def parse_catalogue(text: str) -> list[dict[str, Any]]:
     return out
 
 
-_LOCK = threading.Lock()
-_CACHE: dict[str, tuple[Any, Optional[dict[str, Any]]]] = {}
+_KEPT = kept.KeptJson(lambda d: isinstance(d.get("installs"), list))
 
 
 def load(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """``{fetched, fetched_at, installs}`` of the kept list, or None (not fetched yet)."""
-    p = Path(path) if path else db_path()
-    try:
-        st = p.stat()
-    except OSError:
-        return None
-    sig = (st.st_mtime_ns, st.st_size)
-    with _LOCK:
-        hit = _CACHE.get(str(p))
-        if hit is not None and hit[0] == sig:
-            return hit[1]
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data.get("installs"), list):
-            data = None
-    except (OSError, ValueError, AttributeError):
-        data = None
-    with _LOCK:
-        _CACHE[str(p)] = (sig, data)
-    return data
+    return _KEPT.load(Path(path) if path else db_path())
 
 
 def db_info(path: Optional[Path] = None) -> dict[str, Any]:
@@ -106,44 +83,23 @@ def db_info(path: Optional[Path] = None) -> dict[str, Any]:
 
 def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = None, now: Optional[float] = None) -> dict[str, Any]:
     """``missing`` (fetch), ``up_to_date`` (younger than :data:`MAX_AGE_DAYS`), else ``update_available``."""
-    info = db_info(path)
-    if not info["available"]:
-        return {"status": "missing"}
-    if gate and (now if now is not None else time.time()) - info["fetched_at"] < MAX_AGE_DAYS * 86400:
-        return {"status": "up_to_date", "skipped": True}
-    return {"status": "update_available"}
-
-
-def _fetch(url: str, timeout: float = 60, opener: Optional[Callable[[Any], Any]] = None) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    resp = opener(req) if opener else urllib.request.urlopen(req, timeout=timeout)
-    try:
-        data = resp.read()
-    finally:
-        resp.close()
-    meter.add(len(data))
-    return data
+    return kept.check_age(db_info(path), MAX_AGE_DAYS, gate, now)
 
 
 def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None, out: Optional[Path] = None,
                        opener: Optional[Callable[[Any], Any]] = None) -> dict[str, int]:
     """Fetch the list of installs and keep it (atomic replace)."""
-    if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-        raise InterruptedError("cancelled")
+    cancellation.check(cancel)
     if progress:
         progress(0, 0, "WHDLoad installs: fetching the list")
-    text = _fetch(CATALOGUE_URL, opener=opener).decode("utf-8", "replace")
+    text = kept.fetch(CATALOGUE_URL, opener=opener).decode("utf-8", "replace")
     installs = parse_catalogue(text)
     if len(installs) < 100:
         raise WhdInstallError("the list of WHDLoad installs could not be read (the page has changed?)")
     out = Path(out) if out else db_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
     data = {"source": CATALOGUE_URL, "fetched": time.strftime("%Y-%m-%d", time.gmtime(now)), "fetched_at": now, "installs": installs}
-    fd, tmp = tempfile.mkstemp(prefix=".installs-", dir=out.parent)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False)
-    os.replace(tmp, out)
+    _KEPT.write(out, data, ".installs-")
     if progress:
         progress(1, 1, f"WHDLoad installs: {len(installs)} games")
     return {"installs": len(installs)}
@@ -459,10 +415,9 @@ def download_install(install: dict[str, Any], dest_dir: Path, game: str = "", op
     """Download ``install`` and unpack it into ``dest_dir / folder_name(install)`` (replacing an older download of it). The archive is
     checked first (an LhA archive, every file's CRC) - a page of the site instead of the file is never unpacked. Returns the folder."""
     from .lha import LhaError, LhaFile
-    if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-        raise InterruptedError("cancelled")
+    cancellation.check(cancel)
     url = BASE_URL + install["archive"]
-    data = _fetch(url, opener=opener)
+    data = kept.fetch(url, opener=opener)
     try:
         arc = LhaFile(data)
         files = [(e.name, arc.read(e)) for e in arc.entries if not e.is_dir]
@@ -501,16 +456,13 @@ def package(install: dict[str, Any], opener: Optional[Callable[[Any], Any]] = No
         return data, False
     except (OSError, LhaError):
         pass
-    data = _fetch(BASE_URL + install["archive"], opener=opener)
+    data = kept.fetch(BASE_URL + install["archive"], opener=opener)
     try:
         LhaFile(data)
     except LhaError as exc:
         raise WhdInstallError(f"{install['archive']} is not a readable install archive ({exc})") from None
     cache.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".pkg-", dir=cache.parent)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    os.replace(tmp, cache)
+    paths.atomic_write(cache, data, ".pkg-")
     return data, True
 
 
@@ -533,14 +485,11 @@ def xfd_package(opener: Optional[Callable[[Any], Any]] = None) -> bytes:
             return data
     except OSError:
         pass
-    data = _fetch(XFD_URL, opener=opener)
+    data = kept.fetch(XFD_URL, opener=opener)
     if not good(data):
         raise WhdInstallError("the XFD package from Aminet is not what it should be (no xfdmaster.library in it)")
     cache.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".xfd-", dir=cache.parent)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    os.replace(tmp, cache)
+    paths.atomic_write(cache, data, ".xfd-")
     return data
 
 

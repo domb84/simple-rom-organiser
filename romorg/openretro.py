@@ -12,25 +12,20 @@ since the last sync id. Kept: the fields used here, ``openretro/amiga.json.gz`` 
 
 from __future__ import annotations
 
-import gzip
 import json
-import os
 import re
 import struct
-import tempfile
 import threading
 import time
-import urllib.request
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import meter
+from . import cancellation, kept
 
 __all__ = ["SYNC_URL", "db_path", "load", "db_info", "check_update", "download_and_build", "parse_page", "Database", "database"]
 
 SYNC_URL = "https://openretro.org/api/sync/amiga/games?v=3&sync={sync}"
-USER_AGENT = "simple-rom-organiser"
 MAX_AGE_DAYS = 7
 PAGE_PAUSE = 0.5                                   # (between pages: a small site)
 
@@ -96,30 +91,12 @@ def _compact(data: dict[str, Any]) -> Optional[tuple[str, dict[str, Any]]]:
 
 _DISK_RE = re.compile(r"\.(?:adf|adz|ipf|dms|fdi|scp|raw|iso|cue|bin|img|ccd|chd)$", re.IGNORECASE)
 _LOCK = threading.Lock()
-_CACHE: dict[str, tuple[Any, Any]] = {}
+_KEPT = kept.KeptJson(lambda d: isinstance(d.get("variants"), dict) and isinstance(d.get("games"), dict), gz=True)
 
 
 def load(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """``{fetched, fetched_at, sync, games, variants}`` of the kept copy, or None (not fetched yet)."""
-    p = Path(path) if path else db_path()
-    try:
-        st = p.stat()
-    except OSError:
-        return None
-    sig = (st.st_mtime_ns, st.st_size)
-    with _LOCK:
-        hit = _CACHE.get(str(p))
-        if hit is not None and hit[0] == sig:
-            return hit[1]
-    try:
-        data = json.loads(gzip.decompress(p.read_bytes()))
-        if not isinstance(data.get("variants"), dict) or not isinstance(data.get("games"), dict):
-            data = None
-    except (OSError, ValueError, EOFError, AttributeError):
-        data = None
-    with _LOCK:
-        _CACHE[str(p)] = (sig, data)
-    return data
+    return _KEPT.load(Path(path) if path else db_path())
 
 
 def db_info(path: Optional[Path] = None) -> dict[str, Any]:
@@ -133,23 +110,7 @@ def db_info(path: Optional[Path] = None) -> dict[str, Any]:
 
 def check_update(timeout: float = 10, gate: bool = True, path: Optional[Path] = None, now: Optional[float] = None) -> dict[str, Any]:
     """``missing`` (fetch all), ``up_to_date`` (younger than :data:`MAX_AGE_DAYS`), else ``update_available`` (fetch what changed)."""
-    info = db_info(path)
-    if not info["available"]:
-        return {"status": "missing"}
-    if gate and (now if now is not None else time.time()) - info["fetched_at"] < MAX_AGE_DAYS * 86400:
-        return {"status": "up_to_date", "skipped": True}
-    return {"status": "update_available"}
-
-
-def _fetch(url: str, timeout: float, opener: Optional[Callable[[Any], Any]]) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    resp = opener(req) if opener else urllib.request.urlopen(req, timeout=timeout)
-    try:
-        data = resp.read()
-    finally:
-        resp.close()
-    meter.add(len(data))
-    return data
+    return kept.check_age(db_info(path), MAX_AGE_DAYS, gate, now)
 
 
 def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None, out: Optional[Path] = None,
@@ -162,11 +123,10 @@ def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None
     sync = int(old.get("sync") or 0)
     changed = pages = 0
     while True:
-        if cancel is not None and (cancel() if callable(cancel) else cancel.is_set()):
-            raise InterruptedError("cancelled")
+        cancellation.check(cancel)
         if progress:
             progress(pages, 0, f"OpenRetro: {len(games)} games, {len(variants)} releases")
-        recs = parse_page(_fetch(SYNC_URL.format(sync=sync), timeout, opener))
+        recs = parse_page(kept.fetch(SYNC_URL.format(sync=sync), timeout, opener))
         if not recs:
             break
         for sid, uid, data in recs:
@@ -185,11 +145,7 @@ def download_and_build(progress: Optional[ProgressFn] = None, cancel: Any = None
     now = time.time()
     data = {"source": SYNC_URL.split("?")[0], "fetched": time.strftime("%Y-%m-%d", time.gmtime(now)), "fetched_at": now,
             "sync": sync, "games": games, "variants": variants}
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".openretro-", dir=out.parent)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(gzip.compress(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode(), 6, mtime=0))
-    os.replace(tmp, out)
+    _KEPT.write(out, data, ".openretro-")
     if progress:
         progress(1, 1, f"OpenRetro: {len(games)} games, {len(variants)} releases")
     return {"games": len(games), "variants": len(variants), "changed": changed}

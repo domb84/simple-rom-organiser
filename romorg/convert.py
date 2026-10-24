@@ -560,12 +560,8 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
     if progress is not None and not cancelled:
         progress(total, total, "")
 
-    protected = organiser.protected_dirs(root, [], {op.dat for op in todo if op.dat})
-    sources = [op.src.parent for op in converted] + [Path(c) for c in created]
-    mine = set(created)
-    for d in organiser.remove_empty_dirs(sources, root, protected):
-        if d not in mine:
-            removed.append(d)
+    removed += organiser.tidy_after(root, [op.src.parent for op in converted], created,
+                                    organiser.protected_dirs(root, [], {op.dat for op in todo if op.dat}))
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": None,
             "repacked": sum(1 for op in converted if op.repack), "deleted": sum(1 for op in converted if op.deleted),
             "not_deleted": [op.left for op in converted if op.left]}

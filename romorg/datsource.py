@@ -12,13 +12,12 @@ import hashlib
 import http.client
 import json
 import os
-import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
-from . import __version__
+from . import __version__, paths
 from .tosec import Cancelled, CancelToken, DatInfo
 
 __all__ = ["CHUNK", "TIMEOUT", "MANIFEST", "USER_AGENT", "ProgressFn", "Opener", "PathLike", "now", "unlink", "norm_etag",
@@ -71,17 +70,7 @@ def read_manifest(folder: Path) -> dict[str, Any]:
 
 
 def write_manifest(folder: Path, data: dict[str, Any]) -> None:
-    fd, tmp = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=str(folder))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False, sort_keys=True)
-        os.replace(tmp, folder / MANIFEST)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    paths.atomic_write(folder / MANIFEST, json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True), ".manifest-")
 
 
 def list_dats(folder: Path, pattern: Any, header_first: bool) -> list[DatInfo]:

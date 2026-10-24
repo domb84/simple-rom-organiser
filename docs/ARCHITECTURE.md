@@ -3548,3 +3548,41 @@ extension. The Overview card says *found*, the Library card *kept*.
   rows with Restore in their details, "Restore N missing games from the archive".
 * Fixes of the review: name checks against the bucket use a set of folder prefixes (were O(objects) each); a restore path from metadata
   is kept inside the ROM folder; a multipart upload reads the file once less; restoring a disc game's folder expands to its files.
+
+
+**AMENDMENT 68 (v0.4) — One copy of what the platforms shared (a duplicate-code pass; no behaviour change).**
+Found with an AST scan of functions with equal or near-equal bodies, the same name defined in several modules, and a 7-line clone
+detector; each merge was made only where the copies were the same code.
+* `nativelib.py`: the search for an optional native library (`candidates`: env variable, bundled folder, Windows app folders,
+  `find_library`, well-known names, system folders, de-duplicated; `app_folders`) and `Once` (try once on first use, any thread, until
+  `reset`). `flacnative`, `zstdnative` (45-line `_candidates` each) and `nativeflac` use it; their `_candidates()` stay as thin wrappers
+  (tests patch them).
+* `organiser.Placement` / `discard_part` / `tidy_after`: the end of every conversion - the checked new file put in place, the originals
+  deleted or kept in `_converted_originals/`, a roll-back on any failure, the `.part` file removed, the emptied folders pruned. `discsys`
+  (Dreamcast, PlayStation, PlayStation 2), `cdconvert` (CD32 / CDTV) and `convert` (cartridge dumps) had the same tail each. `Placement`
+  calls the public `organiser.rename_no_overwrite` etc. on purpose: tests patch those names.
+* `kept.py` + `paths.atomic_write`: a list fetched from a website and kept in one file (`fetch`, the age gate `is_fresh` / `check_age`,
+  `KeptJson` = validated, remembered JSON / gzip-JSON, `ReadOnlyDb` = the read-only SQLite base of `GameTdb` and `SwitchDb`).
+  `openretro` and `whdinstalls` were two copies of each other. `atomic_write` (temp file, rename, temp removed on any failure) replaces
+  eight of the nine hand-written versions (some of which left their temp file behind on an error; `scancache` streams a pickle and
+  keeps its own). Side effect: `config.json` is now written with
+  LF line ends on Windows too (it was written in text mode).
+* `cancellation.is_cancelled` / `check`: "an Event or a function says stop" was written out in thirteen places (`organiser`, `scanner`,
+  `switchverify`, `chdtool`, `discsys`, `whdbuild`, and five catalogue downloads); the private names stay as aliases.
+* `emudata.measure` / `read_lines`: `nintendosaves`, `pcsx2` and `switchsaves` each counted a save folder's files and read an ini file the
+  same way; `pcsx2` has one ini walker under `ini_value` and `_ini_lines`.
+* Smaller: `discsys.sheet_track_files` is `sheet_track_names` plus the folder (same parsing, written twice); `tags._tags` builds the
+  result of both name styles; `cdimage.swap16` is the one byte-pair swap (`chd` used a copy); `server._ra_required` (six identical
+  guards); `server.DEFAULT_PLATFORM`; `chdtestlib.tree` (two test copies).
+* Looked at and left alone, with the reason: the two `parse_gdi`s (`cdimage`: chdman 0.289's strict, typed reading; `chdtool`: dict rows
+  for chdman's command line), the five `_rel`s (five different return shapes), `crc16` x3 (three different CRCs), `norm_title` x2 (two
+  different normalisations), `_terminate` x2 (SIGKILL vs SIGTERM then wait), the two hash caches (different tables and look-ups), the DAT
+  sources (already one engine, `datsource`), Dreamcast / PlayStation (already one engine, `discsys`).
+* Not done, for lack of a way to test it here: three file movers exist with different features - `sortroot.move_path` (rename, a copy
+  only across drives, folders, retries), `organiser._move_exclusive` (hard link + unlink, never replaces) and `retroarch._move` (the
+  same plus the case-only rename and the cross-drive copy) - with Windows read-only-attribute handling in `organiser._unlink_linked`,
+  `retroarch._unlink` and `sortroot.remove_file`. One mover would remove several dozen lines (`retroarch._move`, `_unlink`, `_discard`, `_cross_device` alone are about seventy), but those paths are Windows-only and
+  skipped on the Deck: do it where `tests/test_retroarch_windows.py` and the Windows cases of `test_sortroot` / `test_organiser` run.
+* Also not merged: where a platform's facts live. Its name appears as a key in `savecarry` (which saves convert), `emulators`,
+  `keyfiles`, `ratings` (LaunchBox names) and `igdb`, next to `platforms.py`'s own definition. Moving them onto `Platform` would put
+  everything about a system in one place; it is a redesign of five tables, not a clean-up.

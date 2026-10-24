@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Container, Iterable, Optional, Sequence, Union
 
 from . import meter, multihash, sevenzip, winproc
+from .cancellation import is_cancelled
 from .datfile import archive_stem, unit_key
 
 if TYPE_CHECKING:  # avoid a hard runtime dependency; only duck-typed methods are used
@@ -1179,12 +1180,7 @@ def collect_files(root: Path, recursive: bool = True,
     return files
 
 
-def _is_cancelled(cancel: Any) -> bool:
-    if cancel is None:
-        return False
-    if hasattr(cancel, "is_set"):
-        return bool(cancel.is_set())
-    return bool(cancel())
+_is_cancelled = is_cancelled
 
 
 # --------------------------------------------------------------------------- scan

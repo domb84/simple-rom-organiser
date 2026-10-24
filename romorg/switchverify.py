@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 from . import meter, switchfmt
+from .cancellation import is_cancelled
 
 __all__ = ["Verdict", "verify_file", "VerifyCache", "cache_path"]
 
@@ -42,8 +43,7 @@ def cache_path() -> Path:
     return data_dir() / "switch" / "verified.sqlite"
 
 
-def _is_cancelled(cancel: Any) -> bool:
-    return cancel is not None and (cancel() if callable(cancel) else cancel.is_set())
+_is_cancelled = is_cancelled
 
 
 def verify_file(path: Path, box: Optional[switchfmt.Container] = None, progress: Optional[ProgressFn] = None,

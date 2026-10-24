@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from typing import BinaryIO, Callable, Dict, Iterator, List, Optional, Tuple
 
 from . import cdecc, chdhuff, flacnative, zstdnative
+from .cdimage import swap16
 from .chdhuff import BitReader as _BitReader, Huffman as _HuffmanBase
 
 __all__ = ["Chd", "ChdError", "ChdUnsupported", "Track", "TrackHash", "hash_track", "plan_chunks",
@@ -284,13 +285,6 @@ def _flac_raw(comp: bytes, size: int) -> bytes:
     except flacnative.FlacError as exc:
         raise ChdError(f"corrupt FLAC data: {exc}") from exc
     return bytes(pcm)
-
-
-def _swap16(chunk) -> bytes:
-    b = bytearray(chunk)
-    b[0::2] = chunk[1::2]
-    b[1::2] = chunk[0::2]
-    return bytes(b)
 
 
 # --------------------------------------------------------------------------- headers / parents
@@ -1038,9 +1032,9 @@ class Chd:
         """Whole sectors of ``chunk`` (raw 2352-byte sectors of one track) as ``chdman extractcd`` writes them."""
         ssize, soff = track.sector_size, track.sector_offset
         if track.is_audio:
-            return chunk if swapped else _swap16(chunk)
+            return chunk if swapped else swap16(chunk)
         if swapped:
-            chunk = _swap16(chunk)
+            chunk = swap16(chunk)
         if ssize == CD_SECTOR:
             return chunk
         n = len(chunk) // CD_SECTOR

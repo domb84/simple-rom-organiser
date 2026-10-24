@@ -370,9 +370,9 @@ def check_windows_package(dirs: List[Path], require_native: bool = False) -> Lis
 # AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
 # modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
 APP_MODULES = (
-    "adf", "alttitles", "amigados", "whdbuild", "amigahw", "amigainstall", "autoupdate", "bundle", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
-    "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
-    "bios", "biosdata", "cdconvert", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "keyfiles", "lha", "libexport", "library", "lzx", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
+    "adf", "alttitles", "amigados", "whdbuild", "amigahw", "amigainstall", "autoupdate", "bundle", "cancellation", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
+    "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "emudata", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
+    "bios", "biosdata", "cdconvert", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "kept", "keyfiles", "lha", "libexport", "library", "lzx", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nativelib", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "s3", "s3archive", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",

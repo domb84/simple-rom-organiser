@@ -355,14 +355,20 @@ def _parse_nointro(name: str) -> Tags:
         if text in _VIDEO_TAGS and not explicit_video:
             explicit_video = _VIDEO_TAGS[text]
         flags.append(text)
+    return _tags(STYLE_NOINTRO, title, regions, languages, version, status, flags, dump_flags, explicit_video)
+
+
+def _tags(style: str, title: str, regions: Any, languages: Any, version: str, status: str, flags: list, dump_flags: list,
+          explicit_video: str, **extra: Any) -> Tags:
+    """The :class:`Tags` of a parsed name, either style (``languages`` None: none was written, those of the regions are implied)."""
     implied = languages is None
-    langs_out = _implied_languages(regions) if implied else languages  # type: ignore[assignment]
+    langs_out = _implied_languages(regions) if implied else languages
     return Tags(
         title=title, regions=regions, languages=langs_out, languages_implied=implied,
         version=version, version_key=version_key(version), status=status, flags=tuple(flags),
         dump_flags=tuple(dump_flags), bad=any(_is_bad(f) for f in dump_flags),
         bios=any(f.upper() == "BIOS" for f in dump_flags),
-        video=_video_from(regions, explicit_video), style=STYLE_NOINTRO)
+        video=_video_from(regions, explicit_video), style=style, **extra)
 
 
 def _parse_tosec(name: str) -> Tags:
@@ -418,15 +424,8 @@ def _parse_tosec(name: str) -> Tags:
         if text in _VIDEO_TAGS and not explicit_video:
             explicit_video = _VIDEO_TAGS[text]
         flags.append(text)
-    implied = languages is None
-    langs_out = _implied_languages(regions) if implied else languages  # type: ignore[assignment]
-    return Tags(
-        title=title, regions=regions, languages=langs_out, languages_implied=implied,
-        version=version, version_key=version_key(version), status=status, flags=tuple(flags),
-        dump_flags=tuple(dump_flags), bad=any(_is_bad(f) for f in dump_flags),
-        bios=any(f.upper() == "BIOS" for f in dump_flags),
-        video=_video_from(regions, explicit_video), style=STYLE_TOSEC, date=date,
-        publisher=publisher)
+    return _tags(STYLE_TOSEC, title, regions, languages, version, status, flags, dump_flags, explicit_video,
+                 date=date, publisher=publisher)
 
 
 _TRAILING_DOT_RE = re.compile(r"(?<=[)\]])\.+$")

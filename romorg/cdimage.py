@@ -217,7 +217,8 @@ def gd_area_marker(line: str) -> str:
     return ""
 
 
-def _swap16(block: bytes) -> bytes:
+def swap16(block: bytes) -> bytes:
+    """``block`` with every pair of bytes swapped (audio stored big-endian <-> little-endian)."""
     b = bytearray(block)
     b[0::2] = block[1::2]
     b[1::2] = block[0::2]
@@ -227,7 +228,7 @@ def _swap16(block: bytes) -> bytes:
 def _as_frames(block: bytes, sector: int, swap: bool) -> bytes:
     """Sectors of ``sector`` bytes as 2448-byte frames."""
     if swap:
-        block = _swap16(block)
+        block = swap16(block)
     fill = bytes(FRAME - sector)
     return fill.join([block[i:i + sector] for i in range(0, len(block), sector)]) + fill
 

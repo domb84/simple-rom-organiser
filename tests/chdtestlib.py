@@ -821,6 +821,18 @@ def find_bash():
     return None
 
 
+def tree(root: Path) -> dict[str, str]:
+    """{relative path: sha1 of its content, or "DIR"} of everything below ``root``."""
+    out: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for d in dirnames:
+            out[(Path(dirpath) / d).relative_to(root).as_posix()] = "DIR"
+        for f in filenames:
+            p = Path(dirpath) / f
+            out[p.relative_to(root).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
+    return out
+
+
 def disable_native_flac(testcase) -> None:
     """Tests that count on the pure-Python decoder (slow enough to cancel, or the chdman policy) must not depend on
     whether this machine happens to have a libsndfile: switch it off here and in any worker process."""
