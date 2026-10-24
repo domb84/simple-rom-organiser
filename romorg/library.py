@@ -2651,7 +2651,7 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "changes, only the packing). Off: games stay as they are. For the systems whose RetroArch cores load .7z games.", [STYLE_NOINTRO])
     opt("delete_converted", "delete_converted", "Delete the originals after converting", True,
         "Off: the originals (the .iso, the zip, the cue and its tracks) go to _converted_originals, nothing is deleted. On: they are deleted "
-        "once the CHD has been checked against the database. Undo cannot bring a deleted original back.", [STYLE_REDUMP, STYLE_TOSEC])
+        "once the CHD has been checked against the database.", [STYLE_REDUMP, STYLE_TOSEC])
     opt("rescue", "rescue_only_dump", "Keep the only dump of an OS version", False,
         "Workbench / Kickstart disks: keep a disk that is excluded only because of [m], [o] or [u] "
         "when it is the sole dump of its version.", [STYLE_TOSEC])

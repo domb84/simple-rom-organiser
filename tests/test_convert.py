@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import hashlib
 import json
 import random
@@ -49,7 +53,7 @@ def sha1(p: Path) -> str:
 
 
 def tree(root: Path) -> dict[str, str]:
-    """rel path -> sha1 of every file (undo logs excluded)."""
+    """rel path -> sha1 of every file (old undo logs excluded)."""
     return {p.relative_to(root).as_posix(): sha1(p) for p in sorted(root.rglob("*"))
             if p.is_file() and not p.name.startswith(organiser.UNDO_PREFIX)}
 
@@ -180,7 +184,7 @@ class ConvertTests(ConvertFixtures):
                     if op.rom_name == "Alpha (USA).sfc")
         self.assertEqual(st, [("alpha.smc", "conflict"), ("alpha2.smc", "convert")])
 
-    def test_apply_and_undo_snes(self) -> None:
+    def test_apply_snes(self) -> None:
         r = self._snes_root()
         before = tree(r)
         res = self._scan(r, self.snes, ("snes_header",))
@@ -200,13 +204,7 @@ class ConvertTests(ConvertFixtures):
         self.assertTrue((r / "multi.zip").exists())
         self.assertFalse((r / "sub").exists())  # emptied by the move
         self.assertEqual(out["removed_dirs"], [str(r / "sub")])
-        # the undo log records move then create for each file
-        lines = [json.loads(x) for x in Path(out["undo_log"]).read_text().splitlines()]
-        ops_seq = [x.get("op") for x in lines[1:]]
-        self.assertEqual(ops_seq.count("create"), 4)
-        first = [x for x in lines if x.get("op") in ("move", "create")][:2]
-        self.assertEqual([x["op"] for x in first], ["move", "create"])
-        self.assertTrue(all("sha1" in x and "size" in x for x in lines if x.get("op") == "create"))
+        self.assertFalse([p for p in r.rglob(".romorg*")])                  # (no log, no journal, no temp file)
 
         # re-scan: clean files match raw, originals are not offered again
         res2 = self._scan(r, self.snes, ("snes_header",))
@@ -220,10 +218,6 @@ class ConvertTests(ConvertFixtures):
         self.assertEqual((s2["duplicates"], s2["to_rename"]), (0, 0))
         self.assertEqual(s2["matched_via"]["headerless"], 1)  # only multi.zip's member
         self.assertEqual(s2["correctly_placed"], s2["matched_files"] - 1)  # multi.zip can't be placed
-
-        undo = organiser.undo(Path(out["undo_log"]))
-        self.assertEqual(undo.get("created_removed"), 4)
-        self.assertEqual(tree(r), before)
 
     def test_apply_n64_both_orders(self) -> None:
         r = self._root("n64")
@@ -240,8 +234,7 @@ class ConvertTests(ConvertFixtures):
         self.assertEqual((r / "Echo (USA).z64").read_bytes(), self.z_a)
         with zipfile.ZipFile(r / "Foxtrot (Europe).zip") as zf:
             self.assertEqual(zf.read("Foxtrot (Europe).z64"), self.z_b)
-        self.assertEqual(organiser.undo(Path(out["undo_log"])).get("created_removed"), 2)
-        self.assertEqual(tree(r), before)
+        self.assertEqual(sha1(r / "_converted_originals" / "Echo (USA).v64"), before["Echo (USA).v64"])
 
     def test_raw_v64_of_dat_converts_to_z64(self) -> None:
         # the N64 DAT lists both "<set>.z64" and "<set>.v64" for some sets
@@ -339,13 +332,16 @@ os._exit(1)
         self.assertIn("interrupted convert", msg)
         self.assertNotIn("rename it", msg)
         # the case-only-rename recovery never takes a convert temp for an original
-        self.assertFalse(organiser._restore_from_temp(r / "Alpha (USA).sfc"))
-        logs = organiser.list_undo_logs(r)
-        self.assertEqual(len(logs), 1)
-        self.assertEqual(len(organiser.read_undo_log(logs[0])["temp_files"]), 1)
-        u = organiser.undo(logs[0])
-        self.assertEqual((u["restored"], u["temps_removed"], u["failed"]), (1, 1, []))
-        self.assertEqual(tree(r), {"alpha.smc": hashlib.sha1(data).hexdigest()})
+        self.assertEqual(sha1(r / "_converted_originals" / "alpha.smc"), hashlib.sha1(data).hexdigest())   # (the original is safe)
+
+    def test_an_original_whose_clean_file_never_arrived_is_an_orphan(self) -> None:
+        r = self._snes_root()
+        out = convert.apply_conversions(convert.plan_conversions(self._scan(r, self.snes, ("snes_header",))), r)
+        self.assertEqual(out["converted"], 4)
+        self.assertEqual(convert.orphan_originals(self._scan(r, self.snes, ("snes_header",))), [])      # (every clean file is there)
+        (r / "Alpha (USA).sfc").unlink()                                       # as if the run was killed before it was put in place
+        self.assertEqual(convert.orphan_originals(self._scan(r, self.snes, ("snes_header",))),
+                         [(r / "_converted_originals" / "sub" / "alpha.smc", r / "sub" / "alpha.smc")])
 
     def test_same_name_in_place(self) -> None:
         # A headered file already named like the clean rom: original moves away, clean file takes the name.
@@ -359,9 +355,6 @@ os._exit(1)
         self.assertEqual(out["converted"], 1)
         self.assertEqual((r / "Alpha (USA).sfc").read_bytes(), self.s_a)
         self.assertEqual((r / "_converted_originals" / "Alpha (USA).sfc").read_bytes(), data)
-        organiser.undo(Path(out["undo_log"]))
-        self.assertEqual((r / "Alpha (USA).sfc").read_bytes(), data)
-        self.assertFalse((r / "_unmatched").exists() and any((r / "_unmatched").rglob("*.sfc")))
 
     def test_hash_mismatch_aborts_op_and_restores_original(self) -> None:
         r = self._root("bad")
@@ -381,8 +374,7 @@ os._exit(1)
         self.assertFalse((r / "Alpha (USA).sfc").exists())
         self.assertEqual([p.name for p in r.iterdir() if scanner.TEMP_MARKER in p.name], [])
         self.assertFalse((r / "_converted_originals" / "alpha.smc").exists())
-        organiser.undo(Path(out["undo_log"]))
-        self.assertEqual(tree(r), before)
+        self.assertEqual(sha1(r / "_converted_originals" / "echo.v64"), before["echo.v64"])   # (the other one converted)
 
     def test_written_file_verified_from_disk(self) -> None:
         r = self._root("disk")
@@ -396,8 +388,7 @@ os._exit(1)
             out = convert.apply_conversions(ops, r)
         self.assertEqual(out["converted"], 0)
         self.assertIn("written file", out["failed"][0]["error"])
-        self.assertEqual(tree(r), before)
-        self.assertIsNotNone(out["undo_log"])  # the round trip is logged
+        self.assertEqual(tree(r), before)                                   # (the original is back where it was)
 
     def test_crc_only_dat(self) -> None:
         r = self._root("crc")
@@ -442,12 +433,11 @@ os._exit(1)
         out = convert.apply_conversions(ops, r, cancel=cancel)
         self.assertTrue(out["cancelled"])
         self.assertEqual(out["converted"], 1)
-        self.assertIsNotNone(out["undo_log"])
 
     def test_nothing_to_do(self) -> None:
         r = self._root("empty")
         out = convert.apply_conversions([], r)
-        self.assertEqual((out["converted"], out["undo_log"]), (0, None))
+        self.assertEqual((out["converted"], out["failed"]), (0, []))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import dataclasses
 import hashlib
 import json
@@ -23,7 +27,7 @@ from romorg import library, m3u, organiser, platforms, scanner
 from romorg.datfile import DatFile, Rom
 from romorg.organiser import (
     CONVERTED_DIR, SUPERSEDED_DIR, UNMATCHED_DIR, RenameOp, apply_renames, canonical_dir, choose_rom,
-    list_undo_logs, plan_counts, plan_renames, safe_filename, target_filename, undo,
+    plan_counts, plan_renames, safe_filename, target_filename,
 )
 
 
@@ -142,7 +146,7 @@ class OrganiseTests(unittest.TestCase):
 
     # tests -----------------------------------------------------------------
 
-    def test_moves_from_nested_dirs_cleanup_and_undo(self) -> None:
+    def test_moves_from_nested_dirs_and_cleanup(self) -> None:
         d1, d2 = self.data(), self.data()
         self.add_rom(GAMES, "Alpha (1990)(Pub).adf", d1)
         self.add_rom(FW, "Kickstart v1.3 (1987)(Commodore).rom", d2)
@@ -166,7 +170,6 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual(spare.dst, self.root / "_duplicates" / "keep" / spare.src.name)
         self.assertNotIn("keep/.hidden", ops)
 
-        before_files, before_dirs = self.files(), self.dirs()
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["moved"], 3, res)
         self.assertEqual(res["failed"], [])
@@ -175,19 +178,12 @@ class OrganiseTests(unittest.TestCase):
             "keep/.hidden", f"_duplicates/keep/{spare.src.name}",
         })
         dirs = self.dirs()
-        for gone in ("a", "a/b", "a/b/c", "roms"):
+        for gone in ("a", "a/b", "a/b/c", "roms", "pre-existing-empty", "keep/inner"):     # (no empty folder stays: also one already empty)
             self.assertNotIn(gone, dirs)
-        for kept in ("pre-existing-empty", "keep", "keep/inner", GAMES, FW):
+        for kept in ("keep", GAMES, FW):
             self.assertIn(kept, dirs)
         self.assertEqual(sorted(Path(d).relative_to(self.root).as_posix() for d in res["removed_dirs"]),
-                         ["a", "a/b", "a/b/c", "roms"])
-
-        log = organiser.read_undo_log(Path(res["undo_log"]))
-        self.assertEqual(log["version"], 3)
-        self.assertTrue(log["complete"])
-        self.assertEqual(len(log["moves"]), 3)
-        raw = Path(res["undo_log"]).read_text()
-        self.assertNotIn(str(self.root), raw.split("\n", 1)[1])  # entries are relative to the folder
+                         ["a", "a/b", "a/b/c", "keep/inner", "pre-existing-empty", "roms"])
 
         # rescan after organising: everything already in place
         ops2 = self.plan()
@@ -195,12 +191,6 @@ class OrganiseTests(unittest.TestCase):
                          {f"{GAMES}/Alpha (1990)(Pub).adf": "ok",
                           f"{FW}/Kickstart v1.3 (1987)(Commodore).rom": "ok",
                           f"_duplicates/keep/{spare.src.name}": "ok"})
-
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual(u["restored"], 3, u)
-        self.assertEqual(self.files(), before_files)
-        self.assertEqual(self.dirs(), before_dirs)  # removed dirs recreated, created DAT folders gone
-        self.assertEqual(list_undo_logs(self.root), [])
 
     def test_files_already_in_place_are_ok(self) -> None:
         d = self.data()
@@ -210,7 +200,6 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual([o.status for o in ops.values()], ["ok"])
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["moved"], 0)
-        self.assertIsNone(res["undo_log"])
         self.assertEqual(self.scan().summary()["correctly_placed"], 1)
 
     def test_rename_inside_dat_folder(self) -> None:
@@ -259,13 +248,56 @@ class OrganiseTests(unittest.TestCase):
         self.assertNotIn(f"{UNMATCHED_DIR}/deep", self.dirs())  # emptied by our move
         self.assertIn(UNMATCHED_DIR, self.dirs())
 
-    def test_dat_folders_never_removed(self) -> None:
+    def test_a_build_leaves_no_app_file_in_the_library_and_old_undo_logs_are_deleted(self) -> None:
+        d = self.data()
+        self.add_rom(GAMES, "One.adf", d)
+        self.write("in/one.adf", d)
+        res = apply_renames(list(self.plan().values()), self.root)
+        self.assertEqual(res["moved"], 1)
+        self.assertFalse([p for p in self.root.rglob(".romorg*")])                     # (no undo log, no journal, no temp file)
+        self.assertNotIn("undo_log", res)
+        # the undo logs an older version left in the folder go (Undo was removed in 0.4); nothing else is touched
+        old = self.root / ".romorg-undo-20240101-000000.json"
+        old.write_text("{}")
+        self.assertEqual(organiser.purge_undo_logs(self.root), 1)
+        self.assertFalse(old.exists())
+        self.assertTrue((self.root / GAMES / "One.adf").is_file())
+
+    def test_what_a_killed_run_left_behind_is_cleaned_up(self) -> None:
+        self.write("a/Game.sfc.romorg-convert-abcd1234", b"half")
+        self.write("b/disc.chd.romorg.part", b"part")
+        self.write("c/Game.lha.romorg-tmp-whd", b"whd")
+        self.write("d/.romorg-chd-unpack/track01.bin", b"t")
+        moved = self.write("e/game.adf.romorg-tmp-0123abcd", b"mine")
+        self.write("f/taken.adf", b"other")
+        blocked = self.write("f/taken.adf.romorg-tmp-0123abcd", b"mine too")
+        self.write(".hidden/x.romorg-convert-1", b"not looked at")
+        self.write("Kickstarts/k.rom.romorg.part", b"the system's own folder: not looked at")
+        out = organiser.recover_leftovers(self.root, keep_dirs=("Kickstarts",))
+        self.assertEqual(sorted(Path(p).relative_to(self.root).as_posix() for p in out["deleted"]),
+                         ["a/Game.sfc.romorg-convert-abcd1234", "b/disc.chd.romorg.part", "c/Game.lha.romorg-tmp-whd", "d/.romorg-chd-unpack"])
+        self.assertEqual(out["renamed"], [(str(moved), str(self.root / "e" / "game.adf"))])
+        self.assertEqual((self.root / "e" / "game.adf").read_bytes(), b"mine")
+        self.assertEqual([x["path"] for x in out["left"]], [str(blocked)])          # never over another file
+        self.assertEqual(((self.root / "f" / "taken.adf").read_bytes(), blocked.read_bytes()), (b"other", b"mine too"))
+        self.assertEqual(out["converts"], 1)
+        self.assertTrue((self.root / ".hidden" / "x.romorg-convert-1").exists() and (self.root / "Kickstarts" / "k.rom.romorg.part").exists())
+
+    def test_the_systems_own_folders_are_never_tidied(self) -> None:
+        (self.root / "Kickstarts" / "empty").mkdir(parents=True)
+        (self.root / "loose-empty").mkdir()
+        res = apply_renames([], self.root, keep_dirs=("Kickstarts",))
+        self.assertTrue((self.root / "Kickstarts" / "empty").is_dir())
+        self.assertFalse((self.root / "loose-empty").exists())
+        self.assertEqual([Path(d).name for d in res["removed_dirs"]], ["loose-empty"])
+
+    def test_an_emptied_dat_folder_goes(self) -> None:
         self.write(f"{FW}/notes.txt", b"n")  # only content of the Firmware folder is unmatched
         ops = self.plan()
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["moved"], 1)
-        self.assertTrue((self.root / FW).is_dir())
-        self.assertEqual(res["removed_dirs"], [])
+        self.assertFalse((self.root / FW).exists())                      # (a clean library: no empty folder, a DAT's neither)
+        self.assertEqual([Path(d).name for d in res["removed_dirs"]], [FW])
 
     def test_priority_decides_folder(self) -> None:
         d = self.data()
@@ -333,7 +365,6 @@ class OrganiseTests(unittest.TestCase):
         res = apply_renames(ops, self.root)
         self.assertEqual(res["moved"], 0)
         self.assertEqual(len(res["failed"]), 1)
-        self.assertIsNone(res["undo_log"])
         self.assertEqual((self.root / GAMES / "One.adf").read_bytes(), b"appeared later")
         self.assertEqual((self.root / "one.adf").read_bytes(), d)
 
@@ -350,26 +381,6 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual(res["moved"], 2, res)
         self.assertEqual((self.root / GAMES / "b.adf").read_bytes(), da)
         self.assertEqual((self.root / GAMES / "c.adf").read_bytes(), db)
-
-    def test_undo_skips_when_original_taken(self) -> None:
-        d = self.data()
-        self.add_rom(GAMES, "One.adf", d)
-        self.write("one.adf", d)
-        res = apply_renames(list(self.plan().values()), self.root)
-        self.write("one.adf", b"new file")
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual(u["restored"], 0)
-        self.assertEqual(len(u["skipped"]), 1)
-        self.assertTrue((self.root / GAMES / "One.adf").exists())
-
-    def test_undo_reads_version1_logs(self) -> None:
-        self.write("new.adf", b"x")
-        log = self.root / ".romorg-undo-20250101-000000.json"
-        log.write_text(json.dumps([{"src": str(self.root / "old" / "old.adf"),
-                                    "dst": str(self.root / "new.adf")}]))
-        u = undo(log)
-        self.assertEqual(u["restored"], 1)
-        self.assertTrue((self.root / "old" / "old.adf").exists())
 
     def test_progress(self) -> None:
         d = self.data()
@@ -424,7 +435,7 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual(ops["link.adf"].status, "skip")
         self.assertIn("symbolic link", ops["link.adf"].reason)
 
-    def test_own_m3u_deleted_and_restored_by_undo(self) -> None:
+    def test_own_m3u_deleted_and_user_m3u_kept(self) -> None:
         from romorg import m3u
         d1, d2 = self.data(), self.data()
         self.add_rom(GAMES, "Foo (1990)(X)(Disk 1 of 2).adf", d1)
@@ -437,31 +448,11 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual(ops["old/sub/Foo (1990)(X).m3u"].status, "delete")
         self.assertEqual(ops["old/My list.m3u"].status, "skip")
         self.assertEqual(plan_counts(ops.values())["delete"], 1)
-        before_files, before_dirs = self.files(), self.dirs()
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual((res["moved"], res["deleted"], res["failed"]), (2, 1, []))
         self.assertFalse(own.exists())
         self.assertTrue(user.exists())
         self.assertNotIn("old/sub", self.dirs())  # nothing keeps the old folder alive
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual((u["restored"], u["m3us_restored"]), (2, 1))
-        self.assertEqual(self.files(), before_files)
-        self.assertEqual(self.dirs(), before_dirs)
-        self.assertTrue(own.read_text().startswith(m3u.M3U_MARKER))
-
-    def test_undo_removes_own_m3u_written_after_organise(self) -> None:
-        from romorg import m3u
-        d1, d2 = self.data(), self.data()
-        self.add_rom(GAMES, "Foo (1990)(X)(Disk 1 of 2).adf", d1)
-        self.add_rom(GAMES, "Foo (1990)(X)(Disk 2 of 2).adf", d2)
-        self.write("foo1.adf", d1)
-        self.write("foo2.adf", d2)
-        res = apply_renames(list(self.plan().values()), self.root)
-        ops = m3u.plan_m3us(self.scan())
-        self.assertEqual(m3u.write_m3us(ops)["written"], 1)
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual((u["restored"], u["m3us_removed"]), (2, 1))
-        self.assertFalse((self.root / GAMES).exists())  # the created DAT folder could be removed
 
     def test_duplicate_blocking_a_canonical_name_moves_out_of_the_way(self) -> None:
         da, db = self.data(), self.data()
@@ -505,128 +496,12 @@ class OrganiseTests(unittest.TestCase):
         self.assertEqual((self.root / GAMES / "A.adf").read_bytes(), da)
         self.assertEqual((self.root / GAMES / "B.adf").read_bytes(), db)
         self.assertEqual(sorted(os.listdir(self.root / GAMES)), ["A.adf", "B.adf"])
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual(u["failed"], [])
-        self.assertEqual((self.root / GAMES / "A.adf").read_bytes(), db)
-
-    def test_undo_exact_after_failed_move(self) -> None:
-        d1, d2 = self.data(), self.data()
-        self.add_rom(GAMES, "One.adf", d1)
-        self.add_rom(GAMES, "Two.adf", d2)
-        self.write("x/a.adf", d1)
-        self.write("y/b.adf", d2)
-        self.write("z/junk.bin", b"junk")
-        ops = list(self.plan().values())
-        (self.root / "z" / "junk.bin").unlink()  # vanishes between preview and apply
-        before_files, before_dirs = self.files(), self.dirs()
-        res = apply_renames(ops, self.root)
-        self.assertEqual((res["moved"], len(res["failed"])), (2, 1))
-        self.assertNotIn(str(self.root / UNMATCHED_DIR / "z"), res["removed_dirs"])
-        undo(Path(res["undo_log"]))
-        self.assertEqual(self.files(), before_files)
-        self.assertEqual(self.dirs(), before_dirs)
-
-    def test_interrupted_apply_can_be_undone(self) -> None:
-        names = [f"G{i} (1990).adf" for i in range(6)]
-        for i, n in enumerate(names):
-            d = self.data(256)
-            self.add_rom(GAMES, n, d)
-            self.write(f"src/{i}.adf", d)
-        before = self.files()
-        ops = list(self.plan().values())
-
-        def boom(done: int, total: int, name: str) -> None:
-            if done == 3:
-                raise KeyboardInterrupt  # SIGTERM / Ctrl+C mid-apply
-        with self.assertRaises(KeyboardInterrupt):
-            apply_renames(ops, self.root, progress=boom)
-        logs = list_undo_logs(self.root)
-        self.assertEqual(len(logs), 1)
-        self.assertEqual(len(organiser.read_undo_log(logs[0])["moves"]), 3)
-        u = undo(logs[0])
-        self.assertEqual(u["restored"], 3)
-        self.assertEqual(self.files(), before)
-
-    def test_torn_log_and_temp_leftover(self) -> None:
-        d = self.data()
-        self.add_rom(GAMES, "One.adf", d)
-        src = self.write("one.adf", d)
-        # A crash during a case-only rename leaves the file at its temp name and the
-        # log with an intent record (and possibly a torn last line).
-        tmp = src.with_name("one.adf" + organiser.TEMP_MARKER + "abcd1234")
-        src.rename(tmp)
-        log = self.root / ".romorg-undo-20250101-000000.json"
-        log.write_text(json.dumps({"version": 3, "root": str(self.root)}) + "\n"
-                       + json.dumps({"op": "move", "src": "one.adf", "dst": f"{GAMES}/One.adf", "i": 1})
-                       + "\n{\"op\": \"mo", encoding="utf-8")
-        u = undo(log)
-        self.assertEqual(u["restored"], 1)
-        self.assertEqual(src.read_bytes(), d)
 
     def test_scanner_reports_temp_leftovers(self) -> None:
         self.write("game.adf" + organiser.TEMP_MARKER + "abcd1234", b"x")
         res = self.scan()
         self.assertEqual(len(res.errors), 1)
         self.assertIn("interrupted", res.errors[0][1])
-
-    def test_undo_after_remount_uses_relative_paths(self) -> None:
-        d = self.data()
-        self.add_rom(GAMES, "One.adf", d)
-        self.write("in/one.adf", d)
-        res = apply_renames(list(self.plan().values()), self.root)
-        moved_root = self.root.with_name("amiga-remounted")
-        self.root.rename(moved_root)
-        u = undo(moved_root / Path(res["undo_log"]).name)
-        self.assertEqual(u["restored"], 1)
-        self.assertTrue((moved_root / "in" / "one.adf").is_file())
-
-    def test_old_absolute_log_rebased_after_remount(self) -> None:
-        self.write(f"{GAMES}/One.adf", b"x")
-        log = self.root / ".romorg-undo-20240101-000000.json"
-        old = "/run/media/mmcblk0p1/amiga"
-        log.write_text(json.dumps({"version": 2, "root": old, "moves": [
-            {"src": f"{old}/in/one.adf", "dst": f"{old}/{GAMES}/One.adf"}], "created_dirs": [],
-            "removed_dirs": [f"{old}/in"]}))
-        u = undo(log)
-        self.assertEqual(u["restored"], 1)
-        self.assertTrue((self.root / "in" / "one.adf").is_file())
-
-    def test_partial_undo_keeps_log_for_retry(self) -> None:
-        d1, d2 = self.data(), self.data()
-        self.add_rom(GAMES, "One.adf", d1)
-        self.add_rom(GAMES, "Two.adf", d2)
-        self.write("one.adf", d1)
-        self.write("two.adf", d2)
-        res = apply_renames(list(self.plan().values()), self.root)
-        blocker = self.write("one.adf", b"blocker")
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual((u["restored"], u["remaining"]), (1, 1))
-        logs = list_undo_logs(self.root)
-        self.assertEqual(len(logs), 1)
-        blocker.unlink()
-        u2 = undo(logs[0])
-        self.assertEqual((u2["restored"], u2["remaining"]), (1, 0))
-        self.assertEqual(list_undo_logs(self.root), [])
-        self.assertEqual((self.root / "one.adf").read_bytes(), d1)
-
-    def test_planted_log_cannot_reach_outside(self) -> None:
-        outside = Path(self.tmp.name) / "victim"
-        outside.mkdir()
-        (outside / "id_rsa").write_bytes(b"secret")
-        make_symlink(self.root / "evil", outside)
-        log = self.root / ".romorg-undo-29991231-000000.json"
-        log.write_text(json.dumps({"version": 2, "moves": [
-            {"src": str(self.root / "stolen"), "dst": str(outside / "id_rsa")},
-            {"src": "stolen2", "dst": "../victim/id_rsa"},
-            {"src": "stolen3", "dst": "evil/id_rsa"}],
-            "created_dirs": [str(outside)], "removed_dirs": []}))
-        u = undo(log)
-        self.assertEqual(u["restored"], 0)
-        self.assertEqual(u["rejected"], 4)
-        self.assertTrue((outside / "id_rsa").is_file())
-        self.assertFalse((self.root / "stolen").exists())
-        with self.assertRaises(ValueError):
-            undo(log, root=outside)
 
     def test_cancel_stops_between_moves(self) -> None:
         for i in range(4):
@@ -642,21 +517,9 @@ class OrganiseTests(unittest.TestCase):
         res = apply_renames(ops, self.root, cancel=cancel)
         self.assertTrue(res["cancelled"])
         self.assertEqual(res["moved"], 2)
-        self.assertEqual(undo(Path(res["undo_log"]))["restored"], 2)
-
-    def test_undo_log_unwritable_stops_before_moving(self) -> None:
-        d = self.data()
-        self.add_rom(GAMES, "One.adf", d)
-        self.write("one.adf", d)
-        ops = list(self.plan().values())
-        with mock.patch.object(organiser, "_new_log_path", return_value=self.root / "nodir" / "x.json"):
-            res = apply_renames(ops, self.root)
-        self.assertEqual(res["moved"], 0)
-        self.assertIn("undo log", res["error"])
-        self.assertTrue((self.root / "one.adf").exists())
 
     @unittest.skipUnless(os.name == "posix", "bytes filenames")
-    def test_undecodable_names_apply_and_undo(self) -> None:
+    def test_undecodable_names_apply(self) -> None:
         name = os.fsdecode(b"junk\xff.bin")
         try:
             self.write(f"odd/{name}", b"j")
@@ -665,8 +528,6 @@ class OrganiseTests(unittest.TestCase):
         res = apply_renames(list(self.plan().values()), self.root)
         self.assertEqual((res["moved"], res["failed"]), (1, []))
         self.assertTrue((self.root / UNMATCHED_DIR / "odd" / name).is_file())
-        self.assertEqual(undo(Path(res["undo_log"]))["restored"], 1)
-        self.assertTrue((self.root / "odd" / name).is_file())
 
     def test_move_never_replaces_a_target_created_after_the_check(self) -> None:
         a = self.write("a.adf", b"a")
@@ -733,8 +594,6 @@ class CaseInsensitiveFsTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.root / GAMES), ["Game.adf"])
         self.assertEqual(len(self.renames), 2)  # src -> temp -> dst (rename, then link+unlink)
         self.assertIn(".romorg-tmp-", self.renames[0][1])
-        undo(Path(res["undo_log"]))
-        self.assertEqual(os.listdir(self.root / GAMES), ["game.adf"])
 
     def test_case_variant_of_other_file_is_conflict(self) -> None:
         d = _rand(500, 2)
@@ -809,10 +668,10 @@ class TargetFilenameTests(unittest.TestCase):
         self.assertEqual(canonical_dir(root, GAMES), root / GAMES)
 
     def test_public_aliases(self) -> None:
-        for name in ("Journal", "rename_no_overwrite", "move_exclusive", "make_dirs", "temp_name",
-                     "rel_str", "remove_empty_dirs", "protected_dirs", "UndoLogError"):
+        for name in ("rename_no_overwrite", "move_exclusive", "make_dirs", "temp_name",
+                     "rel_str", "remove_empty_dirs", "protected_dirs", "purge_undo_logs"):
             self.assertTrue(callable(getattr(organiser, name)), name)
-        self.assertIs(organiser.Journal, organiser._Journal)
+        self.assertFalse(hasattr(organiser, "undo"))                    # (Undo was removed in 0.4)
 
 
 class NoIntroOrganiseTests(unittest.TestCase):
@@ -889,13 +748,9 @@ class NoIntroOrganiseTests(unittest.TestCase):
             self.assertIn("frontend media folder", ops[keep].reason)
         self.assertEqual(ops["gamelist.xml"].status, "skip")
 
-        before = self.files()
         res = apply_renames(list(ops.values()), self.root)
         self.assertEqual(res["failed"], [])
-        from romorg import organiser as _org           # the quick count agrees with the full reader
-        info = _org.read_undo_log(Path(res["undo_log"]))
-        self.assertEqual(_org.count_undo_log(Path(res["undo_log"])), len(info["moves"]) + len(info["created_files"]))
-        self.assertGreater(len(info["moves"]), 0)
+        self.assertGreater(res["moved"], 0)
         self.assertEqual(self.files(), {
             "Alpha (USA).gba", "Beta Quest (Europe) (En,Fr,De).gba", "Gamma (Japan).gba",
             "Zipped (World).zip", "_unmatched/junk/readme.txt", "media/images/alpha.png",
@@ -903,8 +758,6 @@ class NoIntroOrganiseTests(unittest.TestCase):
         self.assertNotIn("sub", self.dirs())
         self.assertNotIn("_unmatched/old", self.dirs())
         self.assertEqual({o.status for o in self.plan().values()} - {"skip"}, {"ok"})
-        undo(Path(res["undo_log"]))
-        self.assertEqual(self.files(), before)
 
     def test_a_cached_scan_hands_out_independent_plans(self) -> None:
         self.dat_name = NES
@@ -1019,11 +872,6 @@ class NoIntroOrganiseTests(unittest.TestCase):
         self.assertEqual(self.files(), set(local))
         self.assertNotIn(f"{SUPERSEDED_DIR}", self.dirs())
 
-        # both applies undo cleanly, newest first
-        undo(Path(res2["undo_log"]))
-        undo(Path(res["undo_log"]))
-        self.assertEqual(self.files(), {f"in/{i}.gba" for i in range(len(local))})
-
     def test_latest_only_nes_keeps_the_headered_copy(self) -> None:
         # a newer headerless .unh never sends away the only (iNES-headered) playable copy
         self.dat_name = NES
@@ -1130,139 +978,6 @@ class NoIntroOrganiseTests(unittest.TestCase):
             self.assertEqual(ops["Super Game (USA).sfc"].status, "ok")  # Rev 1 there doesn't count
             self.assertEqual(ops["Super Game (USA).sfc"].superseded_by, "")
 
-
-class CreateRecordUndoTests(unittest.TestCase):
-    """Undo log v3 ``create`` records (written by convert.py through the public aliases)."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
-
-    def _convert_like(self, original: bytes, clean: bytes, crash_before_create: bool = False) -> Path:
-        """Mimic apply_conversions: move the original away, then create the clean file."""
-        root = self.root
-        src = root / "game.smc"
-        src.write_bytes(original)
-        orig_dst = root / CONVERTED_DIR / "game.smc"
-        dst = root / "Game (USA).sfc"
-        journal = organiser.Journal(root)
-        created: list[str] = []
-        organiser.make_dirs(orig_dst.parent, created, journal)
-        journal.record({"op": "move", "src": organiser.rel_str(src, root), "dst": organiser.rel_str(orig_dst, root)})
-        organiser.rename_no_overwrite(src, orig_dst)
-        journal.useful = True
-        tmp = organiser.temp_name(dst)
-        tmp.write_bytes(clean)
-        seq = journal.record({"op": "create", "path": organiser.rel_str(dst, root),
-                              "sha1": hashlib.sha1(clean).hexdigest(), "size": len(clean)})
-        if crash_before_create:
-            journal.failed(seq)
-            tmp.unlink()
-        else:
-            organiser.move_exclusive(tmp, dst)
-        log = journal.close()
-        assert log is not None
-        return log
-
-    def test_read_log_steps_and_created_files(self) -> None:
-        log = self._convert_like(b"H" * 512 + b"rom", b"rom")
-        info = organiser.read_undo_log(log)
-        self.assertEqual([s["op"] for s in info["steps"]], ["move", "create"])
-        self.assertEqual(len(info["moves"]), 1)
-        self.assertEqual(info["created_files"], [{"path": self.root / "Game (USA).sfc",
-                                                  "sha1": hashlib.sha1(b"rom").hexdigest(), "size": 3}])
-
-    def test_undo_removes_created_file_and_restores_original(self) -> None:
-        log = self._convert_like(b"H" * 512 + b"rom", b"rom")
-        u = undo(log)
-        self.assertEqual((u["created_removed"], u["restored"], u["remaining"]), (1, 1, 0), u)
-        self.assertEqual(sorted(p.name for p in self.root.iterdir() if not p.name.startswith(".romorg")),
-                         ["game.smc"])
-        self.assertEqual((self.root / "game.smc").read_bytes(), b"H" * 512 + b"rom")
-        self.assertEqual(list_undo_logs(self.root), [])
-
-    def test_failed_create_is_ignored(self) -> None:
-        log = self._convert_like(b"orig", b"rom", crash_before_create=True)
-        self.assertEqual(organiser.read_undo_log(log)["created_files"], [])
-        u = undo(log)
-        self.assertEqual((u["created_removed"], u["restored"]), (0, 1))
-
-    def test_changed_created_file_is_kept_and_log_kept_for_retry(self) -> None:
-        log = self._convert_like(b"orig", b"rom")
-        (self.root / "Game (USA).sfc").write_bytes(b"edited by the user")
-        u = undo(log)
-        self.assertEqual(u["created_removed"], 0)
-        self.assertEqual(u["remaining"], 1)
-        self.assertTrue(any(s["reason"] == "changed since it was created" for s in u["skipped"]))
-        self.assertEqual((self.root / "Game (USA).sfc").read_bytes(), b"edited by the user")
-        self.assertEqual((self.root / "game.smc").read_bytes(), b"orig")  # the move was still undone
-        info = organiser.read_undo_log(log)  # rewritten log keeps the create record
-        self.assertEqual([s["op"] for s in info["steps"]], ["create"])
-        # once the user restores the content, a retry removes it
-        (self.root / "Game (USA).sfc").write_bytes(b"rom")
-        u2 = undo(log)
-        self.assertEqual((u2["created_removed"], u2["remaining"]), (1, 0))
-        self.assertFalse((self.root / "Game (USA).sfc").exists())
-
-    def test_already_gone_created_file_is_skipped(self) -> None:
-        log = self._convert_like(b"orig", b"rom")
-        (self.root / "Game (USA).sfc").unlink()
-        u = undo(log)
-        self.assertEqual((u["created_removed"], u["restored"], u["remaining"]), (0, 1, 0))
-        self.assertTrue(any(s["reason"] == "already gone" for s in u["skipped"]))
-
-    def test_create_record_outside_the_folder_is_rejected(self) -> None:
-        log = self.root / ".romorg-undo-20260101-000000.json"
-        outside = Path(self.tmp.name).parent / "victim.bin"
-        lines = [{"version": 3, "root": str(self.root)},
-                 {"op": "create", "path": "../victim.bin", "sha1": "a" * 40, "size": 1, "i": 1},
-                 {"op": "create", "path": str(outside), "sha1": "a" * 40, "size": 1, "i": 2},
-                 {"op": "create", "path": "ok.bin", "sha1": 5, "size": 1, "i": 3},
-                 {"op": "end"}]
-        log.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
-        info = organiser.read_undo_log(log)
-        self.assertEqual(info["rejected"], 3)
-        self.assertEqual(info["created_files"], [])
-
-    def test_case_insensitive_flat_rename(self) -> None:
-        # exFAT-style: a case-only rename of a No-Intro file in a flat root goes via a temp name.
-        d = _rand(300, 9)
-        (self.root / "alpha (usa).gba").write_bytes(d)
-        with mock.patch.object(scanner, "find_7z", return_value=None):
-            res = scanner.scan(self.root, [DatFile(GBA, "", "", [_nrom("Alpha (USA).gba", d)])], use_cache=False)
-        real_rename = os.rename
-        calls: list[str] = []
-
-        def ci_exists(p: Path) -> bool:
-            p = Path(p)
-            try:
-                return any(c.name.casefold() == p.name.casefold() for c in p.parent.iterdir())
-            except OSError:
-                return False
-
-        def ci_same(a: Path, b: Path) -> bool:
-            return ci_exists(a) and ci_exists(b) and str(a).casefold() == str(b).casefold()
-
-        def spy(a, b) -> None:
-            calls.append(Path(b).name)
-            real_rename(a, b)
-
-        with mock.patch.object(organiser, "_exists", ci_exists), \
-                mock.patch.object(organiser, "_same_file", ci_same), \
-                mock.patch.object(organiser.os, "rename", spy):
-            ops = plan_renames(res, layout="flat")
-            self.assertEqual((ops[0].status, ops[0].kind), ("move", "rename"))
-            out = apply_renames(ops, self.root)
-        self.assertEqual(out["moved"], 1, out)
-        self.assertIn(".romorg-tmp-", calls[0])
-        self.assertEqual(sorted(p.name for p in self.root.iterdir() if not p.name.startswith(".romorg")),
-                         ["Alpha (USA).gba"])
-
-
-# --------------------------------------------------------------------------- Amendment 6: Build library
 
 ABC1 = "ABC Monday Night Football v1.1 (1991)(Data East)(US)(Disk 1 of 3)"
 ABC_NAMES = [
@@ -1396,9 +1111,8 @@ class LibraryPlanTests(unittest.TestCase):
         plan3 = self.plan(profile=dataclasses.replace(prof, languages=(), keep_flags=frozenset(library.tags.KEEP_FLAGS)))
         self.assertEqual(sum(1 for op in plan3.ops if op.status == "move" and not op.unmatched), 4)
 
-    def test_build_is_idempotent_and_undo_removes_playlists(self) -> None:
+    def test_build_is_idempotent(self) -> None:
         self.abc()
-        before = self.files()
         plan, res = self.build()
         self.assertEqual(res["playlists_written"], 1)
         text = (self.root / GAMES / ABC_PLAYLIST).read_text()
@@ -1411,65 +1125,7 @@ class LibraryPlanTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in rc.items() if k not in ("kept", "playlists_ok")},
                          {k: 0 for k in rc if k not in ("kept", "playlists_ok")})
         res2 = apply_renames(plan2.ops, self.root, playlists=plan2.playlists)
-        self.assertEqual((res2["moved"], res2["deleted"], res2["playlists_written"], res2["undo_log"]),
-                         (0, 0, 0, None))
-        # one undo: the playlist the build created goes, every file is back
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual((u["created_removed"], u["failed"]), (1, []))
-        self.assertEqual(self.files(), before)
-        self.assertFalse((self.root / GAMES).exists())
-        self.assertFalse((self.root / "_unmatched").exists())
-
-    def test_undo_keeps_a_playlist_the_user_changed(self) -> None:
-        self.abc()
-        _, res = self.build()
-        pl = self.root / GAMES / ABC_PLAYLIST
-        pl.write_text(pl.read_text() + "# mine\n")
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual(u["created_removed"], 0)
-        self.assertTrue(any(s["reason"] == "changed since it was created" for s in u["skipped"]))
-        self.assertTrue(pl.exists())
-
-    def test_interrupted_build_is_undoable(self) -> None:
-        self.abc()
-        before = self.files()
-        plan = self.plan()
-        n_moves = sum(1 for op in plan.ops if op.status in organiser.MOVE_STATUSES)
-        n_deletes = sum(1 for op in plan.ops if op.status == "delete")
-        # cancelled right before the first playlist: moves stay done and journalled, no playlist yet
-        calls = []
-
-        def cancel() -> bool:
-            calls.append(1)
-            return len(calls) > n_moves + n_deletes
-
-        res = apply_renames(plan.ops, self.root, playlists=plan.playlists, cancel=cancel)
-        self.assertTrue(res["cancelled"])
-        self.assertEqual((res["moved"], res["playlists_written"]), (n_moves, 0))
-        self.assertFalse((self.root / GAMES / ABC_PLAYLIST).exists())
-        self.assertEqual(undo(Path(res["undo_log"]))["failed"], [])
-        self.assertEqual(self.files(), before)
-
-    def test_crash_while_writing_a_playlist_is_undoable(self) -> None:
-        self.abc()
-        before = self.files()
-        plan = self.plan()
-
-        class Crash(BaseException):
-            pass
-
-        def boom(path, text, replace_own=False):
-            raise Crash()
-
-        with mock.patch.object(m3u, "write_playlist", boom), self.assertRaises(Crash):
-            apply_renames(plan.ops, self.root, playlists=plan.playlists)
-        logs = list_undo_logs(self.root)
-        self.assertEqual(len(logs), 1)
-        log = organiser.read_undo_log(logs[0])
-        self.assertEqual(len(log["created_files"]), 1)        # the create record was written first
-        u = undo(logs[0])
-        self.assertEqual(u["failed"], [])
-        self.assertEqual(self.files(), before)
+        self.assertEqual((res2["moved"], res2["deleted"], res2["playlists_written"]), (0, 0, 0))
 
     def test_failed_playlist_write_is_reported(self) -> None:
         self.abc()
@@ -1491,7 +1147,7 @@ class LibraryPlanTests(unittest.TestCase):
         self.assertEqual(res["playlists_written"], 0)
         self.assertTrue(any("disk not at its planned path" in f["error"] for f in res["failed"]), res["failed"])
 
-    def test_stale_playlist_is_deleted_and_undo_restores_it(self) -> None:
+    def test_stale_playlist_is_deleted(self) -> None:
         self.abc()
         old = self.root / "Old.m3u"
         old.write_text(m3u.M3U_MARKER + f"\nin/{ABC_NAMES[0]}\nin/{ABC_NAMES[1]}\n")
@@ -1502,23 +1158,17 @@ class LibraryPlanTests(unittest.TestCase):
         res = apply_renames(plan.ops, self.root, playlists=plan.playlists)
         self.assertEqual((res["deleted"], res["playlists_written"], res["failed"]), (1, 1, []))
         self.assertFalse(old.exists())
-        u = undo(Path(res["undo_log"]))
-        self.assertEqual((u["m3us_restored"], u["created_removed"]), (1, 1))
-        self.assertTrue(old.read_text().startswith(m3u.M3U_MARKER))
 
-    def test_rewritten_playlist_is_one_write_and_undo_restores_the_old_text(self) -> None:
+    def test_rewritten_playlist_is_one_write(self) -> None:
         self.abc()
         self.build()
         pl = self.root / GAMES / ABC_PLAYLIST
-        old_text = pl.read_text()
         plan = self.plan(savedisk=True)   # same name, other content
         self.assertEqual([(p.path, p.status) for p in plan.playlists], [(pl, "write")])
         self.assertEqual([op for op in plan.ops if op.status == "delete"], [])
         res = apply_renames(plan.ops, self.root, playlists=plan.playlists)
         self.assertEqual((res["playlists_written"], res["failed"]), (1, []))
         self.assertIn("#SAVEDISK:", pl.read_text())
-        undo(Path(res["undo_log"]))
-        self.assertEqual(pl.read_text(), old_text)
 
     def test_user_playlist_is_never_replaced(self) -> None:
         self.abc()
@@ -1637,7 +1287,7 @@ class LibraryPlanTests(unittest.TestCase):
         dels = [op for op in plan.ops if op.status == "delete"]
         self.assertEqual(len(dels), 1)
         self.assertIn("set incomplete (missing disk 3)", dels[0].reason)
-        self.assertIn("undo restores it", dels[0].reason)
+        self.assertIn("playlist removed", dels[0].reason)
         self.assertNotIn("write the M3Us again", dels[0].reason)
 
     def test_loose_beats_archive_then_shortest_then_alphabetical(self) -> None:
@@ -1749,7 +1399,7 @@ class ReadOnlyFilesTests(unittest.TestCase):
     def _ro(self, p: Path) -> bool:
         return not os.stat(p).st_mode & self.stat.S_IWRITE
 
-    def test_a_read_only_file_moves_once_stays_read_only_and_comes_back(self) -> None:
+    def test_a_read_only_file_moves_once_and_stays_read_only(self) -> None:
         src = self.root / "Old Folder" / "game.sfc"
         src.parent.mkdir()
         src.write_bytes(b"rom")
@@ -1761,14 +1411,9 @@ class ReadOnlyFilesTests(unittest.TestCase):
         self.assertEqual(dst.read_bytes(), b"rom")
         self.assertTrue(self._ro(dst))
         self.assertFalse(src.parent.exists())
-        out = undo(Path(res["undo_log"]), self.root)
-        self.assertEqual((out["restored"], out["failed"]), (1, []))
-        self.assertEqual(src.read_bytes(), b"rom")
-        self.assertTrue(self._ro(src))
-        self.assertFalse(dst.exists() or dst.parent.exists())
 
     @unittest.skipUnless(os.name == "nt", "the read-only attribute of a folder is a Windows matter")
-    def test_windows_an_emptied_read_only_folder_is_removed_and_restored(self) -> None:
+    def test_windows_an_emptied_read_only_folder_is_removed(self) -> None:
         src = self.root / "Old Folder" / "game.sfc"
         other = self.root / "Full" / "keep.txt"
         for p in (src, other):
@@ -1782,8 +1427,6 @@ class ReadOnlyFilesTests(unittest.TestCase):
         self.assertFalse(src.parent.exists())
         self.assertEqual(organiser._remove_empty_dirs([other.parent], self.root, set()), [])
         self.assertTrue(os.stat(other.parent).st_file_attributes & self.stat.FILE_ATTRIBUTE_READONLY)   # not empty: untouched
-        undo(Path(res["undo_log"]), self.root)
-        self.assertTrue(src.is_file())
 
     @unittest.skipUnless(os.name == "nt", "the read-only attribute is a Windows matter")
     def test_windows_when_the_old_name_cannot_go_the_new_one_is_taken_away_again(self) -> None:
@@ -1894,16 +1537,6 @@ class BugCheckPlanTests(unittest.TestCase):
         self.build(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
         self.assertIn("in/spiel.zip", self.files())
 
-    def test_undo_of_a_case_only_rename_keeps_the_playlist_it_restores(self) -> None:
-        d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
-        self.have(d1, f"{GAMES}/{d1.lower()}")
-        self.have(d2, f"{GAMES}/{d2.lower()}")
-        (self.root / GAMES / "My old list.m3u").write_text(m3u.M3U_MARKER + "\n" + d1.lower() + "\n" + d2.lower() + "\n")
-        _plan, res = self.build()
-        out = undo(Path(res["undo_log"]))
-        self.assertEqual((out["m3us_restored"], out["m3us_removed"]), (1, 0))
-        self.assertIn(f"{GAMES}/My old list.m3u", self.files())
-
     def test_an_old_playlist_whose_name_differs_in_case_is_removed(self) -> None:
         d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
         self.have(d1, f"{GAMES}/{d1.lower()}")
@@ -1952,69 +1585,8 @@ class BugCheckPlanTests(unittest.TestCase):
         self.assertEqual(ops[f"{GAMES}/{name}"].status, "ok")
         self.assertEqual(ops[f"in/{name}"].code, "duplicate")
 
-    def test_undo_of_an_older_log_never_moves_back_a_file_a_later_build_put_in_its_place(self) -> None:
-        name = "Alpha (1990)(Pub).adf"
-        self.have(name, "in/a.adf")                                                         # game A
-        _p, first = self.build()                                                            # in/a.adf -> the DAT folder
-        a, b = self.blobs[name], _rand(600, 999)
-        (self.root / "in").mkdir(exist_ok=True)
-        (self.root / "in" / "b.adf").write_bytes(b)
-        self.roms[:] = [_rom("Alpha Renamed (1990)(Pub).adf", a), _rom(name, b)]             # (a DAT update: B takes A's old name)
-        self.build()
-        out = undo(Path(first["undo_log"]))
-        self.assertEqual(out["restored"], 0)
-        self.assertIn("not the one this build moved", out["skipped"][0]["reason"])
-        self.assertEqual(self.files()[f"{GAMES}/{name}"], b)                                  # (B stays where the later build put it)
-        self.assertNotIn("in/a.adf", self.files())
-
-
-class UndoOfAnOlderLogTests(unittest.TestCase):
-    """Undo of a log that is not the newest: a later build moved the file on, so the older log's step finds nothing at its target."""
-
-    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
-                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
-                                                       LibraryPlanTests.build)
-    NAME, RENAMED = "Alpha (1990)(Pub).adf", "Alpha Renamed (1990)(Pub).adf"
-
-    def two_builds(self) -> tuple[dict, dict, bytes]:
-        self.have(self.NAME, "in/a.adf")
-        data = self.blobs[self.NAME]
-        _plan, first = self.build()
-        self.assertEqual(self.files(), {f"{GAMES}/{self.NAME}": data})
-        self.roms[0] = _rom(self.RENAMED, data)                                   # (a DAT update renames the game: build 2 moves it on)
-        _plan, second = self.build()
-        self.assertEqual(self.files(), {f"{GAMES}/{self.RENAMED}": data})
-        self.assertNotEqual(first["undo_log"], second["undo_log"])
-        self.assertEqual(list_undo_logs(self.root)[0], Path(second["undo_log"]))     # (the newer one is listed first)
-        return first, second, data
-
-    def test_undo_of_the_older_log_moves_nothing_and_says_why(self) -> None:
-        first, _second, data = self.two_builds()
-        out = undo(Path(first["undo_log"]))
-        self.assertEqual((out["restored"], out["failed"]), (0, []))
-        self.assertEqual([(s["dst"], s["reason"]) for s in out["skipped"]],
-                         [(str(self.root / GAMES / self.NAME), "moved file no longer exists")])
-        self.assertEqual(self.files(), {f"{GAMES}/{self.RENAMED}": data})            # (the file the newer build moved is where it was)
-        self.assertFalse((self.root / "in" / "a.adf").exists())
-
-    def test_the_newer_log_still_undoes_after_the_older_one(self) -> None:
-        first, second, data = self.two_builds()
-        undo(Path(first["undo_log"]))
-        out = undo(Path(second["undo_log"]))
-        self.assertEqual((out["restored"], out["skipped"], out["failed"], out["remaining"]), (1, [], [], 0))
-        self.assertEqual(self.files(), {f"{GAMES}/{self.NAME}": data})               # (back where build 1 put it, nothing lost)
-
-    def test_undo_newest_first_walks_both_builds_back(self) -> None:
-        first, second, data = self.two_builds()
-        self.assertEqual(undo(Path(second["undo_log"]))["restored"], 1)
-        out = undo(Path(first["undo_log"]))
-        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (1, [], []))
-        self.assertEqual(self.files(), {"in/a.adf": data})
-        self.assertEqual(list_undo_logs(self.root), [])                                  # (both are undone)
-
-
 class EmptyAndUnmatchedOnlyFolderTests(unittest.TestCase):
-    """A library folder with nothing in it, and one with only files no DAT knows: plan, apply and undo."""
+    """A library folder with nothing in it, and one with only files no DAT knows: plan and apply."""
 
     setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
                                                        LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
@@ -2026,17 +1598,16 @@ class EmptyAndUnmatchedOnlyFolderTests(unittest.TestCase):
         self.assertEqual((plan.ops, plan.playlists), ([], []))
         self.assertEqual(set(organiser.reason_counts(plan).values()), {0})
         res = apply_renames(plan.ops, self.root, playlists=plan.playlists)
-        self.assertEqual((res["moved"], res["deleted"], res["failed"], res["undo_log"]), (0, 0, [], None))
+        self.assertEqual((res["moved"], res["deleted"], res["failed"]), (0, 0, []))
         self.assertEqual(list(self.root.iterdir()), [])                                  # (no DAT folder, no log, no reserved folder)
-        self.assertEqual(list_undo_logs(self.root), [])
 
     def test_an_empty_folder_with_no_dat_either(self) -> None:
         plan = self.plan()
         self.assertEqual(plan.ops, [])
-        self.assertEqual(apply_renames(plan.ops, self.root, playlists=plan.playlists)["undo_log"], None)
+        self.assertEqual(apply_renames(plan.ops, self.root, playlists=plan.playlists)["moved"], 0)
         self.assertEqual(list(self.root.iterdir()), [])
 
-    def test_only_unmatched_files_go_to_unmatched_and_come_back_on_undo(self) -> None:
+    def test_only_unmatched_files_go_to_unmatched(self) -> None:
         self.roms.append(_rom("Alpha (1990)(Pub).adf", _rand(600, 1)))
         for rel, data in (("in/x.adf", _rand(700, 2)), ("in/deeper/y.adf", _rand(800, 3)), ("notes.txt", b"hello")):
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -2054,16 +1625,11 @@ class EmptyAndUnmatchedOnlyFolderTests(unittest.TestCase):
         self.assertFalse((self.root / GAMES).exists())                                   # (no DAT folder for a game nobody has)
         self.assertFalse((self.root / "in").exists())
         self.assertEqual({op.status for op in self.plan().ops}, {"ok"})                  # (a second build leaves them where they are)
-        out = undo(Path(res["undo_log"]))
-        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (3, [], []))
-        self.assertEqual(self.files(), before)
-        self.assertFalse((self.root / UNMATCHED_DIR).exists())
-        self.assertEqual(list_undo_logs(self.root), [])
 
 
 class UnicodeNormalisationTests(unittest.TestCase):
     """A name in NFC (as a DAT writes it) and the same name in NFD (as macOS writes it) are two names on a file system that keeps
-    the bytes: a file is matched by its checksums whatever form its name has, gets its DAT's name, and undo puts the very bytes of its
+    the bytes: a file is matched by its checksums whatever form its name has, gets its DAT's name, and nothing puts the very bytes of its
     old name back. A name in the other form is never taken for the target (no overwrite)."""
 
     setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
@@ -2085,7 +1651,7 @@ class UnicodeNormalisationTests(unittest.TestCase):
         return sorted((op.src.relative_to(self.root).as_posix(), op.dst.relative_to(self.root).as_posix(), op.status, op.code)
                       for op in plan.ops)
 
-    def test_an_nfd_name_is_matched_and_gets_the_dat_name_and_undo_restores_its_bytes(self) -> None:
+    def test_an_nfd_name_is_matched_and_gets_the_dat_name(self) -> None:
         self.assertNotEqual(self.NFC, self.NFD)
         self.have(self.NFC, f"in/{self.NFD}")
         before = self.files()
@@ -2093,10 +1659,6 @@ class UnicodeNormalisationTests(unittest.TestCase):
         _plan, res = self.build()
         self.assertEqual(list(self.files()), [f"{GAMES}/{self.NFC}"])
         self.assertEqual(self.rel(self.plan()), [(f"{GAMES}/{self.NFC}",) * 2 + ("ok", "")])      # (idempotent)
-        out = undo(Path(res["undo_log"]))
-        self.assertEqual((out["restored"], out["skipped"], out["failed"]), (1, [], []))
-        self.assertEqual(self.files(), before)
-        self.assertEqual(os.listdir(self.root / "in"), [self.NFD])                       # (the NFD bytes, not an NFC copy of them)
 
     def test_an_nfd_name_in_its_dat_folder_is_renamed_to_the_dat_name(self) -> None:
         self.have(self.NFC, f"{GAMES}/{self.NFD}")
@@ -2113,9 +1675,6 @@ class UnicodeNormalisationTests(unittest.TestCase):
                                                  (f"in/{self.NFD}", f"{GAMES}/{self.NFC}", "move", "")])
         _plan, res = self.build()
         self.assertEqual(self.files(), {f"{GAMES}/{self.NFC}": self.blobs[self.NFC], f"{UNMATCHED_DIR}/{GAMES}/{self.NFC}": stranger})
-        out = undo(Path(res["undo_log"]))
-        self.assertEqual((out["restored"], out["failed"]), (2, []))
-        self.assertEqual(self.files(), before)
 
     def test_two_copies_named_in_the_two_forms_are_one_game_and_a_duplicate(self) -> None:
         self.have(self.NFC, f"{GAMES}/{self.NFD}")
@@ -2130,8 +1689,6 @@ class UnicodeNormalisationTests(unittest.TestCase):
         self.assertEqual(sorted(self.files().values()), [self.blobs[self.NFC]] * 2)       # (nothing overwritten: both copies are there)
         self.assertIn(f"{GAMES}/{self.NFC}", self.files())
         self.assertEqual({op.status for op in self.plan().ops}, {"ok"})
-        undo(Path(res["undo_log"]))
-        self.assertEqual(self.files(), before)
 
     def test_a_dat_that_writes_nfd_names_its_file_in_nfd(self) -> None:
         data = _rand(700, 11)
@@ -2171,7 +1728,7 @@ class BiosExclusionTests(unittest.TestCase):
         self.tosec_bios((self.bad, "kick.rom", self.BAD))
         self.have("Solo Game (1993)(Pub).adf")
 
-    def test_a_zip_of_a_bad_dump_bios_is_excluded_whole_and_undo_brings_it_back(self) -> None:
+    def test_a_zip_of_a_bad_dump_bios_is_excluded_whole(self) -> None:
         with zipfile.ZipFile(self.root / "kick.zip", "w") as zf:
             zf.writestr("kick.rom", self.bad)
         before = self.files()
@@ -2184,8 +1741,6 @@ class BiosExclusionTests(unittest.TestCase):
         self.assertEqual(zipfile.ZipFile(self.root / "_excluded" / "kick.zip").read("kick.rom"), self.bad)   # (the zip as it was)
         again = next(o for o in self.plan().ops if o.src.name == "kick.zip")
         self.assertEqual((again.status, again.code), ("ok", "excluded"))                   # (it stays set aside)
-        undo(Path(res["undo_log"]))
-        self.assertEqual(self.files(), before)
 
     def test_a_loose_bad_dump_bios_is_excluded(self) -> None:
         (self.root / "fw").mkdir()

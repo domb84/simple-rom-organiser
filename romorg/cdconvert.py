@@ -17,7 +17,7 @@ Conversion
     (:mod:`romorg.chdwrite`, chdman's layout) next to where it is; Build library then puts it where the game goes. The new CHD is
     identified as above against the game's own DAT entries before anything of the original is touched - the check the scan makes
     afterwards, so a converted disc is always recognised. Then the originals are deleted ("Delete the originals after converting")
-    or moved to ``_converted_originals/``. Every step is journalled like the other conversions.
+    or moved to ``_converted_originals/``. A failure on the way moves them back.
 
 A disc whose files cannot all be rebuilt from a CHD (an audio track in an ``.mp3``, a ``.wav`` that is not plain CD audio, no cue
 sheet) is not converted: it stays as it is.
@@ -351,7 +351,7 @@ def _unpack(op: CdConvertOp, n: int, cancel: Any, progress: Optional[ProgressFn]
         raise
 
 
-def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], progress: Optional[ProgressFn], cancel: Any,
+def _convert_one(op: CdConvertOp, root: Path, created: list[str], progress: Optional[ProgressFn], cancel: Any,
                  preset: str, workers: Optional[int], prepared: Any = None) -> None:
     """``prepared``: the future of the disc's :func:`_unpack` started ahead (None: it is unpacked here)."""
     for s, _d in op.moves:
@@ -401,24 +401,11 @@ def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], 
             raise chdtool.ChdmanError("cancelled", cancelled=True) from None
         if not matches_game(got, op.roms):
             raise chdtool.ChdmanError("verification failed: the new CHD does not rebuild the DAT's files - nothing was changed")
-        sha1 = hashlib.sha1()
-        with open(new, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                sha1.update(block)
-        seq = journal.record({"op": "create", "path": organiser.rel_str(op.dst, root), "sha1": sha1.hexdigest(),
-                              "size": new.stat().st_size}, sync=True)
-        try:
-            organiser.move_exclusive(new, op.dst)
-        except BaseException:
-            journal.failed(seq)
-            raise
+        organiser.move_exclusive(new, op.dst)
         placed = True
-        journal.useful = True
         if op.delete_originals:
-            # the originals are deleted: the CHD was checked against the DAT above. Undo could not bring them back, so it must never
-            # take the CHD away either: its record is marked as not done. From here on the CHD stays whatever happens: an original that
-            # cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to undo the conversion
-            journal.failed(seq)
+            # the originals are deleted: the CHD was checked against the DAT above. From here on the CHD stays whatever happens: an
+            # original that cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to roll back
             for s, _d in op.moves:
                 try:
                     os.unlink(s)
@@ -426,24 +413,14 @@ def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], 
                 except OSError as exc:
                     op.left.append(f"{s}: {exc}")
             op.moves = []
-        for s, d in op.moves:                 # keep the originals: each moves to _converted_originals/ (journalled one by one)
-            organiser.make_dirs(d.parent, created, journal)
-            mseq = journal.record({"op": "move", "src": organiser.rel_str(s, root), "dst": organiser.rel_str(d, root)})
-            try:
-                organiser.rename_no_overwrite(s, d)
-            except BaseException:
-                journal.failed(mseq)
-                raise
+        for s, d in op.moves:                 # keep the originals: each moves to _converted_originals/
+            organiser.make_dirs(d.parent, created)
+            organiser.rename_no_overwrite(s, d)
             moved.append((s, d))
-    except BaseException as exc:
+    except BaseException:
         for s, d in list(reversed(moved)):    # roll back: originals back, new CHD removed
             try:
-                rseq = journal.record({"op": "move", "src": organiser.rel_str(d, root), "dst": organiser.rel_str(s, root)})
-                try:
-                    organiser.rename_no_overwrite(d, s)
-                except BaseException:
-                    journal.failed(rseq)
-                    raise
+                organiser.rename_no_overwrite(d, s)
                 moved.remove((s, d))
             except (OSError, ValueError):
                 pass
@@ -452,8 +429,6 @@ def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], 
                 os.unlink(op.dst)
             except OSError:
                 pass
-        if isinstance(exc, organiser.UndoLogError):
-            raise
         raise
     finally:
         if unpacked is not None:
@@ -470,7 +445,6 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
     """Convert the ``convert`` ops: write -> check against the DAT -> place -> delete or keep the originals."""
     root = Path(root)
     todo = [o for o in ops if o.status == "convert"]
-    journal = organiser.Journal(root)
     converted: list[CdConvertOp] = []
     failed: list[dict[str, str]] = []
     created: list[str] = []
@@ -494,10 +468,8 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
             for k in range(i, i + UNPACK_AHEAD + 1):         # (this disc and the next ones unpack while this one is compressed)
                 start(k)
             try:
-                _convert_one(op, root, journal, created, progress, cancel, preset, workers, ahead.pop(i, None))
+                _convert_one(op, root, created, progress, cancel, preset, workers, ahead.pop(i, None))
                 converted.append(op)
-            except organiser.UndoLogError:
-                raise
             except chdtool.ChdmanError as exc:
                 if exc.cancelled:
                     cancelled = True
@@ -513,13 +485,8 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
             if d in mine:
                 created.remove(d)
                 mine.discard(d)
-                journal.record({"op": "unmkdir", "path": organiser.rel_str(Path(d), root)})
             else:
-                journal.record({"op": "rmdir", "path": organiser.rel_str(Path(d), root)})
-                journal.useful = True
                 removed.append(d)
-    except organiser.UndoLogError as exc:
-        error = str(exc)
     finally:
         for fut in ahead.values():                     # (unpacked ahead for discs that were not converted: their work folders go)
             fut.cancel()
@@ -527,9 +494,7 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
         for fut in ahead.values():
             if fut.done() and not fut.cancelled() and fut.exception() is None:
                 shutil.rmtree(fut.result()[0], ignore_errors=True)
-        log_path = journal.close()
-    return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
-            "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
+    return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": error,
             "deleted": sum(len(o.deleted) for o in converted), "not_deleted": [x for o in converted for x in o.left],
             "from_archives": sum(1 for o in converted if o.archive),
             "written_by": {"builtin": len(converted)} if converted else {}, "preset": preset}

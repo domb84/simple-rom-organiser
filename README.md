@@ -63,7 +63,7 @@ What it does:
 3. Scans a folder (always including subfolders) and shows how many games / DAT entries you
    have, which are missing and which files matched nothing - with region, language and tag
    chips and filters.
-4. **Build library** (one preview, one apply, one undo): files are renamed and sorted - Amiga
+4. **Build library** (one preview, one apply): files are renamed and sorted - Amiga
    files into one folder per DAT under their exact TOSEC name, console files under their exact
    No-Intro name, flat in the console folder. Following the **library rules** (each can be
    switched off; the panel shows the exact TOSEC / No-Intro tags behind every rule and how
@@ -100,7 +100,6 @@ snes/
   _superseded/                                       older versions / worse variants
   _duplicates/                                       extra copies of the same ROM
   _converted_originals/                              originals kept by "Convert"
-  .romorg-undo-<timestamp>.json                      undo logs (hidden)
 ```
 
 - Matched files anywhere under the console folder (subfolders, `_unmatched/`, old folders)
@@ -129,7 +128,7 @@ and if it is excluded it simply stays.
 Libraries built by an older version kept these folders *inside*
 `_unmatched/` (`_unmatched/_excluded/` ...). The next Build library recognises them and moves
 the files to the new top-level folders (or to their canonical place if they now qualify) as
-ordinary previewed moves; **Undo last** reverts it, and old undo logs still work.
+ordinary previewed moves.
 
 ### Amiga (TOSEC): one folder per DAT
 
@@ -146,7 +145,6 @@ amiga/
   _superseded/                                       older versions / worse variants
   _incomplete/                                       multi-disk games with missing disks
   _duplicates/                                       extra copies of the same ROM
-  .romorg-undo-<timestamp>.json                      undo logs (hidden)
 ```
 
 - DAT folder names are the DAT name without its version (characters that are illegal on
@@ -161,20 +159,20 @@ amiga/
 - Unmatched files keep their relative path under `_unmatched/`
   (`incoming/foo.adf` -> `_unmatched/incoming/foo.adf`). Files already in `_unmatched/` stay.
   Unmatched files are always moved (there is no switch for it): the preview shows how many are going
-  to `_unmatched/`, the confirmation repeats the number, and *Undo last* puts them back.
+  to `_unmatched/`, the confirmation repeats the number.
 - Left in place even when unmatched: files in the folder of a DAT that is not installed
   (so a missing DAT never empties an organised folder), frontend / emulator files
   (`gamelist.xml`, `systeminfo.txt`, `metadata.txt`, `rom.key`, other `.key` files) and
   symbolic links. A hidden file is one whose name starts with a single dot (`.nomedia`): it is never looked at. A name that starts with
   several (`...GAMELIST.txt`, a ROM pack's list) is an ordinary file. **Anything else that is not a checksummed ROM is set aside** (saves, save states, emulator configs, notes), keeping its path under
-  `_unmatched/` (or the archive folder); Undo brings it back.
+  `_unmatched/` (or the archive folder).
 - The preview warns (and Apply asks twice) when most files match nothing or other systems'
   folders (`snes/`, `psx/` ...) would be moved - i.e. when the folder is too high up. The
   home folder, `/` and the root of a drive / SD card cannot be scanned at all.
-- Folders that became empty because of the moves are removed (never the platform folder
-  or DAT folders, and never folders that were already empty).
-- Hidden files and the undo logs are never moved. Playlists created by this app whose
-  disks move are removed (they are kept in the undo log; write the M3Us again afterwards).
+- No empty folder is left behind: every empty folder below the platform folder is removed after a build, also one that was
+  already empty (never the platform folder itself, nor the system's own folders such as the Kickstarts).
+- Hidden files are never moved. Playlists created by this app whose
+  disks move are removed (the build writes them again).
   Playlists you made yourself are left where they are; the preview tells you when their
   disks move.
 
@@ -232,7 +230,7 @@ you look at is on **Files**, what you set is on **Settings**.)
 * the **tiles** (below): the totals you chose in Settings, and the lists behind them (upgrades, excluded, incomplete);
 * the **rules bar**: *Your default rules* or *Custom: ...*, a one-line summary of what the rules do
   (`4 of 4 exclusions · English · Europe > USA first · latest versions only`) with a **Change** link to the Settings tab, a status that
-  says whether the tree below is up to date, **Undo last** and **Build library**;
+  says whether the tree below is up to date, and **Build library**;
 * **the file tree**, with two tabs above it: **ROM folder** and **Archive** (each with its real path, file count and size). It is what
   the folder and the system's part of the archive would hold after a build with the current rules, opened folder by folder; a folder says
   how many files and bytes are below it, how many the build changes and how many games are missing. A file is marked *renamed*, *moved*,
@@ -308,9 +306,11 @@ known* (hover for why) - the app never invents a hash:
   scanning again carries on from there. The server keeps the scan of the last six systems you scanned, so going to another system
   and back needs no new scan, and a restart does not need one either while nothing changed (see above). Otherwise the scan after
   a restart is quick, because the hashes are cached.
-- Hidden files, `.m3u` files and the app's undo logs are ignored. Leftovers of an
+- Hidden files and `.m3u` files are ignored (the undo logs of versions before 0.4 are deleted when a folder is scanned). Leftovers of an
   interrupted move (`*.romorg-tmp-*`), partial output of an interrupted Convert
-  (`*.romorg-convert-*`, removed by Undo) and dangling symbolic links are listed as errors.
+  (`*.romorg-convert-*`) and dangling symbolic links are listed as errors. The next **Build library** cleans up after a run that
+  was killed by itself: partial files are deleted, a file left under a temporary name is renamed back, and an original whose
+  conversion was cut short is put back and converted again.
 - **Have / Missing** count distinct DAT entries (Amiga) or **games** (consoles);
   **Duplicates** are extra local copies of something you already have. TOSEC sometimes
   lists identical content under several names - such files match all of them.
@@ -538,7 +538,7 @@ is left out of that page. The choice is `page_tiles` in `config.json`.
 **Files next to a disc (disc systems).** On Dreamcast, PlayStation and PlayStation 2 the files in a game's folder that are not its disc
 image (a save or save state, a `.zip`, a checksum file) are **not part of the game**: by default Build library sets them aside like any file that
 matches nothing, but a save, save state or memory card goes under its game: `<archive folder>/<system folder>/_saves/<Title>/<file>` (or `_saves/` in the
-ROM folder while no archive folder is set); the rest goes to `_unmatched`. Undo brings everything back. The rule **Keep other files that
+ROM folder while no archive folder is set); the rest goes to `_unmatched`. The rule **Keep other files that
 sit with a game** (Settings, overridable per system; off by default) keeps them with the game and renames them with it, as earlier versions
 always did. Playlists, `gamelist.xml` and media folders always stay. Saves in RetroArch's own save folders are a different thing: see
 *What happens to the saves*. Likewise loose saves and states in any system's folder are set aside when no game claims them.
@@ -550,8 +550,8 @@ CRC32, MD5 or SHA-1 is a button: press it and it is on the clipboard, ready to s
 folders) is not a ROM, so the build sets it aside - under the game it belongs to: `<archive>/<system>/_saves/<Title>/<file>` (the title without
 region, version or disc, so every edition shares a folder). A file is pinned to a title when its name is a game's (`Game (USA).srm`,
 `.state1`, Flycast's `.A1.bin`), when it sat in that game's own folder, or when it is a memory card that names its games (a GameCube card by its
-game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**;
-Undo puts the original back and removes the copies. A save no title claims goes to `_unmatched`. These rows are the **Saves** reason of the Library list.
+game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**.
+A save no title claims goes to `_unmatched`. These rows are the **Saves** reason of the Library list.
 
 **Saves of games you have no file for** are listed in the Files tree too (Show: Saves). Each sits on the release your library rules
 would choose among those the save works in: the same region; any region for a cartridge system; for the PlayStation 2, another region
@@ -570,8 +570,7 @@ header of each disc you have (`.chd` or `.gdi`, remembered per file): a card wit
 title has a save from another region, shows **Convert the save of ... for this disc** in its details (the disc's code is read from the
 `.chd` / `.iso`). A PlayStation 2 save of a game you lack, shown on another region's release, offers **Convert SLUS-xxxxx →
 SLES-xxxxx** (the code from the game database). The copy is made next to the original (a PlayStation card copy named after the disc;
-a PCSX2 folder card's save folder copied under the new code; a card image rewritten in place, its old content kept), and **Undo** on
-the message takes it back. Not while the emulator runs.
+a PCSX2 folder card's save folder copied under the new code; a card image rewritten in place, its old content kept with the save backups). Not while the emulator runs.
 
 **The file tree** is the Files tab of every system (above): the ROM folder and the archive as a build would leave them, made from the
 system's scan and following the rules. It is a preview: looking at it moves nothing.
@@ -612,9 +611,10 @@ ratings are read into `ratings/igdb.sqlite` (refreshed weekly) and, per title, t
 **in plain text** in `config.json` and is never sent back to the browser. Nothing is shipped with the app; no key, no IGDB traffic.
 Not yet tried against the live service.
 
-**Undo.** One undo log covers the moves and the playlists: **Undo last** moves the files
-back, removes the playlists the build created (only if unchanged) and restores the outdated
-playlists it deleted.
+**There is no Undo** (removed in 0.4). A build renames and moves, never over another file: what the rules set aside is in the
+reason folders or the archive, and changing a rule and building again moves it back. The only files ever deleted are the originals of a
+conversion or a 7z repack, once the new file has been checked against the database (the rules "Delete the originals after converting"
+and "Compress games as 7z").
 
 With the library rules switched off the older behaviour remains: **Latest
 version only** moves older versions to `_superseded/` using the same ranking as
@@ -654,7 +654,7 @@ name and moves along with the folder. A loose `.chd` in the system folder gets a
 its sidecars (files that start with its name). A CHD that matches no Redump entry moves **with its whole folder**
 into `_unmatched/<folder>`; other unrelated files are handled by the usual unmatched rules (frontend files such as
 `gamelist.xml` / `media/` stay). Two copies of one game: the one with more files (your saves) stays, the other
-moves whole to `_duplicates/`. Every step is previewed first, never overwrites, and is undoable (one undo log).
+moves whole to `_duplicates/`. Every step is previewed first and never overwrites.
 
 **Where Redump comes from.** `http://redump.org/datfile/dc/` - **plain HTTP only** (redump.org refuses
 HTTPS connections). At every start the app sends one `HEAD` request (user agent `simple-rom-organiser/<version>`)
@@ -727,8 +727,7 @@ as `<Redump name>.chd.romorg.part` next to its final place (that is the intended
 and compares every track with Redump**, and
 only if all tracks match renames it into `<Redump name>/<Redump name>.chd` and moves the raw files to
 `_converted_originals/<their path>` (nothing is deleted). Any failure, mismatch, missing space or Cancel leaves the raw files
-untouched and no `.part` / temp files behind. About the disc size must be free next to the games during a conversion. **Undo last**
-removes the new CHD (after checking its SHA-1) and puts the raw files back.
+untouched and no `.part` / temp files behind. About the disc size must be free next to the games during a conversion.
 
 **Library rules for Redump names** (`Title (Region) (Languages) (Rev A) (Disc 1)`), in the same panel as the
 consoles: *Demos / samples* (`(Demo)`, `(Sample)`, the Japanese `(Taikenban)` / `(Tentou Taikenban)` /
@@ -752,7 +751,7 @@ A loose CHD (the usual PS2 library: `Gran Turismo 4 (USA).chd` next to its `.sta
 own folder; the folder, the CHD and every file that starts with the CHD's old name are renamed to the Redump name
 (so `Tony Hawk's Pro Skater 4 (USA).chd` becomes `Tony Hawk's Pro Skater 4 (USA) (v1.02)/...` and its save states
 follow); other files in a game folder move along; a game folder that matches nothing goes whole to `_unmatched/`; raw
-sets are left alone except via *Convert*. Preview first, undo log, nothing overwritten.
+sets are left alone except via *Convert*. Preview first, nothing overwritten.
 
 **What is matched.** PlayStation: every game is a `.cue` + `(Track N).bin` per track (a single-track disc: one
 `.bin`). PlayStation 2: 8,606 DVD games are ONE `.iso`, 3,168 CD games are `.cue` + `.bin`. A CHD made with
@@ -807,13 +806,12 @@ Organise only renames. **Convert** writes a clean copy of each copier-headered S
 (header removed -> `.sfc`) and each byte-swapped N64 dump (-> big-endian `.z64`; also a
 `.v64` that matches one of the DAT's own `.v64` entries, when the set has a `.z64`) under its
 exact DAT name, checks it against the DAT's SHA-1, and moves the original to
-`_converted_originals/` (keeping its relative path). Nothing is deleted;
-**Undo last** removes the converted copies (only if unchanged) and puts the originals back.
+`_converted_originals/` (keeping its relative path). Nothing is deleted.
 Single-file `.zip` archives are converted into a new `.zip`; `.7z` / `.rar` and zips with
 several files are skipped ("extract the archive first"). NES dumps are not converted,
 because emulators need the iNES header.
 
-## Organising safety and undo
+## Organising safety
 
 - **Nothing is ever overwritten.** If the target already exists the file is skipped
   (`conflict`). Extra copies of the same ROM are not conflicts: one is kept and the others
@@ -823,15 +821,9 @@ because emulators need the iNES header.
   with `_`, since Steam Deck SD cards are often exFAT.
 - Moves use a hard link + unlink where the file system supports it, so a file that
   appears at the target during the apply is never replaced.
-- Every apply writes an undo log `.romorg-undo-<timestamp>.json` into the platform folder,
-  *before* each move, so even an apply interrupted by closing the app, a shutdown or a
-  crash can be undone. Paths in the log are relative to the platform folder, so undo still
-  works after the SD card is mounted somewhere else.
-  **Undo last** restores the original paths (recreating removed folders and removed
-  playlists), skipping files that have since been moved or replaced. If some files could
-  not be restored the log is kept with just those, so you can fix the cause and undo again.
-  Undo never touches anything outside the platform folder. The folder is re-scanned after
-  apply and undo.
+- Each move is one rename that never overwrites, so an apply interrupted by closing the app, a shutdown or a crash leaves
+  every file whole, in its old place or its new one; the next build finishes the job. Nothing is written into the
+  platform folder but your games (no logs, no journals). The folder is re-scanned after an apply.
 - Closing the app (Quit, SIGTERM from Steam, Ctrl+C) during an apply stops it between two
   moves.
 
@@ -859,13 +851,13 @@ the source and are not copied. The choice is remembered.
 
 - **How files get there:** **Copy** (the default) leaves the source with all its files; it works across drives and on exFAT SD
   cards. **Move** takes the files out of the source folder: a rename on one drive (instant, nothing written again), else a
-  copy that is checked and then removed. Undo moves them back. There are no links. Move cannot be combined with *keep in
+  copy that is checked and then removed. There are no links. Move cannot be combined with *keep in
   sync* (the originals are gone, so there is nothing to compare with).
 - **Safe:** the destination may not be inside the source or contain it; a different file already at a target is never
   overwritten (shown as a conflict); copies are written under a temporary name and renamed when complete; the free
   space is checked first. Running it again only adds what is missing.
-- **Undo last build** removes only what the build added (recorded in `<destination>/.romorg-library/library.sqlite`),
-  and leaves any file you changed since. Your own files in the destination are never touched.
+- What the build added is recorded in `<destination>/.romorg-library/library.sqlite`, so a later build knows which files are
+  its own. Your own files in the destination are never touched.
 - **Keep the destination in sync** (off by default): the build then also brings the
   destination in line with the source.
   - A file this app built earlier that your rules no longer keep, or whose source is gone, is **removed**.
@@ -874,8 +866,6 @@ the source and are not copied. The choice is remembered.
   - The preview lists the counts (*To remove*, *To replace*, *Edited by you*) before anything is done.
   - Safety: a sync that would keep nothing (source empty or not mounted) removes nothing. A sync that would remove most of
     the library (over 20 files and over half) is refused until you confirm it separately.
-  - **Undo last build** also puts removed files back from the source where it still has them. A file replaced by a newer
-    version is not turned back into the old one.
 - Save files and other files lying next to discs stay in the source unless "Also copy save files ..." is ticked.
 - The plan for the next steps is in `docs/V0_2_PLAN.md`.
 
@@ -900,8 +890,47 @@ and what the rules leave out stays in the system's folder in `_excluded`, `_supe
 common one; Settings lists the systems that have their own). After the build, what the rules leave out is moved to the archive,
 **straight from where it was**, into a folder named like this system's own:
 `<archive>/<system folder name>/_excluded`, `_superseded`, `_incomplete`, `_duplicates` and `_unmatched`. The Library tab lists
-the folders for the system you have open. The system folder then holds only what you keep, the preview counts the files, and
-**Undo last** brings them back first, then reverts the build.
+the folders for the system you have open. The system folder then holds only what you keep, the preview counts the files.
+
+## The archive in an S3 bucket (v0.4)
+
+The archive can be an S3 bucket instead of a folder: MEGA S4 or any S3-compatible service. Type `s3://<bucket>/<folder>` where you
+would choose the archive folder (in Settings for every system, or on a system's Library tab for it alone; the folder part is optional).
+Set up the connection once in **Settings > S3 connection**: the endpoint (MEGA S4's global one is `s3.g.megas4.com`; a region can be
+left empty), the access key ID and the secret key. The secret key goes into a file of its own in the app's data folder (`s3-secret`,
+readable only by you) and is never shown again; **Test connection** lists the bucket, puts a small object with metadata, reads it back
+and deletes it, and says whether checksums can be checked without downloading.
+
+A build then does what it does with an archive folder, with one difference: each file the rules set aside is **uploaded** to
+`<bucket>/<folder>/<system folder name>/_excluded/...` (`_superseded`, `_duplicates`, `_unmatched`, `_saves` ...), checked in the
+bucket (its size, its MD5 and its SHA-1, kept with the object as metadata together with its CRC32 and the path it came from), and
+only then **deleted from the disk**. No local copy is kept. A name another object already has gets a number, as in a folder; an
+object is never replaced. A build that cannot reach the bucket stops before it moves anything. Uploads a killed build left unfinished
+are cleared at the next build.
+
+The file tree's **Archive** tab shows the bucket, marked **S3**, with its address: what is in the bucket already (*In the bucket*,
+read from its listing: nothing is downloaded) and what the build uploads (*Uploaded*). Scanning the system reads the listing again.
+
+## Restoring from the archive (v0.4)
+
+The file tree's **Archive** tab (a folder or an S3 bucket) has a tick box on every file and folder that is in the archive; tick
+what you want back and press **Restore** (a folder: everything in it). The archive **keeps its copy**; nothing there is changed.
+
+* A file whose game is recognised goes where a build puts a kept game, **under its database name** - and in the form the library
+  keeps it: a raw cartridge dump becomes a `.7z` where the system's games are kept as 7z, a raw disc (`.iso`, `.cue` / `.gdi` and
+  tracks) becomes a CHD in its game's folder (the rules *Compress games as 7z* and *Convert when building*, as a build would). A file
+  already in that form comes back as it is.
+* A file that is not recognised goes back to the path it came from (an S3 object remembers it; otherwise its path in the archive
+  without the reason folder).
+* Saves in `_saves` are not restored yet.
+* A restored game the rules still leave out is archived again by the next build; change the rules to keep it. It is not uploaded or
+  copied a second time: the archive already holds the same file, so only the local copy goes.
+
+**Missing games the archive holds.** On the ROM folder side, a game the rules want that your folder lacks but the archive holds is
+marked **In the archive**; its details have **Restore from the archive**, and the tree offers **Restore N missing games from the
+archive** for all of them. The archive is matched without downloading anything: an archive folder is scanned like the ROM folder
+(when the system is scanned); an S3 object by what was recorded when it was uploaded (the game the build identified, its SHA-1, a
+zip's / 7z's member CRCs). The app assumes it manages the bucket: objects other tools put there are not looked into.
 
 ## Disc images (CHD) and converting first (v0.2)
 
@@ -914,14 +943,14 @@ the folders for the system you have open. The system folder then holds only what
   on its own Settings tab; off by default): *Convert raw discs to CHD* for the disc systems, *Clean up dumps* for the SNES (copier headers)
   and N64 (byte order). It is a step of **Build library**, not a separate job: the Files tree shows what it will do (the new CHD in its game's
   folder, the original in `_converted_originals`, or marked deleted), and the build converts first (each CHD is checked against Redump before
-  the original is touched), re-reads the folder and then builds the library. **Undo last** reverts both. What counts as a raw disc: an `.iso`,
+  the original is touched), re-reads the folder and then builds the library. What counts as a raw disc: an `.iso`,
   a `.cue` / `.gdi` with its tracks, and a **`.zip` or `.7z` that holds one** (read without unpacking: the tracks are streamed through
   their checksums, the CRC-32 the archive lists rules most games out first, the answer is remembered per archive; a 7z needs no 7-Zip when it
   is LZMA / LZMA2). A zipped disc is unpacked only to convert it, into a work folder next to where the CHD goes, and that folder is removed.
   A GD-ROM in an archive needs a `.gdi` inside. An archive with no disc image in it, or a damaged one, is left as it was.
 - **Delete the originals after converting** (a rule too, disc systems only, off by default): off, the originals (the `.iso`, the zip, the
   cue and its tracks) are kept in `_converted_originals`. On, they are deleted once the CHD has been checked against Redump, and the build's
-  confirmation says so; **Undo cannot bring them back**, so it also never takes the CHD away.
+  confirmation says so.
 - **A raw disc is named after its game even before it is converted:** with the rule off, an `.iso` or a zip / 7z of one is renamed to
   `<Redump name>/<Redump name>.iso` (or `.zip`, `.7z`) like a CHD game is. A `.cue` with tracks is converted, not renamed.
 
@@ -948,19 +977,19 @@ with no RetroArch found, and none chosen, nothing on its card matters.
   Each core keeps its own folder (`bsnes/`, `Flycast/` ...): nothing is merged. States and their `.png` thumbnails go to the
   state folder, everything else to the save folder. Turning one folder per core off flattens the core folders; turning it on
   cannot tell which core a flat file belongs to: those files are moved as they are and listed. Nothing changes while RetroArch
-  is running (it rewrites its config when it closes); **Undo last change** moves the files back and restores the config.
+  is running (it rewrites its config when it closes); the old `retroarch.cfg` is kept as a backup next to it.
 - **Asset folders** (folded away): RetroArch's menu assets, content database, cheats, playlists, thumbnails, downloaded core
   assets, controller remaps and config browser folder, each with the folder RetroArch uses now ("RetroArch's own" for its default).
   **Change...** on a row points that one setting at a folder you choose, or back at RetroArch's own. Nothing is guessed and no
   file is moved: only that setting in `retroarch.cfg` changes (the favourites / history lists follow the playlist folder), the
-  config is backed up first, and **Undo last change** restores it.
+  config is backed up first.
 - **PCSX2** is also looked for in RetroArch's system folder (`<system>/pcsx2`, where RetroArch's PlayStation 2 core keeps its
   memory cards and states, and where many set a standalone PCSX2's folders too).
 - **Saves follow the games:** RetroArch finds a save by the game's file name (`<name>.srm`, `<name>.state`, `.state1` ...,
   `<name>.state1.png`, Flycast's `<name>.A1.bin` memory cards ...). When a library build renames a game, its saves and states
   are renamed to match, in the same core folder (cores stay separate). A build into another folder **copies**
   them to the new names and leaves the old ones. Nothing is overwritten (a file already at the new name is left alone).
-  Undoing the build undoes the saves too. It waits if RetroArch is running (RetroArch writes its saves back when it closes).
+  It waits if RetroArch is running (RetroArch writes its saves back when it closes).
   The switch is **Rename saves with their ROMs** in the Library rules.
 - **Saves in the scan, the library and the builds:** all of this exists only when the app knows a RetroArch config (it found an
   install, or you chose a `retroarch.cfg` on this page). Without one the app does not look at any save folder, shows no saves
@@ -979,18 +1008,18 @@ with no RetroArch found, and none chosen, nothing on its card matters.
   - *Library:* a **Saves** column (sortable), the filters **Games with saves** and **Saves affected by this build**, and on each row
     the choice for that game (below).
   - *Rename:* when a build gives a ROM its database name its saves and states are renamed to match, in the same core folder
-    (a build into another folder copies them). Nothing is overwritten; Undo gives the old names back.
+    (a build into another folder copies them). Nothing is overwritten.
   - *When a rule replaces or archives a game you have saves for* you choose, in your Library defaults (and a system's own rules)
     for every game, and on the Library tab for a single game: **Copy or convert the save to the latest version, leave the existing save**
     (the default: when the version you have is not the one a save belongs to - an older revision, another region, another name, or a ROM the
     rules replace - the save games are copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or
-    PlayStation 2 save is converted for the other disc's game code; the existing save stays and Undo removes the copies), **Keep both ROMs** (the ROM the rules would
+    PlayStation 2 save is converted for the other disc's game code; the existing save stays), **Keep both ROMs** (the ROM the rules would
     replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
     `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
-    used; Undo brings them back) **Leave the saves where they are**, or **Copy the save to the better version**. The last one is for the day you add a better match
+    used) **Leave the saves where they are**, or **Copy the save to the better version**. The last one is for the day you add a better match
     (the version your rules prefer): the old ROM is replaced, and its **save games** (memory cards, battery saves, `.srm`; never
     the save states, which belong to one exact ROM) are copied to the better ROM's name, in the same core folder. A better version that
-    already has a save of its own is never overwritten (the preview says so); the old save stays where it is; Undo removes the copy.
+    already has a save of its own is never overwritten (the preview says so); the old save stays where it is.
     It is done only where the save works in the other release: cartridge systems (Game Boy, GBA, DS, NES, SNES, N64, Master System,
     Game Gear, Mega Drive, 32X, Lynx) in every region; PlayStation, PlayStation 2, GameCube, Wii and Dreamcast only when both releases share a
     region (their memory cards name the files after the disc's region code). Where it would not work, both ROMs stay, as with Keep.
@@ -1000,14 +1029,14 @@ with no RetroArch found, and none chosen, nothing on its card matters.
     save is invisible to the European disc, whose code differs. With this choice the copy is rewritten for the better version: the app reads
     both discs' product codes (from the `.chd` or `.iso`; a game whose disc it cannot read keeps both ROMs), changes that one save's name on
     the card copy and its checksum byte, and leaves everything else on the card (other games' saves, the save's data) byte for byte. A card
-    without a save of that game (an empty card) is not copied. The old card is never touched; Undo removes the converted copy. It is
+    without a save of that game (an empty card) is not copied. The old card is never touched. It is
     written from the card format and checked against your own cards, but not against a real console: a game that keeps the region inside
     its save data may still refuse the save.
     **PlayStation 2** (PCSX2): a save there is a folder named after the disc's code (`BASLUS-20946GTA50000`), so the same rewrite is done on
     that name and on the file inside that carries it. On a *folder card* the save's folder is copied under the new name (PCSX2's own
     `_pcsx2_*` files are left out). In a *card image* (`.ps2`, with or without the spare bytes after each page) the names are rewritten in
     place, so the save is **moved**, not copied; the changed pages' error-correcting codes are recomputed, and the old image is kept in the
-    app's data folder (`retroarch-undo/replaced`) so Undo puts the card back exactly as it was. A card that already has a save under the new
+    save backups folder (`save-backups/replaced` in the app's data folder, or the backup folder you chose). A card that already has a save under the new
     name is left alone (the preview says so), and nothing is done while PCSX2 is running.
  
     Nothing is moved while RetroArch is running (the ROMs are still archived); a build into another folder never archives
@@ -1024,7 +1053,7 @@ with no RetroArch found, and none chosen, nothing on its card matters.
   system). Missing files are looked for in all those ROM folders, one more folder you can name: by name,
   and, when the checksum is known, under any other BIOS-looking name. It is one pass with progress (a minute at most; it says
   when it stopped early). **Place found files** moves (or copies) them to the path the core expects inside the system folder.
-  Nothing is overwritten, nothing is written outside the system folder, and **Undo last change** puts them back.
+  Nothing is overwritten and nothing is written outside the system folder.
 - Only for the platform's disk DATs (for Amiga: Games, Workbench, Kickstart-Disks); a set
   never mixes disks from different DATs.
 - Disks are grouped by their TOSEC name with the `(Disk X of Y)` part removed, so each
@@ -1041,7 +1070,7 @@ with no RetroArch found, and none chosen, nothing on its card matters.
 - Existing playlists are only replaced if this app created them (first line
   `# Generated by simple-rom-organiser`); others are reported as `conflict`.
 - Playlists reference current file names, so **organise first, then write playlists**.
-  Organise and undo remove this app's playlists that would point at moved files; write the
+  Organise removes this app's playlists that would point at moved files; write the
   playlists again afterwards. Outdated playlists of this app (disks gone, or replaced by a
   playlist with a new name) are shown as `stale` and removed by **Write playlists**.
 - Sets are matched flexibly: an untouched disk with a bare or shorter crack flag
@@ -1101,7 +1130,7 @@ switched off) shows no saves anywhere: no card, no column, no choice in the Libr
 * **The others** are told by the game's ID, so they never need a new name: Dolphin by the 4-character game code (GameCube `.gci` files
   and Wii `data` folders), Cemu by the title ID (Cemu's own `title_list_cache.xml` says which disc is which), PCSX2 by the disc's serial
   (read from `SYSTEM.CNF`; memory-card folders and save states). A game that has saves is **kept** when the rules would archive it (or you
-  choose to archive its saves with it: they go to `<archive>/<system>/_saves/...` and Undo brings them back). The saves of a memory card
+  choose to archive its saves with it: they go to `<archive>/<system>/_saves/...`). The saves of a memory card
   *image* (`.ps2`, GameCube `.raw`) cannot be split by game: they are counted but never moved.
 * On the platform page the **Overview** shows "Saves (Dolphin)" and the **Browse** tab has the Saves column and list, with the source.
 
@@ -1243,7 +1272,7 @@ Windows offered opened behind the browser, and the Linux one only worked in Desk
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro
 DATs and their `manifest.json` - kept separate, so updating the TOSEC pack never touches
 them), `cache/` (downloaded pack zip, hash cache), `updates.json` (when the DATs were last
-checked), `whdinstalls/` (the list of WHDLoad installs), `ratings/` (the LaunchBox ratings index, only when a rating filter is used), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Undo logs and playlists
+checked), `whdinstalls/` (the list of WHDLoad installs), `ratings/` (the LaunchBox ratings index, only when a rating filter is used), `redump/` (the Redump DAT) and `config.json` (last system, folder per system, library rules per system, Kickstart destination per system, and for the Dreamcast `chdman_path`, `chd_engine` = `auto` | `python` and `chd_workers` = hash processes, 0 = auto, `temp_dir` = scratch folder for chdman extractions, `temp_ram_reserve_mb` = memory kept free before RAM is used for them). All writes to `config.json` are serialised and applied to the latest file content, so concurrent actions (a scan finishing while you change a rule) never overwrite each other. Set `ROMORG_DATA_DIR` to use a different location. Only playlists
 are written into your platform folder.
 
 ## Adding a platform

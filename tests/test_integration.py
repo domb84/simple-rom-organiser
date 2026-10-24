@@ -2,11 +2,11 @@
 
 platform DATs (+ an AMIX DAT that must be ignored) -> scan a messy platform folder
 -> summary numbers -> plan -> apply (DAT folders + _unmatched/) -> rescan (all ok)
--> undo (byte-for-byte original tree) -> M3Us (relative paths, order, complete sets
+-> the original tree again -> M3Us (relative paths, order, complete sets
 only) -> re-organise -> M3Us inside DAT folders -> Kickstart plan/apply.
 
 No-Intro consoles (SNES / N64 / NES, flat layout): scan -> per-game have/missing ->
-plan (latest only) -> apply -> rescan (all ok) -> convert -> undo convert -> undo organise.
+plan (latest only) -> apply -> rescan (all ok) -> convert.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import os
 import random
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -236,14 +237,14 @@ class IntegrationTest(unittest.TestCase):
         out = organiser.apply_renames(ops, self.root, dat_names=self.platform.dats)
         self.assertEqual(out["failed"], [])
         self.assertEqual(out["moved"], 15)
-        self.assertTrue(Path(out["undo_log"]).is_file())
+        self.assertFalse([p for p in self.root.rglob(".romorg*")])
         for gone in ("stuff", "zips", "deep", "wb", "bios", "sub"):
             self.assertFalse((self.root / gone).exists(), gone)
-        self.assertTrue((self.root / "emptydir").is_dir())
+        self.assertFalse((self.root / "emptydir").exists())          # (a clean library: an empty folder goes, also one already empty)
         self.assertTrue(dup.is_file())  # spare copies are set aside, never deleted
         self.assertTrue((self.root / "mine.m3u").is_file())
         top = {p.name for p in self.root.iterdir() if not p.name.startswith(".")}
-        self.assertEqual(top, {GAMES, WB, FW, "_unmatched", "_duplicates", "emptydir", "mine.m3u"})
+        self.assertEqual(top, {GAMES, WB, FW, "_unmatched", "_duplicates", "mine.m3u"})
 
         # --- rescan: everything matched is in place (spare copies stay set aside)
         res2 = self._scan()
@@ -255,14 +256,11 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual({op.status for op in ops2}, {"ok"})
         self.assertEqual(organiser.plan_counts(ops2)["to_unmatched"], 0)
 
-        # --- undo: original tree back, byte for byte, incl. removed/created dirs
-        logs = organiser.list_undo_logs(self.root)
-        self.assertEqual(len(logs), 1)
-        u = organiser.undo(logs[0])
-        self.assertEqual(u["failed"], [])
-        self.assertEqual(u["restored"], 15)
-        self.assertEqual(snapshot(self.root), original)
-        self.assertEqual(organiser.list_undo_logs(self.root), [])
+        # --- the messy folder again (there is no undo: it is made anew)
+        for p in self.root.iterdir():
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+        self._build_folder()
+        self.assertEqual(set(snapshot(self.root)), set(original))          # (the same files; the junk blobs are random)
 
         # --- m3u on the original layout: relative paths, disk order, complete sets only
         res3 = self._scan()
@@ -356,7 +354,7 @@ PLAIN_SYSTEMS = (
 
 
 class PlainSystemsIntegrationTest(unittest.TestCase):
-    """The systems whose DAT hashes are those of the files as they are: scan -> plan -> apply -> settled -> undo."""
+    """The systems whose DAT hashes are those of the files as they are: scan -> plan -> apply -> settled."""
 
     def test_flow_of_every_plain_system(self) -> None:
         for name, ext in PLAIN_SYSTEMS:
@@ -409,13 +407,11 @@ class PlainSystemsIntegrationTest(unittest.TestCase):
         res2 = scanner.scan(root, dats, use_cache=False, alt_hashes=plat.alt_hashes, layout=plat.layout)
         again = [o for o in organiser.plan_renames(res2, latest_only=True) if o.status not in ("ok", "skip")]
         self.assertEqual(again, [], name)
-        organiser.undo(Path(out["undo_log"]))
-        self.assertEqual({k: v for k, v in snapshot(root).items() if not k.startswith("_")}, before)
 
 
 class NoIntroIntegrationTest(unittest.TestCase):
     """Console flow: scan -> per-game counts -> plan (latest only) -> apply -> rescan ->
-    convert -> undo convert -> undo organise (byte-exact)."""
+    convert."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -527,7 +523,6 @@ class NoIntroIntegrationTest(unittest.TestCase):
         out = organiser.apply_renames(ops, self.root, dat_names=[SNES])
         self.assertEqual(out["failed"], [])
         self.assertEqual(out["moved"], 6)
-        org_log = Path(out["undo_log"])
         for gone in ("sub", "zips"):
             self.assertFalse((self.root / gone).exists(), gone)
         res2 = self._assert_settled("Super Nintendo Entertainment System")
@@ -554,17 +549,6 @@ class NoIntroIntegrationTest(unittest.TestCase):
         # every file in place except the superseded Rev 1 (in _superseded/ only with latest-only)
         self.assertEqual((s3["to_rename"], s3["correctly_placed"]), (0, s3["matched_files"] - 1))
         self.assertEqual(convert.plan_conversions(res3), [])
-
-        # --- undo convert, then undo organise -> byte-exact original tree
-        u1 = organiser.undo(Path(c["undo_log"]))
-        self.assertEqual(u1["failed"], [])
-        self.assertEqual(u1["created_removed"], 1)
-        self.assertFalse((self.root / "Charlie (Japan).sfc").exists())
-        self.assertTrue((self.root / "Charlie (Japan).smc").is_file())
-        u2 = organiser.undo(org_log)
-        self.assertEqual(u2["failed"], [])
-        self.assertEqual(snapshot(self.root), original)
-        self.assertEqual(organiser.list_undo_logs(self.root), [])
 
     # ------------------------------------------------------------------ N64
 
@@ -606,7 +590,6 @@ class NoIntroIntegrationTest(unittest.TestCase):
         self.assertEqual(dst["notes.txt"], "_unmatched/notes.txt")
         out = organiser.apply_renames(ops, self.root, dat_names=[N64])
         self.assertEqual(out["failed"], [])
-        org_log = Path(out["undo_log"])
         res2 = self._assert_settled("Nintendo 64")
 
         cops = {self._rel(op.src): op for op in convert.plan_conversions(res2)}
@@ -630,10 +613,6 @@ class NoIntroIntegrationTest(unittest.TestCase):
         res3 = self._assert_settled("Nintendo 64")
         self.assertEqual(res3.summary()["games_have"], 4)
         self.assertEqual(res3.summary()["convertible"], 0)
-
-        self.assertEqual(organiser.undo(Path(c["undo_log"]))["created_removed"], 4)
-        self.assertEqual(organiser.undo(org_log)["failed"], [])
-        self.assertEqual(snapshot(self.root), original)
 
     # ------------------------------------------------------------------ NES
 
@@ -672,8 +651,6 @@ class NoIntroIntegrationTest(unittest.TestCase):
         self.assertEqual(out["failed"], [])
         self._assert_settled("Nintendo Entertainment System")
         self.assertEqual(convert.plan_conversions(self._scan("Nintendo Entertainment System")), [])
-        self.assertEqual(organiser.undo(Path(out["undo_log"]))["failed"], [])
-        self.assertEqual(snapshot(self.root), original)
 
 
 class IpfSetsTest(unittest.TestCase):
@@ -834,36 +811,26 @@ class LibraryIntegrationTest(unittest.TestCase):
                          {k: 0 for k in rc2 if k not in ("kept", "bios", "playlists_ok")})
         self.assertEqual(res2.summary()["duplicates"], 0)
         out2 = organiser.apply_renames(plan2.ops, self.root, playlists=plan2.playlists)
-        self.assertEqual((out2["moved"], out2["playlists_written"], out2["undo_log"]), (0, 0, None))
+        self.assertEqual((out2["moved"], out2["playlists_written"]), (0, 0))
         self.assertEqual(snapshot(self.root), built)
 
-        # one undo: the playlists it created are gone and every file is back
-        u = organiser.undo(Path(out["undo_log"]))
-        self.assertEqual((u["failed"], u["created_removed"]), ([], 3))
-        self.assertEqual(snapshot(self.root), self.original)
-
-    def test_interrupted_build_then_undo_then_build_again(self) -> None:
+    def test_an_interrupted_build_is_finished_by_the_next_build(self) -> None:
         _, plan = self._plan()
-        steps = sum(1 for op in plan.ops if op.status in organiser.MOVE_STATUSES or op.status == "delete")
-        for stop_after in (3, steps, steps + 1):          # mid-moves, before the playlists, mid-playlists
-            calls: list[int] = []
+        calls: list[int] = []
 
-            def cancel() -> bool:
-                calls.append(1)
-                return len(calls) > stop_after
-
-            out = organiser.apply_renames(plan.ops, self.root, playlists=plan.playlists, cancel=cancel)
-            self.assertTrue(out["cancelled"], stop_after)
-            self.assertEqual(out["failed"], [])
-            if stop_after > steps:
-                self.assertEqual(out["playlists_written"], 1)
-            u = organiser.undo(Path(out["undo_log"]))
-            self.assertEqual(u["failed"], [], u)
-            self.assertEqual(snapshot(self.root), self.original, stop_after)
+        def cancel() -> bool:
+            calls.append(1)
+            return len(calls) > 3                         # stopped in the middle of the moves
+        out = organiser.apply_renames(plan.ops, self.root, playlists=plan.playlists, cancel=cancel)
+        self.assertTrue(out["cancelled"])
+        self.assertEqual(out["failed"], [])
+        self.assertFalse([p for p in self.root.rglob("*.romorg-tmp-*")])        # every move is whole: nothing half done
         _, again = self._plan()
-        self.assertEqual([(o.src, o.dst, o.status) for o in again.ops], [(o.src, o.dst, o.status) for o in plan.ops])
         out = organiser.apply_renames(again.ops, self.root, playlists=again.playlists)
-        self.assertEqual((out["failed"], out["playlists_written"]), ([], 3))
+        self.assertEqual(out["failed"], [])
+        _, settled = self._plan()
+        self.assertEqual({o.status for o in settled.ops}, {"ok"})
+        self.assertEqual({p.status for p in settled.playlists}, {"ok"})
 
 
 class BorrowIntegrationTest(unittest.TestCase):
@@ -900,7 +867,7 @@ class BorrowIntegrationTest(unittest.TestCase):
         profile = dataclasses.replace(library.default_profile(self.platform), **changes)
         return organiser.plan_library(res, profile, missing_dats=missing)
 
-    def test_build_rebuild_empty_undo(self) -> None:
+    def test_build_rebuild_empty(self) -> None:
         plan = self.plan()
         rel = {op.src.name: (op.dst.relative_to(self.root).as_posix(), op.code) for op in plan.ops if op.kind != "m3u"}
         self.assertEqual(rel["d0.adf"][0], f"{GAMES}/{self.D[0]}")
@@ -926,12 +893,8 @@ class BorrowIntegrationTest(unittest.TestCase):
         self.assertEqual({p.status for p in plan2.playlists}, {"ok"})
         self.assertEqual(organiser.reason_counts(plan2)["borrowed_sets"], 1)
         out2 = organiser.apply_renames(plan2.ops, self.root, playlists=plan2.playlists)
-        self.assertEqual((out2["moved"], out2["playlists_written"], out2["undo_log"]), (0, 0, None))
+        self.assertEqual((out2["moved"], out2["playlists_written"]), (0, 0))
         self.assertEqual(snapshot(self.root), built)
-
-        u = organiser.undo(Path(out["undo_log"]))
-        self.assertEqual(u["failed"], [])
-        self.assertEqual(snapshot(self.root), self.original)
 
     def test_option_off_leaves_the_set_incomplete(self) -> None:
         plan = self.plan(borrow_other_editions=False)
@@ -1030,7 +993,7 @@ class LibraryScenarioTest(unittest.TestCase):
         self.assertEqual([(o.src.name, o.status) for o in plan.ops if o.status != "ok"], [])
         self.assertLessEqual({p.status for p in plan.playlists}, {"ok"})
 
-    def test_amiga_build_rebuild_undo_and_rule_toggle(self) -> None:
+    def test_amiga_build_rebuild_and_rule_toggle(self) -> None:
         self._amiga()
         res, plan = self._plan()
         m = _rels(plan, self.root)
@@ -1091,11 +1054,6 @@ class LibraryScenarioTest(unittest.TestCase):
         _, plan4 = self._plan(prof)
         self._assert_empty(plan4)
 
-        # undo both builds -> the original tree, byte for byte, playlists gone
-        for log in organiser.list_undo_logs(self.root):
-            self.assertEqual(organiser.undo(log)["failed"], [])
-        self.assertEqual(snapshot(self.root), self.original)
-
     def test_amiga_all_sets_complete_have_exactly_one_per_game(self) -> None:
         self._amiga()
         _, plan = self._plan()
@@ -1140,7 +1098,7 @@ class LibraryScenarioTest(unittest.TestCase):
                                                           languages=())
         return res, organiser.plan_library(res, profile, missing_dats=missing)
 
-    def test_nointro_build_rebuild_undo_and_rule_toggle(self) -> None:
+    def test_nointro_build_rebuild_and_rule_toggle(self) -> None:
         self._nointro_root()
         res, plan = self._ni_plan()
         m = _rels(plan, self.root)
@@ -1180,10 +1138,6 @@ class LibraryScenarioTest(unittest.TestCase):
         self.assertEqual(out3["failed"], [])
         _, plan4 = self._ni_plan(prof)
         self._assert_empty(plan4)
-
-        for log in organiser.list_undo_logs(self.root):
-            self.assertEqual(organiser.undo(log)["failed"], [])
-        self.assertEqual(snapshot(self.root), self.original)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 __all__ = ["Install", "WinSystem", "detect_installs","read_cfg", "resolve", "settings_of", "is_running", "write_cfg",
-           "classify", "plan_relocation", "apply_relocation", "undo_relocation", "list_undo", "override_warnings",
+           "classify", "plan_relocation", "apply_relocation", "override_warnings",
            "SETTING_KEYS", "split_save", "match_save", "pairs_from_moves", "plan_follow", "apply_follow", "core_infos",
            "cores_for_platform", "cores_for_platforms", "check_bios_cores", "check_bios", "apply_bios", "shared_base", "shared_folders", "apply_shared"]
 
@@ -499,7 +499,7 @@ def _same_file_other_case(a: Path, b: Path) -> bool:
 
 def _fresh(path: Path) -> Path:
     """``path``, or ``<name>-2``, ``-3`` ... (before the extension) when it is taken: two changes within one second
-    must not share a journal, a backup zip or a config backup."""
+    must not share a backup zip or a config backup."""
     path = Path(path)
     stem, suffix = (path.name, "") if BACKUP_SUFFIX in path.name else (path.stem, path.suffix)
     n, out = 1, path
@@ -779,21 +779,17 @@ def _remove_empty(dirs: Iterable[Path], keep: Iterable[Path]) -> int:
     return removed
 
 
-def apply_relocation(install: Install, rel: Relocation, journal_dir: Path, backup_zip: Optional[Path] = None,
+def apply_relocation(install: Install, rel: Relocation, backup_zip: Optional[Path] = None,
                      progress: Optional[Callable[[int, int, str], None]] = None) -> dict:
-    """Back up, move the files, remove the folders that were emptied, write ``retroarch.cfg``. Returns a summary and the
-    undo journal's path. Refuses while RetroArch runs.
+    """Back up, move the files, remove the folders that were emptied, write ``retroarch.cfg`` (its old content kept as a
+    backup). Returns a summary. Refuses while RetroArch runs.
 
-    A file that cannot be put into the backup zip (it is open in another program) is not moved. Whatever was moved is in
-    the journal, also when writing ``retroarch.cfg`` fails in the end (``cfg_error``)."""
+    A file that cannot be put into the backup zip (it is open in another program) is not moved. When writing
+    ``retroarch.cfg`` fails in the end the files stay moved (``cfg_error``); the backup zip has them."""
     if is_running():
         raise RuntimeError("RetroArch is running. Close it first: it rewrites its config when it exits.")
     todo = [m for m in rel.moves if m.status in ("move", "needs_core") and m.src != m.dst]
-    res: Dict[str, Any] = {"moved": 0, "failed": [], "removed_dirs": 0, "backup": None, "cfg_backup": None, "journal": None}
-    journal_dir = Path(journal_dir)
-    journal_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    journal = _fresh(journal_dir / f"saves-{stamp}.json")
+    res: Dict[str, Any] = {"moved": 0, "failed": [], "removed_dirs": 0, "backup": None, "cfg_backup": None}
     if backup_zip is not None and todo:
         backup_zip = Path(backup_zip)
         backup_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -813,7 +809,6 @@ def apply_relocation(install: Install, rel: Relocation, journal_dir: Path, backu
                                                     for i, m in enumerate(todo) if m in saved], indent=1))
         todo = saved
         res["backup"] = str(backup_zip)
-    done: List[dict] = []
     dirs: set = set()
     for i, m in enumerate(todo):
         if progress:
@@ -823,7 +818,6 @@ def apply_relocation(install: Install, rel: Relocation, journal_dir: Path, backu
             if os.path.lexists(m.dst):
                 raise FileExistsError("a file appeared there since the preview")
             _move(m.src, m.dst)
-            done.append({"from": str(m.src), "to": str(m.dst)})
             dirs.add(m.src.parent)
             res["moved"] += 1
         except OSError as exc:
@@ -831,126 +825,13 @@ def apply_relocation(install: Install, rel: Relocation, journal_dir: Path, backu
     res["removed_dirs"] = _remove_empty(dirs, keep=[Path(rel.new["save"]), Path(rel.new["state"]), install.base])
     old_roots = [Path(rel.old["save"]), Path(rel.old["state"])]
     res["removed_dirs"] += _remove_empty(old_roots, keep=[Path(rel.new["save"]), Path(rel.new["state"]), install.base])
-    cfg_backup = None
-    record: Dict[str, Any] = {}
     if not res["failed"]:
         try:
-            cfg_backup = write_cfg(install.cfg, rel.changes)
-            res["cfg_backup"] = str(cfg_backup)
-            record = _cfg_record(install.cfg, rel.changes)
-        except OSError as exc:                                # the files are moved: the journal below can bring them back
+            res["cfg_backup"] = str(write_cfg(install.cfg, rel.changes))
+        except OSError as exc:
             res["cfg_error"] = str(exc)
             res["failed"].append({"path": str(install.cfg), "error": f"retroarch.cfg was not changed: {exc}"})
-    journal.write_text(json.dumps({"install": install.cfg.as_posix(), "moves": done, "cfg_backup": str(cfg_backup or ""),
-                                   "old": rel.old, "new": rel.new, "undone": False, **record}, indent=1), encoding="utf-8")
-    res["journal"] = str(journal)
     return res
-
-
-def _cfg_record(cfg: Path, changes: Dict[str, Any]) -> dict:
-    """What undo needs to know about a config change: the keys, and the file's checksum right after it."""
-    try:
-        return {"cfg_keys": sorted(changes), "cfg_md5": md5_of(cfg)}
-    except OSError:
-        return {"cfg_keys": sorted(changes)}
-
-
-def _restore_cfg(d: dict) -> bool:
-    """Undo a config change. The backup is put back whole while ``retroarch.cfg`` is still as this app wrote it. When
-    it has changed since (RetroArch saved other settings), only the keys this app changed get their old values back."""
-    cb, cfg = d.get("cfg_backup"), d.get("install")
-    if not cb or not cfg or not Path(cb).is_file():
-        return False
-    keys = d.get("cfg_keys") or list(d.get("changes") or {})
-    try:
-        changed = bool(d.get("cfg_md5")) and md5_of(Path(cfg)) != d["cfg_md5"]
-    except OSError:
-        changed = False
-    if changed and keys:
-        old = read_cfg(Path(cb))
-        write_cfg(Path(cfg), {k: old.get(k) for k in keys})
-    else:
-        shutil.copy2(cb, cfg)
-    return True
-
-
-def list_undo(journal_dir: Path) -> List[dict]:
-    """The changes that can be undone, newest first (by the time stamp in the name; within one second by the time the
-    journal was written, so that a rename of saves made after a move is listed, and undone, before it)."""
-    out = []
-    for p in Path(journal_dir).glob("saves-*.json"):
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(d, dict) or d.get("undone"):
-                continue
-            st = p.stat()
-            out.append((p.name[:21], st.st_mtime_ns, p.name,
-                        {"journal": str(p), "name": p.name, "files": len(d.get("moves", [])) or len(d.get("changes", {})),
-                         "kind": d.get("kind", "relocate"), "at": st.st_mtime}))
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-    return [item for _stamp, _at, _name, item in sorted(out, key=lambda t: t[:3], reverse=True)]
-
-
-def undo_relocation(journal: Path) -> dict:
-    """Move the files back (only where the original place is free and the file is still where it was put) and restore
-    ``retroarch.cfg`` (see :func:`_restore_cfg`). A file that is already back (an earlier undo was interrupted) is fine."""
-    if is_running():
-        raise RuntimeError("RetroArch is running. Close it first.")
-    journal = Path(journal)
-    d = json.loads(journal.read_text(encoding="utf-8"))
-    restored, skipped, dirs = 0, [], set()
-    for m in reversed(d.get("moves", [])):
-        src, dst = Path(m["to"]), Path(m["from"])
-        if m.get("replace"):                                # a file rewritten in place: put the saved content back if it is still what the build wrote
-            try:
-                if os.path.lexists(src) and md5_sha1(src) == m.get("sha1") and os.path.isfile(m.get("backup", "")):
-                    tmp = src.with_name(src.name + ".romorg-tmp")
-                    shutil.copy2(m["backup"], tmp)
-                    os.replace(tmp, src)
-                    restored += 1
-                else:
-                    skipped.append({"path": str(src), "reason": "changed since it was rewritten - left as it is"})
-            except OSError as exc:
-                skipped.append({"path": str(src), "reason": str(exc)})
-            continue
-        if m.get("copy"):                                   # a copy made by a build: remove it again if still the same
-            try:
-                if os.path.lexists(src) and os.path.getsize(src) == m.get("size", -1):
-                    _unlink(src)
-                    restored += 1
-                    dirs.add(src.parent)
-                elif os.path.lexists(src):
-                    skipped.append({"path": str(src), "reason": "changed since it was copied - left in place"})
-            except OSError as exc:
-                skipped.append({"path": str(src), "reason": str(exc)})
-            continue
-        there = os.path.lexists(dst) and not _same_file_other_case(src, dst)
-        if not os.path.lexists(src):
-            if not there:                                   # with the file at its original place it is back already
-                skipped.append({"path": str(src), "reason": "no longer there"})
-        elif there:
-            skipped.append({"path": str(dst), "reason": "a file is already at the original place"})
-        else:
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                _move(src, dst)
-                restored += 1
-                dirs.add(src.parent)
-            except OSError as exc:
-                skipped.append({"path": str(src), "reason": str(exc)})
-    cfg_restored = False
-    if not skipped:
-        try:
-            cfg_restored = _restore_cfg(d)
-        except OSError as exc:
-            skipped.append({"path": str(d.get("install", "")), "reason": f"retroarch.cfg was not restored: {exc}"})
-    old = d.get("old") or {}
-    _remove_empty(dirs, keep=[Path(p) for p in (old.get("save"), old.get("state")) if p] + [Path(d["install"]).parent])
-    if not skipped:
-        d["undone"] = True
-        journal.write_text(json.dumps(d, indent=1), encoding="utf-8")
-    return {"restored": restored, "skipped": skipped, "cfg_restored": cfg_restored}
 
 
 # --------------------------------------------------------------------------- saves follow the games
@@ -1198,22 +1079,20 @@ def plan_follow(install: Install, pairs: Iterable[tuple], mode: str = "move", ho
     return out
 
 
-def apply_follow(ops: List[Follow], journal_dir: Path, extra: Optional[dict] = None, install: Optional[Install] = None,
-                 running: Optional[bool] = None) -> dict:
-    """Do the renames / copies (and ``replace``: a file rewritten in place, its old content kept in the journal's folder for Undo). Skipped
+def apply_follow(ops: List[Follow], backup_dir: Path, running: Optional[bool] = None) -> dict:
+    """Do the renames / copies (and ``replace``: a file rewritten in place, its old content kept in ``backup_dir``). Skipped
     (not an error) while RetroArch runs: it writes its saves back on exit; ``running`` says so for another program (None: RetroArch)."""
     todo = [o for o in ops if o.status in ("move", "copy", "replace")]
-    res: Dict[str, Any] = {"followed": 0, "copied": 0, "failed": [], "skipped_running": False, "journal": None}
+    res: Dict[str, Any] = {"followed": 0, "copied": 0, "failed": [], "skipped_running": False}
     if not todo:
         return res
     if is_running() if running is None else running:
         res["skipped_running"] = True
         return res
-    done: List[dict] = []
     for o in todo:
         try:
             if o.status == "replace":
-                backup = Path(journal_dir) / "replaced" / f"{time.strftime('%Y%m%d-%H%M%S')}-{o.src.name}"
+                backup = Path(backup_dir) / "replaced" / f"{time.strftime('%Y%m%d-%H%M%S')}-{o.src.name}"
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 backup = Path(_fresh(backup))
                 shutil.copy2(o.src, backup)
@@ -1226,8 +1105,6 @@ def apply_follow(ops: List[Follow], journal_dir: Path, extra: Optional[dict] = N
                     _discard(tmp)
                     raise
                 res["replaced"] = res.get("replaced", 0) + 1
-                done.append({"from": str(o.src), "to": str(o.src), "copy": False, "replace": str(o.src), "backup": str(backup),
-                             "sha1": hashlib.sha1(o.data or b"").hexdigest(), "size": len(o.data or b"")})
                 continue
             if os.path.lexists(o.dst) and not _same_file_other_case(o.src, o.dst):
                 raise FileExistsError("a file appeared there")
@@ -1252,16 +1129,8 @@ def apply_follow(ops: List[Follow], journal_dir: Path, extra: Optional[dict] = N
             else:
                 _move(o.src, o.dst)
                 res["followed"] += 1
-            done.append({"from": str(o.src), "to": str(o.dst), "copy": o.status == "copy", "size": o.size})
         except OSError as exc:
             res["failed"].append({"path": str(o.src), "error": str(exc)})
-    if done:
-        journal_dir = Path(journal_dir)
-        journal_dir.mkdir(parents=True, exist_ok=True)
-        j = _fresh(journal_dir / f"saves-{time.strftime('%Y%m%d-%H%M%S')}-follow.json")
-        j.write_text(json.dumps({"install": str(install.cfg) if install else "", "kind": "follow", "moves": done,
-                                 "cfg_backup": "", "undone": False, **(extra or {})}, indent=1), encoding="utf-8")
-        res["journal"] = str(j)
     return res
 
 
@@ -1276,15 +1145,6 @@ def _fold(text: str) -> str:
 
 def read_info(path: Path) -> Dict[str, str]:
     return read_cfg(path)
-
-
-def md5_sha1(path: Path) -> str:
-    """The SHA-1 of a file (named for where it is used: Undo of a rewritten file)."""
-    h = hashlib.sha1()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def md5_of(path: Path) -> str:
@@ -1489,12 +1349,10 @@ def check_bios(install: Install, platform: Any, search_dirs: Iterable[Path], hom
     return check_bios_cores(install, cores_for_platform(core_infos(install, home), platform), search_dirs, home, [platform])
 
 
-def apply_bios(install: Install, items: List[dict], journal_dir: Path, mode: str = "move",
-               home: Optional[Path] = None) -> dict:
+def apply_bios(install: Install, items: List[dict], mode: str = "move", home: Optional[Path] = None) -> dict:
     """Put the found files where the cores look for them (``items``: ``{target, source}`` from :func:`check_bios`). Never
-    overwrites; one journal for undo."""
-    res: Dict[str, Any] = {"placed": 0, "failed": [], "journal": None}
-    done: List[dict] = []
+    overwrites."""
+    res: Dict[str, Any] = {"placed": 0, "failed": []}
     system = Path(settings_of(install, home)["system_path"] or install.base / "system")
     for it in items:
         src, dst = Path(it["source"]), Path(it["target"])
@@ -1509,7 +1367,6 @@ def apply_bios(install: Install, items: List[dict], journal_dir: Path, mode: str
             if os.path.lexists(dst):
                 raise FileExistsError("a file is already there")
             dst.parent.mkdir(parents=True, exist_ok=True)
-            size = src.stat().st_size
             if mode == "copy":
                 try:
                     shutil.copy2(src, dst)
@@ -1518,17 +1375,9 @@ def apply_bios(install: Install, items: List[dict], journal_dir: Path, mode: str
                     raise
             else:
                 _move(src, dst)
-            done.append({"from": str(src), "to": str(dst), "copy": mode == "copy", "size": size})
             res["placed"] += 1
         except OSError as exc:
             res["failed"].append({"path": str(dst), "error": str(exc)})
-    if done:
-        journal_dir = Path(journal_dir)
-        journal_dir.mkdir(parents=True, exist_ok=True)
-        j = _fresh(journal_dir / f"saves-{time.strftime('%Y%m%d-%H%M%S')}-bios.json")
-        j.write_text(json.dumps({"install": str(install.cfg), "kind": "bios", "moves": done, "cfg_backup": "", "undone": False},
-                                indent=1), encoding="utf-8")
-        res["journal"] = str(j)
     return res
 
 
@@ -1609,18 +1458,17 @@ def asset_folders(install: Install, home: Optional[Path] = None) -> List[dict]:
     return rows
 
 
-def set_asset_folder(install: Install, key: str, folder: str, journal_dir: Path, home: Optional[Path] = None) -> dict:
-    """Point one asset setting at ``folder`` ("" = back to RetroArch's own). Only retroarch.cfg changes (backed up, journalled)."""
+def set_asset_folder(install: Install, key: str, folder: str, home: Optional[Path] = None) -> dict:
+    """Point one asset setting at ``folder`` ("" = back to RetroArch's own). Only retroarch.cfg changes (backed up)."""
     if key not in {k for k, _l, _n in SHARED}:
         raise KeyError(key)
     want = Path(os.path.expanduser(folder)) if folder else None
     row = {"key": key, "want": str(want) if want else "default", "status": "set",
            "want_cfg": to_cfg_path(want, home, install) if want else "default"}
-    return apply_shared(install, [row], [key], journal_dir, home)
+    return apply_shared(install, [row], [key], home)
 
 
-def apply_shared(install: Install, rows: List[dict], keys: Iterable[str], journal_dir: Path,
-                 home: Optional[Path] = None) -> dict:
+def apply_shared(install: Install, rows: List[dict], keys: Iterable[str], home: Optional[Path] = None) -> dict:
     """Point the chosen settings at the shared folders (files are not moved). Refuses while RetroArch runs."""
     if is_running():
         raise RuntimeError("RetroArch is running. Close it first: it rewrites its config when it exits.")
@@ -1639,12 +1487,6 @@ def apply_shared(install: Install, rows: List[dict], keys: Iterable[str], journa
             if name and (playlist / "builtin" / name).is_file():
                 changes[key] = to_cfg_path(playlist / "builtin" / name, home, install)
     if not changes:
-        return {"changed": [], "cfg_backup": None, "journal": None}
+        return {"changed": [], "cfg_backup": None}
     backup = write_cfg(install.cfg, changes)
-    journal_dir = Path(journal_dir)
-    journal_dir.mkdir(parents=True, exist_ok=True)
-    j = _fresh(journal_dir / f"saves-{time.strftime('%Y%m%d-%H%M%S')}-config.json")
-    j.write_text(json.dumps({"install": str(install.cfg), "kind": "config", "moves": [], "cfg_backup": str(backup),
-                             "changes": {k: str(v) for k, v in changes.items()}, "undone": False,
-                             **_cfg_record(install.cfg, changes)}, indent=1), encoding="utf-8")
-    return {"changed": sorted(changes), "cfg_backup": str(backup), "journal": str(j)}
+    return {"changed": sorted(changes), "cfg_backup": str(backup)}

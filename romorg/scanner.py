@@ -1144,7 +1144,7 @@ def collect_files(root: Path, recursive: bool = True,
                         if (problems is not None and CONVERT_TEMP_MARKER in de.name
                                 and not is_hidden(de.name)):
                             problems.append((Path(de.path), "partial output of an interrupted convert - the "
-                                                            "original is kept (run Undo); safe to delete"))
+                                                            "original is kept; safe to delete"))
                         elif (problems is not None and de.name.endswith(WHDLOAD_BUILD_TEMP)
                                 and not is_hidden(de.name)):
                             problems.append((Path(de.path), "part of a WHDLoad game an interrupted build was writing - safe to "
@@ -1153,7 +1153,7 @@ def collect_files(root: Path, recursive: bool = True,
                                 and not is_hidden(de.name)):
                             original = de.name.split(TEMP_MARKER, 1)[0]
                             problems.append((Path(de.path), "leftover of an interrupted move - rename it "
-                                                            f"back to '{original}' (or run Undo)"))
+                                                            f"back to '{original}'"))
                         continue
                     try:
                         if de.is_dir(follow_symlinks=False):

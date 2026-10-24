@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import hashlib
 import json
 import random
@@ -209,39 +213,6 @@ class LegacyMigrationTests(LayoutBase):
         self.assertIn("_converted_originals/sub/orig.smc", files)
         self.assertIn("_excluded/stray/readme.bin", files)
         self.assertEqual([op for op in self.plan().ops if op.status in organiser.ACTION_STATUSES], [])
-        # undo puts the old tree back byte for byte (dirs included)
-        log = organiser.list_undo_logs(self.root)[0]
-        res = organiser.undo(Path(log["path"]) if isinstance(log, dict) else log, self.root)
-        self.assertEqual(res.get("failed", []), [], res)
-        self.assertEqual(_snapshot(self.root), before)
-
-    def test_old_v3_log_from_the_legacy_layout_still_undoes(self) -> None:
-        # what the previous version wrote: moves INTO _unmatched/_excluded/ and _unmatched/_converted_originals/
-        self.put(f"in/{BAD}")
-        self.put("sub/orig.smc", data=b"orig")
-        before = _snapshot(self.root)
-        steps = [("in/" + BAD, f"_unmatched/_excluded/in/{BAD}"), ("sub/orig.smc", "_unmatched/_converted_originals/sub/orig.smc")]
-        lines = [{"version": 3, "root": str(self.root), "started": "2026-10-01T10:00:00"}]
-        seq = 0
-        for d in ("_unmatched", "_unmatched/_excluded", "_unmatched/_excluded/in", "_unmatched/_converted_originals",
-                  "_unmatched/_converted_originals/sub"):
-            seq += 1
-            lines.append({"op": "mkdir", "path": d, "i": seq})
-        for src, dst in steps:
-            seq += 1
-            lines.append({"op": "move", "src": src, "dst": dst, "i": seq})
-            (self.root / dst).parent.mkdir(parents=True, exist_ok=True)
-            (self.root / src).rename(self.root / dst)
-        lines.append({"op": "end"})
-        for d in ("in", "sub"):
-            (self.root / d).rmdir()
-        log = self.root / ".romorg-undo-20261001-100000.json"
-        log.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
-        res = organiser.undo(log, self.root)
-        self.assertEqual(res.get("failed", []), [], res)
-        files, _dirs = _snapshot(self.root)
-        self.assertEqual(files, before[0])
-        self.assertFalse((self.root / "_unmatched").exists())
 
     def test_legacy_converted_originals_are_recognised_by_scan_and_convert(self) -> None:
         self.put("_unmatched/_converted_originals/sub/a.adf", ALPHA)

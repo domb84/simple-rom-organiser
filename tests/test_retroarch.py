@@ -81,7 +81,7 @@ class Relocate(World):
         new_saves, new_states = self.home / "new" / "saves", self.home / "new" / "states"
         rel = self.plan(new_saves, new_states)
         self.assertEqual(rel.counts()["move"], 5)
-        res = ra.apply_relocation(self.inst, rel, self.home / "j", self.home / "bk" / "b.zip")
+        res = ra.apply_relocation(self.inst, rel, self.home / "bk" / "b.zip")
         self.assertEqual((res["moved"], res["failed"]), (5, []))
         self.assertTrue((new_saves / "bsnes" / "Mario (USA).srm").is_file())
         self.assertTrue((new_states / "bsnes" / "Mario (USA).state1.png").is_file())
@@ -92,18 +92,14 @@ class Relocate(World):
         self.assertTrue(Path(res["backup"]).is_file())
         self.assertTrue(Path(res["cfg_backup"]).is_file())
 
-    def test_flatten_and_undo(self) -> None:
+    def test_flatten(self) -> None:
         rel = self.plan(self.saves, self.saves, False, False)
-        res = ra.apply_relocation(self.inst, rel, self.home / "j")
+        res = ra.apply_relocation(self.inst, rel)
         self.assertEqual(res["moved"], 5)
         self.assertTrue((self.saves / "Mario (USA).srm").is_file())
         self.assertFalse((self.saves / "bsnes").exists())
         self.assertFalse(ra.settings_of(self.inst, self.home)["sort_savefiles_enable"])
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"], out["cfg_restored"]), (5, [], True))
-        self.assertTrue((self.saves / "bsnes" / "Mario (USA).srm").is_file())
-        self.assertTrue(ra.settings_of(self.inst, self.home)["sort_savefiles_enable"])
-        self.assertEqual(ra.list_undo(self.home / "j"), [])
+        self.assertIn('sort_savefiles_enable = "true"', Path(res["cfg_backup"]).read_text())     # (the old config is kept)
 
     def test_flat_files_cannot_be_given_a_core(self) -> None:
         flat = self.home / "flat"
@@ -121,7 +117,7 @@ class Relocate(World):
         (dest / "bsnes" / "Mario (USA).srm").write_bytes(b"mine")
         rel = self.plan(dest, dest)
         self.assertEqual(rel.counts()["conflict"], 1)
-        res = ra.apply_relocation(self.inst, rel, self.home / "j")
+        res = ra.apply_relocation(self.inst, rel)
         self.assertEqual((dest / "bsnes" / "Mario (USA).srm").read_bytes(), b"mine")
         self.assertTrue((self.saves / "bsnes" / "Mario (USA).srm").is_file())
         self.assertEqual(res["moved"], 4)
@@ -130,7 +126,7 @@ class Relocate(World):
         rel = self.plan(self.home / "new", self.home / "new")
         with mock.patch.object(ra, "is_running", return_value=True):
             with self.assertRaises(RuntimeError):
-                ra.apply_relocation(self.inst, rel, self.home / "j")
+                ra.apply_relocation(self.inst, rel)
         self.assertTrue((self.saves / "bsnes" / "Mario (USA).srm").is_file())
 
     def test_override_files_are_reported(self) -> None:
@@ -155,14 +151,11 @@ class Follow(World):
         (self.saves / "Snes9x" / "Mario.srm").write_bytes(b"3")
         ops = ra.plan_follow(self.inst, [("Mario", "Mario World")], "move", self.home)
         self.assertEqual(len(ops), 3)
-        res = ra.apply_follow(ops, self.home / "j", install=self.inst)
+        res = ra.apply_follow(ops, self.home / "j")
         self.assertEqual((res["followed"], res["failed"]), (3, []))
         self.assertTrue((self.saves / "bsnes" / "Mario World.state2").is_file())
         self.assertTrue((self.saves / "Snes9x" / "Mario World.srm").is_file())
         self.assertFalse((self.saves / "bsnes" / "Mario.srm").exists())
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"]), (3, []))
-        self.assertTrue((self.saves / "bsnes" / "Mario.srm").is_file())
 
     def test_every_file_of_a_game_follows_whatever_its_suffix(self) -> None:
         """Cores name their files ``<game><suffix>`` with suffixes of every shape: Flycast's memory cards are
@@ -177,7 +170,7 @@ class Follow(World):
             (d / n).write_bytes(b"x")
         ops = ra.plan_follow(self.inst, [("Dave Mirra (USA)", "Dave Mirra Freestyle BMX (USA)")], "move", self.home)
         self.assertEqual(sorted(o.src.name for o in ops if o.src.parent == d), sorted(mine))
-        res = ra.apply_follow(ops, self.home / "j", install=self.inst)
+        res = ra.apply_follow(ops, self.home / "j")
         self.assertEqual(res["failed"], [])
         for n in mine:
             self.assertTrue((d / n.replace("Dave Mirra (USA)", "Dave Mirra Freestyle BMX (USA)", 1)).is_file(), n)
@@ -187,15 +180,12 @@ class Follow(World):
         self.assertEqual(ra.match_save("Dr. Mario (USA).srm", {"Dr": "x"}), None)             # a dot inside the name is not a cut
         self.assertEqual(ra.match_save("Game (USA).state1.png", {"Game (USA)": 1, "Game": 2}), ("Game (USA)", ".state1.png"))
 
-    def test_copy_mode_keeps_both_and_undo_removes_the_copy(self) -> None:
+    def test_copy_mode_keeps_both(self) -> None:
         ops = ra.plan_follow(self.inst, [("Mario (USA)", "Mario - New")], "copy", self.home)
-        res = ra.apply_follow(ops, self.home / "j", install=self.inst)
+        res = ra.apply_follow(ops, self.home / "j")
         self.assertEqual(res["copied"], 3)
         self.assertTrue((self.saves / "bsnes" / "Mario (USA).srm").is_file())
         self.assertTrue((self.saves / "bsnes" / "Mario - New.srm").is_file())
-        ra.undo_relocation(Path(res["journal"]))
-        self.assertFalse((self.saves / "bsnes" / "Mario - New.srm").exists())
-        self.assertTrue((self.saves / "bsnes" / "Mario (USA).srm").is_file())
 
     def test_a_file_with_the_new_name_is_never_overwritten_and_running_retroarch_waits(self) -> None:
         (self.saves / "bsnes" / "Mario.srm").write_bytes(b"old")
@@ -204,7 +194,7 @@ class Follow(World):
         self.assertEqual([o.status for o in ops], ["conflict"])
         ops = ra.plan_follow(self.inst, [("Sonic (USA)", "Sonic 1")], "move", self.home)
         with mock.patch.object(ra, "is_running", return_value=True):
-            res = ra.apply_follow(ops, self.home / "j", install=self.inst)
+            res = ra.apply_follow(ops, self.home / "j")
         self.assertTrue(res["skipped_running"])
         self.assertTrue((self.saves / "Flycast" / "Sonic (USA).srm").is_file())
 
@@ -255,15 +245,13 @@ class Bios(World):
         self.assertEqual(st, {"scph5501.bin": "found", "sub/scph5502.bin": "missing", "other.bin": "missing"})
         self.assertEqual(r["required_missing"], 1)
         items = [{"target": i["target"], "source": i["source"]} for i in r["cores"][0]["firmware"] if i["status"] == "found"]
-        res = ra.apply_bios(self.inst, items, self.home / "j", "move", self.home)
+        res = ra.apply_bios(self.inst, items, "move", self.home)
         self.assertEqual((res["placed"], res["failed"]), (1, []))
         self.assertEqual((self.base / "system" / "scph5501.bin").read_bytes(), self.good)
         self.assertFalse((self.roms / "SCPH-5501.BIN").exists())
         again = ra.check_bios(self.inst, self.psx, [self.roms], self.home)
         self.assertEqual(again["cores"][0]["firmware"][0]["status"], "ok")
         self.assertEqual(again["required_missing"], 0)
-        ra.undo_relocation(Path(res["journal"]))
-        self.assertTrue((self.roms / "SCPH-5501.BIN").is_file())
 
     def test_a_wrong_file_in_place_is_reported_and_never_replaced(self) -> None:
         (self.base / "system" / "scph5501.bin").write_bytes(b"corrupt")
@@ -271,14 +259,14 @@ class Bios(World):
         r = ra.check_bios(self.inst, self.psx, [self.roms], self.home)
         self.assertEqual(r["cores"][0]["firmware"][0]["status"], "wrong")
         res = ra.apply_bios(self.inst, [{"target": str(self.base / "system" / "scph5501.bin"), "source": str(self.roms / "scph5501.bin")}],
-                            self.home / "j", "move", self.home)
+                            "move", self.home)
         self.assertEqual(res["placed"], 0)
         self.assertEqual((self.base / "system" / "scph5501.bin").read_bytes(), b"corrupt")
 
     def test_only_the_system_folder_is_ever_written(self) -> None:
         (self.roms / "x.bin").write_bytes(b"x")
         res = ra.apply_bios(self.inst, [{"target": str(self.home / "elsewhere.bin"), "source": str(self.roms / "x.bin")}],
-                            self.home / "j", "move", self.home)
+                            "move", self.home)
         self.assertEqual(res["placed"], 0)
         self.assertTrue((self.roms / "x.bin").exists())
 
@@ -309,24 +297,22 @@ class Shared(World):
         self.assertEqual(rows["cheat_database_path"]["want_cfg"], self.written("MEGA/assets/cht"))
         self.assertEqual(ra.shared_base(self.inst, self.home), str(self.assets))
 
-    def test_apply_changes_only_the_ticked_settings_and_undo_restores_them(self) -> None:
+    def test_apply_changes_only_the_ticked_settings(self) -> None:
         rows = ra.shared_folders(self.inst, str(self.assets), self.home)
-        res = ra.apply_shared(self.inst, rows, ["cheat_database_path", "content_database_path"], self.home / "j", self.home)
+        res = ra.apply_shared(self.inst, rows, ["cheat_database_path", "content_database_path"], self.home)
         self.assertEqual(res["changed"], ["cheat_database_path"])
         cfg = ra.read_cfg(self.inst.cfg)
         self.assertEqual(cfg["cheat_database_path"], self.written("MEGA/assets/cht"))
         self.assertEqual(cfg["thumbnails_directory"], "/somewhere/else")            # not ticked: untouched
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertTrue(out["cfg_restored"])
-        self.assertEqual(ra.read_cfg(self.inst.cfg)["cheat_database_path"], ":/cheats")
+        self.assertEqual(ra.read_cfg(Path(res["cfg_backup"]))["cheat_database_path"], ":/cheats")       # (the old config is kept)
 
     def test_the_history_lists_follow_the_playlist_folder_and_running_retroarch_refuses(self) -> None:
         self.inst.cfg.write_text(CFG + 'playlist_directory = ":/playlists"\ncontent_history_path = ":/playlists/content_history.lpl"\n')
         rows = ra.shared_folders(self.inst, str(self.assets), self.home)
         with mock.patch.object(ra, "is_running", return_value=True):
             with self.assertRaises(RuntimeError):
-                ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home / "j", self.home)
-        res = ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home / "j", self.home)
+                ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home)
+        res = ra.apply_shared(self.inst, rows, ["playlist_directory"], self.home)
         self.assertEqual(res["changed"], ["content_history_path", "playlist_directory"])
         self.assertEqual(ra.read_cfg(self.inst.cfg)["content_history_path"],
                          self.written("MEGA/assets/playlists/builtin/content_history.lpl"))

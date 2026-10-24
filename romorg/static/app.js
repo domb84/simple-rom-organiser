@@ -596,7 +596,7 @@
   const fmtPct = (pct) => `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
   const JOB_LABEL = { scan: "Scan", verify: "Verify", library: "Library", organise: "Organise", convert: "Convert",
     m3u: "Playlists", retroarch: "RetroArch", switch: "Switch scan", switchdb: "Switch title database", switchverify: "Switch checksums",
-    whdload: "WHDLoad installs", whdcheck: "WHDLoad versions", whdbuild: "WHDLoad games" };
+    whdload: "WHDLoad installs", whdcheck: "WHDLoad versions", whdbuild: "WHDLoad games", restore: "Restore" };
 
 
   const UNMATCHED = "_unmatched";
@@ -1420,7 +1420,6 @@
     renderScanOverview();
     renderLibraryIntro();
     renderLibraryGate();
-    refreshUndo();
     updateActionState();
     loadTotals();
     if (inSystem() && state.tab === "files") { Previews.resume("lib"); Files.show(); }
@@ -2591,7 +2590,8 @@
       el("div", { class: "archive-source" }, mine ? "This system's own archive folder. " : "The archive folder for every system (Settings). ",
         mine ? el("button", { class: "btn btn-small btn-ghost", id: "lib-aside-reset", text: "Use the common folder",
           on: { click: () => { $("lib-aside-dir").value = archiveBase(); archiveFieldChanged(); } } }) : null),
-      el("div", { class: "archive-head" }, "Files the rules leave out go to ", el("code", { text: own }), ":"),
+      el("div", { class: "archive-head" }, /^s3:\/\//i.test(dir) ? "Files the rules leave out are uploaded to " : "Files the rules leave out go to ",
+        el("code", { text: own }), /^s3:\/\//i.test(dir) ? " (each is checked in the bucket, then deleted here):" : ":"),
       el("ul", { class: "archive-list" }, [
         [EXCLUDED, "bad dumps, betas, demos, language and flag exclusions"],
         [SUPERSEDED, "older versions and worse variants"],
@@ -2622,10 +2622,8 @@
     $("lib-export-sync").disabled = $("lib-export-mode").value === "move";
     $("lib-export-opts").classList.toggle("hidden", !$("lib-where-other").checked);
     $("lib-apply-btn").textContent = $("lib-where-other").checked ? "Build library in destination" : "Build library";
-    $("lib-undo-btn").textContent = $("lib-where-other").checked ? "Undo last build" : "Undo last";
     saveExportSettings();
     if (Previews.has("lib")) resetLibraryPreview();
-    refreshUndo();
     updateActionState();
   }
   function loadExportSettings() {
@@ -2642,7 +2640,6 @@
     $("lib-export-sync").disabled = e.mode === "move";
     $("lib-export-opts").classList.toggle("hidden", !e.enabled);
     $("lib-apply-btn").textContent = e.enabled ? "Build library in destination" : "Build library";
-    $("lib-undo-btn").textContent = e.enabled ? "Undo last build" : "Undo last";
   }
 
   async function loadLibraryProfile() {
@@ -3304,15 +3301,15 @@
   // (it exists only when a save source is set up for the system: the profile then has ``saved_games``).
   const SAVED_CHOICES = [
     { value: "convert", label: "Copy or convert the save to the latest version, leave the existing save (default)",
-      text: "When the version of a game you have is not the one a save belongs to (a newer revision or another region arrived, or the rules replace the old ROM), the save is copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or PlayStation 2 save is converted for the other release's game code, so it works there. Memory cards and battery saves only, not save states. The existing save is left where it is and the copies are journalled: Undo removes them. Nothing is copied over a save the new version already has, and not while the emulator is running." },
+      text: "When the version of a game you have is not the one a save belongs to (a newer revision or another region arrived, or the rules replace the old ROM), the save is copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or PlayStation 2 save is converted for the other release's game code, so it works there. Memory cards and battery saves only, not save states. The existing save is left where it is. Nothing is copied over a save the new version already has, and not while the emulator is running." },
     { value: "keep", label: "Keep both ROMs",
       text: "The ROM the rules would replace or archive stays as well, so the saves still have their game. Its saves are renamed if the ROM is renamed." },
     { value: "archive", label: "Archive the saves with the ROM",
-      text: "The ROM is replaced or archived as the rules say, and its saves and save states move to the archive with it (into a _saves folder). Undo brings them back. Not while RetroArch is running." },
+      text: "The ROM is replaced or archived as the rules say, and its saves and save states move to the archive with it (into a _saves folder). Not while RetroArch is running." },
     { value: "leave", label: "Leave the saves where they are",
       text: "The ROM is replaced or archived as the rules say; its saves are not touched." },
     { value: "carry", label: "Copy the save to the better version",
-      text: "When a better version of a game you have saves for arrives, the old ROM is replaced and its save games (memory cards, battery saves; not save states) are copied to the new ROM's name, if the new ROM has no save yet. Where the save would not work in the new version (a PlayStation, GameCube or Dreamcast save of another region) both ROMs stay. The old save is left where it is. Undo removes the copy." },
+      text: "When a better version of a game you have saves for arrives, the old ROM is replaced and its save games (memory cards, battery saves; not save states) are copied to the new ROM's name, if the new ROM has no save yet. Where the save would not work in the new version (a PlayStation, GameCube or Dreamcast save of another region) both ROMs stay. The old save is left where it is." },
   ];
 
   /** The group of the rules panels: what happens to a game the rules would archive when RetroArch has saves for it, and the
@@ -3724,7 +3721,6 @@
 
   function renderLibraryIntro() {
     if (!Previews.has("lib")) resetLibraryPreview();
-    refreshUndo();
     refreshLibraryStats();
   }
 
@@ -3746,7 +3742,7 @@
         ...(ex.enough_space ? [] : [card(fmtBytes(ex.free || 0), "Free space is not enough", "bad")])] : []),
       card(fmt(r.kept), "Kept", "ok"),
       card(fmt(r.bios || 0), "BIOS / firmware files kept", r.bios ? "info" : ""),
-      ...(asd ? [card(fmt(asd.coming + asd.existing), "To move out to the archive folder", "info")] : []),
+      ...(asd ? [card(fmt(asd.coming + asd.existing), asd.s3 ? "To upload to the S3 archive" : "To move out to the archive folder", "info")] : []),
       ...(plan.convert ? [card(fmt(plan.convert.count), plan.convert.kind === "chd" ? "Raw discs to convert to CHD first"
         : plan.convert.kind === "7z" ? "Games to compress as 7z first" : "Dumps to clean up first", plan.convert.count ? "info" : "ok")] : []),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
@@ -3874,7 +3870,7 @@
   }
 
   /** The buttons that copy a save for another region's release (PlayStation: for a disc you have; PlayStation 2: also for a release you lack,
-   *  by its code). Experimental: the original stays; Undo takes the copy away. */
+   *  by its code). Experimental: the original stays. */
   let convertDone = () => {};
   function convertButtons(i) {
     const c = i.convert;
@@ -3883,11 +3879,8 @@
         const r = await post("/api/saves/convert", { platform: state.platform, set: c.set, ...body });
         if (r.skipped_running) { toast("The emulator is running: close it and try again.", "error"); return; }
         const n = r.saves || 0;
-        const t = toast(n ? `${nPlural(n, "save", "saves")} converted from ${r.old} to ${r.new} (${label})` : "Nothing was converted (the card has no save of that game, or the new name is taken).",
+        toast(n ? `${nPlural(n, "save", "saves")} converted from ${r.old} to ${r.new} (${label})` : "Nothing was converted (the card has no save of that game, or the new name is taken).",
           n ? "ok" : "error", 10000);
-        if (n && r.journal && t) t.append(el("button", { class: "btn btn-small", type: "button", text: "Undo", on: { click: async () => {
-          try { await post("/api/retroarch/undo", { journal: r.journal }); toast("Conversion undone", "ok"); convertDone(); } catch (err) { toast(err.message, "error"); }
-        } } }));
         convertDone();
       } catch (err) { toast(err.message, "error"); }
     };
@@ -4058,35 +4051,14 @@
         line(ex.counts.kept_edited, "file(s) you edited stay where they are"),
         line(ex.playlists, "playlist(s) written")),
       el("ul", {},
-        el("li", { text: ex.counts.move ? "Moved files are no longer in the source folder. Undo moves them back." : "The source folder is not changed: its files stay where they are." }),
-        el("li", { text: "Only the files your rules keep are built; excluded, superseded and unmatched files stay in the source." }),
-        el("li", { text: "\"Undo last build\" removes what this build added (nothing else)." })));
+        el("li", { text: ex.counts.move ? "Moved files are no longer in the source folder." : "The source folder is not changed: its files stay where they are." }),
+        el("li", { text: "Only the files your rules keep are built; excluded, superseded and unmatched files stay in the source." })));
     if (!(await confirmDialog({ title: ex.sync ? "Build and sync library" : "Build library in another folder", body, okText: `Build (${fmt(plan.actionable)} items)` }))) return;
     if (ex.mass_removal && !(await confirmDialog({
       title: "Remove most of the library?",
       body: `${(ex.notes || []).join(" ")} ${fmt(ex.counts.remove)} files would be removed. Only do this if you changed the rules on purpose and the source is complete.`,
       okText: "Yes, remove them", danger: true }))) return;
     Jobs.start("/api/library/apply", { ...buildOptions(), plan_id: plan.plan_id, allow_mass_removal: ex.mass_removal ? true : undefined });
-  }
-
-  async function undoLibraryExport() {
-    const dest = $("lib-export-dest").value.trim();
-    let runs;
-    try { runs = (await get(`/api/library/export/runs?${qs({ dest })}`)).runs || []; } catch (err) { toast(err.message, "error"); return; }
-    const run = runs[0];
-    if (!run) { toast("No library build is recorded in the destination.", "info"); return; }
-    const ok = await confirmDialog({
-      title: "Undo last build",
-      body: `Remove the ${fmt(run.files)} file(s) added to ${dest} on ${run.started.replace("T", " ")}? Files you changed since are left in place. The source is not touched.`,
-      okText: "Undo", danger: true,
-    });
-    if (!ok) return;
-    try {
-      const r = await post("/api/library/export/undo", { dest, run: run.id, follow: state.exportFollow || undefined });
-      state.exportFollow = "";
-      toast(`Removed ${fmt(r.removed)} file(s)${r.restored ? `, put back ${fmt(r.restored)}` : ""}${r.skipped.length ? `, ${fmt(r.skipped.length)} left (changed or not restorable)` : ""}`, r.skipped.length ? "error" : "ok", 8000);
-      if (libPlan) showLibraryPlan();
-    } catch (err) { toast(err.message, "error"); }
   }
 
   async function applyLibrary() {
@@ -4118,14 +4090,15 @@
         ...savesLines(plan.saves)),
       el("ul", {},
         el("li", { text: plan.convert && plan.convert.count && plan.convert.delete ? "Existing files are never overwritten. Only the originals of the conversions are deleted (see below)." : "Nothing is deleted and existing files are never overwritten." }),
-        ...(plan.aside ? [el("li", { text: `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is then moved out of this folder to ${plan.aside.path}.` })] : []),
+        ...(plan.aside ? [el("li", { text: plan.aside.s3
+          ? `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is uploaded to ${plan.aside.path}; each file is deleted here once its upload is checked (size, MD5, SHA-1).`
+          : `What is archived (${fmt(plan.aside.coming + plan.aside.existing)} file(s)) is then moved out of this folder to ${plan.aside.path}.` })] : []),
       ...(plan.convert && plan.convert.count ? [el("li", { text: plan.convert.kind === "chd"
         ? `${fmt(plan.convert.count)} raw disc(s)${plan.convert.archives ? ` (${fmt(plan.convert.archives)} in a zip or 7z)` : ""} are converted to CHD first (each is checked against its database; this can take a long time). The library counts above are those before the conversion.`
-          + (plan.convert.delete ? " THE ORIGINALS ARE DELETED once their CHD is checked: Undo cannot bring them back." : " The originals are kept in _converted_originals.")
+          + (plan.convert.delete ? " THE ORIGINALS ARE DELETED once their CHD is checked." : " The originals are kept in _converted_originals.")
         : plan.convert.kind === "7z" || plan.convert.repack
           ? `${fmt(plan.convert.count)} game(s) are compressed as 7z first (each .7z is checked against the database, then the zip or file it replaces is deleted: the game itself does not change). This can take a while the first time.`
           : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
-        el("li", { text: "One undo log is saved as it goes - \"Undo last\" reverts the moves and removes / restores the playlists." }),
         el("li", { text: "The folder is re-scanned afterwards." })));
     if (!(await confirmDialog({ title: "Build library", body, okText: `Build library (${fmt(plan.actionable)} changes)` }))) return;
     if (warnings.length && !(await confirmDialog({
@@ -4143,7 +4116,7 @@
     if (s.kept) out.push(el("li", { text: `${fmt(s.kept)} game(s) the rules would archive are kept because you have saves for them.` }));
     if (s.follow && s.rename && s.rename.files) out.push(el("li", { text: `${fmt(s.rename.files)} save file(s) are ${s.elsewhere ? "copied" : "renamed"} with their ROMs.` }));
     if (s.rename && s.rename.conflicts) out.push(el("li", { text: `${fmt(s.rename.conflicts)} save file(s) cannot be renamed: a file with the new name is there. They stay as they are.` }));
-    if (!s.elsewhere && s.ps2 && s.ps2.saves) out.push(el("li", { text: `${fmt(s.ps2.saves)} PlayStation 2 save(s) are converted to the better version's game code (a card image is rewritten; the old image is kept for Undo).` }));
+    if (!s.elsewhere && s.ps2 && s.ps2.saves) out.push(el("li", { text: `${fmt(s.ps2.saves)} PlayStation 2 save(s) are converted to the better version's game code (a card image is rewritten; the old image is kept with the save backups).` }));
     if (!s.elsewhere && s.carry && s.carry.files) out.push(el("li", { text: `${fmt(s.carry.files)} save file(s) are copied to the better version of ${fmt(s.carry.games)} game(s)${s.carry.converted ? `, ${fmt(s.carry.converted)} of them converted to the other region` : ""}. The old saves stay.` }));
     if (!s.elsewhere && s.archive && s.archive.files)
       out.push(el("li", { text: `${fmt(s.archive.files)} save file(s) of ${fmt(s.archive.games)} archived game(s) move to ${s.archive.to}${s.running ? " - not now: RetroArch is running, so they stay" : ""}.` }));
@@ -4152,52 +4125,30 @@
     return out;
   }
 
-  async function undoLibrary() {
-    if ($("lib-where-other").checked) {
-      if (!$("lib-export-dest").value.trim()) { toast("Choose the destination folder first.", "error"); return; }
-      return undoLibraryExport();
-    }
-    await refreshUndo();
-    const log = undoLogs[0];
-    if (!log) { toast("No undo log found in this folder.", "info"); return; }
-    const when = log.mtime ? new Date(log.mtime * 1000).toLocaleString() : log.name;
-    const what = log.count !== null && log.count !== undefined ? `${fmt(log.count)} change(s)` : "the changes";
-    const ok = await confirmDialog({
-      title: "Undo last build",
-      body: `Revert ${what} made on ${when}, playlists included? Files that were moved or changed since are skipped.`,
-      okText: "Undo", danger: true,
-    });
-    if (ok) Jobs.start("/api/library/undo", { log: log.log });
-  }
-
   Jobs.handlers.library = async (job) => {
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
-      const isUndo = r.action === "undo";
       const isExport = r.action === "library_export";
-      if (isExport && r.saves && r.saves.journal) state.exportFollow = r.saves.journal;       // (undo removes the copied saves too)
       const failed = Array.isArray(r.failed) ? r.failed : [];
       const n = (v) => (Array.isArray(v) ? v.length : v || 0);
-      const text = isUndo
-        ? `Reverted ${fmt(n(r.restored))} file(s)${r.created_removed ? `, removed ${fmt(r.created_removed)} playlist/converted file(s)` : ""}`
-        : isExport
+      const text = isExport
           ? `Built ${fmt(r.created || 0)} file(s) in ${r.dest} (${fmt(r.copied || 0)} copied, ${fmt(r.moved || 0)} moved), ${fmt(r.playlists || 0)} playlist(s)${r.removed ? `, removed ${fmt(r.removed)}` : ""}${r.cancelled ? " - cancelled" : ""}`
           : `Moved ${fmt(n(r.moved))} file(s), wrote ${fmt(n(r.playlists_written))} playlist(s)`;
       const sv = r.saves || {};
-      const saveText = sv.carried ? `; ${fmt(sv.carried)} save file(s) copied to the better version` + ((sv.followed || 0) ? `, ${fmt(sv.followed)} renamed with their ROMs` : "") : (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : (r.action === "undo" && sv.restored ? `; ${fmt(sv.restored)} save file(s) renamed back` : "");
+      const saveText = sv.carried ? `; ${fmt(sv.carried)} save file(s) copied to the better version` + ((sv.followed || 0) ? `, ${fmt(sv.followed)} renamed with their ROMs` : "") : (sv.followed || sv.copied) ? `; ${fmt((sv.followed || 0) + (sv.copied || 0))} save file(s) ${sv.copied ? "copied to" : "renamed to"} the new names` : "";
       const p2 = r.ps2_saves;
       const sa = r.saves_archived;
       const archText = sa ? (sa.skipped_running ? `; ${(sa.running || ["RetroArch"]).join(", ")} ${(sa.running || [1]).length > 1 ? "are" : "is"} running: ${sa.moved ? "some" : "the"} saves of the archived games were not moved` : `; ${fmt(sa.moved)} save file(s) archived with their games`) : "";
-      const asideText = r.aside ? `; ${fmt(r.aside.moved)} archived file(s) moved out to ${r.aside.path}` : (r.action === "undo" && r.aside_restored ? `; ${fmt(r.aside_restored)} archived file(s) brought back` : "");
-      const convText = r.converted ? `; ${fmt(r.converted.count)} converted first${r.converted.failed.length ? ` (${fmt(r.converted.failed.length)} could not be converted)` : ""}` : (r.action === "undo" && r.converted_back ? "; the conversion was undone too" : "");
+      const asideText = r.aside ? `; ${fmt(r.aside.moved)} archived file(s) ${r.aside.s3 ? "uploaded" : "moved out"} to ${r.aside.path}` : "";
+      const convText = r.converted ? `; ${fmt(r.converted.count)} converted first${r.converted.failed.length ? ` (${fmt(r.converted.failed.length)} could not be converted)` : ""}` : "";
+      const rc = r.recovered;
+      const recText = rc ? `; cleaned up after an interrupted run (${fmt(rc.deleted)} partial file(s) deleted${rc.renamed ? `, ${fmt(rc.renamed)} renamed back` : ""}${rc.originals_back ? `, ${fmt(rc.originals_back)} original(s) put back to convert again` : ""})` : "";
       const ps2Text = p2 ? (p2.skipped_running ? "; PCSX2 is running: its saves were not converted" : p2.saves ? `; ${fmt(p2.saves)} PlayStation 2 save(s) converted to the better version` : "") : "";
-      toast(text + saveText + ps2Text + archText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
+      toast(text + recText + saveText + ps2Text + archText + asideText + convText + (failed.length ? `, ${fmt(failed.length)} failed` : ""), failed.length || r.error ? "error" : "ok", 8000);
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
-      showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move / write:",
-        failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
+      showFailures("lib-failures", "Could not move / write:", failed.concat(skipped, (rc && rc.left) || []),
         (f) => `${f.src || f.path || ""}${f.dst ? ` → ${f.dst}` : ""}: ${f.error || f.reason || "failed"}`,
         [r.error ? `Stopped: ${r.error}` : "",
-          r.remaining ? `${fmt(r.remaining)} move(s) are kept in the undo log - fix the cause and press "Undo last" again.` : "",
           r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
     }
     const wasOpen = !$("lib-output").classList.contains("hidden");
@@ -4208,6 +4159,21 @@
     await refreshScan();
     if (wasOpen && state.scan) { vanishTable = null; await showLibraryPlan(); }
     if (job.result && job.result.whdload_next) Jobs.start("/api/whdload/build", { platform: job.result.whdload_next });   // (the rule "Build WHDLoad games")
+  };
+
+  Jobs.handlers.restore = async (job) => {
+    const r = job.result || {};
+    if (job.status === "done" && r.action === "restore") {
+      const failed = r.failed || [];
+      toast(`Restored ${fmt(r.restored)} file(s) from the archive: ${fmt(r.placed)} under their database name, ${fmt(r.at_original)} where they were`
+        + (r.skipped_saves ? `; ${fmt(r.skipped_saves)} save(s) not restored (not yet supported)` : "")
+        + (failed.length ? `; ${fmt(failed.length)} failed` : ""), failed.length ? "error" : "ok", 8000);
+      showFailures("lib-failures", "Not restored:", failed, (f) => `${f.path}: ${f.error}`, []);
+    }
+    Files.sel.clear();
+    await refreshScan();
+    Files.shown = "";
+    Files.show();
   };
 
   Jobs.handlers.whdbuild = async (job) => {
@@ -4231,40 +4197,18 @@
     container.replaceChildren(chip("", allLabel, total), ...keys.map((k) => chip(k, labelFor(k), counts[k])));
   }
 
-  let undoLogs = [];
-  let undoFetch = null;      // the request in flight: every tab intro asks at once when a page opens
-  async function refreshUndo() {
-    let logs = [];
-    if (state.scan) {
-      undoFetch = undoFetch || get("/api/organise/undo-logs").finally(() => { undoFetch = null; });
-      try { logs = (await undoFetch).logs || []; } catch (_) { logs = []; }
-    }
-    undoLogs = logs;
-    for (const id of ["lib-undo-btn"]) {
-      const btn = $(id);
-      btn.dataset.blocked = undoLogs.length || (id === "lib-undo-btn" && $("lib-where-other").checked && state.scan) ? "0" : "1";
-      btn.title = undoLogs.length ? `Undo ${undoLogs[0].name}` : "No undo logs in this folder";
-    }
-    Jobs.setRunning(Jobs.running);
-  }
-
   Jobs.handlers.organise = async (job) => {
     if ((job.status === "done" || job.status === "cancelled") && job.result) {
       const r = job.result;
-      const isUndo = r.action === "undo" || (r.action === undefined && "restored" in r);
       const failed = Array.isArray(r.failed) ? r.failed : [];
       const first = (...vals) => vals.find((v) => v !== undefined);
-      const done = isUndo ? r.restored : first(r.moved, r.renamed);
+      const done = first(r.moved, r.renamed);
       const count = Array.isArray(done) ? done.length : done || 0;
-      const created = isUndo && r.created_removed ? `, removed ${fmt(r.created_removed)} converted file(s)` : "";
-      toast(`${isUndo ? "Reverted" : "Moved"} ${fmt(count)} file(s)${created}${failed.length ? `, ${fmt(failed.length)} failed` : ""}`,
+      toast(`Moved ${fmt(count)} file(s)${failed.length ? `, ${fmt(failed.length)} failed` : ""}`,
         failed.length || r.error ? "error" : "ok", 8000);
-      const skipped = Array.isArray(r.skipped) ? r.skipped : [];
-      showFailures("lib-failures", isUndo ? "Could not restore:" : "Could not move:",
-        failed.concat(skipped.filter((x) => x.reason !== "already back in place")),
+      showFailures("lib-failures", "Could not move:", failed,
         (f) => `${f.src}${f.dst ? ` → ${f.dst}` : ""}: ${f.error || f.reason || "failed"}`,
         [r.error ? `Stopped: ${r.error}` : "",
-          r.remaining ? `${fmt(r.remaining)} move(s) are kept in the undo log - fix the cause and press "Undo last" again.` : "",
           r.rescan_error ? `The folder could not be re-scanned (${r.rescan_error}) - scan it again.` : ""]);
     }
     await refreshScan();
@@ -4447,7 +4391,6 @@
       }
       $("ra-backup").checked = info.backup.enabled;
       if (document.activeElement !== $("ra-backup-dir")) $("ra-backup-dir").value = info.backup.dir;
-      $("ra-undo-btn").dataset.blocked = info.undo.length ? "0" : "1";
       Jobs.setRunning(Jobs.running);
     },
 
@@ -4496,7 +4439,7 @@
         body: el("div", {},
           el("p", { text: `${fmt(c.move + c.needs_core)} file(s) (${fmtBytes(p.bytes)}) move to ${p.new.save}${p.new.state !== p.new.save ? ` and ${p.new.state}` : ""}.` }),
           el("ul", {},
-            el("li", { text: this.body().backup ? "A zip backup of those files is made first." : "No backup: the files are only moved (Undo can move them back)." }),
+            el("li", { text: this.body().backup ? "A zip backup of those files is made first." : "No backup: the files are only moved." }),
             el("li", { text: "Nothing is overwritten. Folders left empty are removed." }),
             el("li", { text: "retroarch.cfg is backed up, then its save settings are changed." }),
             ...(c.needs_core ? [el("li", { text: `${fmt(c.needs_core)} file(s) have no core folder yet; RetroArch will not find them until they are in one.` })] : []))),
@@ -4549,7 +4492,7 @@
         const res = await post("/api/retroarch/assets/set", { key: r.key, folder });
         this.assets = res.rows;
         this.renderAssets();
-        toast(`${r.label}: ${folder || "RetroArch's own folder"} (Undo last change puts it back)`, "ok", 6000);
+        toast(`${r.label}: ${folder || "RetroArch's own folder"} (the old retroarch.cfg is kept as a backup)`, "ok", 6000);
         await this.load();
         this.render();
       } catch (err) { toast(err.message, "error"); }
@@ -4598,23 +4541,8 @@
       if (!r) { toast("Press Check first to see what can be placed.", "info"); return; }
       if (!this.biosFound) { toast("No file to place: nothing missing was found in the folders searched.", "info"); return; }
       const mode = $("ra-bios-mode").value;
-      if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} firmware file(s) into ${r.system_dir}${(r.keys && r.keys.rows.some((k) => k.status === "found")) ? ", and copy the key files found into the emulators' folders (key files are always copied)" : ""}? Nothing is overwritten; Undo puts the moved files back.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
+      if (!(await confirmDialog({ title: "Place BIOS files", body: `${mode === "copy" ? "Copy" : "Move"} ${fmt(r.counts.found)} firmware file(s) into ${r.system_dir}${(r.keys && r.keys.rows.some((k) => k.status === "found")) ? ", and copy the key files found into the emulators' folders (key files are always copied)" : ""}? Nothing is overwritten.`, okText: mode === "copy" ? "Copy" : "Move" }))) return;
       Jobs.start("/api/retroarch/bios/apply", { ...this.biosBody(), mode });
-    },
-
-    async undo() {
-      const u = (this.info && this.info.undo) || [];
-      if (!u.length) { toast("Nothing to undo.", "info"); return; }
-      const what = { follow: "Give the saves their old names back (or remove the copies)?", bios: "Move the BIOS files back where they came from?",
-        config: "Restore RetroArch's config from before? Close RetroArch first." }[u[0].kind]
-        || "Move the saves back and restore RetroArch's config from before? Close RetroArch first.";
-      if (!(await confirmDialog({ title: "Undo last change", body: `${fmt(u[0].files)} file(s). ${what}`, okText: "Undo", danger: true }))) return;
-      try {
-        const r = await post("/api/retroarch/undo", { journal: u[0].journal });
-        toast(`Moved ${fmt(r.restored)} file(s) back${r.cfg_restored ? " and restored the config" : ""}${r.skipped.length ? `; ${fmt(r.skipped.length)} left` : ""}`, r.skipped.length ? "error" : "ok", 8000);
-        this.filled = false;
-        await this.show();
-      } catch (err) { toast(err.message, "error"); }
     },
 
     bind() {
@@ -4633,7 +4561,6 @@
       $("ra-bios-browse").addEventListener("click", () => FolderBrowser.open($("ra-bios-search"), "Choose a folder to look for BIOS files in"));
       $("ra-plan-btn").addEventListener("click", () => this.plan());
       $("ra-apply-btn").addEventListener("click", () => this.apply());
-      $("ra-undo-btn").addEventListener("click", () => this.undo());
     },
   };
 
@@ -4707,6 +4634,9 @@
     existing: ["", "Already archived"], ignored: ["skip", "Not looked at"], incoming: ["warn", "Set aside"], copy: ["info", "Copy"],
     saves: ["info", "Saves"], missing: ["missing", "Missing"], saveonly: ["info", "Saves only"],
     converted: ["ok", "Convert"], deleted: ["warn", "Convert, deleted"], whdload: ["info", "WHDLoad install"] };
+  /** The archive in an S3 bucket: its files are objects, the build uploads them (and deletes the local file once checked). */
+  const S3_STATES = { existing: ["", "In the bucket"], incoming: ["warn", "Uploaded"], copy: ["info", "Copied in the bucket"], saves: ["info", "Saves, uploaded"] };
+  const treeState = (k) => (Files.side === "archive" && Files.s3 && S3_STATES[k]) || TREE_STATES[k];
   const FOLDER_STATES = ["converted", "deleted", "renamed", "moved", "new", "incoming", "copy"];       // (what the build does below a folder, shown on it)
   const FILES_SHOW = [["", "Everything"], ["have", "Games you have"], ["missing", "Missing"], ["bios", "BIOS and firmware"], ["unmatched", "Unmatched"], ["saves", "Saves"]];
   const FILES_STATES = ["renamed", "moved", "new", "converted", "deleted", "incoming", "copy", "saves", "existing", "ignored"];
@@ -4720,8 +4650,11 @@
     upTimer: 0,
     upTries: 0,
     shown: "",
+    sel: new Set(),                                       // the paths of the archive chosen to restore
+    s3: null,
 
     reset() {
+      this.sel = new Set();
       this.side = "library";
       this.f = { show: "have", state: "", region: "", language: "", rated: "", q: "" };
       this.open = { library: new Set(), archive: new Set() };
@@ -4771,10 +4704,20 @@
       if (seq !== this.seq) return;                      // a later change is already on its way
       box.classList.remove("tree-busy");
       if (!doc.ready) { box.replaceChildren(el("div", { class: "muted", text: doc.reason || "Not available." })); return; }
+      if (!doc.path) this.s3 = doc.archive_s3 || null;      // (the archive is an S3 bucket: its labels say so)
+      const restorable = this.side === "library" ? doc.archive_restorable || 0 : 0;
+      $("files-actions").classList.toggle("hidden", !restorable);
+      $("files-actions").replaceChildren(...(restorable ? [el("button", { class: "btn btn-small", type: "button", id: "files-restore-missing",
+        text: `Restore ${fmt(restorable)} missing ${restorable === 1 ? "game" : "games"} from the archive`,
+        on: { click: () => this.restore({ missing: true }, `${fmt(restorable)} missing ${restorable === 1 ? "game" : "games"}`) } })] : []));
+      this.drawRestoreBar();
       this.drawSides(doc);
       this.drawChips(doc.facets || {});
       const t = doc.totals || { files: 0, bytes: 0, changed: 0, missing: 0 };
-      $("files-where").textContent = doc.none ? "" : doc.root;
+      $("files-where").replaceChildren(...(doc.none ? [] : [
+        ...(this.side === "archive" && this.s3 ? [el("span", { class: "badge copy", text: "S3", title: "The archive is an S3 bucket: these are its objects" }), " "] : []),
+        doc.root,
+        ...(this.side === "archive" && this.s3 && this.s3.error ? [el("span", { class: "error-text", text: ` - the bucket cannot be read: ${this.s3.error}` })] : [])]));
       $("files-totals").textContent = doc.none
         ? "No archive folder is set (Settings > Archive folder): what the rules set aside stays in the ROM folder, in _excluded, _superseded ..."
         : `${fmt(t.files)} ${t.files === 1 ? "file" : "files"} · ${fmtBytes(t.bytes)}${t.missing ? ` · ${fmt(t.missing)} missing` : ""}`
@@ -4830,7 +4773,7 @@
         FILES_SHOW.filter(([k]) => !k || show[k] || this.f.show === k).map(([k, text]) => el("button", { class: `chip chip-sm ${this.f.show === k ? "active" : ""}`, type: "button",
           "data-filter": "show", "data-value": k, text: `${text} (${fmt(show[k] || 0)})`, on: { click: () => { if (this.f.show !== k) { this.f.show = k; this.reload(); } } } }))));
       const st = facets.state || {};
-      const states = FILES_STATES.filter((k) => st[k] || this.f.state === k).map((k) => [k, TREE_STATES[k][1], st[k] || 0]);
+      const states = FILES_STATES.filter((k) => st[k] || this.f.state === k).map((k) => [k, treeState(k)[1], st[k] || 0]);
       const [regions, moreR] = top("region", facets.region);
       const [langs, moreL] = top("language", facets.language);
       const rated = facets.rated || {};
@@ -4853,7 +4796,7 @@
     rows(doc, path) {
       const rows = [];
       if (!doc.offset) for (const d of doc.dirs) rows.push(this.folderNode(d, path ? `${path}/${d.name}` : d.name));
-      for (const f of doc.files) rows.push(this.fileNode(f));
+      for (const f of doc.files) rows.push(this.fileNode(f, path ? `${path}/${f.name}` : f.name));
       const shown = doc.offset + doc.files.length;
       if (shown < doc.total_files) {
         rows.push(el("button", { class: "btn btn-small btn-ghost tree-more", type: "button", text: `Show more (${fmt(doc.total_files - shown)} more)`,
@@ -4877,7 +4820,7 @@
         + `${info.missing ? `${info.files ? " · " : ""}${fmt(info.missing)} missing` : ""}${info.changed ? ` · ${fmt(info.changed)} changed` : ""}`;
       const head = el("button", { class: "tree-row tree-dir", type: "button", role: "treeitem", "aria-expanded": "false", "data-tree-path": path },
         caret, el("span", { class: "tree-name", text: info.name }), info.tags ? tagChips(info.tags) : null,
-        ...FOLDER_STATES.filter((k) => (info.states || {})[k]).map((k) => badge(TREE_STATES[k][0] || "skip", TREE_STATES[k][1])),
+        ...FOLDER_STATES.filter((k) => (info.states || {})[k]).map((k) => badge(treeState(k)[0] || "skip", treeState(k)[1])),
         saveEffectTag(info.save_move),
         info.upgrades ? el("span", { class: "tree-upgrade", title: `${fmt(info.upgrades)} ${info.upgrades === 1 ? "game" : "games"} below ${info.upgrades === 1 ? "has" : "have"} a better version`,
           "aria-label": "Better versions exist below", text: `⬆ ${fmt(info.upgrades)}` }) : null,
@@ -4903,12 +4846,36 @@
       };
       head.addEventListener("click", () => set(kids.classList.contains("hidden")));
       if (open.has(path)) set(true);
+      if (this.side === "archive" && (info.states || {}).existing) {           // (a folder of the archive: all of it can be restored)
+        return el("div", { class: "tree-node" }, el("div", { class: "tree-pick" }, this.pickBox(path, info.name), head), kids);
+      }
       return el("div", { class: "tree-node" }, head, kids);
     },
 
+    /** A tick box that adds a path of the archive to what Restore copies back. */
+    pickBox(path, name) {
+      const box = el("input", { type: "checkbox", "aria-label": `Choose ${name} to restore`, "data-restore-path": path });
+      box.checked = this.sel.has(path);
+      box.addEventListener("change", () => { if (box.checked) this.sel.add(path); else this.sel.delete(path); this.drawRestoreBar(); });
+      return box;
+    },
+
+    /** The bar under the Archive side: how much is chosen, and Restore. */
+    drawRestoreBar() {
+      const n = this.sel.size;
+      $("files-restore-bar").classList.toggle("hidden", this.side !== "archive" || !n);
+      $("files-restore-count").textContent = `${fmt(n)} chosen (a folder: everything in it)`;
+    },
+
+    /** Restore copies back from the archive (it keeps its copy): a recognised game under its database name, anything else where it was. */
+    restore(body, what) {
+      Jobs.start("/api/archive/restore", { platform: state.platform, ...body });
+      toast(`Restoring ${what}...`, "info");
+    },
+
     /** A file row; one that belongs to a row of the build list (a game's file, a missing game) opens into what is known about it. */
-    fileNode(f) {
-      const [cls, label] = TREE_STATES[f.state] || ["", f.state];
+    fileNode(f, path = "") {
+      const [cls, label] = treeState(f.state) || ["", f.state];
       const i = f.row;
       const plain = f.state === "same";
       const tags = i && i.tags ? tagChips(i.tags) : null;
@@ -4917,6 +4884,7 @@
         f.saved_keep ? el("span", { class: "badge saved", text: "Kept for saves", title: "The rules would set this game aside; your saves keep it. It is not counted." }) : null,
         f.saved_keep ? el("span", { class: "tree-saved-why small", text: `${f.saved_why || ""}${i && i.saves && i.saves.total ? ` \u00b7 ${savesText(i.saves)}` : ""}` }) : null,
         i && i.bios ? badge("info", "BIOS") : null,
+        i && f.state === "missing" && i.in_archive ? el("span", { class: "badge copy", text: "In the archive", title: `Restore it from ${i.in_archive}` }) : null,
         f.upgrade ? el("span", { class: "tree-upgrade", title: "A better version of this game exists (open the file to see it)", "aria-label": "A better version exists", text: "⬆" }) : null,
         plain ? null : badge(cls || "skip", label),
         i && i.saves && i.saves.total && !f.saved_keep ? el("span", { class: "tree-saves small", title: "Saves and save states in the emulator's folders", text: savesText(i.saves) }) : null,
@@ -4924,7 +4892,8 @@
         i && saveNotCopied(i) ? el("span", { class: "badge skip", text: "Saves not copied", title: saveNotCopied(i) }) : null,
         f.state === "missing" || f.state === "saveonly" ? null : el("span", { class: "tree-meta muted small", text: fmtBytes(f.size) })];
       if (!i) {
-        return el("div", { class: `tree-row tree-file state-${f.state}${f.saved_keep ? " saved-keep" : ""}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
+        const row = el("div", { class: `tree-row tree-file state-${f.state}${f.saved_keep ? " saved-keep" : ""}`, role: "treeitem", "data-state": f.state, title: f.from ? `from ${f.from}` : "" }, ...cells);
+        return this.side === "archive" && f.state === "existing" && path ? el("div", { class: "tree-pick" }, this.pickBox(path, f.name), row) : row;
       }
       const panel = el("div", { class: "tree-detail hidden" });
       const head = el("button", { class: `tree-row tree-file state-${f.state}${f.saved_keep ? " saved-keep" : ""}`, type: "button", role: "treeitem", "aria-expanded": "false", "data-state": f.state,
@@ -4946,9 +4915,15 @@
       const game = i.item === "game" ? i.name : (i.rom_name || (i.game_ref && i.game_ref.game) || "");
       const build = f.state === "saveonly" ? "No game file here: these are only its saves." : f.state === "missing" ? "Not in your folder."
         : f.state === "same" ? "Leaves it where it is."
-          : f.state === "incoming" ? `Sets it aside: it goes to the archive${f.from ? ` from ${f.from}` : ""}.`
-            : `${TREE_STATES[f.state] ? TREE_STATES[f.state][1] : f.state}${f.from ? ` (from ${f.from})` : ""}.`;
+          : f.state === "incoming" ? (Files.s3 ? `Sets it aside: it is uploaded to the bucket${f.from ? ` from ${f.from}` : ""}, checked, and then deleted from the disk.`
+            : `Sets it aside: it goes to the archive${f.from ? ` from ${f.from}` : ""}.`)
+            : f.state === "existing" && Files.s3 ? "An object in the bucket already (nothing is downloaded to show it)."
+            : `${treeState(f.state) ? treeState(f.state)[1] : f.state}${f.from ? ` (from ${f.from})` : ""}.`;
       const sums = el("div", { class: "cs-sums" });
+      const restoreRow = f.state === "missing" && i.in_archive ? el("div", { class: "row" },
+        el("button", { class: "btn btn-small btn-primary", type: "button", text: "Restore from the archive",
+          on: { click: () => this.restore({ paths: [i.in_archive] }, game || i.in_archive) } }),
+        el("span", { class: "muted small mono-path", text: i.in_archive })) : null;
       const actions = i.game_ref && i.item === "file" ? el("div", { class: "row" },
         el("button", { class: "btn btn-small", type: "button", text: "Always keep", title: "Keep this game whatever the rules say", on: { click: () => setOverrides([i], "keep") } }),
         el("button", { class: "btn btn-small", type: "button", text: "Always exclude", title: "Set this game aside whatever the rules say", on: { click: () => setOverrides([i], "exclude") } }),
@@ -4967,7 +4942,7 @@
         ...line("The build", el("span", { text: build })),
         ...line("Saves", i.saves ? libSavesCell(i) : null),
         ...line("Year", i.year ? el("span", { text: String(i.year) }) : null)),
-      ...[sums, actions].filter(Boolean));          // (a game with no file has no buttons: replaceChildren would write "null")
+      ...[restoreRow, sums, actions].filter(Boolean));          // (a game with no file has no buttons: replaceChildren would write "null")
       if (i.category === "kept" && i.item === "file") {
         const rules = panel.querySelector(".tree-facts");
         Better.of(i).then((it) => {
@@ -5001,6 +4976,15 @@
       });
       $("saves-box").addEventListener("toggle", () => { if ($("saves-box").open) showSavesTable(); });
       tabKeys($("files-sides"));
+      $("files-restore-clear").addEventListener("click", () => {
+        this.sel.clear();
+        document.querySelectorAll("#files-tree input[data-restore-path]").forEach((b) => { b.checked = false; });
+        this.drawRestoreBar();
+      });
+      $("files-restore-btn").addEventListener("click", () => {
+        const paths = [...this.sel];
+        if (paths.length) this.restore({ paths }, `${fmt(paths.length)} ${paths.length === 1 ? "item" : "items"}`);
+      });
     },
   };
 
@@ -5140,13 +5124,53 @@
       const a = (state.status && state.status.archive) || { dir: "", overrides: {} };
       $("set-archive-dir").value = a.dir || "";
       const p = currentPlatform();
-      $("set-archive-default").textContent = a.dir ? "Every system archives to this folder, unless it has its own (below)."
+      this.renderS3();
+      $("set-archive-default").textContent = a.dir ? `Every system archives ${/^s3:\/\//i.test(a.dir) ? "to this S3 bucket" : "to this folder"}, unless it has its own (below).`
         : "Not set: nothing is archived. What the rules leave out stays in each system's folder (_excluded, _superseded ...) Choose a folder to turn archiving on.";
       const own = Object.entries(a.overrides || {}).sort(([x], [y]) => x.localeCompare(y));
       $("set-archive-own-box").classList.toggle("hidden", !own.length);
       $("set-archive-own").replaceChildren(...own.map(([name, dir]) => el("li", {},
         el("b", { text: name }), " ", el("code", { text: dir }), " ",
         el("button", { class: "btn btn-small btn-ghost", text: "Use the common folder", on: { click: () => this.save("", name) } }))));
+    },
+
+    /** The S3 connection: what is stored (never the secret: only whether there is one). */
+    renderS3() {
+      const c = (state.status && state.status.s3) || {};
+      if (document.activeElement !== $("s3-endpoint")) $("s3-endpoint").value = c.endpoint || "";
+      if (document.activeElement !== $("s3-region")) $("s3-region").value = c.region || "";
+      if (document.activeElement !== $("s3-access")) $("s3-access").value = c.access_key || "";
+      $("s3-secret").placeholder = c.secret_set ? "Secret key (stored - type a new one to replace it)" : "Secret key";
+      $("s3-forget").classList.toggle("hidden", !c.endpoint);
+      $("s3-test").disabled = !c.secret_set;
+    },
+
+    async saveS3(forget = false) {
+      const body = forget ? { clear: true } : { endpoint: $("s3-endpoint").value.trim(), region: $("s3-region").value.trim(),
+        access_key: $("s3-access").value.trim(), secret_key: $("s3-secret").value };
+      try {
+        state.status.s3 = await post("/api/settings/s3", body);
+        $("s3-secret").value = "";
+        $("s3-status").textContent = "";
+        toast(forget ? "The S3 connection is forgotten" : "The S3 connection is saved", "ok");
+        this.renderS3();
+        if (Previews.has("lib")) resetLibraryPreview();
+      } catch (err) { toast(err.message, "error"); }
+    },
+
+    /** Lists the bucket of the archive, puts a small object with metadata, reads it back and deletes it. */
+    async testS3() {
+      const a = (state.status && state.status.archive) || {};
+      const location = [a.dir, ...Object.values(a.overrides || {})].find((d) => /^s3:\/\//i.test(d || ""));
+      if (!location) { toast("Set the archive folder to s3://bucket/folder first: the test uses that bucket.", "error", 6000); return; }
+      $("s3-status").textContent = `Testing ${location} ...`;
+      try {
+        const r = await post("/api/settings/s3/test", { location });
+        const bits = [r.etag_is_md5 ? "checksums can be checked without downloading" : "the ETag is not the MD5 (checksums kept in metadata)",
+          r.metadata_back ? "metadata kept" : "METADATA LOST", r.read_back && r.range_read ? "reads back" : "READ FAILED"];
+        $("s3-status").textContent = `${r.ok ? "Works" : "Problem"}: ${bits.join(", ")}.`;
+        toast(r.ok ? `The S3 archive works (${r.location})` : "The S3 archive answered, but not everything works", r.ok ? "ok" : "error", 6000);
+      } catch (err) { $("s3-status").textContent = err.message; toast(err.message, "error", 8000); }
     },
 
     async save(dir, platform = "") {
@@ -5165,6 +5189,9 @@
       $("igdb-remove").addEventListener("click", () => this.saveIgdb(true));
       $("set-archive-dir").addEventListener("change", () => this.save($("set-archive-dir").value.trim()));
       $("set-archive-browse").addEventListener("click", () => FolderBrowser.open($("set-archive-dir"), "Choose the archive folder"));
+      $("s3-save").addEventListener("click", () => this.saveS3());
+      $("s3-forget").addEventListener("click", () => this.saveS3(true));
+      $("s3-test").addEventListener("click", () => this.testS3());
     },
   };
 
@@ -5174,7 +5201,6 @@
     const canScan = !!state.platform && !!folderOf(currentPlatform()).trim();
     $("scan-btn").dataset.blocked = canScan ? "0" : "1";
     for (const id of ["lib-plan-btn"]) $(id).dataset.blocked = hasScan ? "0" : "1";
-    if (!hasScan) for (const id of ["lib-undo-btn"]) $(id).dataset.blocked = "1";
     if (!hasScan || libPlan === null) $("lib-apply-btn").dataset.blocked = hasScan ? "0" : "1";
     // Apply buttons are enabled once a scan exists (until a preview shows there is
     // nothing to do); the confirmation step re-checks the counts anyway.
@@ -5210,7 +5236,7 @@
   function bind() {
     bindMoreMenu();
     initSide();
-    for (const id of ["scan-btn", "scan-force-btn", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn"]) {
+    for (const id of ["scan-btn", "scan-force-btn", "lib-plan-btn", "lib-apply-btn"]) {
       $(id).setAttribute("data-needs-idle", "");
     }
     $("updates-btn").addEventListener("click", () => Updates.check());
@@ -5223,7 +5249,6 @@
     $("lib-apply-btn").addEventListener("click", applyLibrary);
     $("set-tiles-reset").addEventListener("click", () => Settings.resetTiles());
     Files.bind();
-    $("lib-undo-btn").addEventListener("click", undoLibrary);
     for (const id of ["lib-where-here", "lib-where-other", "lib-export-mode", "lib-export-sidecars", "lib-export-sync"]) $(id).addEventListener("change", exportSettingsChanged);
     $("lib-export-dest").addEventListener("change", exportSettingsChanged);
     $("lib-aside-on").addEventListener("change", asideChanged);

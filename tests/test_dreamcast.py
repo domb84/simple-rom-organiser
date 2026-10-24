@@ -1,7 +1,11 @@
 """Sega Dreamcast: scan (CHD identified / verified, raw sets, cache), tidy, Build library, playlists, Convert,
-Verify fully, undo - on synthetic discs (see chdtestlib)."""
+Verify fully - on synthetic discs (see chdtestlib)."""
 
 from __future__ import annotations
+
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
 import dataclasses
 
 import contextlib
@@ -256,19 +260,6 @@ class TidyTest(unittest.TestCase):
         self.assertEqual({o.status for o in ops}, {"ok"})
         self.assertEqual(dreamcast.file_ops(ops), [])
 
-    def test_undo_restores_the_exact_tree(self) -> None:
-        self.w.chd("Beta (Europe)", "old folder/old name.chd", ["old name.zip", "old name.state", "n.txt"])
-        self.w.chd("Gamma (Japan)", "loose.chd", ["loose.state"])
-        (self.w.root / "junk.bin").write_bytes(b"zz")
-        (self.w.root / "gamelist.xml").write_text("<gameList/>")
-        before = tree(self.w.root)
-        res = self.apply(dreamcast.plan_tidy(self.w.scan()))
-        self.assertTrue(res["undo_log"])
-        self.assertNotEqual(tree(self.w.root), before)
-        out = organiser.undo(Path(res["undo_log"]), root=self.w.root)
-        self.assertEqual(out.get("remaining", 0), 0)
-        self.assertEqual(tree(self.w.root), before)
-
     def test_loose_chd_gets_its_own_folder(self) -> None:
         self.w.chd("Gamma (Japan)", "loose.chd", ["loose.state", "loose.zip", "other.txt"])
         self.apply(dreamcast.plan_tidy(self.w.scan()))
@@ -452,8 +443,7 @@ class LibraryTest(unittest.TestCase):
             if ln and not ln.startswith("#"):
                 self.assertTrue((m3u.parent / ln).is_file(), ln)
 
-    def test_apply_idempotent_and_one_undo(self) -> None:
-        before = tree(self.w.root)
+    def test_apply_idempotent(self) -> None:
         plan = self.plan()
         res = dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
         self.assertEqual(res["failed"], [])
@@ -467,10 +457,6 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(dreamcast.file_ops([o for o in plan2.ops if o.status != "ok"]), [])
         self.assertEqual([p.status for p in plan2.playlists], ["ok"])
         self.assertEqual(organiser.reason_counts(plan2)["playlists_remove"], 0)
-        # one undo restores everything (including removing the created playlist)
-        out = organiser.undo(Path(res["undo_log"]), root=self.w.root)
-        self.assertEqual(out.get("remaining", 0), 0)
-        self.assertEqual(tree(self.w.root), before)
 
     def test_switching_a_rule_off_moves_games_back(self) -> None:
         plan = self.plan()
@@ -579,7 +565,6 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(op.original_dst, self.w.root / "_converted_originals" / "raw dump")
 
     def test_convert_verifies_places_and_keeps_originals(self) -> None:
-        before = tree(self.w.root)
         res = self.run_convert()
         self.assertEqual((res["converted"], res["failed"], res["error"]), (1, [], None))
         got = tree(self.w.root)
@@ -593,10 +578,6 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual([m.unit.game.name for m in r.matched], ["Epsilon (USA)"])
         self.assertEqual(r.matched[0].kind, "chd")
         self.assertEqual([e.rel for e in r.unmatched if not e.rel.startswith("_converted_originals")], [])
-        # undo removes the new CHD and brings the raw files back
-        out = organiser.undo(Path(res["undo_log"]), root=self.w.root)
-        self.assertEqual(out.get("remaining", 0), 0)
-        self.assertEqual(tree(self.w.root), before)
 
     def test_chdman_failure_leaves_nothing_behind(self) -> None:
         before = tree(self.w.root)
@@ -606,7 +587,6 @@ class ConvertTest(unittest.TestCase):
         self.assertIn("simulated createcd failure", res["failed"][0]["error"])
         self.assertEqual(tree(self.w.root), before)
         self.assertFalse([p for p in os.listdir(self.w.root) if p.startswith(".romorg-chd-")])
-        self.assertIsNone(res["undo_log"])
 
     def test_a_wrong_result_is_rejected_by_the_redump_check(self) -> None:
         bad = self.w.base / "bad.chd"

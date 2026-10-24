@@ -4,6 +4,10 @@ discs (see chdtestlib). Real Redump DATs / real CHDs are only used when present 
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import dataclasses
 import glob
 import hashlib
@@ -393,9 +397,6 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertIn("Gamma (Japan)/Gamma (Japan).state1", got)
         self.assertIn("Gamma (Japan)/readme.txt", got)                    # unrelated files in a game folder move along
         self.assertNotIn("Gamma Folder", got)
-        out = organiser.undo(Path(res["undo_log"]), root=self.w.root)
-        self.assertEqual(out.get("remaining", 0), 0)
-        self.assertEqual(tree(self.w.root), before)
 
     def test_unmatched_game_folder_goes_whole_to_unmatched(self) -> None:
         T.build_chd(self.w.root / "Mystery" / "m.chd", [{"type": "MODE1", "data": T.make_iso(40, 77)}], gd=False) if (self.w.root / "Mystery").mkdir() is None else None
@@ -434,7 +435,7 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertFalse([k for k in got if k.endswith(".m3u")])
         again = discsys.plan_library(self.w.scan(), self.profile)
         self.assertEqual([op for op in again.ops if op.status == "move"], [])
-        self.assertTrue(res["undo_log"])
+        self.assertEqual(res["failed"], [])
 
 
 class PsxPlaylistTest(unittest.TestCase):
@@ -534,9 +535,6 @@ class ConvertTest(unittest.TestCase):
         self.assertIn("_converted_originals/raw/Alpha.iso", got)
         r = self.w.scan()
         self.assertEqual([(m.unit.game.name, m.kind) for m in r.matched], [("Alpha (USA)", "chd")])
-        out = organiser.undo(Path(res["undo_log"]), root=self.w.root)
-        self.assertEqual(out.get("remaining", 0), 0)
-        self.assertEqual(tree(self.w.root), before)
 
     def test_config_can_choose_createcd_for_an_iso(self) -> None:
         ops, res = self.run_convert({"ps2_iso_chd": "cd"})

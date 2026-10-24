@@ -16,13 +16,9 @@ new zip holding the clean rom); 7z/rar and multi-member zips are skipped.
 
 Per file: the original is first moved to
 ``<root>/_converted_originals/<its rel path>``, the clean file is
-written to a temporary name (``<clean name>.romorg-convert-xxxxxxxx``, journalled
-first so Undo deletes a leftover of an interrupted run) and its hash compared with the DAT (sha1, else crc)
+written to a temporary name (``<clean name>.romorg-convert-xxxxxxxx``) and its hash compared with the DAT (sha1, else crc)
 and size - re-read from disk - and only then moved to its final name. Any
-mismatch or error deletes the temporary file and moves the original back. Every
-step goes into the organiser's undo log (``move`` + ``create`` records), so the
-normal :func:`organiser.undo` removes the clean file (sha1-checked) and restores
-the original.
+mismatch or error deletes the temporary file and moves the original back.
 """
 
 from __future__ import annotations
@@ -185,6 +181,31 @@ def _superseded_names(result: "ScanResult") -> dict[tuple[str, str], str]:
         style = "nointro" if any(names.values()) else "tosec"
         for old, new in tags.superseded(list(names), style).items():
             out[(dat, old)] = new
+    return out
+
+
+def orphan_originals(result: "ScanResult") -> list[tuple[Path, Path]]:
+    """``(original, where it came from)`` for each file in ``_converted_originals`` none of whose roms is matched anywhere else in the
+    folder: a conversion that was cut short (the original is moved away first, the clean file was never put in place). Moving it
+    back lets the next build convert it again."""
+    root = Path(result.root)
+    elsewhere: set[tuple[str, str]] = set()
+    kept: list["Match"] = []
+    for m in result.matched:
+        path = m.entry.path if m.entry.path.is_absolute() else root / m.entry.path
+        if scanner.is_converted_original(path, root):
+            kept.append(m)
+        else:
+            elsewhere.update((r.dat, r.name) for r in m.primary)
+    out: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    for m in kept:
+        path = m.entry.path if m.entry.path.is_absolute() else root / m.entry.path
+        if path in seen or not m.primary or any((r.dat, r.name) in elsewhere for r in m.primary):
+            continue
+        seen.add(path)
+        rel = path.relative_to(root)
+        out.append((path, root.joinpath(*folders.core_parts(rel.parts))))
     return out
 
 
@@ -404,20 +425,12 @@ def _write_7z(op: ConvertOp, original: Path, tmp: Path, cancel: Any = None) -> s
     return scanner.hash_file(tmp)[1]
 
 
-def _repack_one(op: ConvertOp, root: Path, journal: Any, created: list[str], tmp: Path, sha1: str) -> None:
-    """Put the checked ``.7z`` of a repack op in place and delete the original (main thread: the journal is written here only).
-    Undo cannot bring a deleted original back, so it never takes the new file away either (its record is marked as not done)."""
+def _repack_one(op: ConvertOp, root: Path, created: list[str], tmp: Path) -> None:
+    """Put the checked ``.7z`` of a repack op in place and delete the original (main thread)."""
     if organiser._exists(op.dst) and not organiser._same_file(op.src, op.dst):
         raise FileExistsError(f"target exists: {op.dst}")
-    organiser.make_dirs(op.dst.parent, created, journal)
-    seq = journal.record({"op": "create", "path": organiser.rel_str(op.dst, root), "sha1": sha1, "size": tmp.stat().st_size})
-    try:
-        organiser.move_exclusive(tmp, op.dst)
-    except BaseException:
-        journal.failed(seq)
-        raise
-    journal.useful = True
-    journal.failed(seq)
+    organiser.make_dirs(op.dst.parent, created)
+    organiser.move_exclusive(tmp, op.dst)
     try:
         os.unlink(op.src)
         op.deleted = True
@@ -425,7 +438,7 @@ def _repack_one(op: ConvertOp, root: Path, journal: Any, created: list[str], tmp
         op.left = f"{op.src}: {exc}"
 
 
-def _convert_one(op: ConvertOp, root: Path, journal: Any, created: list[str]) -> None:
+def _convert_one(op: ConvertOp, root: Path, created: list[str]) -> None:
     src, dst, orig = op.src, op.dst, op.original_dst
     if not organiser._exists(src):
         raise FileNotFoundError(f"source missing: {src}")
@@ -435,56 +448,33 @@ def _convert_one(op: ConvertOp, root: Path, journal: Any, created: list[str]) ->
         raise FileExistsError(f"target exists: {dst}")
 
     # 1. keep the original
-    organiser.make_dirs(orig.parent, created, journal)
-    seq = journal.record({"op": "move", "src": organiser.rel_str(src, root),
-                          "dst": organiser.rel_str(orig, root)})
-    try:
-        organiser.rename_no_overwrite(src, orig)
-    except BaseException:
-        journal.failed(seq)
-        raise
-    journal.useful = True
+    organiser.make_dirs(orig.parent, created)
+    organiser.rename_no_overwrite(src, orig)
 
     tmp: Optional[Path] = None
     try:
         # 2. write the clean file under a temporary name and verify it against the DAT
-        organiser.make_dirs(dst.parent, created, journal)
+        organiser.make_dirs(dst.parent, created)
         tmp = _temp_name(dst)
-        # journalled before it exists: Undo deletes a leftover of an interrupted run
-        journal.record({"op": "tmp", "path": organiser.rel_str(tmp, root)})
         if op.container == "7z":
-            sha1 = _write_7z(op, orig, tmp)
+            _write_7z(op, orig, tmp)
         elif op.member is None:
-            sha1 = _write_loose(op, orig, tmp)
+            _write_loose(op, orig, tmp)
         else:
-            sha1 = _write_zip(op, orig, tmp)
-        # 3. journal the file we create, then move it into place (never overwriting)
-        seq = journal.record({"op": "create", "path": organiser.rel_str(dst, root),
-                              "sha1": sha1, "size": tmp.stat().st_size})
-        try:
-            organiser.move_exclusive(tmp, dst)
-        except BaseException:
-            journal.failed(seq)
-            raise
+            _write_zip(op, orig, tmp)
+        # 3. move it into place (never overwriting)
+        organiser.move_exclusive(tmp, dst)
         tmp = None
     except BaseException as exc:
         if tmp is not None:
             try:
                 tmp.unlink()
-            except FileNotFoundError:
-                pass
             except OSError:
                 pass
-        if isinstance(exc, organiser.UndoLogError):
-            raise  # stop everything; the log says where the original is
-        seq = journal.record({"op": "move", "src": organiser.rel_str(orig, root),
-                              "dst": organiser.rel_str(src, root)})
         try:
             organiser.rename_no_overwrite(orig, src)
         except (OSError, ValueError) as back:
-            journal.failed(seq)
-            raise ConvertError(f"{exc}; the original could not be moved back ({back}) - "
-                               f"it is at {orig} (Undo restores it)") from exc
+            raise ConvertError(f"{exc}; the original could not be moved back ({back}) - it is at {orig}") from exc
         raise
 
 
@@ -492,110 +482,90 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
                       cancel: Any = None) -> dict[str, Any]:
     """Perform the ``convert`` ops (see the module doc).
 
-    Returns ``{"converted", "failed": [{src, dst, error}], "removed_dirs",
-    "undo_log", "cancelled", "error"}``. ``cancel`` (callable or Event) stops between files.
+    Returns ``{"converted", "failed": [{src, dst, error}], "removed_dirs", "cancelled", "error", "repacked", "deleted",
+    "not_deleted"}``. ``cancel`` (callable or Event) stops between files.
     """
     root = Path(root)
     todo = [op for op in ops if op.status == CONVERT]
     total = len(todo)
-    journal = organiser.Journal(root)
     converted: list[ConvertOp] = []
     failed: list[dict[str, str]] = []
     created: list[str] = []
     removed: list[str] = []
     cancelled = False
-    error: Optional[str] = None
     errors = (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error, lzma.LZMAError)
     done = 0
-    try:
-        cleanups = [op for op in todo if not op.repack]
-        repacks = [op for op in todo if op.repack]
-        for op in cleanups:
-            if organiser._is_cancelled(cancel):
-                cancelled = True
-                break
-            if progress is not None:
-                progress(done, total, op.src.name)
-            done += 1
-            try:
-                _convert_one(op, root, journal, created)
-                converted.append(op)
-            except organiser.UndoLogError:
-                raise
-            except errors as exc:
-                failed.append({"src": str(op.src), "dst": str(op.dst),
-                               "error": winproc.long_path_hint(exc, op.src, op.dst)})
-        # repacks: compressed in threads (LZMA releases the GIL: ~3 MB/s a core), put in place one by one here
-        workers = max(1, min(len(repacks), os.cpu_count() or 1))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="romorg-7z") as pool:
-            running: dict[Any, tuple[ConvertOp, Path]] = {}
-            queue = list(repacks)
-            while (queue or running) and not cancelled:
-                while queue and len(running) < workers * 2:
-                    if organiser._is_cancelled(cancel):
-                        cancelled = True
-                        break
-                    op = queue.pop(0)
-                    tmp = _temp_name(op.dst)
-                    organiser.make_dirs(op.dst.parent, created, journal)
-                    journal.record({"op": "tmp", "path": organiser.rel_str(tmp, root)})   # (Undo deletes a leftover)
-                    running[pool.submit(_write_7z, op, op.src, tmp, cancel)] = (op, tmp)
-                if not running:
+    cleanups = [op for op in todo if not op.repack]
+    repacks = [op for op in todo if op.repack]
+    for op in cleanups:
+        if organiser._is_cancelled(cancel):
+            cancelled = True
+            break
+        if progress is not None:
+            progress(done, total, op.src.name)
+        done += 1
+        try:
+            _convert_one(op, root, created)
+            converted.append(op)
+        except errors as exc:
+            failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+    # repacks: compressed in threads (LZMA releases the GIL: ~3 MB/s a core), put in place one by one here
+    workers = max(1, min(len(repacks), os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="romorg-7z") as pool:
+        running: dict[Any, tuple[ConvertOp, Path]] = {}
+        queue = list(repacks)
+        while (queue or running) and not cancelled:
+            while queue and len(running) < workers * 2:
+                if organiser._is_cancelled(cancel):
+                    cancelled = True
                     break
-                finished, _rest = wait(list(running), return_when=FIRST_COMPLETED)
-                for fut in finished:
-                    op, tmp = running.pop(fut)
-                    done += 1
-                    if progress is not None:
-                        progress(done, total, op.src.name)
-                    try:
-                        sha1 = fut.result()
-                        _repack_one(op, root, journal, created, tmp, sha1)
-                        converted.append(op)
-                    except organiser.UndoLogError:
-                        raise
-                    except InterruptedError:
-                        cancelled = True
-                    except errors as exc:
-                        failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
-                    finally:
-                        if tmp.exists():
-                            try:
-                                tmp.unlink()
-                            except OSError:
-                                pass
-            for fut, (op, tmp) in running.items():          # (cancelled: the ones still running end, their part files go)
-                fut.cancel()
-            for fut, (op, tmp) in running.items():
+                op = queue.pop(0)
+                tmp = _temp_name(op.dst)
+                organiser.make_dirs(op.dst.parent, created)
+                running[pool.submit(_write_7z, op, op.src, tmp, cancel)] = (op, tmp)
+            if not running:
+                break
+            finished, _rest = wait(list(running), return_when=FIRST_COMPLETED)
+            for fut in finished:
+                op, tmp = running.pop(fut)
+                done += 1
+                if progress is not None:
+                    progress(done, total, op.src.name)
                 try:
                     fut.result()
-                except BaseException:  # noqa: BLE001
+                    _repack_one(op, root, created, tmp)
+                    converted.append(op)
+                except InterruptedError:
+                    cancelled = True
+                except errors as exc:
+                    failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+                finally:
+                    if tmp.exists():
+                        try:
+                            tmp.unlink()
+                        except OSError:
+                            pass
+        for fut, (op, tmp) in running.items():          # (cancelled: the ones still running end, their part files go)
+            fut.cancel()
+        for fut, (op, tmp) in running.items():
+            try:
+                fut.result()
+            except BaseException:  # noqa: BLE001
+                pass
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
                     pass
-                if tmp.exists():
-                    try:
-                        tmp.unlink()
-                    except OSError:
-                        pass
-        if progress is not None and not cancelled:
-            progress(total, total, "")
+    if progress is not None and not cancelled:
+        progress(total, total, "")
 
-        protected = organiser.protected_dirs(root, [], {op.dat for op in todo if op.dat})
-        sources = [op.src.parent for op in converted] + [Path(c) for c in created]
-        mine = set(created)
-        for d in organiser.remove_empty_dirs(sources, root, protected):
-            if d in mine:  # a folder this run created (its conversion failed)
-                created.remove(d)
-                mine.discard(d)
-                journal.record({"op": "unmkdir", "path": organiser.rel_str(Path(d), root)})
-            else:
-                journal.record({"op": "rmdir", "path": organiser.rel_str(Path(d), root)})
-                journal.useful = True
-                removed.append(d)
-    except organiser.UndoLogError as exc:  # stop: every change made so far is in the log
-        error = str(exc)
-    finally:
-        log_path = journal.close()
-    return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
-            "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
+    protected = organiser.protected_dirs(root, [], {op.dat for op in todo if op.dat})
+    sources = [op.src.parent for op in converted] + [Path(c) for c in created]
+    mine = set(created)
+    for d in organiser.remove_empty_dirs(sources, root, protected):
+        if d not in mine:
+            removed.append(d)
+    return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": None,
             "repacked": sum(1 for op in converted if op.repack), "deleted": sum(1 for op in converted if op.deleted),
             "not_deleted": [op.left for op in converted if op.left]}

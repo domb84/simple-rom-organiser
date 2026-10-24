@@ -627,7 +627,7 @@ class BuildElsewhereTests(UiTestCase):
         self.page.eval("document.getElementById('confirm-yes').click()")
         return text
 
-    def test_build_in_another_folder_leaves_the_source_alone_and_undoes(self) -> None:
+    def test_build_in_another_folder_leaves_the_source_alone(self) -> None:
         dest = Path(tempfile.mkdtemp(prefix="romorg-ui-lib-"))
         self.addCleanup(shutil.rmtree, dest, True)
         before = sorted(str(p.relative_to(self.fx.root)) for p in self.fx.root.rglob("*"))
@@ -651,12 +651,7 @@ class BuildElsewhereTests(UiTestCase):
         self.page.goto(self.fx.url + "#/system/commodore-amiga/settings")   # the choice is remembered
         self.page.wait("document.getElementById('lib-where-other').checked")
         self.assertEqual(self.page.eval("document.getElementById('lib-export-dest').value"), str(dest))
-        self.page.eval("location.hash = '#/system/commodore-amiga/files'")
-        self.page.wait("!document.getElementById('lib-undo-btn').disabled", timeout=30)
-        self.click("#lib-undo-btn")
-        self.assertIn("Remove the", self.confirm_dialog())
-        self.page.wait("document.querySelector('.toast')?.textContent.includes('Removed ')", timeout=30)
-        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
+        self.assertFalse(self.page.eval("!!document.getElementById('lib-undo-btn')"))          # (no Undo: removed in 0.4)
         self.no_js_errors()
 
 
@@ -684,7 +679,7 @@ class RetroArchTests(UiTestCase):
         self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r};
             i.dispatchEvent(new Event('change')); }})()""")
 
-    def test_move_saves_and_update_the_config_then_undo(self) -> None:
+    def test_move_saves_and_update_the_config(self) -> None:
         base = Path(tempfile.mkdtemp(prefix="romorg-ui-ra-"))
         self.addCleanup(shutil.rmtree, base, True)
         ra, old, new = base / "ra", base / "old", base / "new"
@@ -711,11 +706,8 @@ class RetroArchTests(UiTestCase):
         self.assertTrue((new / "saves" / "bsnes" / "Mario (USA).srm").is_file())
         self.assertTrue((new / "states" / "bsnes" / "Mario (USA).state1").is_file())
         self.assertIn(str(new / "saves"), cfg.read_text())
-        self.page.wait("document.getElementById('ra-undo-btn').dataset.blocked !== '1'")
-        self.click("#ra-undo-btn")
-        self.confirm_dialog()
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('back'))", timeout=30)
-        self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())
+        self.assertFalse((old / "bsnes" / "Mario (USA).srm").exists())
+        self.assertFalse(self.page.eval("!!document.getElementById('ra-undo-btn')"))
         self.no_js_errors()
 
     def test_bios_check_finds_a_file_and_places_it(self) -> None:
@@ -1091,7 +1083,7 @@ class ConvertDropdownTests(UiTestCase):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
 
-    def test_the_library_converts_raw_discs_when_building_and_undo_reverts_it(self) -> None:
+    def test_the_library_converts_raw_discs_when_building(self) -> None:
         self.open()
         self.scan(self.PLATFORM, str(self.psx))
         self.page.goto(self.fx.url + "#/settings")                                       # the rule "Convert when building": your default for every system
@@ -1099,7 +1091,7 @@ class ConvertDropdownTests(UiTestCase):
         self.page.wait(f"!!document.querySelector({box % 'delete_converted'!r})", timeout=30)
         self.assertTrue(self.page.eval(f"document.querySelector({box % 'convert_first'!r}).checked"))    # (both on by default)
         self.assertTrue(self.page.eval(f"document.querySelector({box % 'delete_converted'!r}).checked"))
-        self.click(box % "delete_converted")                                              # off: the originals are kept, so Undo can bring them back
+        self.click(box % "delete_converted")                                              # off: the originals are kept
         deadline = time.time() + 20
         while time.time() < deadline and self.api("GET", "/api/library/defaults")["profile"]["delete_converted"]:
             time.sleep(0.1)
@@ -1118,13 +1110,6 @@ class ConvertDropdownTests(UiTestCase):
         self.assertTrue(chd.is_file())
         self.assertTrue((self.psx / "_converted_originals" / "raw" / "t.bin").is_file())
         self.assertFalse((self.psx / "raw" / "t.bin").exists())
-        self.page.wait("document.getElementById('lib-undo-btn').dataset.blocked !== '1'")
-        self.click("#lib-undo-btn")
-        self.confirm_dialog()
-        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Reverted'))", timeout=120)
-        self.idle()
-        self.assertFalse(chd.exists())
-        self.assertTrue((self.psx / "raw" / "t.bin").is_file())
         self.no_js_errors()
 
 
@@ -1411,6 +1396,79 @@ class SettingsTests(UiTestCase):
         self.files_ready()
         self.assertNotIn("next to the games", self.page.eval("document.getElementById('view-system').textContent"))
         self.assertFalse(self.page.eval("!!document.getElementById('library-intro')"))
+        self.no_js_errors()
+
+
+class S3ArchiveUiTests(UiTestCase):
+    """The S3 connection in Settings (the secret never shown again), its test, and the Archive side of the file tree as the bucket."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from http.server import ThreadingHTTPServer
+        import threading
+        from test_s3 import AK, SK, FakeS3, _handler
+        self.fake = FakeS3()
+        self.s3srv = ThreadingHTTPServer(("127.0.0.1", 0), _handler(self.fake))
+        threading.Thread(target=self.s3srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.s3srv.server_close)
+        self.addCleanup(self.s3srv.shutdown)
+        self.ak, self.sk = AK, SK
+
+    def fill(self, id_: str, value: str) -> None:
+        self.page.eval(f"""(() => {{ const i = document.getElementById({id_!r}); i.value = {value!r}; }})()""")
+
+    def test_the_connection_is_set_up_tested_and_the_archive_tree_is_the_bucket(self) -> None:
+        self.open("#/settings")
+        self.page.wait("!!document.getElementById('s3-save')?.offsetParent", timeout=30)
+        self.fill("s3-endpoint", f"http://127.0.0.1:{self.s3srv.server_address[1]}")
+        self.fill("s3-access", self.ak)
+        self.fill("s3-secret", self.sk)
+        self.click("#s3-save")
+        self.page.wait("document.getElementById('s3-secret').placeholder.includes('stored')")
+        self.assertEqual(self.page.eval("document.getElementById('s3-secret').value"), "")
+        self.set_archive("s3://bucket/arch")
+        self.page.goto(self.fx.url + "#/settings")
+        self.page.wait("document.getElementById('set-archive-default').textContent.includes('S3 bucket')", timeout=30)
+        self.assertEqual(self.page.eval("document.getElementById('set-archive-dir').value"), "s3://bucket/arch/")
+        self.page.wait("!document.getElementById('s3-test').disabled")
+        self.click("#s3-test")
+        self.page.wait("document.getElementById('s3-status').textContent.startsWith('Works')", timeout=30)
+        self.assertNotIn(self.sk, self.page.eval("document.documentElement.outerHTML"))
+        self.scan()
+        self.files_ready()
+        self.click("#files-sides button[data-side='archive']")
+        self.page.wait("document.getElementById('files-where').textContent.includes('s3://bucket/arch/')", timeout=30)
+        self.assertTrue(self.page.eval("document.querySelector('#files-where .badge')?.textContent === 'S3'"))
+        self.page.wait("document.querySelectorAll('#files-tree .tree-row').length > 0", timeout=30)
+        self.assertIn("Uploaded", self.page.eval("document.getElementById('files-chips').textContent"))
+        self.no_js_errors()
+
+
+class RestoreUiTests(UiTestCase):
+    """Ticking files and folders on the Archive side and restoring them (the archive keeps its copy)."""
+
+    def test_chosen_files_are_restored_from_the_archive(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        mine = arch / self.fx.root.name / "_unmatched" / "notes"
+        mine.mkdir(parents=True)
+        (mine / "readme.txt").write_bytes(b"my notes")
+        (mine / "todo.txt").write_bytes(b"later")
+        self.open()
+        self.set_archive(str(arch))
+        self.scan()
+        self.files_ready()
+        self.click("#files-sides button[data-side='archive']")
+        self.page.wait("!!document.querySelector('#files-tree input[data-restore-path=\"_unmatched\"]')", timeout=30)
+        self.assertTrue(self.page.eval("document.getElementById('files-restore-bar').classList.contains('hidden')"))
+        self.click("#files-tree input[data-restore-path='_unmatched']")
+        self.page.wait("!document.getElementById('files-restore-bar').classList.contains('hidden')")
+        self.assertIn("1 chosen", self.page.eval("document.getElementById('files-restore-count').textContent"))
+        self.click("#files-restore-btn")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Restored 2'))", timeout=60)
+        self.assertEqual((self.fx.root / "notes" / "readme.txt").read_bytes(), b"my notes")
+        self.assertTrue((mine / "readme.txt").is_file())                               # the archive keeps its copy
+        self.page.wait("document.getElementById('files-restore-bar').classList.contains('hidden')")
         self.no_js_errors()
 
 

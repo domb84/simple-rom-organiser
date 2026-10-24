@@ -190,11 +190,10 @@ class BiosOption(ServerCase):
         built = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts)
         self.assertEqual([b for b in built if "boot" in b], ["boot.bin"])                         # one copy, as the list names it (the fewest folders, as for a ROM); the spare and the bad dump stay
 
-    def test_a_build_and_its_undo_with_bios_files_set_aside_and_renamed(self) -> None:
+    def test_a_build_with_bios_files_set_aside_and_renamed(self) -> None:
         put(self.root / "copy of it.bin", FIRMWARE)
         put(self.root / "bad.bin", DAMAGED)
         mine = lambda: sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*") if p.is_file() and not p.name.startswith(".romorg"))  # noqa: E731
-        before = mine()
         self.scan()
         aside = self.tmp / "lib-archive"
         plan = self.call("POST", "/api/library/plan", {"aside_to": str(aside)})
@@ -204,8 +203,6 @@ class BiosOption(ServerCase):
         self.assertNotIn("bad.bin", after)
         archived = sorted(p.relative_to(aside).as_posix() for p in aside.rglob("*") if p.is_file())
         self.assertTrue(any(a.endswith("_excluded/bad.bin") for a in archived) and any("_duplicates" in a for a in archived), archived)
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(mine(), before)
 
     def test_key_files_an_earlier_build_set_aside_come_back_too(self) -> None:
         put(self.root / "_unmatched" / "prod.keys", b"k")

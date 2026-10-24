@@ -1,15 +1,14 @@
-"""Moves of what a library build sets aside, and the journal that makes them undoable.
+"""Moves of what a library build sets aside.
 
 * :func:`plan_sweep`: what a library build set aside inside a system's folder (``_excluded``, ``_superseded``,
   ``_incomplete``, ``_duplicates``, ``_unmatched``) moves to ``<archive>/<system folder>/<same folder>``, so the ROM folder only
-  holds what you keep. :func:`apply_moves` does any list of moves (never over an existing file, journalled);
-  :func:`undo_moves` takes them back.
+  holds what you keep. :func:`apply_moves` does any list of moves (never over an existing file).
 """
 
 from __future__ import annotations
 
 import errno
-import json
+import filecmp
 import os
 import shutil
 import stat
@@ -21,8 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
-__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "apply_moves", "undo_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir",
-           "read_journal"]
+__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "apply_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir"]
 
 # the folders a library build sets things aside in (the converted originals are the user's safety copies: they stay)
 ASIDE_FOLDERS = tuple(d for d in RESERVED_DIRS if d != CONVERTED_DIR)
@@ -33,6 +31,9 @@ DISC_EXTS = {".chd", ".cue", ".gdi", ".iso", ".bin", ".img", ".mdf", ".ccd", ".c
 ARCHIVE_EXTS = {".zip", ".7z", ".rar"}
 
 
+ALREADY = "already archived"    # an SMove's note: the archive holds this very file at dst already (only the source goes)
+
+
 @dataclass
 class SMove:
     src: Path
@@ -41,7 +42,8 @@ class SMove:
     note: str = ""
     kind: str = "file"          # file | folder
     size: int = 0
-    copy: bool = False          # a copy: ``src`` stays, ``dst`` is a new file (an undo removes it)
+    copy: bool = False          # a copy: ``src`` stays, ``dst`` is a new file
+    rom: str = ""               # what the build identified it as (its DAT rom / disc game name; "" for a file no DAT knows)
 
 
 def overlap(root: Path, dest: Path) -> str:
@@ -73,12 +75,30 @@ def inside(path: Path, folder: Path) -> bool:
         return False
 
 
+_VIRTUAL: Dict[str, Callable[[Path], bool]] = {}      # a folder that stands for something else (an S3 archive): who says what is there
+
+
+def register_virtual(base: Path, exists: Callable[[Path], bool]) -> None:
+    """Paths below ``base`` exist when ``exists`` says so (see ``s3archive``); a later call for the same base replaces it."""
+    _VIRTUAL[os.path.normcase(str(base))] = exists
+
+
+def lexists(path: Path) -> bool:
+    """``os.path.lexists``, or the answer of the registered stand-in a path lies below."""
+    p = os.path.normcase(str(path))
+    for base, fn in _VIRTUAL.items():
+        if p == base or p.startswith(base.rstrip(os.sep) + os.sep):
+            return fn(Path(path))
+    return os.path.lexists(path)
+
+
 class Names:
-    """Free names: a target that is taken (on disk or by an earlier move of this plan) gets `` (2)``, `` (3)`` ..."""
+    """Free names: a target that is taken (on disk, in a registered stand-in, or by an earlier move of this plan) gets `` (2)``,
+    `` (3)`` ..."""
 
     def __init__(self, exists: Optional[Callable[[Path], bool]] = None) -> None:
         self.taken: set = set()
-        self.exists = exists or os.path.lexists
+        self.exists = exists or lexists
 
     def free(self, dst: Path, folder: bool = False) -> Path:
         n = 1
@@ -281,8 +301,7 @@ def move_path(src: Path, dst: Path) -> None:
 
 def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optional[Iterable[str]] = None) -> None:
     """Remove the folders that are empty now, and their parents while those are empty too. ``stop`` are never removed;
-    with ``only`` no other folder than these is (an undo removes the folders its moves created, not the user's own empty
-    folder the archive lies in)."""
+    with ``only`` no other folder than these is."""
     stops = {os.path.normcase(os.path.realpath(s)) for s in stop}
     mine = None if only is None else {os.path.normcase(str(x)) for x in only}
     for d in sorted({Path(x) for x in dirs}, key=lambda p: len(p.parts), reverse=True):
@@ -299,124 +318,30 @@ def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optiona
             cur = cur.parent
 
 
-# ---- the journal
-# A finished journal is one JSON document: {"kind", "moves": [{"from", "to", "kind"}], "made": [folders created], "undone",
-# ...}. While the moves run, the file holds one JSON object per line instead: a header ({"kind", "partial": true, ...}),
-# then each folder that is created ({"made": path}) and each move, written BEFORE it is made. A run that is killed therefore leaves a record of everything it moved (read_journal reads both forms;
-# a line whose move never happened is recognised by its file still being where it was).
-def _write_json(path: Path, data: dict) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(data, indent=1))
-        f.flush()
+# ---- moving
+def _make_dirs(folder: Path, made: List[str]) -> None:
+    """``mkdir -p``; the folders this creates are added to ``made`` (removed again when a move into them fails)."""
+    missing: List[Path] = []
+    d = Path(folder)
+    while not os.path.lexists(d) and d != d.parent:
+        missing.append(d)
+        d = d.parent
+    for d in reversed(missing):
         try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    os.replace(tmp, path)
-
-
-def read_journal(journal: Path) -> dict:
-    """A journal as ``{"kind", "moves", "undone", ...}``; ``"partial": True`` when the run that wrote it did not finish."""
-    text = Path(journal).read_text(encoding="utf-8")
-    try:
-        d = json.loads(text)
-        if isinstance(d, dict) and not d.get("partial"):
-            d.setdefault("moves", [])
-            return d
-    except ValueError:
-        pass
-    head: dict = {}
-    moves: List[dict] = []
-    made: List[str] = []
-    for n, line in enumerate(text.splitlines()):
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue                                   # a torn last line: that move was not made
-        if not isinstance(rec, dict):
+            os.mkdir(d)
+        except FileExistsError:
             continue
-        if n == 0 and "from" not in rec and "made" not in rec:
-            head = rec
-        elif "from" in rec and "to" in rec:
-            moves.append(rec)
-        elif isinstance(rec.get("made"), str):
-            made.append(rec["made"])
-    return {"undone": False, **head, "partial": True, "moves": moves, "made": made}
+        made.append(str(d))
 
 
-class _Journal:
-    def __init__(self, journal_dir: Path, kind: str, extra: Optional[dict], started: Optional[Callable[[Path], None]]) -> None:
-        self.dir, self.kind, self.extra, self.started = Path(journal_dir), kind, dict(extra or {}), started
-        self.path: Optional[Path] = None
-        self.made: List[str] = []
-        self._f: Any = None
-
-    def _open(self) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        n = 1
-        while True:
-            path = self.dir / (f"{self.kind}-{stamp}.json" if n == 1 else f"{self.kind}-{stamp}-{n}.json")
-            try:
-                self._f = open(path, "x", encoding="utf-8", newline="\n")
-                break
-            except FileExistsError:
-                n += 1
-        self.path = path
-        self._line({"kind": self.kind, "undone": False, "partial": True, **self.extra})
-        if self.started is not None:
-            self.started(path)
-
-    def _line(self, rec: dict) -> None:
-        self._f.write(json.dumps(rec) + "\n")
-        self._f.flush()                                # survives a killed process
-
-    def intend(self, rec: dict) -> None:
-        if self._f is None:
-            self._open()
-        self._line(rec)
-
-    def mkdirs(self, folder: Path) -> None:
-        """``mkdir -p``; the folders this creates are written down (an undo removes these, and no others, when empty)."""
-        missing: List[Path] = []
-        d = Path(folder)
-        while not os.path.lexists(d) and d != d.parent:
-            missing.append(d)
-            d = d.parent
-        for d in reversed(missing):
-            try:
-                os.mkdir(d)
-            except FileExistsError:
-                continue
-            self.made.append(str(d))
-            self.intend({"made": str(d)})
-
-    def close(self, done: List[dict]) -> Optional[Path]:
-        """The finished document (or no file at all when nothing was moved)."""
-        if self._f is None:
-            return None
-        self._f.close()
-        self._f = None
-        assert self.path is not None
-        if not done:
-            _drop(self.path)
-            return None
-        _write_json(self.path, {"kind": self.kind, "moves": done, "made": self.made, "undone": False, **self.extra})
-        return self.path
-
-
-def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable[Path] = (),
+def apply_moves(moves: List[SMove], keep: Iterable[Path] = (),
                 progress: Optional[Callable[[int, int, str], None]] = None,
-                cancel: Optional[Callable[[], bool]] = None, extra: Optional[dict] = None,
-                started: Optional[Callable[[Path], None]] = None) -> dict:
+                cancel: Optional[Callable[[], bool]] = None) -> dict:
     """Move the files / folders; never over an existing one. Folders that were emptied are removed (``keep`` are never
-    removed). Writes one JSON journal for :func:`undo_moves`: each move is recorded before it is made (``started(path)`` is
-    called when the journal file is created), so a run that dies half-way can still be undone."""
-    res: Dict[str, Any] = {"moved": 0, "failed": [], "journal": None, "cancelled": False}
-    done: List[dict] = []
+    removed). Returns ``{"moved", "failed": [{path, error}], "cancelled"}``."""
+    res: Dict[str, Any] = {"moved": 0, "failed": [], "cancelled": False}
     emptied: set = set()
-    journal = _Journal(journal_dir, kind, extra, started)
+    made: List[str] = []
     reset_retries()
     try:
         for i, m in enumerate(moves):
@@ -426,18 +351,22 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
             if progress:
                 progress(i, len(moves), m.src.name)
             try:
+                if m.note == ALREADY and os.path.isfile(m.dst) and not m.copy:
+                    if not filecmp.cmp(m.src, m.dst, shallow=False):
+                        raise FileExistsError("another file is already there")
+                    remove_file(m.src)                       # (the archive has it: the copy here goes)
+                    emptied.add(m.src.parent)
+                    res["moved"] += 1
+                    continue
                 if os.path.lexists(m.dst):
                     raise FileExistsError("a file is already there")
                 if not os.path.lexists(m.src):
                     raise FileNotFoundError("the file is no longer there")
-                journal.mkdirs(m.dst.parent)
-                rec = {"from": str(m.src), "to": str(m.dst), "kind": "copy" if m.copy else m.kind}
-                journal.intend(rec)
+                _make_dirs(m.dst.parent, made)
                 if m.copy:
                     shutil.copy2(m.src, m.dst)
                 else:
                     move_path(m.src, m.dst)
-                done.append(rec)
                 meter.add(m.size)
                 emptied.add(m.src.parent)
                 res["moved"] += 1
@@ -445,61 +374,9 @@ def apply_moves(moves: List[SMove], journal_dir: Path, kind: str, keep: Iterable
                 res["failed"].append({"path": str(m.src), "error": winproc.long_path_hint(exc, m.src, m.dst)})
         _remove_empty_dirs(emptied, keep)
     finally:
-        for d in reversed(list(journal.made)):         # a folder made for a move that then failed does not stay behind empty
+        for d in reversed(made):                       # a folder made for a move that then failed does not stay behind empty
             try:
                 os.rmdir(d)
-                journal.made.remove(d)
             except OSError:
                 pass
-        path = journal.close(done)
-        res["journal"] = str(path) if path else None
     return res
-
-
-def undo_moves(journal: Path, keep: Iterable[Path] = ()) -> dict:
-    """Move everything back where it came from, unless the original place is taken or the file is gone. Returns
-    ``{"restored", "skipped": [{path, reason}], "left"}``; ``left`` moves could not be taken back now and stay in the journal,
-    so the undo can be tried again (a file that was in use ...)."""
-    journal = Path(journal)
-    d = read_journal(journal)
-    partial = bool(d.pop("partial", False))
-    restored, skipped, dirs = 0, [], set()
-    left: List[dict] = []
-    reset_retries()
-    for m in reversed(d.get("moves", [])):
-        src, dst = Path(m["to"]), Path(m["from"])
-        if m.get("kind") == "copy":                    # a copy is taken away again (the original is where it was)
-            if os.path.lexists(src):
-                try:
-                    remove_file(src)
-                    restored += 1
-                    dirs.add(src.parent)
-                except OSError as exc:
-                    skipped.append({"path": str(src), "reason": str(exc)})
-                    left.append(m)
-            continue
-        if not os.path.lexists(src):
-            if partial and os.path.lexists(dst):
-                continue                               # written down, then never moved (the run died or the move failed)
-            skipped.append({"path": str(src), "reason": "no longer there"})
-        elif os.path.lexists(dst):
-            skipped.append({"path": str(dst), "reason": "something is at the original place now"})
-            left.append(m)
-        else:
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                move_path(src, dst)
-                restored += 1
-                dirs.add(src.parent)
-            except OSError as exc:
-                skipped.append({"path": str(src), "reason": winproc.long_path_hint(exc, src, dst)})
-                left.append(m)
-    _remove_empty_dirs(dirs, keep, d.get("made") if isinstance(d.get("made"), list) else None)
-    if not skipped:
-        d["undone"] = True
-        _write_json(journal, d)
-    elif partial or restored:                          # from now on a journal of what is still to take back
-        d["moves"] = list(reversed(left))
-        d["undone"] = not left
-        _write_json(journal, d)
-    return {"restored": restored, "skipped": skipped, "left": len(left)}

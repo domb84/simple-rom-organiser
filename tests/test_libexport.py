@@ -1,6 +1,10 @@
-"""Tests for romorg.libexport: build the library in another folder, leave the source alone, undo."""
+"""Tests for romorg.libexport: build the library in another folder, leave the source alone."""
 
 from __future__ import annotations
+
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
 
 import contextlib
 import errno
@@ -47,18 +51,12 @@ class Export(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["a.gba", "b.gba", "c.gba"])
         self.assertFalse(list(self.dest.rglob("*.part")))
 
-    def test_rerun_adds_nothing_and_undo_removes_only_ours(self) -> None:
+    def test_rerun_adds_nothing(self) -> None:
         libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "copy"))
         again = libexport.plan_export(self.plan, self.root, self.dest, "copy")
         self.assertEqual(again.pending(), 0)
-        self.assertEqual(len(libexport.list_runs(self.dest)), 1)
-        (self.dest / "mine.txt").write_text("keep")
-        res = libexport.undo_run(self.dest)
-        self.assertEqual(res["removed"], 2)
-        self.assertTrue((self.dest / "mine.txt").exists())
-        self.assertFalse((self.dest / "b.gba").exists())
+        self.assertEqual(libexport.apply_export(again)["created"], 0)
         self.assertEqual((self.root / "a.gba").read_bytes(), b"A" * 1000)   # a copy: the source keeps its file
-        self.assertEqual(libexport.list_runs(self.dest), [])
 
     def test_foreign_file_is_never_overwritten(self) -> None:
         self.dest.mkdir()
@@ -67,13 +65,6 @@ class Export(unittest.TestCase):
         self.assertEqual(ep.counts()["conflict"], 1)
         libexport.apply_export(ep)
         self.assertEqual((self.dest / "b.gba").read_bytes(), b"other")
-
-    def test_undo_leaves_a_changed_file(self) -> None:
-        libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "copy"))
-        (self.dest / "b.gba").write_bytes(b"edited by the user")
-        res = libexport.undo_run(self.dest)
-        self.assertEqual(len(res["skipped"]), 1)
-        self.assertTrue((self.dest / "b.gba").exists())
 
     def test_overlapping_folders_are_refused(self) -> None:
         for dest in (self.root, self.root / "out", self.root.parent):
@@ -86,7 +77,7 @@ class Export(unittest.TestCase):
             self.assertEqual(ep.mode, "copy")
             self.assertEqual({t.action for t in ep.items}, {"copy"})
 
-    def test_move_takes_the_files_out_of_the_source_and_undo_puts_them_back(self) -> None:
+    def test_move_takes_the_files_out_of_the_source(self) -> None:
         ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
         self.assertEqual(ep.counts()["move"], 2)
         self.assertEqual(ep.bytes_to_copy(), 0)                                # same drive: a rename writes nothing
@@ -95,18 +86,6 @@ class Export(unittest.TestCase):
         self.assertEqual((self.dest / "Game A.gba").read_bytes(), b"A" * 1000)
         self.assertFalse((self.root / "a.gba").exists())
         self.assertTrue((self.root / "c.gba").exists())                          # not kept: never touched
-        out = libexport.undo_run(self.dest)
-        self.assertEqual((out["removed"], out["skipped"]), (2, []))
-        self.assertEqual((self.root / "a.gba").read_bytes(), b"A" * 1000)
-        self.assertFalse((self.dest / "Game A.gba").exists())
-
-    def test_undo_of_a_move_never_overwrites_the_original_place(self) -> None:
-        libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "move"))
-        (self.root / "a.gba").write_bytes(b"a new file")
-        out = libexport.undo_run(self.dest)
-        self.assertEqual(len(out["skipped"]), 1)
-        self.assertEqual((self.root / "a.gba").read_bytes(), b"a new file")
-        self.assertTrue((self.dest / "Game A.gba").exists())
 
     def test_move_and_sync_do_not_go_together(self) -> None:
         with self.assertRaises(libexport.ExportError):
@@ -138,7 +117,7 @@ class Sync(Export):
     def build(self, mode: str = "copy"):
         return libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, mode, sync=True))
 
-    def test_rule_change_removes_what_is_no_longer_kept_and_undo_restores_it(self) -> None:
+    def test_rule_change_removes_what_is_no_longer_kept(self) -> None:
         self.build()
         self.plan.ops = [self.plan.ops[0]]                       # b.gba is no longer kept
         ep = libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True)
@@ -148,9 +127,6 @@ class Sync(Export):
         self.assertFalse((self.dest / "b.gba").exists())
         self.assertTrue((self.root / "b.gba").exists())          # the source never changes
         self.assertTrue((self.dest / "Game A.gba").exists())
-        undone = libexport.undo_run(self.dest, res["run"])
-        self.assertEqual(undone["restored"], 1)
-        self.assertEqual((self.dest / "b.gba").read_bytes(), b"B" * 500)
 
     def test_without_sync_nothing_is_removed(self) -> None:
         self.build()
@@ -289,9 +265,8 @@ class MoveSafety(unittest.TestCase):
         self.assertEqual((res["moved"], res["copied"], len(res["failed"])), (0, 0, 2))
         self.assertEqual(self.files(self.dest), [])
         self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
-        self.assertEqual(libexport.list_runs(self.dest), [])
 
-    def test_to_another_drive_the_file_is_copied_then_removed_and_undo_brings_it_back(self) -> None:
+    def test_to_another_drive_the_file_is_copied_then_removed(self) -> None:
         os.chmod(self.root / "a.gba", stat.S_IREAD)             # read-only: Windows refuses a plain delete
         self.addCleanup(lambda: [os.chmod(p, stat.S_IREAD | stat.S_IWRITE) for p in (self.root / "a.gba", self.dest / "Game A.gba") if p.exists()])
         with _other_drive():
@@ -300,11 +275,6 @@ class MoveSafety(unittest.TestCase):
             self.assertEqual((res["moved"], res["copied"], res["failed"]), (2, 0, []))
             self.assertEqual(self.files(self.root), ["c.gba"])
             self.assertEqual((self.dest / "Game A.gba").read_bytes(), b"A" * 1000)
-            out = libexport.undo_run(self.dest)
-        self.assertEqual((out["removed"], out["skipped"]), (2, []))
-        self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
-        self.assertEqual((self.root / "a.gba").read_bytes(), b"A" * 1000)
-        self.assertEqual(self.files(self.dest), [])
 
     def test_to_another_drive_an_original_that_cannot_be_removed_is_recorded_as_a_copy_and_reported(self) -> None:
         real = os.unlink
@@ -319,10 +289,7 @@ class MoveSafety(unittest.TestCase):
         self.assertEqual((res["moved"], res["copied"]), (1, 1))
         self.assertEqual([f["rel"] for f in res["failed"]], ["Game A.gba"])
         self.assertIn("could not be removed", res["failed"][0]["error"])
-        out = libexport.undo_run(self.dest)                       # the copy goes, the moved one returns: as it was
-        self.assertEqual(out["skipped"], [])
-        self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
-        self.assertEqual(self.files(self.dest), [])
+        self.assertTrue((self.root / "a.gba").is_file() and (self.dest / "Game A.gba").is_file())
 
 
 @unittest.skipUnless(os.environ.get("ROMORG_TEST_OTHER_DRIVE"), "set ROMORG_TEST_OTHER_DRIVE to a folder on another drive")
@@ -334,7 +301,7 @@ class RealOtherDrive(unittest.TestCase):
         self.dest = Path(self._far.name) / "lib"
         self.assertNotEqual(os.stat(self.root).st_dev, os.stat(self._far.name).st_dev, "not another drive")
 
-    def test_move_and_undo(self) -> None:
+    def test_move(self) -> None:
         os.chmod(self.root / "a.gba", stat.S_IREAD)
         self.addCleanup(lambda: [os.chmod(p, stat.S_IREAD | stat.S_IWRITE) for p in (self.root / "a.gba", self.dest / "Game A.gba") if p.exists()])
         ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
@@ -344,10 +311,6 @@ class RealOtherDrive(unittest.TestCase):
         self.assertEqual((res["moved"], res["copied"], res["failed"]), (2, 0, []))
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["c.gba"])
         self.assertEqual((self.dest / "Game A.gba").read_bytes(), b"A" * 1000)
-        out = libexport.undo_run(self.dest)
-        self.assertEqual((out["removed"], out["skipped"]), (2, []))
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["a.gba", "b.gba", "c.gba"])
-        self.assertFalse([p for p in self.dest.rglob("*") if p.is_file() and libexport.MANIFEST_DIR not in p.parts])
 
     def test_copy_sync_and_cancel(self) -> None:
         ep = libexport.plan_export(self.plan, self.root, self.dest, "copy", sync=True)

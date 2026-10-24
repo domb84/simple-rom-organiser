@@ -267,7 +267,7 @@ class ServerTestCase(unittest.TestCase):
             missing=[miss, miss_wb],
         )
         self.scan_gate: threading.Event | None = None
-        self.calls: dict[str, list[Any]] = {"scan": [], "apply": [], "undo": [], "write": [], "m3u_plan": [],
+        self.calls: dict[str, list[Any]] = {"scan": [], "apply": [], "write": [], "m3u_plan": [],
                                             "load": [], "kick_plan": [], "kick_apply": []}
         test = self
 
@@ -281,9 +281,6 @@ class ServerTestCase(unittest.TestCase):
                         raise RuntimeError("cancelled")
             return test.result
 
-        self.undo_log = root / ".romorg-undo-20250101-000000.json"
-        self.undo_log.write_text(json.dumps({"moves": [{"src": "a", "dst": "b"}, {"src": "c", "dst": "d"}],
-                                             "removed_dirs": []}))
 
         tosec = types.ModuleType("romorg.tosec")
         tosec.DEFAULT_DAT_NAME = GAMES
@@ -324,16 +321,9 @@ class ServerTestCase(unittest.TestCase):
 
         def apply_renames(ops: list[RenameOp], root_: Path, progress: Any = None) -> dict[str, Any]:
             test.calls["apply"].append(ops)
-            return {"moved": 3, "failed": [], "undo_log": test.undo_log}
+            return {"moved": 3, "failed": []}
 
         organiser.apply_renames = apply_renames
-        organiser.list_undo_logs = lambda root_: [test.undo_log]
-
-        def undo(log: Path) -> dict[str, Any]:
-            test.calls["undo"].append(log)
-            return {"restored": 3}
-
-        organiser.undo = undo
 
         m3u = types.ModuleType("romorg.m3u")
 
@@ -719,20 +709,6 @@ class EndpointTests(ServerTestCase):
         self.assertEqual(self.wait_job()["status"], "done")
         self.assertEqual(self.get("/api/status")["scan"]["platform"], "Atari ST")
 
-    def test_undo_logs_and_undo(self) -> None:
-        self.scan()
-        logs = self.get("/api/organise/undo-logs")["logs"]
-        self.assertEqual(logs[0]["name"], self.undo_log.name)
-        self.assertEqual(logs[0]["count"], 2)  # dict-style log {"moves": [...]}
-
-        status, _, _ = self.request("POST", "/api/organise/undo", {"log": str(self.roms / "other.json")})
-        self.assertEqual(status, 400)
-        self.post("/api/organise/undo", {"log": logs[0]["log"]})
-        job = self.wait_job()
-        self.assertEqual(job["status"], "done", job)
-        self.assertEqual(self.calls["undo"], [self.undo_log])
-        self.assertEqual(job["result"]["restored"], 3)
-
     def test_m3u_plan_and_apply(self) -> None:
         self.scan()
         plan = self.post("/api/m3u/plan", {"savedisk": True, "labels": True})
@@ -854,12 +830,6 @@ class HelperTests(unittest.TestCase):
         rel = "Turrican II (1991)(Rainbow Arts)(de)"                                         # (an SPS image: its release's languages)
         rom = DatRom(name=f"{rel} - Disk1.ipf", size=1, crc="", md5="", sha1="", game=rel, dat="Commodore Amiga - Games - SPS")
         self.assertEqual(server._tags_json(rom, real_tags)["variant_languages"], ["De"])
-
-    def test_undo_log_count(self) -> None:
-        self.assertEqual(server._undo_log_count([1, 2]), 2)
-        self.assertEqual(server._undo_log_count({"moves": [1], "removed_dirs": ["x"]}), 1)
-        self.assertIsNone(server._undo_log_count({"x": 1}))
-
 
 class DeadSocketTests(unittest.TestCase):
     """A browser that closes the connection mid-response (WinError 10053 on Windows) only ends that connection."""
@@ -1035,12 +1005,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(m3u["items"][0]["dir"], GAMES)
         self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
 
-        logs = self.call("GET", "/api/organise/undo-logs")["logs"]
-        self.assertEqual(len(logs), 1)
-        self.job("/api/organise/undo", {"log": logs[0]["log"]})
-        for rel, data in self.files.items():
-            self.assertEqual((self.root / rel).read_bytes(), data, rel)
-
 
     def test_library_built_in_another_folder(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
@@ -1062,11 +1026,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)  # source untouched
         again = self.call("POST", "/api/library/plan", {"limit": 5, **opts})
         self.assertEqual(again["export"]["pending"], 0)
-        runs = self.call("GET", f"/api/library/export/runs?dest={urllib.request.quote(str(dest))}")["runs"]
-        self.assertEqual(len(runs), 1)
-        undone = self.call("POST", "/api/library/export/undo", {"dest": str(dest)})
-        self.assertEqual(undone["removed"], res["created"] + res["playlists"])
-        self.assertEqual([p for p in dest.rglob("*") if p.is_file() and ".romorg-library" not in p.parts], [])
 
     def test_retroarch_saves_are_moved_and_the_config_updated(self) -> None:
         ra_dir = self.tmp / "ra"
@@ -1094,11 +1053,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertIn(str(new_saves), cfg.read_text())
             self.assertIn('video_vsync = "true"', cfg.read_text())
             self.assertTrue(Path(res["backup"]).is_file())
-            info = self.call("GET", "/api/retroarch")
-            self.assertEqual(len(info["undo"]), 1)
-            undone = self.call("POST", "/api/retroarch/undo", {"journal": info["undo"][0]["journal"]})
-            self.assertEqual((undone["restored"], undone["skipped"], undone["cfg_restored"]), (2, [], True))
-            self.assertTrue((old / "bsnes" / "Mario (USA).srm").is_file())
+            self.assertFalse((old / "bsnes" / "Mario (USA).srm").exists())
 
     def _retroarch_with_saves(self) -> tuple[Path, Path]:
         ra_dir, saves = self.tmp / "ra-follow", self.tmp / "ra-saves"
@@ -1111,7 +1066,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
         return ra_dir, saves
 
-    def test_saves_follow_a_library_build_in_place_and_come_back_on_undo(self) -> None:
+    def test_saves_follow_a_library_build_in_place(self) -> None:
         _ra, saves = self._retroarch_with_saves()
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         with mock.patch("romorg.retroarch.is_running", return_value=False):
@@ -1121,9 +1076,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
             self.assertTrue((saves / "PUAE" / f"{new}.state1").is_file())
             self.assertFalse((saves / "PUAE" / "game_d1.srm").exists())
-            self.job("/api/library/undo", {"log": res["undo_log"]})
-            self.assertTrue((saves / "PUAE" / "game_d1.srm").is_file())
-            self.assertFalse((saves / "PUAE" / f"{new}.srm").exists())
 
     def test_retroarch_bios_check_and_place_over_http(self) -> None:
         ra_dir = self.tmp / "ra-bios"
@@ -1158,7 +1110,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertIn('video_vsync = "true"', (ra_dir / "retroarch.cfg").read_text())
         self.assertEqual(next(r for r in res["rows"] if r["key"] == "cheat_database_path")["status"], "ok")
 
-    def test_retroarch_asset_folders_are_set_one_by_one_and_undone(self) -> None:
+    def test_retroarch_asset_folders_are_set_one_by_one(self) -> None:
         ra_dir, cht = self.tmp / "ra-assets", self.tmp / "my-cheats"
         ra_dir.mkdir()
         cht.mkdir()
@@ -1179,8 +1131,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
             back = self.call("POST", "/api/retroarch/assets/set", {"key": "cheat_database_path", "folder": ""})        # back to RetroArch's own
             self.assertEqual(back["changed"], ["cheat_database_path"])
             self.assertIn('cheat_database_path = "default"', (ra_dir / "retroarch.cfg").read_text())
-            self.call("POST", "/api/retroarch/undo", {"journal": back["journal"]})
-            self.assertIn(str(cht), (ra_dir / "retroarch.cfg").read_text())
+            self.assertTrue(Path(back["cfg_backup"]).is_file())
 
     def test_retroarch_bios_for_every_system_with_a_folder(self) -> None:
         ra_dir = self.tmp / "ra-bios-all"
@@ -1275,9 +1226,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
                     self.assertEqual(code, 400, (path, save_dir, data))
             self.assertEqual(self.status("/api/retroarch/plan", {"save_dir": str(self.tmp / "ok"), "state_dir": str(a_file)})[0], 400)
             self.assertEqual(self.status("/api/retroarch/plan", {})[0], 400)
-            # undo, shared folders, BIOS
-            for journal in (None, "", "nope", str(cfg), 7):
-                self.assertEqual(self.status("/api/retroarch/undo", {"journal": journal})[0], 400, journal)
+            # shared folders, BIOS
             for body in ({}, {"base": 5}, {"base": str(a_file)}, {"base": (missing_drive or "/nowhere/") + "assets"}):
                 code, data = self.status("/api/retroarch/shared", body)
                 self.assertEqual(code, 200, (body, data))
@@ -1339,9 +1288,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertIn(b'savefile_directory = ":\\user\\saves"\n', cfg.read_bytes())
             info = self.call("GET", "/api/retroarch")
             self.assertEqual(info["settings"]["savefile_path"], str(ra_dir / "user" / "saves"))
-            undone = self.call("POST", "/api/retroarch/undo", {"journal": info["undo"][0]["journal"]})
-            self.assertEqual((undone["restored"], undone["skipped"], undone["cfg_restored"]), (1, [], True))
-            self.assertEqual(cfg.read_bytes(), before)
+            self.assertEqual(Path(res["cfg_backup"]).read_bytes(), before)
             # a second install, chosen by a path typed in another case: that one is selected, not the first in the list
             other, other_cfg = self._retroarch_portable("Other-RA")
             info = self.call("POST", "/api/retroarch/select", {"custom": str(other).upper().replace("\\", "/")})
@@ -1364,9 +1311,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertTrue(any((aside / self.root.name).rglob("*.*")))                       # everything under this system's own folder
         self.assertEqual(sorted(p.name for p in aside.iterdir()), [self.root.name])
         self.assertTrue(any((aside / self.root.name / "_unmatched").rglob("*.*")))
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertFalse(any(p.is_file() for p in aside.rglob("*")))                      # all of it came back first
-        self.assertTrue((self.root / "incoming" / "game_d1.adf").is_file())
 
     # ---- Collection: one scan, then everything from its metadata
     def _gba_games(self) -> dict[str, bytes]:
@@ -1868,7 +1812,7 @@ class NoIntroServerTests(ServerTestCase):
 
         def apply_conversions(ops: list[ConvertOp], root_: Path, progress: Any = None, cancel: Any = None) -> dict:
             test.calls["convert_apply"].append([op.status for op in ops])
-            return {"converted": 1, "failed": [], "removed_dirs": [], "undo_log": test.undo_log,
+            return {"converted": 1, "failed": [], "removed_dirs": [],
                     "cancelled": False, "error": None}
 
         convert.plan_conversions = plan_conversions
@@ -2070,12 +2014,6 @@ class NoIntroServerTests(ServerTestCase):
         self.assertEqual(status, 409)
         self.assertEqual(self.calls["convert_plan"], [])
 
-    def test_undo_log_count_includes_created_files(self) -> None:
-        organiser = sys.modules["romorg.organiser"]
-        organiser.read_undo_log = lambda log: {"moves": [1, 2], "created_files": [{"path": "x"}], "steps": []}
-        self.scan_snes()
-        self.assertEqual(self.get(f"/api/organise/undo-logs?path={self.q(str(self.roms))}")["logs"][0]["count"], 3)
-
     def test_rescan_skipped_only_when_closing(self) -> None:
         app = self.srv.app
         self.scan_snes()
@@ -2122,7 +2060,7 @@ class LPlan:
 
 
 class LibraryServerTests(ServerTestCase):
-    """AMENDMENT 6: library profile, Build library preview / apply / undo, tag rule filters."""
+    """AMENDMENT 6: library profile, Build library preview / apply, tag rule filters."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -2161,7 +2099,7 @@ class LibraryServerTests(ServerTestCase):
         def apply_renames(ops: list, root_: Path, progress: Any = None, cancel: Any = None,
                           playlists: Any = ()) -> dict[str, Any]:
             test.calls["library_apply"].append((list(ops), list(playlists)))
-            return {"moved": 5, "failed": [], "undo_log": test.undo_log, "playlists_written": len(playlists)}
+            return {"moved": 5, "failed": [], "playlists_written": len(playlists)}
 
         organiser.plan_library = plan_library
         organiser.reason_counts = reason_counts
@@ -2481,7 +2419,7 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual({k: v for k, v in self.calls["plan_library"][-1].items() if k != "profile"},
                          {"savedisk": True, "labels": False, "platform": "Commodore Amiga"})
 
-    def test_library_apply_and_undo_are_single_jobs(self) -> None:
+    def test_library_apply_is_a_single_job(self) -> None:
         self.scan()
         self.post("/api/library/apply", {})
         job = self.wait_job()
@@ -2493,12 +2431,6 @@ class LibraryServerTests(ServerTestCase):
         ops, playlists = self.calls["library_apply"][-1]
         self.assertEqual(len(ops), 7)
         self.assertEqual([p.status for p in playlists], ["write"])
-        self.post("/api/library/undo", {"log": str(self.undo_log)})
-        job = self.wait_job()
-        self.assertEqual((job["kind"], job["result"]["action"]), ("library", "undo"))
-        self.assertEqual(self.calls["undo"], [self.undo_log])
-        status, _, _ = self.request("POST", "/api/library/undo", {"log": "/etc/passwd"})
-        self.assertEqual(status, 400)  # only logs the organiser lists
 
     def test_library_plan_empty_when_nothing_to_do(self) -> None:
         self.scan()
@@ -2578,7 +2510,7 @@ class LibraryServerTests(ServerTestCase):
         for gone in ("update-tosec-btn", "update-nointro-btn", "force-download", "release-info", "nointro-info"):
             self.assertNotIn(gone, html)
             self.assertNotIn(gone, js)
-        for present in ("updates-btn", "updates-line", "lib-plan-btn", "lib-apply-btn", "lib-undo-btn", "library-rules",
+        for present in ("updates-btn", "updates-line", "lib-plan-btn", "lib-apply-btn", "library-rules",
                         "lib-incomplete"):
             self.assertIn(f'id="{present}"', html)
         self.assertNotIn("/api/dats/update", js)

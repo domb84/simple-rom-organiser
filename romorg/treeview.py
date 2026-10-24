@@ -162,12 +162,13 @@ def _in_install(d: Path, root: Path, seen: Dict[str, bool]) -> bool:
 
 
 def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
-            playlists: Iterable[Any] = ()) -> List[Entry]:
+            playlists: Iterable[Any] = (), archive_files: Optional[Iterable[Tuple[Tuple[str, ...], int]]] = None) -> List[Entry]:
     """Every file of the system's ROM folder and of its part of the archive as a build would leave them.
 
     ``archive_base``: ``<archive>/<system folder name>`` (None: no archive folder is used, so what is set aside stays in the ROM
     folder's ``_excluded`` ...). ``to_archive``: the moves the build makes to the archive (``sortroot.SMove``: the files set aside, the
-    copies of saves that belong to several games, what earlier builds left in the reserved folders, an emulator's saves)."""
+    copies of saves that belong to several games, what earlier builds left in the reserved folders, an emulator's saves).
+    ``archive_files``: what the archive holds already, as ``(parts, size)`` (an S3 archive's listing); None: read ``archive_base``."""
     root = Path(root)
     out: List[Entry] = []
     leaving: Dict[str, Any] = {}
@@ -221,7 +222,10 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
                 size = getattr(m, "size", 0) if getattr(m, "copy", False) else _size(f)
                 out.append(Entry(ARCHIVE, tuple(parts) + tuple(sub), size, state,
                                  "/".join(origin_parts) if origin_parts is not None else os.fspath(f), -1))
-        if archive_base.is_dir():
+        if archive_files is not None:
+            for parts, size in archive_files:                       # what is in the archive already (a bucket's objects)
+                out.append(Entry(ARCHIVE, tuple(parts), size, EXISTING, "", -1))
+        elif archive_base.is_dir():
             for f in _files_under(archive_base):                    # what is in the archive already
                 parts = _rel(f, archive_base)
                 if parts:

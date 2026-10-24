@@ -3,6 +3,10 @@ for the PS2), convert (createdvd) - synthetic discs, throwaway data dir, fake ch
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import json
 import os
 import sys
@@ -66,7 +70,7 @@ class Ps2EndpointTests(PsServerCase):
         self.assertEqual(rows[PS2]["folder"], str(self.roms.resolve()))
         self.assertIsNone(rows[PSX]["folder"])
 
-    def test_scan_verify_organise_library_and_undo(self) -> None:
+    def test_scan_verify_organise_library(self) -> None:
         self.call("/api/chdman", {"engine": "python"})
         self.put_iso("Alpha (USA)", "Alpha loose.chd", ["Alpha loose.state"])
         self.put_iso("Beta (Europe) (En,Fr,De)", "Beta/b.chd", dvd=True)
@@ -90,11 +94,7 @@ class Ps2EndpointTests(PsServerCase):
         self.assertTrue((self.roms / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
         self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())          # (a disc of a multi-disc game: in its game's folder)
         self.assertFalse(list(self.roms.rglob("*.m3u")))
-        logs = self.call(f"/api/organise/undo-logs?path={self.roms}")["logs"]
-        self.call("/api/organise/undo", {"log": logs[0]["log"]})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "Alpha loose.chd").is_file())
-        self.assertTrue((self.roms / "Alpha loose.state").is_file())
+        self.assertFalse((self.roms / "Alpha loose.chd").exists())
 
     def test_convert_plan_offers_createdvd_for_an_iso(self) -> None:
         (self.roms / "raw").mkdir()
@@ -228,7 +228,7 @@ class DiscSavesTests(PsServerCase):
         conn.commit()
         conn.close()
 
-    def test_a_save_of_another_region_is_offered_converted_for_the_release_there_and_undone(self) -> None:
+    def test_a_save_of_another_region_is_offered_converted_for_the_release_there(self) -> None:
         self.iso.update({"Golf (Europe)": T.make_iso(38, 17)})
         T.write_dat(paths.redump_dir() / f"{PS2_DAT}.dat", [(n, "Games", [d], "iso") for n, d in self.iso.items()],
                     name=PS2_DAT, version="2026-06-15 03-41-38")
@@ -245,8 +245,6 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual((res["saves"], res["copied"]), (1, 1))
         self.assertEqual((card / "BESLES-59990GOLF" / "BESLES-59990GOLF").read_bytes(), b"golf")
         self.assertTrue((card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").is_file())          # the original stays
-        self.call("/api/retroarch/undo", {"journal": res["journal"]})
-        self.assertFalse((card / "BESLES-59990GOLF").exists())
 
     def test_the_default_converts_a_save_of_a_release_you_lack_for_the_one_you_have(self) -> None:
         from test_nintendo import ps2_iso
@@ -377,7 +375,7 @@ class DiscSavesTests(PsServerCase):
         self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())      # (the saves did not move)
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])                                      # (the game was archived)
 
-    def test_archive_takes_the_saves_along_and_undo_brings_them_back(self) -> None:
+    def test_archive_takes_the_saves_along(self) -> None:
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "archive"})
         aside = self.base / "archive"
         plan = self.call("/api/library/plan", {"platform": PS2, "aside_to": str(aside)})
@@ -392,12 +390,6 @@ class DiscSavesTests(PsServerCase):
         self.assertTrue((there / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
         self.assertFalse((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA").exists())
         self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BESLES-50012OTHER" / "data.bin").is_file())   # (the other game's save stays)
-        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
-        back = self.job()
-        self.assertEqual(back["status"], "done", back)
-        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
-        self.assertTrue((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())
-        self.assertTrue((self.pcsx2 / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
 
 
 if __name__ == "__main__":
@@ -416,7 +408,7 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.assertEqual(res["status"], "done", res)
         return plan, res["result"]
 
-    def test_a_folder_card_save_is_copied_under_the_other_releases_code_and_undo_removes_it(self) -> None:
+    def test_a_folder_card_save_is_copied_under_the_other_releases_code(self) -> None:
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual((plan["reasons"]["kept_saved"], plan["reasons"]["superseded"]), (0, 1))
@@ -431,11 +423,6 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.assertEqual((card / "BASLUS-20946GAMMA" / "data.bin").read_bytes(), b"save")        # the old save is not touched
         self.assertEqual((card / "BESLES-50012OTHER" / "data.bin").read_bytes(), b"other")
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "_superseded/Gamma (USA)/Gamma (USA).chd"])        # (the USA disc is set aside)
-        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
-        back = self.job()
-        self.assertEqual(back["status"], "done", back)
-        self.assertFalse((card / "BESLES-50012GAMMA").exists())
-        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
 
     def test_a_save_the_card_has_under_the_new_code_is_not_overwritten(self) -> None:
         card = self.pcsx2 / "memcards" / "Mcd001.ps2"
@@ -448,7 +435,7 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"mine")
 
-    def test_a_card_image_is_rewritten_in_place_and_undo_puts_the_old_image_back(self) -> None:
+    def test_a_card_image_is_rewritten_in_place_and_the_old_image_is_kept(self) -> None:
         import shutil
         from test_nintendo import ps2_card_image
         from romorg import pcsx2
@@ -466,9 +453,8 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.assertEqual(res["result"]["ps2_saves"]["replaced"], 1)
         names = sorted(s.name for s in pcsx2.read_card_image(card))
         self.assertEqual(names, ["BESLES-50012GAMMA", "BESLES-50012OTHER"])
-        self.call("/api/library/undo", {"log": res["result"]["undo_log"]})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertEqual(card.read_bytes(), image)                                               # the card is exactly as it was
+        kept = list(paths.data_dir().joinpath("save-backups", "replaced").glob("*Mcd001.ps2"))
+        self.assertEqual([p.read_bytes() for p in kept], [image])                                # the old card, as it was
 
 
 class MissingFollowsTheRules(PsServerCase):
@@ -615,7 +601,7 @@ class RawDiscTests(PsServerCase):
         self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 1)" / "Part (USA) (Disc 1).chd").is_file())
         self.assertFalse((self.roms / "_incomplete").exists())
 
-    def test_the_originals_can_be_deleted_after_converting_and_undo_keeps_the_chd(self) -> None:
+    def test_the_originals_can_be_deleted_after_converting(self) -> None:
         self.zip_of("a.zip", "Alpha (USA)")
         (self.roms / "b.iso").write_bytes(self.iso["Beta (Europe) (En,Fr,De)"])
         self.call("/api/library/profile", {"platform": PS2, "convert_first": True, "delete_converted": True})
@@ -632,9 +618,6 @@ class RawDiscTests(PsServerCase):
         self.assertTrue((self.roms / "Beta (Europe) (En,Fr,De)" / "Beta (Europe) (En,Fr,De).chd").is_file())
         self.assertFalse((self.roms / "a.zip").exists() or (self.roms / "b.iso").exists())
         self.assertFalse((self.roms / "_converted_originals").exists())                           # nothing was kept
-        self.call("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "Alpha (USA)" / "Alpha (USA).chd").is_file())               # the CHD is all that is left of the game
 
     def test_an_original_that_cannot_be_deleted_never_costs_the_checked_chd(self) -> None:
         self.zip_of("a.zip", "Alpha (USA)")

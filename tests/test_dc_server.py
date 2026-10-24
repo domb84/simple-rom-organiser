@@ -178,7 +178,7 @@ class DcEndpointTests(DcServerCase):
         missing = self.call("/api/scan/results?kind=missing&limit=50")
         self.assertIn("Alpha (USA) (En,Fr)", [m["name"] for m in missing["items"]])
 
-    def test_library_apply_and_undo(self) -> None:
+    def test_library_apply(self) -> None:
         self.call("/api/chdman", {"engine": "python"})
         self.put("Beta (Europe)", "x/y.chd", ["y.state"])
         self.scan()
@@ -193,13 +193,7 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual(j["result"]["summary"]["correctly_placed"], 1)
         self.assertTrue((self.roms / "Beta (Europe)" / "Beta (Europe).chd").is_file())
         self.assertTrue((self.roms / "_saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
-        logs = self.call(f"/api/organise/undo-logs?path={self.roms}")["logs"]
-        self.assertEqual(len(logs), 1)
-        self.call("/api/organise/undo", {"log": logs[0]["log"]})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "x" / "y.chd").is_file())
-        self.assertTrue((self.roms / "x" / "y.state").is_file())                         # ... and Undo brings it back
-        self.assertFalse((self.roms / "Beta (Europe)").exists())
+        self.assertFalse((self.roms / "x").exists())                                     # (no empty folder stays)
 
     def test_stale_move_unmatched_false_is_ignored_unmatched_always_moves(self) -> None:
         self.call("/api/chdman", {"engine": "python"})
@@ -252,11 +246,6 @@ class DcEndpointTests(DcServerCase):
         # after the rescan the plan is empty
         plan2 = self.call("/api/library/plan", {"platform": PLAT})
         self.assertTrue(plan2["empty"], plan2["counts"])
-        log = j["result"]["undo_log"]
-        self.call("/api/library/undo", {"log": log})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "g" / "g.chd").is_file())
-        self.assertFalse(list(self.roms.rglob("*.m3u")))
 
     def test_checksums_per_track_identified_verified_raw_missing_unmatched(self) -> None:
         import hashlib
@@ -372,12 +361,8 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual((j["result"]["converted"]["count"], j["result"]["converted"]["failed"]), (1, []))
         self.assertTrue((self.roms / "Epsilon (USA)" / "Epsilon (USA).chd").is_file())
         self.assertTrue((self.roms / "_converted_originals" / "raw set" / "e.gdi").is_file())
-        self.call("/api/library/undo", {"log": j["result"]["undo_log"]})                   # one undo reverts both
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "raw set" / "e.gdi").is_file())
-        self.assertFalse((self.roms / "Epsilon (USA)").exists())
 
-    def test_convert_plan_apply_and_undo(self) -> None:
+    def test_convert_plan_apply(self) -> None:
         self.use_fake_chdman()
         self.call("/api/chdman", {"engine": "python"})
         raw_e = T.prepare_fake_raw(self.base / "fakeraw_e", self.discs["Epsilon (USA)"])
@@ -400,10 +385,6 @@ class DcEndpointTests(DcServerCase):
         self.assertTrue((self.roms / "_converted_originals" / "raw set" / "e.gdi").is_file())
         sm = j["result"]["summary"]
         self.assertEqual((sm["raw"], sm["have"], sm["converted_originals"]), (0, 1, 1))
-        self.call("/api/organise/undo", {"log": j["result"]["undo_log"]})
-        self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "raw set" / "e.gdi").is_file())
-        self.assertFalse((self.roms / "Epsilon (USA)").exists())
 
     def test_convert_without_chdman_uses_the_builtin_writer(self) -> None:
         self.discs["Epsilon (USA)"].write_raw(self.roms / "raw set", "e")

@@ -26,14 +26,13 @@ Units
 
 Organise / Build library
     Plans are lists of game-level :class:`DcOp` (one per folder / CHD) whose ``moves`` are the file moves;
-    :func:`apply_plan` expands them and hands them to ``organiser.apply_renames`` (journalled, undoable,
-    never overwrites). Nothing is ever deleted; save states and other sidecars always travel with their CHD.
+    :func:`apply_plan` expands them and hands them to ``organiser.apply_renames`` (never
+    overwrites). Nothing is ever deleted; save states and other sidecars always travel with their CHD.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import os
 import re
@@ -1875,10 +1874,10 @@ def file_ops(ops: Iterable[RenameOp]) -> list[RenameOp]:
 
 
 def apply_plan(ops: Iterable[RenameOp], root: Path, progress: Optional[ProgressFn] = None, cancel: Any = None,
-               playlists: Sequence[Any] = ()) -> dict[str, Any]:
-    """Apply a tidy / library plan through ``organiser.apply_renames`` (one journal, one undo)."""
+               playlists: Sequence[Any] = (), keep_dirs: Iterable[str] = ()) -> dict[str, Any]:
+    """Apply a tidy / library plan through ``organiser.apply_renames`` (one pass)."""
     flat = file_ops(ops)
-    res = organiser.apply_renames(flat, root, progress=progress, cancel=cancel, playlists=list(playlists))
+    res = organiser.apply_renames(flat, root, progress=progress, cancel=cancel, playlists=list(playlists), keep_dirs=keep_dirs)
     return res
 
 
@@ -2178,7 +2177,7 @@ def write_builtin(op: DcConvertOp, new: Path, preset: str, progress: Optional[Pr
         raise chdtool.ChdmanError(f"could not write the CHD: {exc}") from exc
 
 
-def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], index: DcIndex, journal: Any,
+def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], index: DcIndex,
                  created: list[str], progress: Optional[ProgressFn], cancel: Any,
                  sched: Optional[chdsched.Scheduler] = None, engine: str = "auto",
                  verify_notes: Optional[list[str]] = None, writer: str = "auto", preset: str = "default") -> None:
@@ -2200,7 +2199,7 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
     unpacked: Optional[Path] = None
     archive_path = op.src
     try:
-        organiser.make_dirs(op.dst.parent, created, journal)
+        organiser.make_dirs(op.dst.parent, created)
         if new.is_file() and not new.is_symlink():
             new.unlink()                      # a leftover of a crashed run (our own distinctive name)
         if op.archive:                        # the disc is taken out of its zip / 7z next to where the CHD goes (the same file system)
@@ -2291,25 +2290,11 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         if bad:
             raise chdtool.ChdmanError(f"verification failed: track {', '.join(bad)} of the new CHD does not "
                                       f"match Redump - nothing was changed")
-        sha1 = hashlib.sha1()
-        with open(new, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                sha1.update(block)
-        size = new.stat().st_size
-        seq = journal.record({"op": "create", "path": organiser.rel_str(op.dst, root),
-                              "sha1": sha1.hexdigest(), "size": size}, sync=True)
-        try:
-            organiser.move_exclusive(new, op.dst)
-        except BaseException:
-            journal.failed(seq)
-            raise
+        organiser.move_exclusive(new, op.dst)
         placed = True
-        journal.useful = True
         if op.delete_originals:
-            # the originals are deleted: the CHD was checked against Redump above. Undo could not bring them back, so it must never
-            # take the CHD away either: its record is marked as not done. From here on the CHD stays whatever happens: an original that
-            # cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to undo the conversion
-            journal.failed(seq)
+            # the originals are deleted: the CHD was checked against Redump above. From here on the CHD stays whatever happens: an
+            # original that cannot be deleted (open elsewhere, read-only) is left where it is and reported, never a reason to roll back
             for s, _d in op.moves:
                 try:
                     os.unlink(s)
@@ -2317,26 +2302,16 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 except OSError as exc:
                     op.left.append(f"{s}: {exc}")
             op.moves = []
-        # keep the originals: every raw file moves to _converted_originals/ (journalled one by one)
+        # keep the originals: every raw file moves to _converted_originals/
         for s, d in op.moves:
-            organiser.make_dirs(d.parent, created, journal)
-            mseq = journal.record({"op": "move", "src": organiser.rel_str(s, root), "dst": organiser.rel_str(d, root)})
-            try:
-                organiser.rename_no_overwrite(s, d)
-            except BaseException:
-                journal.failed(mseq)
-                raise
+            organiser.make_dirs(d.parent, created)
+            organiser.rename_no_overwrite(s, d)
             moved.append((s, d))
-    except BaseException as exc:
+    except BaseException:
         # roll back what was done: originals back, new CHD removed
         for s, d in list(reversed(moved)):
             try:
-                rseq = journal.record({"op": "move", "src": organiser.rel_str(d, root), "dst": organiser.rel_str(s, root)})
-                try:
-                    organiser.rename_no_overwrite(d, s)
-                except BaseException:
-                    journal.failed(rseq)
-                    raise
+                organiser.rename_no_overwrite(d, s)
                 moved.remove((s, d))            # back in place: only what could not be restored stays listed
             except (OSError, ValueError):
                 pass
@@ -2345,8 +2320,6 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 os.unlink(op.dst)
             except OSError:
                 pass
-        if isinstance(exc, organiser.UndoLogError):
-            raise
         raise
     finally:
         op.src = archive_path
@@ -2375,7 +2348,6 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
     cannot decode (or ``engine`` = ``chdman``). ``result["verify_text"]`` says which."""
     root = Path(root)
     todo = [o for o in ops if o.status == "convert"]
-    journal = organiser.Journal(root)
     converted: list[DcConvertOp] = []
     failed: list[dict[str, str]] = []
     created: list[str] = []
@@ -2395,11 +2367,9 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
             if progress:
                 progress(i, len(todo), op.rom_name)
             try:
-                _convert_one(op, root, chdman, index, journal, created, progress, cancel, sched, engine, notes,
+                _convert_one(op, root, chdman, index, created, progress, cancel, sched, engine, notes,
                              writer, preset)
                 converted.append(op)
-            except organiser.UndoLogError:
-                raise
             except chdtool.ChdmanError as exc:
                 if exc.cancelled:
                     cancelled = True
@@ -2416,18 +2386,11 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
             if d in mine:
                 created.remove(d)
                 mine.discard(d)
-                journal.record({"op": "unmkdir", "path": organiser.rel_str(Path(d), root)})
             else:
-                journal.record({"op": "rmdir", "path": organiser.rel_str(Path(d), root)})
-                journal.useful = True
                 removed.append(d)
-    except organiser.UndoLogError as exc:
-        error = str(exc)
     finally:
         sched.close()
-        log_path = journal.close()
-    return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
-            "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
+    return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": error,
             "temp": tempspace.report(), "verify_text": notes[-1] if notes else "",
             "generated_gdi": sum(1 for o in converted if o.gdi_text is not None),
             "deleted": sum(len(o.deleted) for o in converted), "not_deleted": [x for o in converted for x in o.left],

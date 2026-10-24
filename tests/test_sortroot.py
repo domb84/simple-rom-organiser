@@ -1,9 +1,12 @@
-"""Tests for romorg.sortroot: sweeping what a build set aside, moves that never duplicate a file, and the journal."""
+"""Tests for romorg.sortroot: sweeping what a build set aside, moves that never duplicate a file."""
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+_os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-data-"))   # (undo logs live in the data folder: never the real one)
+
 import errno
-import json
 import os
 import stat
 import subprocess
@@ -34,23 +37,20 @@ class World(unittest.TestCase):
 
 
 class Sweep(World):
-    def test_set_aside_folders_leave_the_rom_folder_and_come_back(self) -> None:
+    def test_set_aside_folders_leave_the_rom_folder(self) -> None:
         keep = self.f("gba/keep.gba")
         ex = self.f("gba/_excluded/beta.gba")
         sup = self.f("snes/_superseded/Sub/old.sfc")
         orig = self.f("gba/_converted_originals/raw/x.bin")              # the user's safety copies stay
         moves = sr.plan_sweep(self.folders, self.aside)
         self.assertEqual(sorted(m.src.name for m in moves), ["beta.gba", "old.sfc"])
-        res = sr.apply_moves(moves, self.aside.parent / "j", "sweep", keep=[self.root, *self.folders.values()])
+        res = sr.apply_moves(moves, keep=[self.root, *self.folders.values()])
         self.assertEqual(res["moved"], 2)
         self.assertTrue((self.aside / "gba" / "_excluded" / "beta.gba").is_file())
         self.assertTrue((self.aside / "snes" / "_superseded" / "Sub" / "old.sfc").is_file())
         self.assertTrue(keep.is_file() and orig.is_file())
         self.assertFalse((self.root / "gba" / "_excluded").exists())
-        journal = sr.read_journal(Path(res["journal"]))                   # (the build's undo takes them back)
-        self.assertEqual(sorted(Path(m["to"]).name for m in journal["moves"]), ["beta.gba", "old.sfc"])
-        sr.undo_moves(Path(res["journal"]))
-        self.assertTrue(ex.is_file() and sup.is_file())
+        self.assertFalse(ex.exists() or sup.exists())
 
 
 def _other_drive(real_rename=os.rename):
@@ -70,7 +70,7 @@ class MovesNeverDuplicate(World):
     """A move is a rename; only a target on another drive is a copy + delete, and then the file is never left in both places."""
 
     def move(self, src: Path, dst: Path, kind: str = "file") -> dict:
-        return sr.apply_moves([sr.SMove(src, dst, "x", kind=kind)], self.aside.parent / "j", "sort", keep=[self.root])
+        return sr.apply_moves([sr.SMove(src, dst, "x", kind=kind)], keep=[self.root])
 
     def test_a_file_another_program_holds_open_is_not_copied(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
@@ -81,7 +81,6 @@ class MovesNeverDuplicate(World):
         if os.name == "nt":
             self.assertEqual(res["moved"], 0)
             self.assertEqual([f["path"] for f in res["failed"]], [str(a)])
-            self.assertIsNone(res["journal"])
             self.assertTrue(a.is_file())
             self.assertFalse(dst.exists(), "the file must not be in two places")
         else:                                              # POSIX: an open file moves like any other
@@ -132,7 +131,7 @@ class MovesNeverDuplicate(World):
         with mock.patch.object(sr, "RETRY_BUDGET", 3), mock.patch.object(sr.time, "sleep", naps.append):
             handles = [open(p, "rb") for p in files]
             try:
-                res = sr.apply_moves([sr.SMove(p, self.root / "snes" / p.name, "x") for p in files], self.aside.parent / "j", "sort")
+                res = sr.apply_moves([sr.SMove(p, self.root / "snes" / p.name, "x") for p in files])
             finally:
                 for h in handles:
                     h.close()
@@ -149,10 +148,6 @@ class MovesNeverDuplicate(World):
             self.assertEqual(dst.read_bytes(), b"aaaa")
             self.assertEqual(int(dst.stat().st_mtime), 1_000_000_000)
             self.assertFalse(a.exists() or a.parent.exists())
-            back = sr.undo_moves(Path(res["journal"]), keep=[self.root])
-        self.assertEqual((back["restored"], back["skipped"]), (1, []))
-        self.assertEqual(a.read_bytes(), b"aaaa")
-        self.assertFalse(self.aside.exists())
 
     def test_to_another_drive_when_the_original_cannot_be_removed_the_copy_is_taken_away(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
@@ -168,7 +163,6 @@ class MovesNeverDuplicate(World):
             res = self.move(a, dst)
         self.assertEqual(res["moved"], 0)
         self.assertEqual([f["path"] for f in res["failed"]], [str(a)])
-        self.assertIsNone(res["journal"])
         self.assertEqual(a.read_bytes(), b"aaaa")
         self.assertFalse(dst.exists(), "the file must not be in two places")
 
@@ -190,15 +184,11 @@ class MovesNeverDuplicate(World):
         self.assertEqual((res["moved"], len(res["failed"])), (0, 1))
         self.assertEqual(sorted(p.relative_to(game).as_posix() for p in game.rglob("*") if p.is_file()), before)
         self.assertFalse(dst.exists(), "no half-copied folder stays behind")
-        with _other_drive():                               # and when nothing is in the way, all of it moves, and comes back
+        with _other_drive():                               # and when nothing is in the way, all of it moves
             res = self.move(game, dst, "folder")
             self.assertEqual((res["moved"], res["failed"]), (1, []))
             self.assertEqual(sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*") if p.is_file()), before)
             self.assertFalse(game.exists())
-            back = sr.undo_moves(Path(res["journal"]), keep=[self.root])
-        self.assertEqual((back["restored"], back["skipped"]), (1, []))
-        self.assertEqual(sorted(p.relative_to(game).as_posix() for p in game.rglob("*") if p.is_file()), before)
-        self.assertFalse(dst.exists())
 
     def test_read_only_files_move_also_to_another_drive_and_stay_read_only(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
@@ -214,10 +204,8 @@ class MovesNeverDuplicate(World):
             self.assertEqual((res2["moved"], res2["failed"]), (1, []))
             self.assertFalse(a.exists() or b.exists() or a.parent.exists())
             self.assertFalse(os.access(d2, os.W_OK) and os.name == "nt")
-            self.assertEqual(sr.undo_moves(Path(res2["journal"]), keep=[self.root])["skipped"], [])
-        self.assertEqual(sr.undo_moves(Path(res["journal"]), keep=[self.root])["skipped"], [])
-        self.assertEqual((a.read_bytes(), b.read_bytes()), (b"aaaa", b"bbbb"))
-        self.assertFalse(d1.exists() or d2.exists())
+        self.assertEqual((d1.read_bytes(), d2.read_bytes()), (b"aaaa", b"bbbb"))
+        self.assertFalse(os.access(d1, os.W_OK))
 
     @unittest.skipUnless(os.name == "nt", "the read-only attribute of a folder is a Windows matter")
     def test_windows_an_emptied_read_only_folder_is_removed_and_a_full_one_keeps_its_attribute(self) -> None:
@@ -244,7 +232,7 @@ class MovesNeverDuplicate(World):
         try:
             self.assertEqual(proc.stdout.read(2), b"up")           # it runs, with busy/ as its current folder
             res = sr.apply_moves([sr.SMove(a, self.root / "snes" / "a.sfc", "x"), sr.SMove(b, self.root / "snes" / "b.sfc", "x")],
-                                 self.aside.parent / "j", "sort", keep=[self.root])
+                                 keep=[self.root])
             self.assertEqual((res["moved"], res["failed"]), (2, []))
             self.assertFalse((self.root / "free").exists())
             if os.name == "nt":
@@ -254,100 +242,22 @@ class MovesNeverDuplicate(World):
             proc.stdout.close()
 
 
-class Journal(World):
-    def moves(self, n: int = 5) -> list:
-        return [sr.SMove(self.f(f"in/{i}.sfc", str(i).encode()), self.root / "snes" / f"{i}.sfc", "x") for i in range(n)]
-
-    def test_the_journal_is_on_disk_before_a_file_moves(self) -> None:
-        moves = self.moves(3)
-        seen: list = []
-        real = sr.move_path
-
-        def spy(src, dst):
-            j = sr.read_journal(seen[0])
-            self.assertTrue(j["partial"])
-            self.assertIn(str(src), [m["from"] for m in j["moves"]])       # written down first
-            return real(src, dst)
-
-        with mock.patch.object(sr, "move_path", spy):
-            res = sr.apply_moves(moves, self.aside.parent / "j", "sort", keep=[self.root], started=seen.append)
-        self.assertEqual([str(p) for p in seen], [res["journal"]])
-        done = json.loads(Path(res["journal"]).read_text(encoding="utf-8"))  # finished: the one JSON document it always was
-        self.assertEqual((done["kind"], done["undone"], len(done["moves"])), ("sort", False, 3))
-        self.assertNotIn("partial", done)
-        self.assertEqual(set(done["moves"][0]), {"from", "to", "kind"})
-
-    def test_undo_removes_the_folders_it_made_and_not_the_one_the_archive_lies_in(self) -> None:
-        a = self.f("in/a.txt")
-        outer = self.aside.parent / "My archives"                  # the user's own folder, empty but for our archive
-        outer.mkdir()
-        res = sr.apply_moves([sr.SMove(a, outer / "arch" / "_other" / "in" / "a.txt", "_other")], self.aside.parent / "j", "sort",
-                             keep=[self.root])
-        self.assertEqual(res["moved"], 1)
-        self.assertEqual(sr.undo_moves(Path(res["journal"]))["skipped"], [])
-        self.assertTrue(a.is_file())
-        self.assertFalse((outer / "arch").exists())                # made by the move: gone again
-        self.assertTrue(outer.is_dir(), "the folder above the archive is the user's")
-
+class Folders(World):
     def test_a_failed_move_leaves_no_empty_folder_behind(self) -> None:
         gone = sr.SMove(self.f("in/a.txt"), self.aside / "_other" / "deep" / "a.txt", "_other")
         with mock.patch.object(sr, "move_path", side_effect=PermissionError(13, "no")):
-            res = sr.apply_moves([gone], self.aside.parent / "j", "sort", keep=[self.root])
+            res = sr.apply_moves([gone], keep=[self.root])
         self.assertEqual((res["moved"], len(res["failed"])), (0, 1))
         self.assertFalse(self.aside.exists())
 
-    def test_nothing_moved_leaves_no_journal(self) -> None:
-        gone = sr.SMove(self.root / "nope.sfc", self.root / "snes" / "nope.sfc", "x")
-        res = sr.apply_moves([gone], self.aside.parent / "j", "sort")
-        self.assertEqual((res["moved"], len(res["failed"]), res["journal"]), (0, 1, None))
-        self.assertFalse(list((self.aside.parent / "j").glob("*")) if (self.aside.parent / "j").exists() else [])
-
-    def test_a_run_that_is_killed_can_still_be_undone(self) -> None:
-        moves = self.moves(5)
-        jdir = self.aside.parent / "j"
-        code = (
-            "import os, sys\n"
-            "from pathlib import Path\n"
-            "from romorg import sortroot as sr\n"
-            "root, jdir = Path(sys.argv[1]), Path(sys.argv[2])\n"
-            "real, n = sr.move_path, [0]\n"
-            "def dying(src, dst):\n"
-            "    n[0] += 1\n"
-            "    if n[0] == 4:\n"
-            "        os._exit(9)\n"                                  # killed: no clean-up of any kind runs
-            "    real(src, dst)\n"
-            "sr.move_path = dying\n"
-            "sr.apply_moves([sr.SMove(root / 'in' / f'{i}.sfc', root / 'snes' / f'{i}.sfc', 'x') for i in range(5)], jdir, 'sort')\n"
-        )
-        repo = str(Path(sr.__file__).resolve().parent.parent)
-        proc = subprocess.run([sys.executable, "-c", code, str(self.root), str(jdir)], cwd=repo, capture_output=True)
-        self.assertEqual(proc.returncode, 9, proc.stderr)
-        self.assertEqual(sorted(p.name for p in (self.root / "snes").iterdir()), ["0.sfc", "1.sfc", "2.sfc"])
-        journals = list(jdir.glob("sort-*.json"))
-        self.assertEqual(len(journals), 1, "the moves that were made are on record")
-        j = sr.read_journal(journals[0])
-        self.assertTrue(j["partial"])
-        self.assertEqual([Path(m["from"]).name for m in j["moves"]], ["0.sfc", "1.sfc", "2.sfc", "3.sfc"])
-        back = sr.undo_moves(journals[0], keep=[self.root])
-        self.assertEqual((back["restored"], back["skipped"]), (3, []))           # the fourth was written down but never moved
-        self.assertEqual(sorted(p.name for p in (self.root / "in").iterdir()), [f"{i}.sfc" for i in range(5)])
-        self.assertFalse((self.root / "snes").exists())
-        self.assertTrue(json.loads(journals[0].read_text(encoding="utf-8"))["undone"])
-        del moves
-
-    def test_a_torn_last_line_is_ignored(self) -> None:
-        a = self.f("in/a.sfc")
-        jdir = self.aside.parent / "j"
-        jdir.mkdir()
-        j = jdir / "sort-x.json"
-        (self.root / "snes").mkdir()
-        os.rename(a, self.root / "snes" / "a.sfc")
-        j.write_text(json.dumps({"kind": "sort", "undone": False, "partial": True}) + "\n"
-                     + json.dumps({"from": str(a), "to": str(self.root / "snes" / "a.sfc"), "kind": "file"}) + "\n"
-                     + '{"from": "' + str(self.root / "in").replace("\\", "\\\\"), encoding="utf-8")
-        back = sr.undo_moves(j, keep=[self.root])
-        self.assertEqual((back["restored"], back["skipped"]), (1, []))
-        self.assertTrue(a.is_file())
+    def test_the_folder_the_archive_lies_in_is_never_removed(self) -> None:
+        a = self.f("in/a.txt")
+        outer = self.aside.parent / "My archives"                  # the user's own folder, empty but for our archive
+        outer.mkdir()
+        res = sr.apply_moves([sr.SMove(a, outer / "arch" / "_other" / "in" / "a.txt", "_other")], keep=[self.root])
+        self.assertEqual(res["moved"], 1)
+        self.assertTrue((outer / "arch" / "_other" / "in" / "a.txt").is_file())
+        self.assertFalse((self.root / "in").exists())              # emptied by the move: gone
 
 
 if __name__ == "__main__":

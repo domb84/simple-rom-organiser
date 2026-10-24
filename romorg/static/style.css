@@ -799,3 +799,10 @@ button.tree-file[aria-expanded="true"] { background: var(--panel-2); }
 .whd-list .row { align-items: center; }
 .whd-list .table-wrap { max-height: 60vh; overflow: auto; }
 .whd-list td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Restoring from the archive: a tick box on each file and folder of the Archive side, and the bar that restores them */
+.tree-pick { display: flex; align-items: center; gap: 6px; }
+.tree-pick > input[type="checkbox"] { width: 18px; height: 18px; flex: none; margin: 0 2px; }
+.tree-pick > .tree-row { flex: 1; min-width: 0; }
+.restore-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px;
+  padding: 10px 14px; background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); }

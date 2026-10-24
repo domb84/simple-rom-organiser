@@ -13,14 +13,13 @@ How a file gets there (``mode``):
 Safety: the destination may not be inside the source or the other way round; a different file that is already at a
 target is never overwritten (reported as a conflict); copies are written to a ``.part`` name and renamed when
 complete; every file this module puts in the destination is recorded in ``<dest>/.romorg-library/library.sqlite``
-so that a build can be undone (only what is still unchanged is removed) and so that a later run knows what is ours.
+so that a later run knows what is ours.
 Running the build again only adds what is missing.
 
 Sync (``sync=True``): the build also brings the destination in line with the source. A file this module built earlier
 that the rules no longer keep (or whose source is gone) is removed; one whose source changed is replaced; one that was
 edited in the destination since is left alone and reported. Only files recorded in the manifest are ever removed. A
-sync that would keep nothing, or remove most of the library, is refused unless the caller says it is meant. Removed files
-are recorded, so "undo" puts them back from the source where it still has them.
+sync that would keep nothing, or remove most of the library, is refused unless the caller says it is meant.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ from typing import Any, Callable, Iterator, List, Optional
 from . import meter, sortroot, winproc
 
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
-           "plan_export", "apply_export", "list_runs", "undo_run", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
+           "plan_export", "apply_export", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
 
 MODES = ("copy", "move")
 
@@ -566,7 +565,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
         summary["failed"] = len(out["failed"])
         db.execute("UPDATE runs SET summary = ? WHERE id = ?", (repr(summary), run))
         if not out["created"] and not out["playlists"] and not out["removed"]:
-            db.execute("DELETE FROM runs WHERE id = ?", (run,))        # a run that changed nothing is not worth undoing
+            db.execute("DELETE FROM runs WHERE id = ?", (run,))        # a run that changed nothing is not worth keeping
             out["run"] = None
         db.commit()
         db.close()
@@ -575,7 +574,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
 
 def _remove_stale(plan: ExportPlan, db: sqlite3.Connection, run: int, out: dict, cancelled: Callable[[], bool]) -> None:
     """Sync: delete what the plan says the rules no longer keep (re-checked now: only a file that is still what the
-    build made), remember it for undo, tidy empty folders and manifest rows of files that are already gone."""
+    build made), tidy empty folders and manifest rows of files that are already gone."""
     dest = plan.dest
     wanted = {t.rel for t in plan.items} | {p.rel for p in plan.playlists}
     for rel, size, mtime_ns, how, src in db.execute("SELECT path, size, mtime_ns, how, src FROM files").fetchall():
@@ -595,8 +594,6 @@ def _remove_stale(plan: ExportPlan, db: sqlite3.Connection, run: int, out: dict,
         except OSError as exc:
             out["failed"].append({"rel": r.rel, "error": str(exc)})
             continue
-        db.execute("INSERT INTO removed (path, src, size, mtime_ns, how, run) VALUES (?, ?, ?, ?, ?, ?)",
-                   (r.rel, row[3], row[0], row[1], row[2], run))
         db.execute("DELETE FROM files WHERE path = ?", (r.rel,))
         out["removed"] += 1
         folders.add((dest / r.rel).parent)
@@ -607,121 +604,3 @@ def _remove_stale(plan: ExportPlan, db: sqlite3.Connection, run: int, out: dict,
             except OSError:
                 break
             d = d.parent
-
-
-# --------------------------------------------------------------------------- undo
-def list_runs(dest: Path) -> List[dict]:
-    """Builds recorded in ``dest`` that were not undone, newest first: ``{id, started, source, mode, files}``."""
-    db = _connect(Path(dest), create=False)
-    if db is None:
-        return []
-    try:
-        rows = db.execute("SELECT r.id, r.started, r.source, r.mode, COUNT(f.path) FROM runs r "
-                          "LEFT JOIN files f ON f.run = r.id WHERE r.undone = 0 GROUP BY r.id ORDER BY r.id DESC").fetchall()
-        gone = dict(db.execute("SELECT run, COUNT(*) FROM removed GROUP BY run").fetchall())
-    except sqlite3.Error:
-        return []
-    finally:
-        db.close()
-    return [{"id": r[0], "started": r[1], "source": r[2], "mode": r[3], "files": r[4], "removed": gone.get(r[0], 0)}
-            for r in rows if r[4] or gone.get(r[0])]
-
-
-def undo_run(dest: Path, run: Optional[int] = None) -> dict:
-    """Remove what a build put in ``dest`` (the newest one unless ``run``): a file only while it is still what the
-    build made (a copy of the same size and time, a link that still points at the source); anything changed since is
-    left and reported. Folders the build created go when they are empty."""
-    dest = Path(dest)
-    db = _connect(dest, create=False)
-    if db is None:
-        raise ExportError("There is no library build recorded in that folder.")
-    removed = 0
-    skipped: List[dict] = []
-    sortroot.reset_retries()
-    try:
-        if run is None:
-            row = db.execute("SELECT MAX(id) FROM runs WHERE undone = 0").fetchone()
-            run = row[0] if row else None
-        if run is None:
-            raise ExportError("Nothing to undo in that folder.")
-        files = db.execute("SELECT path, src, size, mtime_ns, how FROM files WHERE run = ?", (run,)).fetchall()
-        for rel, src, size, mtime_ns, how in files:
-            p = dest / rel
-            if not os.path.lexists(p):
-                db.execute("DELETE FROM files WHERE path = ?", (rel,))
-                continue
-            if how == "move":                               # put the file back where it came from (never over another file)
-                try:
-                    unchanged = not os.path.islink(p) and os.stat(p).st_size == size and os.stat(p).st_mtime_ns == mtime_ns
-                except OSError:
-                    unchanged = False
-                if not unchanged:
-                    skipped.append({"rel": rel, "reason": "changed since it was built - left in place"})
-                elif os.path.lexists(src):
-                    skipped.append({"rel": rel, "reason": "the original place is taken - left in the library"})
-                else:
-                    try:
-                        Path(src).parent.mkdir(parents=True, exist_ok=True)
-                        sortroot.move_path(p, Path(src))    # a rename; a copy only back to another drive
-                        removed += 1
-                        db.execute("DELETE FROM files WHERE path = ?", (rel,))
-                    except OSError as exc:
-                        skipped.append({"rel": rel, "reason": str(exc)})
-                continue
-            try:
-                if how == "symlink":
-                    ok = os.path.islink(p) and os.path.realpath(p) == os.path.realpath(src)
-                elif how == "hardlink":
-                    ok = os.path.isfile(p) and os.stat(p).st_size == size
-                else:                                   # copy, playlist
-                    st = os.stat(p)
-                    ok = not os.path.islink(p) and st.st_size == size and st.st_mtime_ns == mtime_ns
-            except OSError:
-                ok = False
-            if not ok:
-                skipped.append({"rel": rel, "reason": "changed since it was built - left in place"})
-                continue
-            try:
-                os.unlink(p)
-                removed += 1
-                db.execute("DELETE FROM files WHERE path = ?", (rel,))
-            except OSError as exc:
-                skipped.append({"rel": rel, "reason": str(exc)})
-        dirs = [r[0] for r in db.execute("SELECT path FROM dirs WHERE run = ?", (run,)).fetchall()]
-        removed_dirs = 0
-        for d in sorted(dirs, key=lambda x: x.count("/"), reverse=True):
-            try:
-                os.rmdir(dest / d)
-                removed_dirs += 1
-            except OSError:
-                pass
-            db.execute("DELETE FROM dirs WHERE path = ?", (d,))
-        restored = 0
-        for rel, src, size, mtime_ns, how in db.execute(
-                "SELECT path, src, size, mtime_ns, how FROM removed WHERE run = ?", (run,)).fetchall():
-            if how == "playlist":
-                continue                                    # written again by the next build
-            p = dest / rel
-            if os.path.lexists(p):
-                skipped.append({"rel": rel, "reason": "a file is there now - not restored"})
-            elif not os.path.isfile(src):
-                skipped.append({"rel": rel, "reason": "the source file is gone - cannot restore"})
-            else:
-                try:
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    t = Transfer(Path(src), rel, size, "copy")
-                    got = _transfer(t, p, "copy", None, lambda n: None)
-                    st = os.stat(p)
-                    db.execute("INSERT OR REPLACE INTO files (path, src, size, mtime_ns, how, run) VALUES (?, ?, ?, ?, ?, 0)",
-                               (rel, src, st.st_size, st.st_mtime_ns, got))
-                    restored += 1
-                except OSError as exc:
-                    skipped.append({"rel": rel, "reason": f"cannot restore: {exc}"})
-                    continue
-            db.execute("DELETE FROM removed WHERE path = ? AND run = ?", (rel, run))
-        if not skipped:
-            db.execute("UPDATE runs SET undone = 1 WHERE id = ?", (run,))
-        db.commit()
-    finally:
-        db.close()
-    return {"run": run, "removed": removed, "restored": restored, "removed_dirs": removed_dirs, "skipped": skipped}

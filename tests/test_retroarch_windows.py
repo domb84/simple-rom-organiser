@@ -318,20 +318,19 @@ class CfgBytes(Tmp):
         rel = ra.plan_relocation(inst, new, inst.base / "states", True, True, self.home)
         self.assertEqual((rel.counts()["move"], rel.counts()["ok"]), (0, 2))
         rel = ra.plan_relocation(inst, inst.base / "data" / "saves", inst.base / "data" / "states", True, True, self.home)
-        res = ra.apply_relocation(inst, rel, self.home / "j")
+        res = ra.apply_relocation(inst, rel)
         self.assertEqual((res["moved"], res["failed"]), (2, []))
         cfg = ra.read_cfg(inst.cfg)
         self.assertEqual((cfg["savefile_directory"], cfg["savestate_directory"]), (":\\data\\saves", ":\\data\\states"))
         self.assertEqual(inst.cfg.read_bytes().count(b"\r"), 0)
-        self.assertTrue(ra.undo_relocation(Path(res["journal"]))["cfg_restored"])
-        self.assertEqual(inst.cfg.read_bytes(), REAL_CFG)
+        self.assertEqual(Path(res["cfg_backup"]).read_bytes(), REAL_CFG)
 
 
 class Moves(Tmp):
     def relocate(self, inst: ra.Install, **kw):
         new = self.home / "new"
         rel = ra.plan_relocation(inst, new / "saves", new / "states", True, True, self.home)
-        return new, ra.apply_relocation(inst, rel, self.home / "j", **kw)
+        return new, ra.apply_relocation(inst, rel, **kw)
 
     def test_another_drive_copies_and_a_source_that_cannot_be_removed_leaves_no_second_copy(self) -> None:
         inst = self.portable()
@@ -356,7 +355,6 @@ class Moves(Tmp):
         self.assertFalse((saves / "PCSX-ReARMed").exists())
         self.assertIsNone(res["cfg_backup"])                                               # a failure: the config stays
         self.assertEqual(inst.cfg.read_bytes(), REAL_CFG)
-        self.assertEqual(ra.undo_relocation(Path(res["journal"]))["restored"], 1)
 
     def test_a_rename_that_fails_on_the_same_drive_is_not_turned_into_a_copy(self) -> None:
         inst = self.portable()
@@ -391,13 +389,13 @@ class Moves(Tmp):
             self.assertTrue(held.is_file())
             self.assertFalse((new / "saves" / "Flycast" / "Sonic (USA).srm").exists())
             ops = ra.plan_follow(inst, [("Sonic (USA)", "Sonic 1")], "move", self.home)
-            out = ra.apply_follow(ops, self.home / "j", install=inst)
+            out = ra.apply_follow(ops, self.home / "j")
             self.assertEqual((out["followed"], len(out["failed"])), (0, 1))
             self.assertEqual(sorted(p.name for p in held.parent.iterdir()), ["Sonic (USA).srm"])
         self.assertEqual(inst.cfg.read_bytes(), REAL_CFG)
 
     @unittest.skipUnless(WINDOWS, "the read-only attribute stops a delete only on Windows")
-    def test_read_only_saves_move_and_stay_read_only_and_come_back(self) -> None:
+    def test_read_only_saves_move_and_stay_read_only(self) -> None:
         inst = self.portable()
         saves = self.with_saves(inst)
         ro = saves / "Flycast" / "Sonic (USA).srm"
@@ -407,15 +405,6 @@ class Moves(Tmp):
         moved = new / "saves" / "Flycast" / "Sonic (USA).srm"
         self.assertFalse(ro.exists())
         self.assertFalse(os.access(moved, os.W_OK))
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"]), (2, []))
-        self.assertFalse(os.access(ro, os.W_OK))
-        # a copy made for a build elsewhere is removed again by undo even when it is read-only
-        ops = ra.plan_follow(inst, [("Sonic (USA)", "Sonic 1")], "copy", self.home)
-        out = ra.apply_follow(ops, self.home / "j", install=inst)
-        self.assertEqual(out["copied"], 1)
-        self.assertEqual(ra.undo_relocation(Path(out["journal"]))["skipped"], [])
-        self.assertFalse((saves / "Flycast" / "Sonic 1.srm").exists())
 
     def test_the_backup_zip_takes_old_time_stamps_long_and_non_ascii_names(self) -> None:
         inst = self.portable()
@@ -443,29 +432,7 @@ class Moves(Tmp):
         self.assertNotEqual(Path(res["backup"]), z)
         self.assertTrue(zipfile.is_zipfile(res["backup"]))
 
-    def test_two_changes_in_one_second_keep_two_journals(self) -> None:
-        inst = self.portable()
-        self.with_saves(inst)
-        with mock.patch.object(ra.time, "strftime", return_value="20261008-120000"):
-            a = ra.apply_follow(ra.plan_follow(inst, [("Sonic (USA)", "Sonic 1")], "move", self.home), self.home / "j", install=inst)
-            b = ra.apply_follow(ra.plan_follow(inst, [("Crash (USA)", "Crash 1")], "move", self.home), self.home / "j", install=inst)
-            new, c = self.relocate(inst)
-            new2 = self.home / "again"
-            d = ra.apply_relocation(inst, ra.plan_relocation(inst, new2, new2, True, True, self.home), self.home / "j")
-        journals = [a["journal"], b["journal"], c["journal"], d["journal"]]
-        self.assertEqual(len(set(journals)), 4)
-        self.assertEqual(len(ra.list_undo(self.home / "j")), 4)
-        self.assertEqual(len(json.loads(Path(a["journal"]).read_text())["moves"]), 1)
-        for i, j in enumerate(journals):                                    # written in this order, a moment apart
-            os.utime(j, (1_700_000_000 + i, 1_700_000_000 + i))
-        self.assertEqual([x["journal"] for x in ra.list_undo(self.home / "j")], journals[::-1])       # the newest first
-        older = self.home / "j" / "saves-20250101-000000.json"
-        older.write_text(json.dumps({"install": str(inst.cfg), "moves": [], "undone": False}))
-        self.assertEqual(ra.list_undo(self.home / "j")[-1]["name"], older.name)           # whatever its file time says
-        (self.home / "j" / "saves-20250101-000001.json").write_text("[1, 2]")              # not a journal: left out
-        self.assertEqual(len(ra.list_undo(self.home / "j")), 5)
-
-    def test_files_moved_before_the_config_could_not_be_written_can_still_be_undone(self) -> None:
+    def test_files_moved_before_the_config_could_not_be_written_are_reported(self) -> None:
         inst = self.portable()
         saves = self.with_saves(inst)
         with mock.patch.object(ra, "write_cfg", side_effect=PermissionError(errno.EACCES, "retroarch.cfg is read-only")):
@@ -473,57 +440,17 @@ class Moves(Tmp):
         self.assertEqual(res["moved"], 2)
         self.assertIn("read-only", res["cfg_error"])
         self.assertEqual([f["path"] for f in res["failed"]], [str(inst.cfg)])
-        self.assertTrue(Path(res["journal"]).is_file())
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"]), (2, []))
-        self.assertTrue((saves / "Flycast" / "Sonic (USA).srm").is_file())
-
-    def test_an_undo_that_was_stopped_half_way_can_be_finished(self) -> None:
-        inst = self.portable()
-        saves = self.with_saves(inst)
-        new, res = self.relocate(inst)
-        blocker = saves / "Flycast" / "Sonic (USA).srm"
-        blocker.parent.mkdir(parents=True)
-        blocker.write_bytes(b"in the way")
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], len(out["skipped"]), out["cfg_restored"]), (1, 1, False))
-        blocker.unlink()
-        out = ra.undo_relocation(Path(res["journal"]))                       # the file that is back already is no obstacle
-        self.assertEqual((out["restored"], out["skipped"], out["cfg_restored"]), (1, [], True))
-        self.assertEqual(inst.cfg.read_bytes(), REAL_CFG)
-        self.assertEqual(ra.list_undo(self.home / "j"), [])
-
-    def test_undo_keeps_what_retroarch_saved_in_the_config_since(self) -> None:
-        inst = self.portable()
-        self.with_saves(inst)
-        new, res = self.relocate(inst)
-        ra.write_cfg(inst.cfg, {"video_fullscreen": True})                    # RetroArch ran and saved another setting
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertTrue(out["cfg_restored"])
-        cfg = ra.read_cfg(inst.cfg)
-        self.assertEqual(cfg["video_fullscreen"], "true")
-        self.assertEqual((cfg["savefile_directory"], cfg["savestate_directory"]), (":\\saves", ":\\states"))
-        self.assertEqual(inst.cfg.read_bytes(), REAL_CFG.replace(b'video_fullscreen = "false"', b'video_fullscreen = "true"'))
-
-    def test_an_untouched_config_is_put_back_byte_for_byte_by_undo(self) -> None:
-        inst = self.portable(cfg=b'savefile_directory = ":\\saves"\nsavestate_directory = ":\\states"\n')    # keys get added
-        self.with_saves(inst)
-        new, res = self.relocate(inst)
-        self.assertIn("sort_savefiles_enable", ra.read_cfg(inst.cfg))
-        ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual(inst.cfg.read_bytes(), b'savefile_directory = ":\\saves"\nsavestate_directory = ":\\states"\n')
+        self.assertTrue((new / "saves" / "Flycast" / "Sonic (USA).srm").is_file())
+        self.assertFalse((saves / "Flycast" / "Sonic (USA).srm").exists())
 
     def test_a_new_name_that_differs_only_by_case(self) -> None:
         inst = self.portable()
         saves = self.with_saves(inst, ("Flycast/sonic (usa).srm", "Flycast/sonic (usa).state1"))
         ops = ra.plan_follow(inst, [("sonic (usa)", "Sonic (USA)")], "move", self.home)
         self.assertEqual([o.status for o in ops], ["move", "move"])                       # never "a file is in the way": itself
-        res = ra.apply_follow(ops, self.home / "j", install=inst)
+        res = ra.apply_follow(ops, self.home / "j")
         self.assertEqual((res["followed"], res["failed"]), (2, []))
         self.assertEqual(sorted(os.listdir(saves / "Flycast")), ["Sonic (USA).srm", "Sonic (USA).state1"])
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"]), (2, []))
-        self.assertEqual(sorted(os.listdir(saves / "Flycast")), ["sonic (usa).srm", "sonic (usa).state1"])
         if case_insensitive(self.home):
             self.assertEqual(ra.plan_follow(inst, [("sonic (usa)", "Sonic (USA)")], "copy", self.home), [])   # nothing to copy
 
@@ -564,7 +491,7 @@ class SharedPaths(Tmp):
         rows = {r["key"]: r for r in ra.shared_folders(inst, str(assets).lower(), self.home)}
         self.assertEqual(rows["cheat_database_path"]["status"], "ok")
         self.assertEqual(rows["playlist_directory"]["status"], "ok")                # a trailing separator
-        res = ra.apply_shared(inst, list(rows.values()), ["cheat_database_path", "playlist_directory"], self.home / "j", self.home)
+        res = ra.apply_shared(inst, list(rows.values()), ["cheat_database_path", "playlist_directory"], self.home)
         self.assertEqual(res["changed"], [])
         local = self.portable("Local", cfg=REAL_CFG.replace(b'":\\cheats"', b'"%s"' % str(self.home / "LOCAL" / "cheats").upper().encode()))
         rows = {r["key"]: r for r in ra.shared_folders(local, str(assets), self.home)}
@@ -643,16 +570,13 @@ class BiosWindows(Tmp):
         items = r["cores"][0]["firmware"]
         self.assertEqual([i["status"] for i in items], ["found", "found"])
         self.assertEqual(Path(items[1]["target"]), self.system / "dc" / "dc_boot.bin")
-        res = ra.apply_bios(self.inst, [{"target": i["target"], "source": i["source"]} for i in items], self.home / "j", "move", self.home)
+        res = ra.apply_bios(self.inst, [{"target": i["target"], "source": i["source"]} for i in items], "move", self.home)
         self.assertEqual((res["placed"], res["failed"]), (2, []))
         self.assertEqual(os.listdir(self.system / "dc"), ["dc_boot.bin"])                  # the name the core asks for
         self.assertIn("scph5501.bin", os.listdir(self.system))
         self.assertFalse(src1.exists())
         again = ra.check_bios(self.inst, self.psx, [self.roms], self.home)
         self.assertEqual([i["status"] for i in again["cores"][0]["firmware"]], ["ok", "ok"])
-        out = ra.undo_relocation(Path(res["journal"]))
-        self.assertEqual((out["restored"], out["skipped"]), (2, []))
-        self.assertTrue(src1.is_file())
 
     def test_a_bios_already_in_place_under_another_case(self) -> None:
         (self.system / "SCPH5501.BIN").write_bytes(self.a)
@@ -666,11 +590,11 @@ class BiosWindows(Tmp):
         (self.roms / "x.bin").write_bytes(b"x")
         outside = str(self.system) + "-other"
         res = ra.apply_bios(self.inst, [{"target": str(Path(outside) / "x.bin"), "source": str(self.roms / "x.bin")}],
-                            self.home / "j", "copy", self.home)
+                            "copy", self.home)
         self.assertEqual(res["placed"], 0)
         target = self.system / "x.bin"
         spelled = str(target).upper().replace("\\", "/") if WINDOWS else str(target)
-        res = ra.apply_bios(self.inst, [{"target": spelled, "source": str(self.roms / "x.bin")}], self.home / "j", "copy", self.home)
+        res = ra.apply_bios(self.inst, [{"target": spelled, "source": str(self.roms / "x.bin")}], "copy", self.home)
         self.assertEqual((res["placed"], res["failed"]), (1, []))
 
 

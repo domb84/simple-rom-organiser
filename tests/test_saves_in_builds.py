@@ -134,7 +134,7 @@ class LeaveMode(SavesCase):
 
 
 class ArchiveMode(SavesCase):
-    def test_the_saves_of_an_archived_game_go_with_it_and_undo_brings_them_back(self) -> None:
+    def test_the_saves_of_an_archived_game_go_with_it(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)", "Solo (USA)")
         saves = self.save("bsnes", "Zed (USA)")
         solo = self.save("bsnes", "Solo (USA)")                                    # a kept game: its saves never move
@@ -145,7 +145,6 @@ class ArchiveMode(SavesCase):
         self.assertEqual(plan["saves"]["archive"]["games"], 1)
         self.assertEqual(plan["saves"]["archive"]["states"], 1)                    # (a state's screenshot is moved with it but not counted)
         self.assertEqual(plan["reasons"]["kept_saved"], 0)
-        before_saves, before_roms = self.saved_files(), tree(root)
         self.assertEqual(self.saved_files(), sorted(saves + solo))                 # (the preview moved nothing)
         res = self.lib_apply(plan, aside_to=str(aside))
         self.assertEqual(res["saves_archived"]["moved"], 4)
@@ -153,11 +152,6 @@ class ArchiveMode(SavesCase):
         self.assertEqual(sorted(x for x in tree(aside) if not x.endswith("/") and "_saves" in x),
                          sorted(f"snes/_saves/{s}" for s in saves))
         self.assertTrue((aside / "snes" / "_superseded" / "Zed (USA).sfc").is_file())
-        back = self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(back["aside_restored"], 5)                                # the ROM and its four save files
-        self.assertEqual(tree(root), before_roms)
-        self.assertEqual(self.saved_files(), before_saves)
-        self.assertEqual([x for x in tree(aside) if not x.endswith("/")], [])
 
     def test_without_an_archive_folder_they_go_to_a_saves_folder_next_to_the_archived_roms(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
@@ -169,9 +163,6 @@ class ArchiveMode(SavesCase):
         self.assertEqual(self.saved_files(), [])
         self.assertEqual(sorted(x for x in tree(root) if x.startswith("_saves") and not x.endswith("/")),
                          sorted(f"_saves/{s}" for s in saves))
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(self.saved_files(), saves)
-        self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")), ["Zed (Europe).sfc", "Zed (USA).sfc"])
 
     def test_a_save_already_at_the_destination_is_never_overwritten(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
@@ -308,7 +299,6 @@ class CarryToTheReleaseYouHave(SavesCase):
         self.assertEqual(res["saves"]["carried"], 2)
         self.assertTrue((self.saves / "bsnes" / "Zed (USA) (Rev 1).srm").is_file())
         self.assertTrue((self.saves / "bsnes" / "Zed (USA).srm").is_file())                        # (the old save stays)
-        self.assertTrue(res["saves"]["journal"])                                                   # (journalled: Retroarch's Undo removes the copies)
 
     def test_the_default_choice_copies_the_save_to_the_version_you_have(self) -> None:
         root = self.rom_folder("Zed (USA) (Rev 1)")
@@ -349,7 +339,7 @@ class CarryToAnotherRegion(SavesCase):
 class CarryMode(SavesCase):
     """``carry``: the game a better version replaces goes, and its save games (never its states) are copied to the new ROM's name."""
 
-    def test_the_save_is_copied_to_the_better_version_the_old_rom_goes_and_undo_removes_the_copy(self) -> None:
+    def test_the_save_is_copied_to_the_better_version_and_the_old_rom_goes(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
         old = self.save("bsnes", "Zed (USA)")
         self.mode("carry")
@@ -368,9 +358,6 @@ class CarryMode(SavesCase):
         self.assertEqual(self.saved_files(), sorted(old + ["bsnes/Zed (Europe).srm", "bsnes/Zed (Europe).A1.bin"]))
         self.assertEqual((self.saves / "bsnes" / "Zed (Europe).srm").read_bytes(), (self.saves / "bsnes" / "Zed (USA).srm").read_bytes())
         self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")), sorted(["Zed (Europe).sfc", "_superseded/Zed (USA).sfc"]))
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(self.saved_files(), old)
-        self.assertTrue((root / "Zed (USA).sfc").is_file())
 
     def test_a_better_version_that_has_a_save_of_its_own_is_never_overwritten(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
@@ -500,8 +487,6 @@ class ConvertMode(SavesCase):
             check ^= b
         self.assertEqual(check, data[128 + 127])
         self.assertEqual(sum(1 for a, b in zip(self.card, data) if a != b), 4)                       # A->E, U->E, the last digit, the checksum: nothing else
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertFalse(new.exists())
 
     def test_a_blank_card_or_a_card_without_the_game_is_not_copied(self) -> None:
         from tests.test_memcards import ps1_card

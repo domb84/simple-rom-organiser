@@ -408,10 +408,9 @@ class PlatformTest(unittest.TestCase):
             with self.assertRaises(scanner.ScanCancelled):
                 self.scan()
 
-    def test_rename_keeps_the_extension_and_undo_restores_everything(self) -> None:
+    def test_rename_keeps_the_extension(self) -> None:
         for junk in ("cut.rvz", "fake.rvz", "wii.rvz", "c.rvz"):
             (self.root / junk).unlink()
-        before = self.tree()
         res = self.scan()
         ops = organiser.plan_renames(res, latest_only=True)
         dst = {op.src.relative_to(self.root).as_posix(): op.dst.relative_to(self.root).as_posix() for op in ops}
@@ -425,8 +424,6 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(again, [])
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if not p.name.startswith(".")),
                          ["Alpha (USA).rvz", "Beta (Europe) (En,Fr,De).iso"])
-        organiser.undo(Path(out["undo_log"]))
-        self.assertEqual(self.tree(), before)
 
 
 class ServerTest(unittest.TestCase):

@@ -293,12 +293,6 @@ class Policies(SavesCase):
                     self.assertEqual((s["archive"]["files"], s["archive"]["games"]), (6, 2))
                     self.assertEqual(res["saves_archived"]["moved"], s["archive"]["files"])
                     self.assertEqual(self.saved_files(), [])
-                if res.get("undo_log"):
-                    self.job("/api/library/undo", {"log": res["undo_log"]})
-                self.assertEqual(self.saved_files(), sorted(saves))
-                self.assertEqual(self.roms(root), sorted(before))
-                for p in list(self.saves.rglob("*")) + list(aside.rglob("*")):
-                    pass
                 import shutil
                 shutil.rmtree(self.saves)
                 self.saves.mkdir()
@@ -383,7 +377,7 @@ class Policies(SavesCase):
 
 
 class Renames(SavesCase):
-    def test_rename_in_a_platform_build_undo_gives_the_old_names_back(self) -> None:
+    def test_rename_in_a_platform_build(self) -> None:
         root = self.tmp / "snes"
         put(root / "zed usa.sfc", self.rom["Zed (USA)"])
         old = self.save("bsnes", "zed usa")
@@ -391,10 +385,8 @@ class Renames(SavesCase):
         self.assertEqual(plan["saves"]["rename"]["files"], 4)
         res = self.lib_apply(plan)
         self.assertEqual(self.saved_files(), sorted(f.replace("zed usa", "Zed (USA)") for f in old))
-        self.job("/api/library/undo", {"log": res["undo_log"]})
-        self.assertEqual(self.saved_files(), sorted(old))
 
-    def test_a_platform_build_in_another_folder_copies_the_saves_and_undo_removes_the_copies(self) -> None:
+    def test_a_platform_build_in_another_folder_copies_the_saves(self) -> None:
         root = self.tmp / "snes"
         put(root / "zed usa.sfc", self.rom["Zed (USA)"])
         old = self.save("bsnes", "zed usa", ("{n}.srm", "{n}.state1"))
@@ -406,8 +398,6 @@ class Renames(SavesCase):
         res = self.job("/api/library/apply", {"plan_id": plan["plan_id"], **opts})
         self.assertEqual(res["saves"]["copied"], 2)
         self.assertEqual(self.saved_files(), sorted(old + [f.replace("zed usa", "Zed (USA)") for f in old]))
-        self.call("POST", "/api/library/export/undo", {"dest": str(dest), "follow": res["saves"]["journal"]})
-        self.assertEqual(self.saved_files(), sorted(old))
 
 
 

@@ -3471,3 +3471,80 @@ extension. The Overview card says *found*, the Library card *kept*.
   the preview, its rows and the tree show the .7z.
 * Real data (a copy of the SNES folder, 2,278 zips): 1,853 kept games repacked in 175 s, none failed, 1,597 -> 1,429 MB (-10.5 %);
   tree = totals. Tests' ServerCase turns the rule off unless a test asks for it (its zips stay zips).
+
+
+**AMENDMENT 64 (v0.4) — A clean library: no empty folders, no app files (phase 0 of docs/PLAN-v0.4.md).**
+* The user: "a clean library locally and a clean archive; no straggling empty dirs and loose files in either"; no manual step.
+* `organiser.apply_renames` (every build ends there, conversions included) removes EVERY empty folder below the root at the end, not
+  only those its moves emptied (`all_dirs`): one already empty, an emptied DAT folder, an empty `_unmatched`. Hidden folders and the
+  system's own (`keep_dirs` = `Platform.protected_dirs`) are never looked at.
+* (Undo logs were first moved to the data folder; Amendment 65 removed Undo altogether.)
+* Builds with an archive already sweep old reason folders out (`sortroot.plan_sweep`): the Amiga's 25,667 files go with its next build.
+
+
+**AMENDMENT 65 (v0.4) — Undo is removed.**
+* The user had never used it and chose to remove it (2026-10-24). Gone: the Undo buttons (Library, RetroArch, a converted save's toast),
+  `/api/library/undo`, `/api/organise/undo`, `/api/organise/undo-logs`, `/api/retroarch/undo`, `/api/library/export/undo` and
+  `/api/library/export/runs`; `organiser.undo` / `Journal` / `list_undo_logs` and the log format; `sortroot`'s journal and `undo_moves`;
+  `retroarch.undo_relocation` / `list_undo` and the RetroArch journals; `libexport.undo_run` / `list_runs`; the `undo_log` / `journal`
+  keys of every result.
+* Why it is safe without: a move is one `rename` that never overwrites (`_rename_no_overwrite`), so an interrupted build leaves each
+  file whole in its old or new place and the next build finishes it; conversions still move the original back on any failure before
+  the new file is in place. Backups that protect the user's own data stay: the zip of saves before a relocation, `retroarch.cfg`'s
+  backup on every change, a memory-card image's old content before it is rewritten (`<save backups>/replaced/`).
+* Clean folders: the library and the archive hold nothing of the app's (no logs, no journals). `organiser.purge_undo_logs(root)` runs at
+  each scan and deletes the `.romorg-undo-*` files older versions left in the folder, and the data folder's `undo/` and
+  `collection-undo/` stores. `retroarch-undo/` is left alone (it may hold copies of rewritten memory cards).
+* Leftovers of a killed run (no journal to find them by): Build library first calls `organiser.recover_leftovers(root, keep_dirs)`,
+  which deletes `*.romorg-convert-*`, `*.romorg.part`, `*.romorg-tmp-whd` and `.romorg-chd-unpack/`, and renames a `*.romorg-tmp-*`
+  file back (never over another file; else listed). When a convert temp was found, `convert.orphan_originals(scan)` lists the files in
+  `_converted_originals` none of whose roms is matched elsewhere (the original is moved away before the clean file is written) and
+  they go back to their old place, so the build converts them again. Re-scans when anything changed; `result["recovered"]`.
+* `libexport` keeps its manifest (`<dest>/.romorg-library/library.sqlite`): a later build and the sync need to know which files are
+  its own.
+
+
+**AMENDMENT 66 (v0.4) — The archive in an S3 bucket (phases 1 and 2 of docs/PLAN-v0.4.md).**
+* `s3.py`: a stdlib S3 client (http.client, SigV4 by hand - AWS's own example is a test), path-style requests; list (all pages), head,
+  put (single, or multipart with per-part Content-MD5, aborted on failure), get (to a `.romorg.part`, never over a file), range reads,
+  copy (metadata kept / replaced), batch delete, unfinished uploads, `ping`, `probe` (the "Test connection"). Retries 5xx / 429 / network
+  errors with back-off; streams; never puts a secret into an error. `tests/test_s3.py` has an S3 server (each signature checked).
+* Settings: `config.json` `s3` = endpoint, region, access key; the secret in `<data>/s3-secret` (0600), never sent to the page
+  (`GET/POST /api/settings/s3`, `POST /api/settings/s3/test {location}`). An archive location (`archive_dir`, `archive_overrides`, a
+  build's `aside_to`) is a folder or `s3://bucket/prefix` (`s3archive.parse`).
+* Planning is unchanged: an S3 location plans as its **stand-in folder** `<data>/s3-archive/<bucket>/<prefix>` (never written), so
+  `_archive_pass`, `sortroot.plan_sweep` and the saves moves work as for a folder. Free names are kept against the bucket:
+  `sortroot.register_virtual(stand_in, Inventory.exists)` and `Names` asks `sortroot.lexists`. `s3archive.Inventory` lists one system
+  folder's keys once (per scan; kept up to date with this app's uploads; `version` is part of the tree's identity).
+* Doing: `App._archive_moves` sends moves whose target lies below a stand-in to `s3archive.upload_moves` (4 at once): read once for
+  md5 / sha1 / sha256 / crc32, put with Content-MD5 and metadata (`md5`, `sha1`, `crc32`, `size`, `from`), head, check size + ETag (or
+  the `md5` metadata for a multipart upload) + `sha1`, then delete the local file; an object already there with the same content counts
+  as done, other content fails the move (never replaced). A copy whose source is in the archive (a save of several games) is a
+  server-side CopyObject. Before a build: `ping` (unreachable -> the job stops before anything moves) and stale multipart uploads are
+  aborted; no connection -> 409 `no_s3` before the job starts.
+* Tree: `treeview.collect(archive_files=)` takes the inventory's listing for "already archived"; `/api/tree` gives the archive root as
+  `s3://...` and `archive_s3 {url, error}`; the page marks it **S3** and words the states "In the bucket" / "Uploaded".
+* Checked on MEGA S4 (global endpoint, path-style, region us-east-1 accepted): a single PUT's ETag is the MD5, a multipart one is not;
+  metadata, Content-MD5, Range, copy, batch delete work. `ROMORG_S4_TEST=<config file>` runs the real-service tests.
+
+
+**AMENDMENT 67 (v0.4) — Restore from the archive (phase 3, the user's spec).**
+* `POST /api/archive/restore {platform, paths?: [path below <archive>/<system>/ (a folder: all below)], missing?: true}` (job
+  `restore`). The archive keeps its copy (the user's choice): S3 `s3archive.restore` (to `.romorg.part`, MD5 checked against the
+  ETag / `md5` metadata, renamed, never over a file); a folder `_copy_checked` (copy, compare, rename). Destination: the `from`
+  metadata, else the archive path without its reason folder (kept inside the ROM folder). Then a re-scan, then the build's
+  conversions for the restored files only (`_apply_conversions(only=)`: 7z repack, clean-up, disc -> CHD, as the system's rules say),
+  then the rules-free placement (`_rename_plan`): a recognised file to its database name (not into a reason folder), others stay.
+  Result `restored`, `converted`, `placed`, `at_original`, `skipped_saves` (saves are not restored yet), `failed`. No override is
+  added (the user: change the rules).
+* Re-archiving a restored file: `_archive_pass(same=_archived_same)`: the archive's file at the target with the same content (a
+  folder: the same bytes; S3: size + MD5) is reused - the move carries `sortroot.ALREADY` and only removes the local file.
+* Missing games in the archive (`_archive_ids`): a folder archive is scanned with the system's DATs during the system's scan
+  (`_local_archive_ids`, kept per archive folder until the next scan); an S3 archive by object metadata - `rom` (the DAT rom / disc game
+  the build identified: SMove.rom from the plan op), `sha1`, `roms` (zip / 7z member `crc:size`); unknown objects get a HEAD during a
+  scan (at most `ARCHIVE_HEADS` a scan), kept in `<data>/s3-meta/<bucket>.json`. The tree marks missing rows `in_archive` and gives
+  `archive_restorable`.
+* UI: tick boxes on the Archive side (files and folders holding archived files), a sticky Restore bar, "In the archive" on missing
+  rows with Restore in their details, "Restore N missing games from the archive".
+* Fixes of the review: name checks against the bucket use a set of folder prefixes (were O(objects) each); a restore path from metadata
+  is kept inside the ROM folder; a multipart upload reads the file once less; restoring a disc game's folder expands to its files.

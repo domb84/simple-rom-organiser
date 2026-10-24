@@ -15,9 +15,10 @@ server starts quickly and tests can substitute fakes via ``sys.modules``.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
+import filecmp
 import functools
+import hashlib
 import importlib
 import importlib.resources
 import inspect
@@ -70,6 +71,46 @@ def _staged(job: "Job", index: int, count: int, label: str) -> Callable[..., Non
         text = Path(texts[0]).name if texts and isinstance(texts[0], os.PathLike) else (texts[0] if texts else "")
         job.report(index + frac, count, f"[{min(index + 1, count)}/{count}] {label}" + (f": {text}" if text else ""))
     return report
+
+
+def _op_sources(op: Any) -> set[str]:
+    """The files a convert op reads (normcased): its source, and the files of a disc set it moves."""
+    out = {os.path.normcase(str(op.src))}
+    for m in getattr(op, "moves", None) or ():
+        out.add(os.path.normcase(str(m[0])))
+    return out
+
+
+def _copy_checked(src: Path, dest: Path) -> None:
+    """Copy ``src`` to ``dest`` (a ``.romorg.part`` first, compared byte for byte, then renamed; never over a file)."""
+    part = dest.with_name(dest.name + ".romorg.part")
+    try:
+        shutil.copy2(src, part)
+        if not filecmp.cmp(src, part, shallow=False):
+            raise OSError(f"{src.name}: the copy does not match")
+        _mod("organiser").rename_no_overwrite(part, dest)
+    finally:
+        if part.exists():
+            part.unlink()
+
+
+ARCHIVE_HEADS = 400        # objects of an S3 archive another tool put there, read with a HEAD per scan (the rest the next time)
+_MD5_MEMO: dict[tuple[str, int, int], str] = {}
+
+
+def _file_md5(path: Path) -> str:
+    """The MD5 of a file (remembered by path, size and time: plans ask again)."""
+    st = os.stat(path)
+    key = (os.fspath(path), st.st_size, st.st_mtime_ns)
+    if key not in _MD5_MEMO:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        if len(_MD5_MEMO) > 4096:
+            _MD5_MEMO.clear()
+        _MD5_MEMO[key] = h.hexdigest()
+    return _MD5_MEMO[key]
 
 
 def _existing_parent(path: Path) -> Path:
@@ -195,15 +236,12 @@ class JobManager:
         self._lock = threading.Lock()
         self._current: Job | None = None
         self._next_id = 1
-        self._exclusive = ""               # a request that moves files without being a job (an undo) is at work
 
     def start(self, kind: str, fn: Callable[[Job], Any], cancellable: bool = True,
               platform: str | None = None) -> Job:
         with self._lock:
             if self._current is not None and self._current.status == "running":
                 raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is already running")
-            if self._exclusive:
-                raise ApiError(HTTPStatus.CONFLICT, f"Wait: {self._exclusive} is still at work")
             job = Job(self._next_id, kind, cancellable, platform)
             _mod("meter").reset()
             self._next_id += 1
@@ -238,22 +276,6 @@ class JobManager:
     def current(self) -> Job | None:
         with self._lock:
             return self._current
-
-    @contextlib.contextmanager
-    def exclusive(self, what: str) -> Any:
-        """For a request that moves files in its own thread (the undo of a collection build ...): refused while a job runs
-        (they would move the same files at the same time), and no job starts until it is through."""
-        with self._lock:
-            if self._current is not None and self._current.status == "running":
-                raise ApiError(HTTPStatus.CONFLICT, f"A {self._current.kind} job is running: wait for it to finish, or stop it", "busy")
-            if self._exclusive:
-                raise ApiError(HTTPStatus.CONFLICT, f"Wait: {self._exclusive} is still at work", "busy")
-            self._exclusive = what
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._exclusive = ""
 
     def cancel(self) -> bool:
         job = self.current
@@ -778,17 +800,6 @@ def scan_record(summary: dict[str, Any], root: Any, dat_names: Any = (), now: fl
     return record
 
 
-def _undo_log_count(data: Any) -> int | None:
-    """Number of moves recorded in an undo log (list, or dict holding a list)."""
-    if isinstance(data, list):
-        return len(data)
-    if isinstance(data, dict):
-        for key in ("moves", "ops", "renames", "entries"):
-            if isinstance(data.get(key), list):
-                return len(data[key])
-    return None
-
-
 class _NoUpdates:
     """Stand-in when ``romorg.autoupdate`` is unavailable: never updates, never blocks."""
 
@@ -827,7 +838,8 @@ class App:
         self.updates = self._make_updates(auto_update)
         self._scan: ScanState | None = None
         self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
-        self._undo_counts: dict[tuple[str, int, int], int] = {}
+        self._s3_inv: dict[str, Any] = {}                         # the inventories of the S3 archives in use (s3archive), by stand-in folder
+        self._archive_scans: dict[str, tuple[Any, dict[str, str]]] = {}   # archive folder -> (its stamp, {game: path}) of its last scan
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
         self._lang_cache: dict[Any, list[dict[str, Any]]] = {}  # available languages of one platform
         self._region_cache: dict[str, tuple[tuple, dict[str, int]]] = {}   # platform -> regions found in its DATs
@@ -2337,6 +2349,7 @@ class App:
                                  "sidecars": bool(exp.get("sidecars")), "sync": bool(exp.get("sync")),
                                  "aside": exp.get("aside", True) is not False}      # (archiving is on unless it was switched off)
         out["archive"] = self._archive_settings(cfg)
+        out["s3"] = self._s3_settings(cfg)
         out["tiles"] = _mod("tiles").shown(cfg)
         try:
             out["dats_count"] = len(_mod("tosec").list_dats())
@@ -2921,8 +2934,8 @@ class App:
         """``POST /api/saves/convert {platform, set, to_file | to_code}``: make a copy of a save for another region's release of its game.
         ``to_file`` is a disc you have (relative to the system's folder; its code is read from it), ``to_code`` another release's code
         (PlayStation 2 only: the game database knows it). PlayStation: the card's entry of the game is renamed (a copy named after the disc);
-        PlayStation 2: the save folder is copied under the new code, or renamed in a card image. Journalled: ``journal`` undoes it
-        (``POST /api/retroarch/undo``). Nothing is written while the emulator runs."""
+        PlayStation 2: the save folder is copied under the new code, or renamed in a card image. A card image rewritten in
+        place is backed up first. Nothing is written while the emulator runs."""
         platform = self._resolve_platform(body.get("platform"))
         savecarry, ra = _mod("savecarry"), _mod("retroarch")
         if platform.name not in savecarry.CONVERTIBLE:
@@ -2952,10 +2965,10 @@ class App:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "to_file (a disc you have) or, for a PlayStation 2 save, to_code is needed.", "bad_target")
         if new == old:
             raise ApiError(HTTPStatus.BAD_REQUEST, "That release has the same game code: the save works there as it is.", "same_code")
-        journal_dir = _mod("paths").data_dir() / "retroarch-undo"
+        backup_dir = self._ra_dirs(self._ra_state()[2])
         if st.source == "pcsx2":
             ops, info = self._ps2_ops({"ps2": [(old, new)]})
-            res = ra.apply_follow(ops, journal_dir, {"converted": [old, new]}, None, running=_mod("emulators").source_running("pcsx2"))
+            res = ra.apply_follow(ops, backup_dir, running=_mod("emulators").source_running("pcsx2"))
         else:
             sel = self._ra_active()
             if sel is None or target is None:
@@ -2973,7 +2986,7 @@ class App:
                     o.data, o.size = done[0], len(done[0])
                     ops.append(o)
                     info["saves"] += done[1]
-            res = ra.apply_follow(ops, journal_dir, {"converted": [old, new]}, sel)
+            res = ra.apply_follow(ops, backup_dir)
         res.update(info, old=old, new=new)
         self._saves_forget_all()
         for holder in (state,):                                   # (the tree and the saves are read again)
@@ -3075,10 +3088,22 @@ class App:
         platform = self._resolve_platform(body.get("platform"))
         force = _bool_arg(body.get("force"))              # recalculate every checksum (else only new or changed files are read)
 
+        self._s3_inv.clear()                                  # (a scan reads the S3 archives' listings again too)
+
         def work(job: Job) -> Any:
+            purge = getattr(_mod("organiser"), "purge_undo_logs", None)
+            if purge is not None:
+                purge(root)                               # (the undo logs of versions before 0.4: Undo is gone)
             state = self._run_scan(job, root, platform, force=force)
             if state is None:
                 return None
+            aside = self._archive_of(platform, root)
+            if aside is not None:
+                job.report(0, 0, "Looking at what the archive holds...")
+                try:
+                    self._archive_ids(state, fetch=True)          # (objects this app did not upload: one HEAD each, then kept)
+                except Exception:  # noqa: BLE001 - the archive is a courtesy of the scan
+                    traceback.print_exc()
             self._config_update(folder_for=(platform.name, str(root)), last_platform=platform.name,
                                 last_dir=str(root))
             return self._summary(state)
@@ -3481,6 +3506,36 @@ class App:
         return {"kind": "file" if locals_ else "missing", "source": label, "dat_name": item.get("dat", ""),
                 "dat": dat_rows, "also_named": 0, "local": locals_, "more_files": max(0, len(matches) - 6)}
 
+    def _recover_leftovers(self, job: Job, state: ScanState) -> tuple[ScanState, dict[str, Any] | None]:
+        """Before a build: delete the partial files a killed run left in the folder, rename a file a move left under a temporary name
+        back, and put back an original whose conversion was cut short (it is converted again). Re-scans when anything changed."""
+        organiser = _mod("organiser")
+        recover = getattr(organiser, "recover_leftovers", None)
+        if recover is None:
+            return state, None
+        out = recover(state.root, keep_dirs=tuple(getattr(state.platform, "protected_dirs", ()) or ()))
+        moved_back: list[str] = []
+        if out["deleted"] or out["renamed"]:
+            job.report(0, 0, "Cleaning up after an interrupted run...")
+            self._run_scan(job, state.root, state.platform, cancellable=False)
+            state = self._require_scan()
+            orphans = getattr(_mod("convert"), "orphan_originals", None)
+            if out["converts"] and orphans is not None and not self._is_dc(state):
+                for src, dst in orphans(state.result):
+                    try:
+                        organiser.make_dirs(dst.parent, [])
+                        organiser.rename_no_overwrite(src, dst)
+                        moved_back.append(str(dst))
+                    except (OSError, ValueError) as exc:
+                        out["left"].append({"path": str(src), "reason": f"cannot be put back at {dst}: {exc}"})
+                if moved_back:                                    # (the folders they leave empty go at the end of the build)
+                    self._run_scan(job, state.root, state.platform, cancellable=False)
+                    state = self._require_scan()
+        if not (out["deleted"] or out["renamed"] or out["left"]):
+            return state, None
+        return state, {"deleted": len(out["deleted"]), "renamed": len(out["renamed"]), "originals_back": len(moved_back),
+                       "left": out["left"][:20]}
+
     def _rescan_after(self, job: Job, state: ScanState) -> dict[str, Any]:
         job.report(0, 0, "Re-scanning folder...")
         new_state = self._run_scan(job, state.root, state.platform, cancellable=False)
@@ -3507,73 +3562,6 @@ class App:
         if isinstance(raw, str) and raw.strip():
             return self._validate_dir(raw)
         return self._require_scan().root
-
-    def undo_logs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
-        root = self._root_for(query.get("path"))
-        logs = []
-        for log in _mod("organiser").list_undo_logs(root):
-            log = Path(log)
-            try:
-                st = log.stat()
-                mtime = st.st_mtime
-                key = (str(log), st.st_size, st.st_mtime_ns)
-                count = self._undo_counts.get(key)
-                if count is None:          # counted once per log version: this is asked every time a tab opens
-                    counter = getattr(_mod("organiser"), "count_undo_log", None)
-                    reader = getattr(_mod("organiser"), "read_undo_log", None)
-                    if counter is not None:
-                        count = counter(log)
-                    elif reader is not None:
-                        info = reader(log)
-                        count = len(info["moves"]) + len(info.get("created_files") or ())
-                    else:
-                        count = _undo_log_count(json.loads(log.read_text(encoding="utf-8")))
-                    if len(self._undo_counts) > 64:
-                        self._undo_counts.clear()
-                    self._undo_counts[key] = count
-            except (OSError, ValueError, TypeError, KeyError):
-                mtime, count = 0.0, None
-            logs.append({"log": str(log), "name": log.name, "mtime": mtime, "count": count})
-        logs.sort(key=lambda item: item["mtime"], reverse=True)
-        return {"root": str(root), "logs": logs}
-
-    def organise_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        return self._undo(body, "organise")
-
-    def library_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """One undo for a whole Build library run (moves, created playlists, deleted playlists)."""
-        return self._undo(body, "library")
-
-    def _undo(self, body: dict[str, Any], kind: str) -> dict[str, Any]:
-        state = self._require_scan()
-        raw = body.get("log")
-        if not isinstance(raw, str) or not raw:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "No undo log given")
-        # Only accept logs that the organiser itself lists for the scanned folder.
-        known = {str(Path(p).resolve()): Path(p) for p in _mod("organiser").list_undo_logs(state.root)}
-        try:
-            log = known.get(str(Path(raw).resolve()))
-        except (OSError, RuntimeError):
-            log = None
-        if log is None:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown undo log")
-
-        def work(job: Job) -> Any:
-            job.report(0, 0, "Undoing moves...")
-            back = self._undo_library_sweep(str(log))
-            res = dict(_call(_mod("organiser").undo, log, root=state.root))
-            res["action"] = "undo"
-            conv = self._undo_linked_conversion(str(log), state.root) if kind == "library" else None
-            if conv:
-                res["converted_back"] = conv.get("restored")
-            if back:
-                res["aside_restored"] = back["restored"]
-            saves = self._ra_undo_follow(str(log))
-            if saves:
-                res["saves"] = saves
-            return self._rescan_into(job, state, res)
-
-        return {"job": self.jobs.start(kind, work, cancellable=False, platform=state.platform.name).to_dict()}
 
     @staticmethod
     def _library_flags(body: dict[str, Any]) -> tuple[bool, bool]:
@@ -3820,7 +3808,7 @@ class App:
             aside = self._library_aside_dir(state, body)
             existing = len(_mod("sortroot").plan_sweep({state.platform.name: state.root}, aside)) if aside else 0
             r = page["reasons"]
-            page["aside"] = {"path": str(aside), "existing": existing,
+            page["aside"] = {"path": self._archive_where(aside), "existing": existing, "s3": self._s3_inventory(aside) is not None if aside else False,
                              "coming": sum(r.get(k, 0) for k in ("excluded", "superseded", "incomplete", "duplicates", "unmatched"))}
         export_to = _str_arg(body.get("export_to"))
         if export_to:
@@ -3907,15 +3895,17 @@ class App:
         return {"dest": str(ep.dest), "mode": ep.mode, "counts": ep.counts(), "pending": ep.pending(),
                 "bytes_copy": need, "bytes_linked": ep.bytes_linked(), "free": free, "enough_space": free is None or need <= free,
                 "playlists": len([p for p in ep.playlists if p.action == "write"]),
-                "conflicts": problems[:200], "notes": notes, "runs": _mod("libexport").list_runs(ep.dest),
+                "conflicts": problems[:200], "notes": notes,
                 "sync": sync, "mass_removal": ep.mass_removal(),
                 "removals": [{"rel": r.rel, "reason": r.reason, "skip": r.skip} for r in ep.removals[:200]]}
 
     @staticmethod
-    def _archive_pass(folder: Path, plan: Any, aside: Path) -> tuple[list[Any], list[Any]]:
+    def _archive_pass(folder: Path, plan: Any, aside: Path, same: Callable[[Path, Path], bool] | None = None) -> tuple[list[Any], list[Any]]:
         """What a build in place does, in one move per file: the ``RenameOp`` list for ``organiser.apply_renames`` (inside the system's
         folder) and the moves of what the rules set aside (``_excluded``, ``_superseded`` ... ``_unmatched``) from where it lies straight
-        to ``<archive>/<system folder name>/...`` (outside the folder, so ``sortroot`` journals them)."""
+        to ``<archive>/<system folder name>/...`` (outside the folder: ``sortroot`` moves them). ``same(src, target)``: True when the
+        archive holds this very file at the target already (a game restored and set aside again): the move then only removes the
+        local file (``note`` ``sortroot.ALREADY``) instead of making a numbered second copy."""
         organiser, discsys, sortroot = _mod("organiser"), _mod("discsys"), _mod("sortroot")
         # (compared as text: on Windows two Path objects that differ only in case are equal, and a rename that only changes
         # the case of a name - "ALPHA.SFC" to "Alpha.sfc" - is a move that has to be made)
@@ -3945,8 +3935,14 @@ class App:
                     size = op.src.stat().st_size
                 except OSError:
                     pass
-                final = names.free(new)
-                arch.append(sortroot.SMove(op.src, final, top, size=size))
+                if same is not None and sortroot.lexists(new) and os.path.normcase(str(new)).casefold() not in names.taken \
+                        and same(op.src, new):
+                    names.taken.add(os.path.normcase(str(new)).casefold())
+                    final = new
+                    arch.append(sortroot.SMove(op.src, final, top, sortroot.ALREADY, size=size, rom=op.rom_name if op.dat else ""))
+                else:
+                    final = names.free(new)
+                    arch.append(sortroot.SMove(op.src, final, top, size=size, rom=op.rom_name if op.dat else ""))
                 for title in getattr(op, "copies", ()) or ():        # a save of several games: a copy of it under each of the others
                     extra = names.free(aside / folder.name / SAVES_DIR / _mod("organiser").safe_filename(title) / op.src.name)
                     arch.append(sortroot.SMove(final, extra, top, size=size, copy=True))
@@ -3974,6 +3970,12 @@ class App:
         raw = _str_arg(body.get("aside_to"))
         if not raw:
             return None
+        try:
+            target = _mod("s3archive").parse(raw)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc), "bad_aside") from None
+        if target is not None:
+            return self._archive_base(raw, state.root)
         aside = Path(os.path.abspath(os.path.expanduser(raw)))
         problem = _mod("sortroot").check_folders(state.root, aside)
         if problem:
@@ -3993,9 +3995,19 @@ class App:
                            "check the list and build again", "stale_plan")
         self._library_plan(state, *key)  # errors (e.g. module missing) before starting a job
         aside = self._library_aside_dir(state, body)
+        inv = self._s3_inventory(aside) if aside is not None else None
+        if inv is not None and inv.client is None:
+            raise ApiError(HTTPStatus.CONFLICT, inv.error, "no_s3")
 
         def work(job: Job) -> Any:
-            st = state
+            if inv is not None:                                         # an S3 archive: reachable, and no upload of a killed run left open
+                job.report(0, 0, "Connecting to the S3 archive...")
+                try:
+                    inv.client.ping()
+                    _mod("s3archive").abort_stale_uploads(inv.client)
+                except _mod("s3").S3Error as exc:
+                    raise ApiError(HTTPStatus.BAD_GATEWAY, f"The S3 archive cannot be reached: {exc}", "s3_error") from None
+            st, recovered = self._recover_leftovers(job, state)       # what a run that was killed left behind
             conv_res: dict[str, Any] | None = None
             if self._convert_on_build(st.platform, self._config()):      # raw discs / odd dumps are converted first
                 latest = self._latest_arg(st, {})
@@ -4014,58 +4026,47 @@ class App:
             arch_out: dict[str, Any] | None = None
             if aside is not None:
                 # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
-                ops, arch = self._archive_pass(st.root, plan, aside)
+                ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same)
                 if arch:
-                    arch_out = sortroot.apply_moves(arch, _mod("paths").data_dir() / "collection-undo", "libsweep",
-                                                    keep=[st.root, aside], cancel=job.cancel)
+                    arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
+                                                   progress=_staged(job, 0, 1, "uploading to the archive" if inv else "moving to the archive"))
                 res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
-                                                           playlists=list(plan.playlists)))
-                if arch_out and arch_out.get("journal") and not res.get("undo_log"):
-                    # (only the archive moves changed anything: the undo log is the handle "Undo" takes, with no steps of its own)
-                    res["undo_log"] = str(_mod("organiser").write_marker_log(st.root))
-                if arch_out and arch_out.get("journal") and res.get("undo_log"):      # one undo takes both back
-                    jp = Path(arch_out["journal"])
-                    data = json.loads(jp.read_text(encoding="utf-8"))
-                    data["library_log"] = res["undo_log"]
-                    sortroot._write_json(jp, data)
+                                                           playlists=list(plan.playlists),
+                                                           keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
             else:
                 apply = _mod("discsys").apply_plan if self._is_dc(st) else _mod("organiser").apply_renames
-                res = dict(_call(apply, plan.ops, st.root, progress=job.report,
-                                 cancel=job.cancel, playlists=list(plan.playlists)))
+                res = dict(_call(apply, plan.ops, st.root, progress=job.report, cancel=job.cancel, playlists=list(plan.playlists),
+                                 keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
                 copies = self._pinned_copies(plan, st.root)
                 if copies:                                                  # (the saves of several games: a copy under each of the others)
-                    done = sortroot.apply_moves(copies, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=[st.root],
-                                                extra={"library_log": res.get("undo_log") or ""})
+                    done = sortroot.apply_moves(copies, keep=[st.root])
                     res["saves_copied"] = done["moved"]
             res["action"] = "library"
+            if recovered:
+                res["recovered"] = recovered
             if conv_res is not None:
                 res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
                                     "failed": list(conv_res.get("failed") or [])[:20]}
-                if conv_res.get("undo_log") and res.get("undo_log"):    # one undo reverts both
-                    self._link_undo(res["undo_log"], conv_res["undo_log"])
-                elif conv_res.get("undo_log"):                           # the build itself changed nothing: undo the conversion
-                    res["undo_log"] = conv_res["undo_log"]
             saves_moves, _saves_info = self._saves_moves(plan, st.root, aside)
             if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
-                res["saves_archived"] = self._apply_saves_moves(saves_moves, res.get("undo_log", ""))
-            ps2_done = self._ps2_follow(plan, {"library_log": res.get("undo_log", "")})
+                res["saves_archived"] = self._apply_saves_moves(saves_moves)
+            ps2_done = self._ps2_follow(plan)
             if ps2_done:
                 res["ps2_saves"] = ps2_done
             moved = self._moved_pairs(plan.ops)
             sp_now = self._saves_plan(plan)
             if moved or (sp_now and sp_now.get("carry")):
-                follow = self._ra_follow(moved, "move", {"library_log": res.get("undo_log", "")}, plan)
+                follow = self._ra_follow(moved, "move", plan)
                 if follow:
                     res["saves"] = follow
             if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
                 sweep = sortroot.plan_sweep({st.platform.name: st.root}, aside)       # what earlier builds left in _excluded/ ...
                 out = {"moved": 0, "failed": []}
                 if sweep:
-                    out = sortroot.apply_moves(sweep, _mod("paths").data_dir() / "collection-undo", "libsweep",
-                                               keep=[state.root, aside], progress=_staged(job, 0, 1, "moving the archived files out"),
-                                               extra={"library_log": res.get("undo_log") or ""})
+                    out = self._archive_moves(sweep, [state.root, aside], st.root,
+                                              progress=_staged(job, 0, 1, "moving the archived files out"))
                 if sweep or arch_out:
-                    res["aside"] = {"path": str(aside), "moved": out["moved"] + (arch_out or {}).get("moved", 0),
+                    res["aside"] = {"path": self._archive_where(aside), "s3": inv is not None, "moved": out["moved"] + (arch_out or {}).get("moved", 0),
                                     "failed": (out["failed"] + (arch_out or {}).get("failed", []))[:20]}
             if ("build_whdload" in self._library_mod().applicable_fields(st.platform) and self._profile(st.platform).build_whdload
                     and not job.cancel.is_set()):
@@ -4110,7 +4111,7 @@ class App:
             res["action"] = "library_export"
             res["dest"] = str(ep.dest)
             follow = self._ra_follow([(t.src, ep.dest / t.rel) for t in ep.items if t.moves_data], "copy",
-                                     {"collection": str(ep.dest)}, self._library_plan(state, *key))
+                                     self._library_plan(state, *key))
             if follow:
                 res["saves"] = follow
             return res
@@ -4146,19 +4147,19 @@ class App:
                     return inst
         return installs[0] if installs else None
 
-    def _ra_dirs(self, saved: dict[str, Any]) -> tuple[Path, Path]:
-        base = _mod("paths").data_dir()
-        return base / "retroarch-undo", Path(saved.get("backup_dir") or (base / "save-backups"))
+    def _ra_dirs(self, saved: dict[str, Any]) -> Path:
+        """The folder of the backups of saves (and of a save file rewritten in place)."""
+        return Path(saved.get("backup_dir") or (_mod("paths").data_dir() / "save-backups"))
 
     def _ra_info(self) -> dict[str, Any]:
         ra, installs, saved = self._ra_state()
         sel = self._ra_selected(installs, saved)
-        journal_dir, backup_dir = self._ra_dirs(saved)
+        backup_dir = self._ra_dirs(saved)
         out: dict[str, Any] = {"installs": [i.to_dict() for i in installs], "selected": str(sel.cfg) if sel else "",
                                "custom": list(saved.get("custom", [])), "running": ra.is_running(),
                                "backup": {"enabled": saved.get("backup", True) is not False, "dir": str(backup_dir)},
                                "follow": saved.get("follow", True) is not False,
-                               "undo": ra.list_undo(journal_dir), "settings": None, "overrides": []}
+                               "settings": None, "overrides": []}
         if sel is not None:
             out["settings"] = ra.settings_of(sel)
             out["overrides"] = ra.override_warnings(sel)
@@ -4223,7 +4224,7 @@ class App:
 
     def retroarch_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         ra, sel, rel = self._ra_relocation(body)
-        _j, backup_dir = self._ra_dirs(self._ra_state()[2])
+        backup_dir = self._ra_dirs(self._ra_state()[2])
         try:
             free = shutil.disk_usage(_existing_parent(backup_dir)).free
         except OSError:
@@ -4258,39 +4259,25 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, "RetroArch is running. Close it first: it rewrites its config when it closes.",
                            "retroarch_running")
         saved = self._ra_state()[2]
-        journal_dir, backup_dir = self._ra_dirs(saved)
+        backup_dir = self._ra_dirs(saved)
         want_backup = _bool_arg(body.get("backup"), saved.get("backup", True) is not False)
         zip_path = backup_dir / f"saves-{time.strftime('%Y%m%d-%H%M%S')}.zip" if want_backup else None
 
         def work(job: Job) -> Any:
             job.report(0, 0, "Moving saves...")
-            res = ra.apply_relocation(sel, rel, journal_dir, zip_path, progress=lambda d, t, m: job.report(d, t, m))
+            res = ra.apply_relocation(sel, rel, zip_path, progress=lambda d, t, m: job.report(d, t, m))
             res["action"] = "retroarch"
             self._saves_forget_all()            # the saves are somewhere else now: every scan's save report is read again
             return res
 
         return {"job": self.jobs.start("retroarch", work, cancellable=False).to_dict()}
 
-    def retroarch_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        ra, installs, saved = self._ra_state()
-        journal_dir, _b = self._ra_dirs(saved)
-        journal = _str_arg(body.get("journal"))
-        known = {x["journal"] for x in ra.list_undo(journal_dir)}
-        if journal not in known:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "That change cannot be undone (it was already undone, or is unknown).")
-        try:
-            res = ra.undo_relocation(Path(journal))
-            self._saves_forget_all()
-            return res
-        except RuntimeError as exc:
-            raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
-
     @staticmethod
     def _report_files(report: Any) -> list[tuple[Path, Path]]:
         """``[(file, save root)]`` of every file of a save report that is still there."""
         return [(f, root) for st in report.sets.values() if st.renames for f, root, _k, _z in st.members if os.path.lexists(f)]
 
-    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, extra: dict[str, Any], plan: Any) -> dict[str, Any] | None:
+    def _ra_follow(self, pairs_from: list[tuple[Any, Any]], mode: str, plan: Any) -> dict[str, Any] | None:
         """Saves and states follow ROMs that got new names (``pairs_from``: ``(old path, new path)``). ``mode`` ``move`` for
         a build in place, ``copy`` for a build into another folder. None when no RetroArch config is known (``plan`` has no
         save report) or the option is off. The games the plan sets aside keep their saves where they are (or archive them)."""
@@ -4312,7 +4299,7 @@ class App:
             files = self._report_files(sp["report"])
             ops = ra.plan_follow(sel, pairs, mode, files=files) if pairs else []
             carry_ops = self._carry_ops(ra, sel, sp, files) if carry else []
-            res = ra.apply_follow(ops + carry_ops, self._ra_dirs(saved)[0], extra, sel)
+            res = ra.apply_follow(ops + carry_ops, self._ra_dirs(saved))
             res["carried"] = sum(1 for o in carry_ops if o.status == "copy") if not res.get("skipped_running") else 0
             res["converted"] = sum(1 for o in carry_ops if o.status == "copy" and o.data is not None) if res["carried"] else 0
             ops = ops + carry_ops
@@ -4464,8 +4451,8 @@ class App:
         ops += [ra.Follow(path, path, "save", "replace", "", len(now), data=now) for path, (was, now) in images.items() if now != was]
         return ops, info
 
-    def _ps2_follow(self, plan: Any, extra: dict[str, Any]) -> dict[str, Any] | None:
-        """Do :meth:`_ps2_ops` (journalled, so Undo takes the copies away and puts a rewritten card image back). Not while PCSX2 runs."""
+    def _ps2_follow(self, plan: Any) -> dict[str, Any] | None:
+        """Do :meth:`_ps2_ops` (a rewritten card image's old content is kept with the save backups). Not while PCSX2 runs."""
         sp = self._saves_plan(plan)
         if sp is None or not sp.get("ps2"):
             return None
@@ -4473,7 +4460,7 @@ class App:
             ops, info = self._ps2_ops(sp)
             if not ops:
                 return {**info, "followed": 0, "copied": 0, "failed": []} if info["conflicts"] else None
-            res = _mod("retroarch").apply_follow(ops, _mod("paths").data_dir() / "retroarch-undo", extra, None,
+            res = _mod("retroarch").apply_follow(ops, self._ra_dirs(self._ra_state()[2]),
                                                  running=_mod("emulators").source_running("pcsx2"))
             res.update(info)
             return res
@@ -4645,8 +4632,8 @@ class App:
         return moves, {"files": len(moves), "games": len(sp["archive"]), "states": sum(st.states for st in sp["archive"]),
                        "to": str(base), "running": running}
 
-    def _apply_saves_moves(self, moves: list[Any], library_log: str) -> dict[str, Any]:
-        """Do :meth:`_saves_moves` (journalled like a sweep, linked to the build's undo log). The saves of a program that runs are
+    def _apply_saves_moves(self, moves: list[Any]) -> dict[str, Any]:
+        """Do :meth:`_saves_moves`. The saves of a program that runs are
         not moved (RetroArch writes its saves back when it exits; an emulator keeps its save files open): they stay, and the answer says
         which program it was."""
         if not moves:
@@ -4658,9 +4645,8 @@ class App:
         if not todo:
             return {"skipped_running": True, "running": names, "moved": 0, "planned": len(moves), "failed": []}
         keep = [m.src.parent for m in todo] + [m.dst.parent.parent for m in todo]
-        res = _mod("sortroot").apply_moves(todo, _mod("paths").data_dir() / "collection-undo", "libsweep", keep=keep,
-                                           extra={"library_log": library_log})
-        return {"moved": res["moved"], "planned": len(moves), "failed": res["failed"][:20], "journal": res["journal"],
+        res = self._archive_moves(todo, keep)
+        return {"moved": res["moved"], "planned": len(moves), "failed": res["failed"][:20],
                 "skipped_running": bool(busy), "running": names}
 
     def _saves_plan_info(self, plan: Any, folder: Path, aside: Path | None, elsewhere: bool = False) -> dict[str, Any] | None:
@@ -4740,66 +4726,6 @@ class App:
         return {"saves": st.saves, "states": st.states, "total": st.files, "effect": effect,
                 "game": st.game, "dat": st.dat}
 
-    def _link_undo(self, library_log: str, convert_log: str) -> None:
-        folder = _mod("paths").data_dir() / "collection-undo"
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / f"libconv-{time.strftime('%Y%m%d-%H%M%S')}.json").write_text(
-            json.dumps({"library_log": library_log, "convert_log": convert_log}), encoding="utf-8")
-
-    def _undo_linked_conversion(self, library_log: str, root: Path) -> dict[str, Any] | None:
-        """Undoing a library build that converted first also undoes the conversion (its log was linked to the build's)."""
-        folder = _mod("paths").data_dir() / "collection-undo"
-        try:
-            for j in sorted(folder.glob("libconv-*.json"), reverse=True):
-                data = json.loads(j.read_text(encoding="utf-8"))
-                if Path(data["library_log"]).resolve() == Path(library_log).resolve() and Path(data["convert_log"]).is_file():
-                    res = dict(_mod("organiser").undo(Path(data["convert_log"]), root=root))
-                    j.rename(j.with_suffix(".json.undone"))
-                    return res
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        return None
-
-    def _undo_library_sweep(self, library_log: str) -> dict[str, Any] | None:
-        """Undoing a build that moved its archived files out brings them back first (so the build's own undo finds them)."""
-        sortroot = _mod("sortroot")
-        folder = _mod("paths").data_dir() / "collection-undo"
-        out: dict[str, Any] | None = None
-        try:
-            # one build can leave two journals: what its rules archived, and what earlier builds had left in _excluded/ ...
-            for j in sorted(folder.glob("libsweep-*.json"), reverse=True):
-                data = json.loads(j.read_text(encoding="utf-8"))
-                if not data.get("undone") and data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
-                    back = sortroot.undo_moves(j)
-                    out = back if out is None else {"restored": out["restored"] + back["restored"],
-                                                    "skipped": out["skipped"] + back["skipped"]}
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        return out
-
-    def _ra_undo_follow(self, library_log: str) -> dict[str, Any] | None:
-        """Undoing a library build also gives the saves their old names back (the follow journal made by that build)."""
-        try:
-            ra, _installs, saved = self._ra_state()
-            journal_dir = self._ra_dirs(saved)[0]
-            merged: dict[str, Any] | None = None
-            for item in ra.list_undo(journal_dir):               # (a build can leave two: RetroArch's saves and PCSX2's)
-                if item["kind"] != "follow":
-                    continue
-                data = json.loads(Path(item["journal"]).read_text(encoding="utf-8"))
-                if data.get("library_log") and Path(data["library_log"]).resolve() == Path(library_log).resolve():
-                    res = ra.undo_relocation(Path(item["journal"]))
-                    if merged is None:
-                        merged = dict(res)
-                    else:
-                        for k, v in res.items():
-                            merged[k] = merged.get(k, 0) + v if isinstance(v, int) and not isinstance(v, bool) else (merged.get(k, []) + v if isinstance(v, list) else merged.get(k, v))
-            return merged
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            return {"error": str(exc)}
-        return None
-
     def retroarch_shared(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/shared {base?}``: the asset folders RetroArch uses against those in ``base`` (default: the
         folder that holds its playlists / saves now)."""
@@ -4820,7 +4746,7 @@ class App:
 
     def retroarch_assets_set(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/assets/set {key, folder}``: point one asset setting at a folder you chose ("" = RetroArch's own). Only
-        retroarch.cfg changes; Undo puts the old setting back."""
+        retroarch.cfg changes (backed up first)."""
         ra, installs, saved = self._ra_state()
         sel = self._ra_selected(installs, saved)
         if sel is None:
@@ -4829,7 +4755,7 @@ class App:
         if folder and not os.path.isdir(os.path.expanduser(folder)):
             raise ApiError(HTTPStatus.BAD_REQUEST, "That folder does not exist.", "bad_folder")
         try:
-            res = ra.set_asset_folder(sel, _str_arg(body.get("key")), folder, self._ra_dirs(saved)[0])
+            res = ra.set_asset_folder(sel, _str_arg(body.get("key")), folder)
         except KeyError:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown setting.", "bad_key") from None
         except RuntimeError as exc:
@@ -4847,7 +4773,7 @@ class App:
         raw_keys = body.get("keys")
         keys = [k for k in (raw_keys if isinstance(raw_keys, list) else []) if isinstance(k, str)]
         try:
-            res = ra.apply_shared(sel, rows, keys, self._ra_dirs(saved)[0])
+            res = ra.apply_shared(sel, rows, keys)
         except RuntimeError as exc:
             raise ApiError(HTTPStatus.CONFLICT, str(exc), "retroarch_running") from None
         self._config_update(retroarch={**saved, "shared_base": base})
@@ -4923,8 +4849,6 @@ class App:
         mode = "copy" if _str_arg(body.get("mode")) == "copy" else "move"
         raw_paths = body.get("paths")
         wanted = {p for p in (raw_paths if isinstance(raw_paths, list) else []) if isinstance(p, str)}
-        journal_dir = self._ra_dirs(self._ra_state()[2])[0]
-
         def work(job: Job) -> Any:
             job.report(0, 0, "Looking for the files...")
             check = ra.check_bios_cores(sel, cores, dirs, platforms=systems, progress=lambda m: job.report(0, 0, m))
@@ -4932,7 +4856,7 @@ class App:
                      if i["status"] == "found" and (not wanted or i["path"] in wanted)]
             items = list({i["target"]: i for i in items}.values())
             job.report(0, len(items), "Placing files...")
-            res = ra.apply_bios(sel, items, journal_dir, mode)
+            res = ra.apply_bios(sel, items, mode)
             keys = _mod("keyfiles").place(r for r in self._keys_check(dirs, lambda m: job.report(0, 0, m))["rows"]
                                           if not wanted or r["source"] in wanted)
             res["keys_placed"] = keys["placed"]
@@ -5018,11 +4942,403 @@ class App:
         return {"dir": str(cfg.get("archive_dir") or ""),
                 "overrides": {k: v for k, v in table.items() if isinstance(k, str) and isinstance(v, str) and v}}
 
+    # ---- the archive in an S3 bucket (s3archive): the connection is set once; a location "s3://bucket/prefix" uses it
+    def _s3_secret_path(self) -> Path:
+        return _mod("paths").data_dir() / "s3-secret"
+
+    def _s3_settings(self, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The S3 connection as the page may see it: never the secret, only whether there is one."""
+        raw = (cfg if cfg is not None else self._config()).get("s3")
+        c = raw if isinstance(raw, dict) else {}
+        return {"endpoint": str(c.get("endpoint") or ""), "region": str(c.get("region") or ""),
+                "access_key": str(c.get("access_key") or ""), "secret_set": self._s3_secret_path().is_file()}
+
+    def s3_settings_get(self, query: dict[str, str], body: Any) -> dict[str, Any]:
+        """``GET /api/settings/s3``: endpoint, region, access key and whether a secret key is stored (it is never sent back)."""
+        return self._s3_settings()
+
+    def s3_settings_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/settings/s3 {endpoint, region, access_key, secret_key?}``: an empty ``secret_key`` keeps the stored one;
+        ``clear`` forgets the connection. The secret goes into a file of its own that only this user can read."""
+        if _bool_arg(body.get("clear")):
+            self._config_update(s3=None, strict=True)
+            try:
+                self._s3_secret_path().unlink()
+            except FileNotFoundError:
+                pass
+            self._s3_inv.clear()
+            return self._s3_settings()
+        endpoint = _str_arg(body.get("endpoint")).strip()
+        access = _str_arg(body.get("access_key")).strip()
+        if not endpoint or not access:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "The endpoint and the access key are needed.", "bad_s3")
+        secret = _str_arg(body.get("secret_key"))
+        if secret:
+            path = self._s3_secret_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(secret.strip())
+            os.replace(tmp, path)
+        elif not self._s3_secret_path().is_file():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "The secret key is needed.", "bad_s3")
+        self._config_update(s3={"endpoint": endpoint, "region": _str_arg(body.get("region")).strip(), "access_key": access}, strict=True)
+        self._s3_inv.clear()
+        return self._s3_settings()
+
+    def _s3_client(self, target: Any) -> Any:
+        """A client for ``target`` (its bucket and prefix) with the stored connection; ApiError when none is set."""
+        c = self._s3_settings()
+        if not c["endpoint"] or not c["access_key"] or not c["secret_set"]:
+            raise ApiError(HTTPStatus.CONFLICT, "The S3 connection is not set up (Settings > S3 connection).", "no_s3")
+        secret = self._s3_secret_path().read_text(encoding="utf-8").strip()
+        s3 = _mod("s3")
+        return s3.Client(s3.Config(c["endpoint"], target.bucket, c["access_key"], secret, c["region"], target.prefix))
+
+    def s3_test(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/settings/s3/test {location}``: the connection test (list, put a small object with metadata, read it, delete
+        it) in the bucket of an ``s3://`` archive location."""
+        try:
+            target = _mod("s3archive").parse(_str_arg(body.get("location")))
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc), "bad_archive") from None
+        if target is None:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Set the archive to s3://<bucket>/<folder> to test it.", "bad_archive")
+        s3 = _mod("s3")
+        try:
+            out = s3.probe(self._s3_client(target))
+        except s3.S3Error as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"The service refused: {exc}", "s3_error") from None
+        out["ok"] = all(out[k] for k in ("etag_is_md5", "metadata_back", "read_back", "range_read", "deleted"))
+        out["location"] = target.url
+        return out
+
+    def _archive_base(self, raw: str, root: Path) -> Path | None:
+        """The folder planning uses for an archive location (a folder, or the stand-in of an ``s3://`` one, whose inventory then
+        keeps the plan's names free); None when there is none or a folder lies in the system's folder."""
+        if not raw:
+            return None
+        s3archive = _mod("s3archive")
+        target = s3archive.parse(raw)
+        if target is None:
+            aside = Path(os.path.abspath(os.path.expanduser(raw)))
+            return None if _mod("sortroot").check_folders(root, aside) else aside
+        base = s3archive.stand_in(_mod("paths").data_dir(), target)
+        self._s3_inventory(base, target)
+        return base
+
+    def _s3_inventory(self, base: Path, target: Any = None) -> Any:
+        """The inventory of the S3 archive a path lies in (its stand-in folder or below; made by :meth:`_archive_base`, which gives
+        the ``target``; None for any other path). One without a connection answers "nothing there" and says so in ``error``."""
+        known = self._stand_in_of(base)
+        if known is not None:
+            return self._s3_inv[os.path.normcase(str(known))]
+        if target is None:
+            return None
+        key = os.path.normcase(str(base))
+        inv = self._s3_inv.get(key)
+        if inv is None:
+            s3archive = _mod("s3archive")
+            try:
+                client = self._s3_client(target)
+            except ApiError as exc:
+                client = None
+                err = exc.message
+            if client is None:
+                inv = s3archive.Inventory(None, target, base)            # (lists nothing)
+                inv.error = err
+            else:
+                inv = s3archive.Inventory(client, target, base,
+                                          meta_file=_mod("paths").data_dir() / "s3-meta" / f"{target.bucket}.json")
+            self._s3_inv[key] = inv
+            _mod("sortroot").register_virtual(base, inv.exists)
+        return inv
+
+    def _archive_where(self, base: Path | None) -> str:
+        """How an archive base is shown: its path, or ``s3://bucket/prefix/...``."""
+        if base is None:
+            return ""
+        return _mod("s3archive").display(base, _mod("paths").data_dir()) or str(base)
+
+    def _archive_moves(self, moves: list[Any], keep: list[Path], root: Path | None = None, progress: Any = None,
+                       cancel: Any = None) -> dict[str, Any]:
+        """Do moves into the archive: on a disk with ``sortroot``, into an S3 archive as uploads (checked, then the local file
+        deleted)."""
+        sortroot = _mod("sortroot")
+        if not moves:
+            return {"moved": 0, "failed": [], "cancelled": False}
+        inv = None
+        for m in moves:
+            inv = self._s3_inventory(Path(m.dst))
+            if inv is not None:
+                break
+        if inv is None:
+            return sortroot.apply_moves(moves, keep=keep, progress=progress, cancel=cancel)
+        if inv.client is None:
+            return {"moved": 0, "failed": [{"path": str(m.src), "error": inv.error} for m in moves][:20], "cancelled": False}
+        res = _mod("s3archive").upload_moves(inv.client, inv, moves, keep=keep, root=root, progress=progress, cancel=cancel)
+        inv.save_meta()
+        return res
+
+    def _archived_same(self, src: Path, target: Path) -> bool:
+        """The archive holds ``src``'s very content at ``target`` already (in a folder: the same bytes; in a bucket: the same size
+        and MD5)."""
+        try:
+            size = os.path.getsize(src)
+        except OSError:
+            return False
+        inv = self._s3_inventory(target)
+        if inv is None:
+            try:
+                return os.path.isfile(target) and os.path.getsize(target) == size and filecmp.cmp(src, target, shallow=False)
+            except OSError:
+                return False
+        key = inv.key(target)
+        info = inv.get(key) if key else None
+        if info is None or info.size != size:
+            return False
+        want = info.md5 or inv.metadata(key).get("md5", "")
+        return bool(want) and want == _file_md5(src)
+
+    def _stand_in_of(self, path: Path) -> Path | None:
+        """The stand-in folder (``<data>/s3-archive/<bucket>/<prefix>``) a path lies below, among those in use."""
+        p = os.path.normcase(str(path))
+        for key, inv in self._s3_inv.items():
+            if p == key or p.startswith(key.rstrip(os.sep) + os.sep):
+                return inv.base
+        return None
+
+    # ---- using the archive: what it holds, which missing games it has, restoring
+    def _archive_side(self, state: ScanState) -> tuple[Path, Any, list[tuple[str, int]]]:
+        """``(the system's part of the archive, its S3 inventory or None, [(path below it, size)])``; ApiError when there is none."""
+        aside = self._archive_of(state.platform, state.root)
+        if aside is None:
+            raise ApiError(HTTPStatus.CONFLICT, "No archive is set for this system.", "no_archive")
+        base = aside / state.root.name
+        inv = self._s3_inventory(aside)
+        if inv is not None:
+            if inv.client is None:
+                raise ApiError(HTTPStatus.CONFLICT, inv.error, "no_s3")
+            return base, inv, [("/".join(parts), size) for parts, size in inv.files(state.root.name)]
+        out: list[tuple[str, int]] = []
+        if base.is_dir():
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for f in filenames:
+                    if not f.startswith("."):
+                        p = Path(dirpath) / f
+                        out.append((p.relative_to(base).as_posix(), _file_size(p)))
+        return base, None, sorted(out)
+
+    def _archive_ids(self, state: ScanState, fetch: bool = False) -> dict[str, str]:
+        """{game name (and No-Intro set name): its path in the archive (a disc game's folder, a file)} for the games the archive
+        holds. A folder is scanned like the ROM folder (the same matching, its hashes cached). An S3 archive is matched by what each
+        object's metadata says: the rom or game the build identified it as, its SHA-1, a zip's / 7z's members (read with a HEAD
+        only when ``fetch``)."""
+        try:
+            base, inv, files = self._archive_side(state)
+        except ApiError:
+            return {}
+        if inv is None:
+            return self._local_archive_ids(state, base, fetch)
+        ident = (str(base), inv.version, fetch)
+        memo = state.items.get(("archive", "ids"))
+        if memo is not None and memo[0] == ident:
+            return memo[1]
+        dats, _missing = self._platform_dats(state.platform)
+        by_sha: dict[str, set[str]] = {}
+        by_crc: dict[tuple[str, int], set[str]] = {}
+        by_name: dict[str, set[str]] = {}
+        for dat in dats:
+            for r in dat.roms:
+                names = {r.game} | ({r.set_name} if r.set_name else set())
+                by_name.setdefault(r.name, set()).update(names)
+                if r.sha1:
+                    by_sha.setdefault(r.sha1, set()).update(names)
+                if r.crc:
+                    by_crc.setdefault((r.crc, r.size), set()).update(names)
+        meta_value = _mod("s3").meta_value
+        found: dict[str, str] = {}
+        heads = 0
+        for rel, _size in files:
+            if rel.split("/", 1)[0] == SAVES_DIR:
+                continue
+            key = inv.key(base / rel)
+            ask = fetch and heads < ARCHIVE_HEADS and key is not None and not inv.has_meta(key)
+            heads += ask                                       # (objects another tool put there: a HEAD each, a few hundred a scan)
+            meta = inv.metadata(key, fetch=ask) if key else {}
+            names: set[str] = set()
+            rom = meta_value(meta.get("rom", "")) if meta.get("rom") else ""
+            if rom:
+                names |= by_name.get(rom, set()) | {rom}
+            if meta.get("sha1"):
+                names |= by_sha.get(meta["sha1"], set())
+            for part in (meta.get("roms", "").split(";") if meta.get("roms") else ()):
+                crc, _, n = part.partition(":")
+                if n.isdigit():
+                    names |= by_crc.get((crc.lower(), int(n)), set())
+            if names and self._is_dc(state):                   # (a disc game's files sit in a folder of their own: it is restored whole)
+                parts = rel.split("/")
+                if len(parts) > 2:
+                    rel = "/".join(parts[:-1])
+            for name in names:
+                found.setdefault(name, rel)
+        inv.save_meta()
+        state.items[("archive", "ids")] = (ident, found)
+        return found
+
+    def _local_archive_ids(self, state: ScanState, base: Path, fetch: bool = False) -> dict[str, str]:
+        """:meth:`_archive_ids` of an archive folder: its system folder scanned with the system's DATs. Scanned only by a job that
+        asks (``fetch``: a scan of the system; the archive can be big); otherwise what the last one found."""
+        memo = self._archive_scans.get(os.path.normcase(str(base)))
+        if not fetch or not base.is_dir():
+            return memo[1] if memo is not None else {}
+        stamp = _mod("scancache").folder_stamp(base)
+        if memo is not None and memo[0] == stamp:
+            return memo[1]
+        dats, _missing = self._platform_dats(state.platform)
+        platform = state.platform
+        found: dict[str, str] = {}
+        try:
+            if self._is_dc(state):
+                cfg = self._config()
+                result = _mod("discsys").scan(base, dats, chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
+                                              workers=_mod("chdsched").default_workers(cfg.get("chd_workers")))
+                for m in result.matched:
+                    unit = getattr(m, "unit", None)
+                    if unit is None or unit.game is None:
+                        continue
+                    top = Path(unit.top)
+                    found.setdefault(unit.game.name, top.relative_to(base).as_posix() if top != base else "")
+            else:
+                result = _call(_mod("scanner").scan, base, dats, recursive=True,
+                               alt_hashes=tuple(getattr(platform, "alt_hashes", ()) or ()), layout=_layout(platform),
+                               containers=tuple(getattr(platform, "containers", ()) or ()))
+                for m in result.matched:
+                    path = m.entry.path if Path(m.entry.path).is_absolute() else base / m.entry.path
+                    rel = Path(path).relative_to(base).as_posix()
+                    for r in m.primary:
+                        for name in {r.game} | ({r.set_name} if r.set_name else set()):
+                            found.setdefault(name, rel)
+        except Exception:  # noqa: BLE001 - the archive is a courtesy: nothing found then
+            traceback.print_exc()
+        self._archive_scans[os.path.normcase(str(base))] = (stamp, found)
+        return found
+
+    def archive_restore(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/archive/restore {platform, paths?: [path in the archive tree (a folder: all below it)], missing?: true}``:
+        copy files back from the archive (it keeps them): a file whose game is recognised goes where a build puts a kept game, under
+        its database name; one that is not goes back to the path it came from. ``missing``: every game the rules want that the
+        ROM folder lacks and the archive holds. Saves are not restored (yet)."""
+        platform = self._resolve_platform(body.get("platform"))
+        state = self._state_of(platform)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, "Scan this system first.", "no_scan")
+        base, inv, files = self._archive_side(state)
+        sizes = dict(files)
+        raw = body.get("paths")
+        asked = [p.strip("/") for p in (raw if isinstance(raw, list) else []) if isinstance(p, str) and p.strip("/")]
+        if _bool_arg(body.get("missing")):
+            entries, _base, _ident = self._tree_entries(state)
+            asked += [e["row"]["in_archive"] for e in entries if e["state"] == "missing" and not e.get("saves_only")
+                      and (e["row"] or {}).get("in_archive")]
+        wanted: list[str] = []
+        for p in asked:                                   # (a folder: every file in it - a disc game's folder, a reason folder)
+            wanted += [rel for rel, _s in files if rel == p or rel.startswith(p + "/")]
+        rels = list(dict.fromkeys(wanted))
+        if not rels:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to restore: choose files in the archive.", "nothing")
+        root = state.root
+
+        def work(job: Job) -> Any:
+            organiser, sortroot = _mod("organiser"), _mod("sortroot")
+            names = sortroot.Names()
+            restored: list[Path] = []
+            failed: list[dict[str, str]] = []
+            saves = 0
+            total = sum(sizes.get(r, 0) for r in rels) or len(rels)
+            done = 0
+            for i, rel in enumerate(rels):
+                if job.cancel.is_set():
+                    break
+                parts = rel.split("/")
+                meta = inv.metadata(inv.key(base / rel)) if inv is not None else {}
+                origin = meta.get("from", "")
+                if parts[0] == SAVES_DIR and not origin:
+                    saves += 1
+                    continue
+                if not origin:
+                    origin = "/".join(parts[1:] if parts[0] in RESERVED_DIRS and len(parts) > 1 else parts)
+                dest = root.joinpath(*[x for x in origin.replace("\\", "/").split("/") if x not in ("", ".", "..") and ":" not in x])
+                if root.resolve() not in dest.resolve().parents:           # (only ever inside the ROM folder)
+                    dest = root.joinpath(*parts)
+                dest = names.free(dest)
+                job.report(done, total, f"Restoring {parts[-1]}")
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if inv is not None:
+                        _mod("s3archive").restore(inv.client, inv, inv.key(base / rel), dest)
+                    else:
+                        _copy_checked(base / rel, dest)
+                    restored.append(dest)
+                except (OSError, ValueError, _mod("s3").S3Error) as exc:
+                    failed.append({"path": rel, "error": str(exc)})
+                done += sizes.get(rel, 0) or 1
+            res: dict[str, Any] = {"action": "restore", "restored": len(restored), "placed": 0, "skipped_saves": saves,
+                                   "failed": failed}
+            if restored:                                          # where a recognised game goes: the plan without the rules
+                job.report(0, 0, "Re-scanning folder...")
+                self._run_scan(job, root, platform, cancellable=False)
+                st = self._require_scan()
+                mine = {os.path.normcase(str(p)) for p in restored}
+                cfg = self._config()
+                if self._convert_on_build(st.platform, cfg) or self._compress_7z(st.platform, cfg):
+                    # (as a build would: a raw disc becomes a CHD, a game a .7z, a dump is cleaned up - the library's own settings)
+                    latest = self._latest_arg(st, {})
+                    todo = [op for op in self._convert_plan(st, latest) if op.status == "convert" and _op_sources(op) & mine]
+                    if todo:
+                        conv = self._apply_conversions(job, st, latest, only=mine)
+                        res["converted"] = conv.get("converted", 0) if not isinstance(conv.get("converted"), list) else len(conv["converted"])
+                        res["failed"] += [{"path": f.get("src", ""), "error": f.get("error", "")} for f in conv.get("failed") or []]
+                        mine |= {os.path.normcase(str(op.dst)) for op in todo}
+                        self._run_scan(job, root, platform, cancellable=False)
+                        st = self._require_scan()
+                def reserved(p: Path) -> bool:
+                    try:
+                        top = p.relative_to(root).parts[:1]
+                    except ValueError:
+                        return True
+                    return bool(top) and top[0] in RESERVED_DIRS
+                known = [op for op in _mod("discsys").file_ops(self._rename_plan(st))     # (recognised: a place of its own in the library)
+                         if os.path.normcase(str(op.src)) in mine and op.status in ("move", "ok") and not reserved(op.dst)]
+                moves = [op for op in known if op.status == "move"]
+                bad: set[str] = set()
+                if moves:
+                    out = organiser.apply_renames(moves, root, keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ()))
+                    res["failed"] += [{"path": str(f.get("src", "")), "error": f.get("error", "")} for f in out["failed"]]
+                    bad = {os.path.normcase(str(f.get("src", ""))) for f in out["failed"]}
+                placed = {os.path.normcase(str(op.src)) for op in known} - bad
+                here = {p for p in mine if os.path.lexists(p)} | placed
+                res["placed"] = len(placed)
+                res["at_original"] = len(here - placed)
+            else:
+                res["at_original"] = 0
+            return self._rescan_into(job, state, res) if restored else res
+
+        return {"job": self.jobs.start("restore", work, platform=platform.name).to_dict()}
+
     def archive_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/settings/archive {dir, platform?}``: the archive folder for every system, or (with ``platform``) for that
         system alone. An empty ``dir`` goes back to the default (for a system: to the global setting)."""
-        raw = _str_arg(body.get("dir"))
-        if raw:
+        raw = _str_arg(body.get("dir")).strip()
+        try:
+            target = _mod("s3archive").parse(raw)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc), "bad_archive") from None
+        if target is not None:
+            raw = target.url
+        elif raw:
             folder = Path(os.path.abspath(os.path.expanduser(raw)))
             if folder.is_file():
                 raise ApiError(HTTPStatus.BAD_REQUEST, "That is a file, not a folder.", "bad_archive")
@@ -5143,11 +5459,10 @@ class App:
         """The archive folder a build of this system would use (its own, else the one for every system), or None: none is set,
         or it lies in the system's folder."""
         a = self._archive_settings(self._config())
-        raw = a["overrides"].get(platform.name) or a["dir"]
-        if not raw:
+        try:
+            return self._archive_base(a["overrides"].get(platform.name) or a["dir"], root)
+        except ValueError:
             return None
-        aside = Path(os.path.abspath(os.path.expanduser(raw)))
-        return None if _mod("sortroot").check_folders(root, aside) else aside
 
     def _tree_entries(self, state: ScanState) -> tuple[list[dict[str, Any]], Path | None, str]:
         """Every file of the system's ROM folder and of its part of the archive as a build with the current rules would leave them,
@@ -5158,7 +5473,9 @@ class App:
         key = (False, _layout(state.platform) != LAYOUT_GAME_FOLDER)
         aside = self._archive_of(state.platform, state.root)
         wanted = self._target_names(state.platform)
-        ident = f"{self._plan_id(state, key)}|{aside}|{wanted is not None}"
+        inv = self._s3_inventory(aside) if aside is not None else None
+        held = inv.files(state.root.name) if inv is not None else None          # (an S3 archive: its listing, read once)
+        ident = f"{self._plan_id(state, key)}|{aside}|{wanted is not None}|{inv.version if inv is not None else ''}"
         cached = state.items.get(("library", "tree"))
         if cached is not None and cached[0] == ident:
             return cached[1], cached[2], ident
@@ -5170,7 +5487,7 @@ class App:
         base = None
         if aside is not None:
             base = aside / state.root.name
-            _keep, arch = self._archive_pass(state.root, plan, aside)
+            _keep, arch = self._archive_pass(state.root, plan, aside, self._archived_same)
             planned = {os.path.normcase(str(s)) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
                        for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])}
             # (what earlier builds set aside goes to the archive, except a file the plan takes back into the library: a game the rules keep now)
@@ -5181,7 +5498,7 @@ class App:
             except Exception:  # noqa: BLE001 - the saves are a courtesy
                 traceback.print_exc()
         entries: list[dict[str, Any]] = []
-        for e in treeview.collect(state.root, plan, base, moves, plan.playlists):
+        for e in treeview.collect(state.root, plan, base, moves, plan.playlists, archive_files=held):
             row = rows[e.op][0] if 0 <= e.op < len(plan.ops) else None
             entries.append({"side": e.side, "parts": e.parts, "size": e.size, "state": e.state, "from": e.origin, "row": row,
                             "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
@@ -5201,6 +5518,12 @@ class App:
                                 "row": {**item, "item": "game", "category": "missing", "game_ref": {"dat": item.get("dat", ""), "game": item["name"], "release": item.get("release", "")},
                                         "cs_kind": "games", "cs_id": item.get("id")},
                                 "text": (item["name"] + " " + (item.get("title") or "")).casefold()})
+        held_ids = self._archive_ids(state) if aside is not None else {}
+        for e in entries:                                        # a game you lack that the archive holds: it can be restored from there
+            if e["state"] == treeview.MISSING and e["row"]:
+                e["row"].pop("in_archive", None)
+                if held_ids.get(e["row"].get("name", "")):
+                    e["row"]["in_archive"] = held_ids[e["row"]["name"]]
         report = self._saves_report(state) if self._saves_available(state.platform.name) else None
         if report is not None:                                   # the saves of games you have no file for are listed too
             try:
@@ -5612,7 +5935,7 @@ class App:
         if ckey not in cache:
             if len(cache) > 12:
                 cache.clear()
-            root = str(state.root) if side == treeview.LIBRARY else (str(base) if base is not None else "")
+            root = str(state.root) if side == treeview.LIBRARY else self._archive_where(base)
             idx = treeview.Index(root)
             for n, e in enumerate(entries):
                 if e["side"] == side and self._tree_pass(e, f):
@@ -5707,7 +6030,7 @@ class App:
                 continue
             root = Path(os.path.abspath(os.path.expanduser(folder)))
             aside = self._archive_of(p, root)
-            out.append({"platform": p.name, "folder": str(root), "archive": str(aside / root.name) if aside is not None else "",
+            out.append({"platform": p.name, "folder": str(root), "archive": self._archive_where(aside / root.name) if aside is not None else "",
                         "scanned": p.name in held or p.name in records})
         return {"systems": out, "archive_dir": self._archive_settings(cfg)["dir"]}
 
@@ -5769,7 +6092,12 @@ class App:
             out["facets"] = self._tree_facets(entries, side, f, platform)
             out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] not in ("missing", "saveonly") and self._tree_pass(e, f))
                             for s in ("library", "archive")}
-            out["archive_root"] = str(base) if base is not None else ""
+            out["archive_root"] = self._archive_where(base)
+            out["archive_restorable"] = sum(1 for e in entries if e["state"] == "missing" and not e.get("saves_only")
+                                            and (e["row"] or {}).get("in_archive"))
+            inv = self._s3_inventory(base) if base is not None else None
+            if inv is not None:                                           # an S3 archive: the tree says so (and what went wrong reading it)
+                out["archive_s3"] = {"url": self._archive_where(base), "error": inv.error}
         return out
 
     @staticmethod
@@ -5846,36 +6174,9 @@ class App:
                     traceback.print_exc()
         return out
 
-    def library_export_runs(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``GET /api/library/export/runs?dest=``: the builds recorded in a destination folder."""
-        dest = _str_arg(query.get("dest"))
-        if not dest:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "dest is required")
-        return {"dest": dest, "runs": _mod("libexport").list_runs(Path(dest))}
-
-    def library_export_undo(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /api/library/export/undo``: ``{dest, run?}`` removes what a build put in the destination."""
-        dest = _str_arg(body.get("dest"))
-        if not dest:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "dest is required")
-        libexport = _mod("libexport")
-        run = body.get("run")
-        try:
-            with self.jobs.exclusive("the undo of a library build"):
-                res = libexport.undo_run(Path(dest), int(run) if run not in (None, "") else None)
-                follow = _str_arg(body.get("follow"))          # the saves that build copied (its result names the journal)
-                if follow and Path(follow).is_file() and self._ra_active() is not None:
-                    try:
-                        _mod("retroarch").undo_relocation(Path(follow))
-                    except Exception:  # noqa: BLE001 - e.g. RetroArch is running: the copied saves stay, harmless
-                        traceback.print_exc()
-                return res
-        except libexport.ExportError as exc:
-            raise ApiError(HTTPStatus.CONFLICT, str(exc), "nothing_to_undo")
-
     def _run_conversions(self, job: Job, ops: list[Any], root: Path, platform: Any, index: Any,
                          report: Callable[..., None] | None = None) -> dict[str, Any]:
-        """Do the ``convert`` ops (raw disc sets to CHD, or SNES / N64 dumps cleaned up); ``root`` holds the undo log."""
+        """Do the ``convert`` ops (raw disc sets to CHD, or SNES / N64 dumps cleaned up); ``root`` is the system's folder."""
         rep = report or job.report
         rep(0, sum(1 for op in ops if op.status == "convert"), "Converting files...")
         if _layout(platform) == LAYOUT_GAME_FOLDER:
@@ -5903,8 +6204,7 @@ class App:
 
     @staticmethod
     def _merge_conversions(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-        """One result of two conversion runs (cleaned-up dumps, then discs to CHD): counts added, both undo logs kept (the second is
-        the one Undo takes; the first is listed with the others)."""
+        """One result of two conversion runs (cleaned-up dumps, then discs to CHD): counts added, lists joined."""
         out = dict(first)
         for k, v in second.items():
             if isinstance(v, bool):
@@ -5917,10 +6217,13 @@ class App:
                 out[k] = v
         return out
 
-    def _apply_conversions(self, job: Job, state: ScanState, latest_only: bool, report: Callable[..., None] | None = None) -> dict[str, Any]:
-        """Do the conversions of the state's plan (raw disc sets to CHD, or SNES / N64 dumps cleaned up); returns the result
-        (with ``undo_log``). The caller re-scans."""
+    def _apply_conversions(self, job: Job, state: ScanState, latest_only: bool, report: Callable[..., None] | None = None,
+                           only: set[str] | None = None) -> dict[str, Any]:
+        """Do the conversions of the state's plan (raw disc sets to CHD, or SNES / N64 dumps cleaned up); returns the result.
+        The caller re-scans."""
         ops = self._convert_plan(state, latest_only)
+        if only is not None:                             # (a restore: only the files it brought back)
+            ops = [op for op in ops if _op_sources(op) & only]
         delete = self._delete_converted(state.platform)
         for op in ops:                                   # (the rule "Delete the originals after converting" at the time of the build)
             if hasattr(op, "delete_originals"):
@@ -6116,8 +6419,8 @@ class App:
     def stop_jobs(self, timeout: float = STOP_TIMEOUT) -> bool:
         """Ask a running job to stop at its next safe point and wait for it.
 
-        Used on exit (SIGTERM, Ctrl+C, Quit). Organise / undo stop between two
-        moves (everything done so far is in the undo log). True if no job is left running.
+        Used on exit (SIGTERM, Ctrl+C, Quit). Organise stops between two
+        moves (each move is complete, so nothing is half done). True if no job is left running.
         """
         self.closing.set()
         try:
@@ -6162,15 +6465,12 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/library/plan"): App.library_plan,
     ("POST", "/api/library/vanished"): App.library_vanished,
     ("POST", "/api/library/apply"): App.library_apply,
-    ("POST", "/api/library/undo"): App.library_undo,
-    ("GET", "/api/library/export/runs"): App.library_export_runs,
     ("GET", "/api/emulators"): App.emulators_get,
     ("POST", "/api/emulators/config"): App.emulators_config,
     ("GET", "/api/retroarch"): App.retroarch_get,
     ("POST", "/api/retroarch/select"): App.retroarch_select,
     ("POST", "/api/retroarch/plan"): App.retroarch_plan,
     ("POST", "/api/retroarch/apply"): App.retroarch_apply,
-    ("POST", "/api/retroarch/undo"): App.retroarch_undo,
     ("POST", "/api/retroarch/follow"): App.retroarch_follow,
     ("POST", "/api/retroarch/shared"): App.retroarch_shared,
     ("POST", "/api/retroarch/assets"): App.retroarch_assets,
@@ -6183,21 +6483,22 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/switch"): App.switch_get,
     ("POST", "/api/switch/config"): App.switch_config,
     ("POST", "/api/settings/archive"): App.archive_save,
+    ("GET", "/api/settings/s3"): App.s3_settings_get,
+    ("POST", "/api/settings/s3"): App.s3_settings_save,
+    ("POST", "/api/settings/s3/test"): App.s3_test,
+    ("POST", "/api/archive/restore"): App.archive_restore,
     ("GET", "/api/settings/tiles"): App.tiles_get,
     ("POST", "/api/settings/tiles"): App.tiles_save,
     ("GET", "/api/library/insights"): App.library_insights,
     ("GET", "/api/tree/systems"): App.tree_systems,
     ("GET", "/api/tree"): App.tree_get,
     ("POST", "/api/library/export/settings"): App.library_export_settings,
-    ("POST", "/api/library/export/undo"): App.library_export_undo,
     ("POST", "/api/folders"): App.folders_save,
     ("POST", "/api/platforms/options"): App.platform_options,
     ("GET", "/api/fs/list"): App.fs_list,
     ("POST", "/api/scan"): App.scan_start,
     ("GET", "/api/scan/results"): App.scan_results,
     ("GET", "/api/scan/checksums"): App.scan_checksums,
-    ("GET", "/api/organise/undo-logs"): App.undo_logs,
-    ("POST", "/api/organise/undo"): App.organise_undo,
     ("POST", "/api/convert/plan"): App.convert_plan,
     ("POST", "/api/convert/apply"): App.convert_apply,
     ("POST", "/api/m3u/plan"): App.m3u_plan,
@@ -6544,7 +6845,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nShutting down.", flush=True)
     finally:
         try:
-            # A job (e.g. organise) stops at its next safe point; its undo log is complete.
+            # A job (e.g. organise) stops at its next safe point.
             if not server.app.stop_jobs(STOP_TIMEOUT):
                 print("A job is still running; exiting anyway.", file=sys.stderr)
         except KeyboardInterrupt:  # second Ctrl+C / SIGTERM: exit now

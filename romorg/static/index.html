@@ -137,15 +137,33 @@
       </div>
       <div class="panel">
         <h2>Archive folder</h2>
-        <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it.</p>
+        <p class="muted small">Where the Library builds put what the rules leave out (excluded, superseded, incomplete, duplicate and unmatched files), and the files that are not ROMs. Each system gets a folder of its own inside it. A folder, or an S3 bucket written <code>s3://bucket/folder</code> (set up the connection below): each file is uploaded, checked, and then deleted here.</p>
         <div class="row">
-          <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
+          <input type="text" id="set-archive-dir" class="input grow mono" placeholder="Archive folder or s3://bucket/folder (empty: nothing is archived)" spellcheck="false" autocomplete="off" aria-label="Archive folder for every system">
           <button class="btn" id="set-archive-browse">Folders...</button>
         </div>
         <div class="muted small" id="set-archive-default"></div>
         <div class="hidden" id="set-archive-own-box">
           <h3>Systems with their own archive folder</h3>
           <ul class="archive-list" id="set-archive-own"></ul>
+        </div>
+      </div>
+      <div class="panel" id="set-s3-panel">
+        <h2>S3 connection</h2>
+        <p class="muted small">For an archive in an S3 bucket (MEGA S4 or any S3-compatible service). The secret key is kept in a file of its own in the app's data folder that only you can read, and is never shown again.</p>
+        <div class="row">
+          <input type="text" id="s3-endpoint" class="input grow mono" placeholder="Endpoint (e.g. s3.g.megas4.com)" spellcheck="false" autocomplete="off" aria-label="S3 endpoint">
+          <input type="text" id="s3-region" class="input mono" placeholder="Region (optional)" spellcheck="false" autocomplete="off" aria-label="S3 region">
+        </div>
+        <div class="row">
+          <input type="text" id="s3-access" class="input grow mono" placeholder="Access key ID" spellcheck="false" autocomplete="off" aria-label="S3 access key ID">
+          <input type="password" id="s3-secret" class="input grow mono" placeholder="Secret key" spellcheck="false" autocomplete="new-password" aria-label="S3 secret key">
+        </div>
+        <div class="row">
+          <button class="btn btn-primary" id="s3-save">Save</button>
+          <button class="btn" id="s3-test">Test connection</button>
+          <button class="btn btn-ghost" id="s3-forget">Forget the connection</button>
+          <span class="muted small grow" id="s3-status" role="status"></span>
         </div>
       </div>
       <div class="panel" id="set-library-panel">
@@ -203,7 +221,7 @@
       </div>
       <div class="panel">
         <h2>How each system's saves behave</h2>
-        <p class="muted small">Where a save lives and how it is named decides what a build can do with it. Copies are journalled (Undo removes them), the existing save is never changed, and nothing is copied over a save the new version already has. Save states are never touched.</p>
+        <p class="muted small">Where a save lives and how it is named decides what a build can do with it. The existing save is never changed, and nothing is copied over a save the new version already has. Save states are never touched.</p>
         <p class="small" id="saves-now"></p>
         <div class="table-wrap"><table class="saves-table" id="saves-table"></table></div>
         <p class="muted small">Which emulators are looked at, and where their saves are, is on the <a href="#/retroarch">Emulators page</a>.</p>
@@ -319,7 +337,6 @@
               <div class="row">
                 <button class="btn" id="ra-plan-btn" data-needs-idle>Preview</button>
                 <button class="btn btn-primary" id="ra-apply-btn" data-needs-idle>Move saves and update RetroArch</button>
-                <button class="btn" id="ra-undo-btn" data-needs-idle>Undo last change</button>
                 <div class="grow"></div>
               </div>
               <div id="ra-failures" class="notice hidden"></div>
@@ -336,7 +353,7 @@
           <details class="emu-fold" id="ra-assets-panel">
             <summary>Asset folders <span class="muted small" id="ra-assets-sum"></span></summary>
             <div class="emu-fold-body">
-              <p class="muted small">Where RetroArch keeps these. Change one to point RetroArch at another folder: only the setting in retroarch.cfg changes, no file is moved, and Undo puts the old setting back.</p>
+              <p class="muted small">Where RetroArch keeps these. Change one to point RetroArch at another folder: only the setting in retroarch.cfg changes, no file is moved, and the old retroarch.cfg is kept as a backup.</p>
               <div class="table-wrap"><table>
                 <thead><tr><th>What</th><th>RetroArch uses now</th><th></th></tr></thead>
                 <tbody id="ra-assets-table"></tbody>
@@ -381,7 +398,6 @@
         <div class="rulesbar" id="rules-bar">
           <div class="rules-sum" id="totals-rules-line"></div>
           <span class="live" id="lib-live" role="status" aria-live="polite"></span>
-          <button class="btn" id="lib-undo-btn" disabled>Undo last</button>
           <button class="btn btn-primary" id="lib-apply-btn" disabled>Build library</button>
           <button class="btn hidden" id="lib-plan-btn" disabled>Preview library</button>
         </div>
@@ -416,7 +432,14 @@
             <div class="tabs files-sides" role="tablist" id="files-sides" aria-label="Which folder"></div>
             <div class="muted small mono-path" id="files-where"></div>
             <div class="muted small" id="files-totals" role="status" aria-live="polite"></div>
+            <div class="row hidden" id="files-actions"></div>
             <div class="tree" id="files-tree" role="tree" aria-label="Files"></div>
+            <div class="restore-bar hidden" id="files-restore-bar" role="region" aria-label="Restore from the archive">
+              <span id="files-restore-count"></span>
+              <span class="grow"></span>
+              <button class="btn btn-ghost" type="button" id="files-restore-clear">Clear</button>
+              <button class="btn btn-primary" type="button" id="files-restore-btn">Restore</button>
+            </div>
           </div>
         </div>
 

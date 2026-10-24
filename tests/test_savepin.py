@@ -72,7 +72,7 @@ class Pinning(unittest.TestCase):
 
 
 class Archive(unittest.TestCase):
-    def test_a_save_of_several_games_is_moved_under_the_first_and_copied_under_the_others_and_undo_takes_both_back(self) -> None:
+    def test_a_save_of_several_games_is_moved_under_the_first_and_copied_under_the_others(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, aside = Path(tmp) / "gc", Path(tmp) / "archive"
             root.mkdir()
@@ -83,15 +83,11 @@ class Archive(unittest.TestCase):
             plan = SimpleNamespace(ops=[op])
             keep, arch = server.App._archive_pass(root, plan, aside)
             self.assertEqual(keep, [])
-            res = sortroot.apply_moves(arch, Path(tmp) / "j", "libsweep", keep=[root, aside])
+            res = sortroot.apply_moves(arch, keep=[root, aside])
             self.assertEqual((res["moved"], res["failed"]), (2, []))
             self.assertEqual(tree(aside), ["gc/", "gc/_saves/", "gc/_saves/Kart/", "gc/_saves/Kart/MemoryCardA.raw", "gc/_saves/Smash/",
                                            "gc/_saves/Smash/MemoryCardA.raw"])
             self.assertFalse(card.exists())                                                   # the original left the ROM folder
-            back = sortroot.undo_moves(Path(res["journal"]), keep=[root, aside])
-            self.assertEqual((back["restored"], back["skipped"]), (2, []))
-            self.assertEqual(card.read_bytes(), b"card")
-            self.assertEqual(tree(aside), [])                                                  # and the copy is gone
 
 
 class Flat(ServerCase):
@@ -166,9 +162,9 @@ class Trees(ServerCase):
 
 
 class SeveralGames:
-    """A card that holds the saves of two games is under both after a build, and an undo takes all of it back."""
+    """A card that holds the saves of two games is under both after a build."""
 
-    def build_and_undo(self, aside: bool) -> None:
+    def build(self, aside: bool) -> None:
         root = self.tmp / "gba-roms"
         root.mkdir()
         (root / "Run (USA).gba").write_bytes(self.rom["Run (USA)"])
@@ -176,7 +172,6 @@ class SeveralGames:
         (root / "card.bin").write_bytes(card)
         self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
         self.wait()
-        before = (tree(root), tree(self.tmp / "rom-archive"))
         extra = {"aside_to": str(self.tmp / "rom-archive")} if aside else {}
         plan = self.call("POST", "/api/library/plan", {"platform": GBA, "limit": 50, **extra})
         row = [r for r in plan["items"] if r["from"] == "card.bin"][0]
@@ -188,22 +183,18 @@ class SeveralGames:
         self.assertEqual((base / "_saves" / "Run" / "card.bin").read_bytes(), card)
         self.assertEqual((base / "_saves" / "Bash" / "card.bin").read_bytes(), card)                 # ... and a copy under the other
         self.assertFalse((root / "card.bin").exists())
-        logs = self.call("GET", f"/api/organise/undo-logs?path={root}")["logs"]
-        self.call("POST", "/api/organise/undo", {"log": logs[0]["log"]})
-        self.assertEqual(self.wait()["status"], "done")
-        self.assertEqual((tree(root), tree(self.tmp / "rom-archive")), before)                      # the card is back, both copies are gone
 
 
 class SeveralGamesIntoTheArchive(SeveralGames, ServerCase):
-    def test_moved_under_one_copied_under_the_other_and_undone(self) -> None:
-        self.build_and_undo(aside=True)
+    def test_moved_under_one_copied_under_the_other(self) -> None:
+        self.build(aside=True)
 
 
 class SeveralGamesInTheFolder(SeveralGames, ServerCase):
     ARCHIVE = False
 
-    def test_moved_under_one_copied_under_the_other_and_undone(self) -> None:
-        self.build_and_undo(aside=False)
+    def test_moved_under_one_copied_under_the_other(self) -> None:
+        self.build(aside=False)
 
 
 class TreesWithoutAnArchive(ServerCase):
