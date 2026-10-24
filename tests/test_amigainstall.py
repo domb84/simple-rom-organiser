@@ -636,6 +636,13 @@ class PreferWhdloadVersions(unittest.TestCase):
         self.assertFalse(whdready.leaves_manual("Zool2.lha"))               # ("Manual protection removed")
         self.assertFalse(whdready.leaves_manual(None))
 
+    def test_the_shipped_list_names_installs_that_need_a_newer_whdload_than_puae_s(self) -> None:
+        self.assertEqual(whdready.needs_whdload("EmeraldMine.lha"), 20)      # (its slave: WHDLoad 20; PUAE has 19.1)
+        self.assertEqual(whdready.needs_whdload("Zool2.lha"), 0)
+        self.assertEqual(whdready.needs_whdload(None), 0)
+        key = "Zeewolf v1.02 (1994)(Empire)[cr PDX].adf"
+        self.assertEqual(whdready.known()[key], [whdready.BOOTS, "Zeewolf.lha"])   # (boots, with WHDLoad 20 in PUAE's WHDLoad/C)
+
     def test_the_versions_of_a_game_are_listed_for_the_check(self) -> None:
         names = ["Zap (1993)(Acme)(Disk 1 of 2)[cr FLT]", "Zap (1993)(Acme)(Disk 2 of 2)[cr FLT]", "Zap (1993)(Acme)[cr PDX]"]
         items = [Item(key=i, dat=GAMES, rom=Rom(name=n + ".adf", size=1, crc="", md5="", sha1="", game=n, dat=GAMES), style="tosec",

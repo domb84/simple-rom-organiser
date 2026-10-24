@@ -2584,7 +2584,8 @@ class App:
             needs = hw.requirements(row["disks"], release=release) if hw is not None else None
             g = (release or {}).get("game_fields") or {}
             rows.append({"title": row["title"], "disks": len(row["disks"]), "dir": rel,
-                         "install": ({k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")} if inst else None),
+                         "install": ({**{k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")},
+                                      "whdload": _mod("whdready").needs_whdload(inst.get("archive"))} if inst else None),
                          "how": hit[1] if hit else "", "downloaded": bool(done),
                          "folder": os.path.relpath(done["folder"], state.root) if done else "",
                          # (what the game needs - TOSEC's tags, OpenRetro's release - and what OpenRetro knows of it)
@@ -2600,7 +2601,8 @@ class App:
         cat, rows = self._whd_games(platform)
         return {"available": cat is not None, "fetched": (cat or {}).get("fetched", ""), "installs": len((cat or {}).get("installs", ())),
                 "games": rows, "counts": {"games": len(rows), "with_install": sum(1 for r in rows if r["install"]),
-                                          "downloaded": sum(1 for r in rows if r["downloaded"])}}
+                                          "downloaded": sum(1 for r in rows if r["downloaded"]),
+                                          "newer_whdload": sum(1 for r in rows if r["install"] and r["install"].get("whdload"))}}
 
     def whdload_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """Download the installs of some games (``titles``) or of every game that has one and lacks it (``all``), next to their disks."""
@@ -2748,8 +2750,11 @@ class App:
 
         def work(job: Job) -> Any:
             out = whdbuild.build(todo, state.root, cat.get("installs") or [], progress=job.report, cancel=job.cancel)
+            ready = _mod("whdready")
+            newer = sorted({t.title for t in todo if ready.needs_whdload(t.archive)})      # (they boot once PUAE has WHDLoad 20)
             return {"action": "whdbuild", "games": len(todo), **{k: (v if isinstance(v, int) else len(v)) for k, v in out.items()
-                                                                  if k != "failed"}, "failed": out["failed"][:50]}
+                                                                  if k != "failed"}, "failed": out["failed"][:50],
+                    "needs_newer_whdload": newer}
 
         return {"job": self.jobs.start("whdbuild", work, platform=platform.name).to_dict()}
 

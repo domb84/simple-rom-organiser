@@ -571,12 +571,12 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(by["Dune (USA)"].codes, ("rating_low",))
 
     def test_games_of_one_title_stay_or_go_together_at_the_cutoff(self) -> None:
-        names = ["Twin (USA)", "Twin (USA) (Unl)", "Solo (USA)"]
+        names = ["Twin (USA)", "Twin (USA) (Aftermarket)", "Solo (USA)"]           # (a homebrew game of the same title: another game)
         table = {"Twin": (8.0, 10), "Solo": (8.0, 9)}
         prof = replace(FILTER, top_n=1, rank_scope="owned")
         by = decide(names, prof, table)[2]
         self.assertEqual(kept(by), {"Twin"})
-        self.assertEqual({n for n, d in by.items() if d.action == KEEP}, {"Twin (USA)", "Twin (USA) (Unl)"})
+        self.assertEqual({n for n, d in by.items() if d.action == KEEP}, {"Twin (USA)", "Twin (USA) (Aftermarket)"})
 
     def test_all_variants_of_a_game_share_its_rating_and_the_other_rules_come_first(self) -> None:
         names = ["Ace (USA)", "Ace (Europe)", "Ace (USA) (Beta)", "Ace (Japan) (Ja)", "Echo (USA)"]

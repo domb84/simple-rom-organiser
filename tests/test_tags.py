@@ -394,12 +394,33 @@ class OneGameManyReleases(unittest.TestCase):
         self.assertEqual(tags.edition_kind("Koei the Best"), "budget")
         self.assertEqual(tags.edition_kind("Shindou Edition"), "premium")
 
-    def test_pirate_and_bootleg_copies_are_the_game_but_other_unlicensed_games_are_not(self) -> None:
+    def test_tosec_versions_of_every_form_are_no_part_of_the_title(self) -> None:
+        for name, title, version in (("Carrier Command vA.12 (1988-08-19)(Rainbird)", "Carrier Command", "vA.12"),
+                                     ("Liberation - Captive II v2.02-2.00c (1994-04-08)(Mindscape)", "Liberation - Captive II", "v2.02-2.00c"),
+                                     ("Bridge 6.0 r2.49b (1990)(Artworx)", "Bridge 6.0", "r2.49b"),
+                                     ("Faery Tale Adventure, The - release 2 (1987)(MicroIllusions)", "Faery Tale Adventure, The", "release 2"),
+                                     ("Uridium 2 vP1.00-D1.00 (1993)(Renegade)", "Uridium 2", "vP1.00-D1.00")):
+            t = parse_name(name + ".adf", "tosec")
+            self.assertEqual((t.title, t.version), (title, version), name)
+        self.assertLess(version_key("release 2"), version_key("release 10"))
+
+    def test_pirate_unlicensed_and_publisher_releases_are_the_game_but_the_known_other_games_are_not(self) -> None:
         plain = self.key("Contra (USA)")
         self.assertEqual(self.key("Contra (Asia) (En) (Kaiser) (Pirate)"), plain)
         self.assertEqual(self.key("Contra (Taiwan) (En) (Unl)"), plain)
-        self.assertNotEqual(self.key("Tetris (USA) (Unl)"), self.key("Tetris (USA)"))                # (Tengen's Tetris)
         self.assertTrue(tags.unlicensed(parse_name("Contra (Taiwan) (En) (Unl)", "nointro")))
+        # one release per game: Tengen's unlicensed carts, another region's publisher, a board, a cart size, a re-release label
+        for a, b in (("Gauntlet (USA) (V1.1) (Unl)", "Gauntlet (USA)"), ("Klax (USA) (Unl)", "Klax (Japan)"),
+                     ("Medal of Honor - Underground (Europe) (En,Fr,Es,It) (Ubi Soft)", "Medal of Honor - Underground (USA)"),
+                     ("Pyramid (USA) (NINA-03) (Unl)", "Pyramid (USA) (NINA-06) (Unl)"), ("Rod Land (World) (Retro-Bit) (256KiB)", "Rod Land (World) (Retro-Bit) (512KiB)"),
+                     ("Felix the Cat (USA) (Hudson)", "Felix the Cat (World) (En)"), ("Adam & Eve (Spain) (En) (Unl)", "Adam & Eve (Taiwan) (En) (Unl)")):
+            self.assertEqual(self.key(a), self.key(b), a)
+        # different games of one title stay apart (tags.KEEP_APART_PRODUCTS)
+        tetris = {self.key(n) for n in ("Tetris (USA)", "Tetris (USA) (Tengen) (Unl)", "Tetris (Japan) (En) (Rev 2) (Bullet-Proof)")}
+        self.assertEqual(len(tetris), 3)
+        self.assertNotEqual(self.key("Star Wars (Japan) (Namco)"), self.key("Star Wars (Japan) (Victor)"))
+        self.assertEqual(self.key("Star Wars (Japan) (Victor)"), self.key("Star Wars (USA)"))
+        self.assertNotEqual(self.key("Airwolf (Japan) (Kyugo)"), self.key("Airwolf (USA) (Acclaim)"))
 
     def test_homebrew_versions_are_one_game_and_not_the_licensed_one(self) -> None:
         a = self.key("Block Dude (World) (v1.01) (NESDev 2018) (Aftermarket) (Unl)")

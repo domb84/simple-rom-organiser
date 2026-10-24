@@ -109,14 +109,16 @@ _PRERELEASE = {"alpha": 1, "beta": 2, "rc": 3}
 # " v1.2", " v1.3c", " v1.3 rev1", " Rev 2"; an upper-case locale suffix ("v1.0E", "v1.44GE")
 # is split off into the flags (group 2) so it stays part of the supersede key.
 _TOSEC_VERSION_RE = re.compile(
-    r"\s(v\d+(?:\.\d+)*[a-z]?|[Rr]ev ?\d+(?:\.\d+)*|r\d+(?:\.\d+)*)([A-Z]{1,3})?((?:\s?(?:[Rr]ev|r) ?\d+(?:\.\d+)*)?)"
+    r"\s(v\d+(?:\.\d+)*[a-z]?|[Rr]ev ?\d+(?:\.\d+)*|r\d+(?:\.\d+)*[a-z]?)([A-Z]{1,3})?((?:\s?(?:[Rr]ev|r) ?\d+(?:\.\d+)*)?)"
     r"([A-Z]{1,3})?$")
 # Versions the pattern above does not know, tried after it: "v855e.01" (MicroProse), "v2.0f i2.202" (Sierra's interpreter),
-# "vP1.00-D1.00" / "v0.90-1.00" (program and data), "v1.0D3", "v3.1 29701" (a build), "v3.0+", "v1.2-G" (the locale after a dash);
+# "vP1.00-D1.00" / "v0.90-1.00" / "v2.02-2.00c" (program and data), "vA.12" (Rainbird's lettered builds), "v1.0D3", "v3.1 29701" (a
+# build), "v3.0+", "v1.2-G" (the locale after a dash), "- release 2" (MicroIllusions' releases of The Faery Tale Adventure);
 # and a version before a subtitle ("Whale's Voyage v1.2 - Super Enhanced", "Falcon v1.1 - Mission Disk Volume 1 - ...") or before
 # "CD32" ("Gunship 2000 v3.32 CD32"): the title is the rest, so the release is a version of its title like the others.
-_TOSEC_VER = r"v[A-Z]?\d+[a-z]?(?:\.\d+[a-z]?)*(?:-[A-Z]?\d+(?:\.\d+)*)?(?:[A-Z]\d+)?\+?(?:\s[ir]\d+(?:\.\d+)*)?(?:\s\d{4,})?"
-_TOSEC_VERSION_END_RE = re.compile(rf"\s({_TOSEC_VER})(?:-([A-Z]{{1,2}}))?$")
+_TOSEC_VER = (r"(?:v[A-Z]?\d+[a-z]?(?:\.\d+[a-z]?)*|v[A-Z](?:\.\d+)+)(?:-[A-Z]?\d+[a-z]?(?:\.\d+[a-z]?)*)?(?:[A-Z]\d+)?\+?"
+              r"(?:\s[ir]\d+(?:\.\d+)*)?(?:\s\d{4,})?")
+_TOSEC_VERSION_END_RE = re.compile(rf"\s({_TOSEC_VER}|(?<=\s-\s)release\s\d+)(?:-([A-Z]{{1,2}}))?$")
 _TOSEC_VERSION_MID_RE = re.compile(rf"\s({_TOSEC_VER})(?:-([A-Z]{{1,2}}))?\s(?:-\s(\S.*)|(CD32|CDTV))$")
 _TOSEC_DATE_RE = re.compile(r"^[\dx?]{4}(?:-[\dx?]{2}(?:-[\dx?]{2})?)?$", re.IGNORECASE)
 _TOSEC_STATUS_RE = re.compile(
@@ -374,7 +376,7 @@ def _parse_tosec(name: str) -> Tags:
         suffix = (m.group(2) or "") + (m.group(4) or "")
         title = title[:m.start()].rstrip()
     elif (e := _TOSEC_VERSION_END_RE.search(title)) is not None:
-        version, suffix, title = e.group(1), e.group(2) or "", title[:e.start()].rstrip()
+        version, suffix, title = e.group(1), e.group(2) or "", title[:e.start()].rstrip().removesuffix(" -")
     elif (mid := _TOSEC_VERSION_MID_RE.search(title)) is not None:
         version, suffix = mid.group(1), mid.group(2) or ""
         title = title[:mid.start()].rstrip() + (f" - {mid.group(3)}" if mid.group(3) else f" {mid.group(4)}")
@@ -897,25 +899,31 @@ def game_key(t: Tags) -> tuple:
             _key_dump_flags(t))
 
 
-# Where unlicensed copies of other games were made (the Taiwanese Master System carts, the Chinese and Korean ones): an "(Unl)" release
-# of these regions alone is a copy of the game of its title. Elsewhere an unlicensed release is a game of its own ("Tetris (USA) (Unl)"
-# is Tengen's Tetris, not Nintendo's).
-_BOOTLEG_REGIONS = frozenset({"Taiwan", "China", "Hong Kong", "Korea", "Asia", "Russia", "Brazil"})
+
+
+# Different games of one No-Intro title, told apart by a tag of their name (casefold title -> one set of tags per other game; a release
+# with none of them is the title's main game). Every other tag of a name - publisher, licence, board, cart size, re-release label - is no
+# part of the game (one release per game, see :func:`_no_bootleg`). Checked by hand, as ``library.KEEP_APART`` for the Amiga.
+KEEP_APART_PRODUCTS: dict[str, list[frozenset]] = {
+    "tetris": [frozenset({"tengen"}), frozenset({"bullet-proof"})],        # Tengen's and BPS's Famicom Tetris are not Nintendo's
+    "star wars": [frozenset({"namco"})],                                   # Namco's Famicom Star Wars, not Victor's / JVC's
+    "airwolf": [frozenset({"kyugo"})],                                     # Kyugo's Famicom Airwolf, not Acclaim's
+    "othello": [frozenset({"bit corp."})],                                 # Bit Corp.'s own Othello, not HAL's / Kawada's
+}
 
 
 def _no_bootleg(flags: list, t: "Tags") -> tuple:
-    """The product tags of a game key (casefold, sorted). Of a copy of a game they are none: a pirate copy (the maker, the board), an
-    unlicensed one of the bootleg regions or of a re-release (``(Atari Lynx Collection 1) (Unl)``) is the game of its title
-    (:func:`unlicensed` ranks them last). Homebrew (``Aftermarket``) is a game of its own, whatever competition, publisher, board or store
-    it came from (``(NESDev 2018)``, ``(Sly Dog Studios)``, ``(UxROM)``, ``(itch.io)``: versions of it)."""
-    low = [f.casefold() for f in flags]
-    if "pirate" in low:
-        return ()
+    """The product part of a game key: one release per game, so a publisher, a licence (Tengen's unlicensed carts of the same games), a
+    board or cart size, a re-release (Retro-Bit, Limited Run, an anthology), a pirate copy, a translation are all the game of their title.
+    Only two things make another game of the same title: homebrew (``Aftermarket``: a game of its own, whatever competition, publisher,
+    board or store it came from) and :data:`KEEP_APART_PRODUCTS`."""
+    low = {f.casefold() for f in flags}
     if "aftermarket" in low:
-        return tuple(sorted(f for f, raw in zip(low, flags) if flag_kind(raw) == "license"))
-    if "unl" in low and ((t.regions and set(t.regions) <= _BOOTLEG_REGIONS) or any(is_edition(f) for f in t.flags)):
-        return tuple(sorted(f for f, raw in zip(low, flags) if flag_kind(raw) not in ("license", "other", "hardware")))
-    return tuple(sorted(f for f in low if flag_kind(f) != "event"))
+        return ("aftermarket",)
+    for n, tags in enumerate(KEEP_APART_PRODUCTS.get(t.title.casefold(), ()), 1):
+        if low & tags:
+            return (f"#{n}",)
+    return ()
 
 
 def _key_dump_flags(t: "Tags") -> tuple:

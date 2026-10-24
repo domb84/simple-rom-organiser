@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 from . import ratings, tags
 
-__all__ = ["node", "table", "groups", "learn", "forget", "dat_map", "group", "merged", "signature", "clear_cache", "STYLES"]
+__all__ = ["SAME_GAME", "node", "table", "groups", "learn", "forget", "dat_map", "group", "merged", "signature", "clear_cache", "STYLES"]
 
 _LOCK = threading.Lock()
 _CACHE: dict[str, tuple[Any, dict[str, str]]] = {}
@@ -111,9 +111,46 @@ def _openretro_names(platform_name: str, opath: Any) -> list[tuple[str, str]]:
     return [(t, g) for t, g in db.titles() if not re.search(r"\s(?:&|\+|and)\s", t, re.IGNORECASE)]
 
 
+# Titles of one game that no database joins, checked by hand (the duplicate sweep of 2026-10-23): a game known with and without its
+# subtitle, an edition named in the title, a pirate copy with a longer name. A title here names every release under it, so a short one is
+# added only when the DAT has no other game of that title (the Amiga's "Myth" is Magnetic Scrolls', not System 3's "Myth - History in the
+# Making"). An edition word alone proves nothing: "Jeopardy! - Sports Edition" and "Pac-Man - Championship Edition" are other games.
+SAME_GAME: dict[str, list[tuple[str, ...]]] = {
+    "Commodore Amiga": [
+        ("Speedball 2", "Speedball 2 - Brutal Deluxe"), ("Rainbow Islands", "Rainbow Islands - The Story of Bubble Bobble 2"),
+        ("Journey", "Journey - The Quest Begins"), ("Brian the Lion", "Brian the Lion Starring in Rumble in the Jungle"),
+        ("Enemy - Tempest of Violence", "Enemy - Tempest of Violence v1.04 EasyPlay"), ("Gloom", "Gloom Deluxe", "Gloom - Special Edition 97"),
+        ("Harpoon", "Harpoon - Signature Edition"), ("PGA Tour Golf", "PGA Tour Golf - Platinum Edition"),
+        ("Championship Manager '94", "Championship Manager '94 - End of Season Edition"),
+        ("World Class Rugby", "World Class Rugby - Five Nations Edition"),
+        ("Hibernated 1 - This Place is Death", "Hibernated 1 - This Place is Death - Director's Cut"),
+        ("A320 Airbus", "A320 Airbus - Edition Europa", "A320 Airbus - Edition USA"), ("Brutal Football", "Brutal Football - Deluxe Edition"),
+        ("Sensible World of Soccer '95-'96", "Sensible World of Soccer '95-'96 - European Championship Edition"),
+        ("Sensible Soccer", "Sensible Soccer - International Edition", "Sensible Soccer - European Champions - 92-93 Season"),
+        ("Eishockey Manager", "Eishockey Manager - Limited Edition")],
+    "Super Nintendo Entertainment System": [
+        ("SimAnt", "SimAnt - The Electronic Ant Colony"), ("Angelique", "Angelique - Premium Box"),
+        ("Donkey Kong Country", "Donkey Kong Country - Competition Cartridge"), ("Super Bomberman 5", "Super Bomberman 5 - Caravan Event Ban"),
+        ("Super Fire Pro Wrestling X", "Super Fire Pro Wrestling X Premium")],
+    "Nintendo Entertainment System": [
+        ("Kid Kool", "Kid Kool and the Quest for the Seven Wonder Herbs"), ("Harry's Legend", "Harry's Legend - Hali Chuanqi"),
+        ("Fengshenbang", "Fengshenbang - Myth Struggle"), ("Sanguozhi - Yingjie Zhuan", "Sanguozhi - Yingjie Zhuan - Hero Legend"),
+        ("Shuihu Zhuan", "Shuihu Zhuan - Marsh Outlaws"), ("Tiny Toon 3", "Tiny Toon 3 - Crazy Castle")],
+    "Nintendo Game Boy Advance": [
+        ("Yggdra Union", "Yggdra Union - We'll Never Fight Alone"), ("Hi Hi Puffy AmiYumi", "Hi Hi Puffy AmiYumi - Kaznapped!"),
+        ("Pokemon - Sapphire Version", "Pokemon - Sapphire Version - Gotta Catch 'em All!"),
+        ("Strawberry Shortcake - Summertime Adventure", "Strawberry Shortcake - Summertime Adventure - Special Edition")],
+    "Nintendo 64": [("NFL Blitz", "NFL Blitz - Special Edition"), ("77a", "77a Special Edition")],
+    "Sega Mega Drive - Genesis": [("Sonic 3D Blast", "Sonic 3D Blast - Director's Cut")],
+}
+
+
 def _build(lb: str, platform_name: str, rpath: Any, gpath: Any, opath: Any = None) -> dict[str, list[str]]:
     """``{group key: [normal titles]}`` of the groups of two or more titles."""
     owners: dict[str, set] = {}                         # normal title -> the games (("lb", id) / ("gt", code) / ("or", id)) it names
+    for n, titles in enumerate(SAME_GAME.get(platform_name, ())):
+        for title in titles:
+            owners.setdefault(node(title), set()).add(("hand", n))
     for name, dbid in _lb_names(lb, rpath) if lb else ():
         owners.setdefault(node(name), set()).add(("lb", dbid))
     for name, gid in _openretro_names(platform_name, opath):
@@ -218,18 +255,22 @@ def learn(platform: Any, dats: Any) -> None:
     from . import library, totals
     name = getattr(platform, "name", platform)
     games = set(ratings.rated_dats(platform))            # (the DATs of games: a system's updates, add-ons and firmware have no other titles)
-    dats = [d for d in dats if not games or getattr(d, "name", "") in games]
-    per: dict[str, dict[str, tuple[dict, int]]] = {getattr(d, "name", ""): {} for d in dats}
+    # a DAT whose games are another's (the Amiga's SPS / IPF releases and CD32 / CDTV discs are games of its floppy DAT: library.game_dat)
+    # is learned with it, under its name: a title spelt otherwise there ("Fire & Ice" / "Fire and Ice"), or known by another name, is one game
+    dats = [d for d in dats if not games or library.game_dat(getattr(d, "name", "")) in games]
+    per: dict[str, dict[str, tuple[dict, int]]] = {library.game_dat(getattr(d, "name", "")): {} for d in dats}
     for it in totals.target_items(platform, dats):
         if library._style(it) not in STYLES:
             continue
         t = library._tags_of(it)
-        d = per.setdefault(it.dat, {})
+        d = per.setdefault(library.game_dat(it.dat), {})
         cf = t.title.casefold()
         rest = library.combined_key("", tags.game_key(t), True)[2:]     # (the release's kind: status, product tags ...)
         places, n = d.get(cf, ({}, 0))
-        if not tags.unlicensed(t) and not any(tags.is_edition(f) for f in t.flags):
-            places[rest] = places.get(rest, frozenset()) | _places(t)  # (where the title was released: a re-release or a copy tells nothing)
+        if not tags.unlicensed(t) and not any(tags.is_edition(f) for f in t.flags) and library.game_dat(it.dat) == it.dat:
+            # (where the title was released: a re-release or a copy tells nothing, nor an SPS image or a CD of a game - the same release
+            #  as a floppy of it, or one more of the game's: never a second game for the same places)
+            places[rest] = places.get(rest, frozenset()) | _places(t)
         d[cf] = (places, n + 1)
     with _LOCK:
         for dat, titles in per.items():

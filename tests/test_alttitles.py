@@ -126,6 +126,7 @@ if __name__ == "__main__":
 
 AMIGA = platforms.get_platform("Commodore Amiga")
 GAMES = "Commodore Amiga - Games - [ADF]"
+SPS = "Commodore Amiga - Games - SPS"
 
 
 def adf(name: str) -> Rom:
@@ -149,7 +150,11 @@ class AmigaGames(unittest.TestCase):
         d = paths.ratings_dir()
         d.mkdir(parents=True, exist_ok=True)
         rows = [("Commodore Amiga", "another world", 4.0, 10, 1, "Another World", 1991, 0),
-                ("Commodore Amiga", "out of this world", 4.0, 10, 1, "Another World", 1991, 1)]
+                ("Commodore Amiga", "out of this world", 4.0, 10, 1, "Another World", 1991, 1),
+                ("Commodore Amiga", "legend", 4.0, 10, 2, "Legend", 1992, 0),
+                ("Commodore Amiga", "four crystals of trazere", 4.0, 10, 2, "Legend", 1992, 1),
+                ("Commodore Amiga", "500 c c moto manager", 4.0, 10, 3, "500cc Moto Manager", 1991, 0),
+                ("Commodore Amiga", "500 c c motomanager", 4.0, 10, 3, "500cc Moto Manager", 1991, 1)]
         ratings.write_index(rows, d / ratings.INDEX_NAME, {})
 
     def decide(self, names: list[str], **changes) -> dict[str, str]:
@@ -175,6 +180,38 @@ class AmigaGames(unittest.TestCase):
     def test_a_game_with_no_version_in_your_languages_is_set_aside(self) -> None:
         names = ["Anstoss (1993)(Ascon)(DE)"]
         self.assertEqual(self.decide(names), {names[0]: library.EXCLUDED})
+
+    def keys(self, adfs: list[str], sps: list[str]) -> list[tuple]:
+        """The game keys of floppies and SPS releases learnt together (an SPS release's images: "<release> - <file>.ipf")."""
+        rels = [Rom(name=f"{n} - Disk1.ipf", size=1, crc="", md5="", sha1="", game=n, dat=SPS) for n in sps]
+        alttitles.learn(AMIGA, [SimpleNamespace(name=GAMES, roms=[adf(n) for n in adfs]), SimpleNamespace(name=SPS, roms=rels)])
+        items = [Item(key=0, dat=GAMES, rom=adf(n), style="tosec", path=Path(n), member=None) for n in adfs]
+        items += [Item(key=0, dat=SPS, rom=r, style="tosec", path=Path(r.name), member=None) for r in rels]
+        return [library.game_key(it, True) for it in items]
+
+    def test_a_title_spelt_otherwise_in_another_dat_of_the_games_is_the_same_game(self) -> None:
+        a, b = self.keys(["Fire and Ice - The Daring Adventures of Cool Coyote (1992)(Renegade)"],
+                         ["Fire & Ice - The Daring Adventures of Cool Coyote (1992)(Renegade)[0502]"])
+        self.assertEqual(a, b)
+        a, b = self.keys(["Legend of Robin Hood - Conquests of the Longbow v1.000 (1992)(Sierra)(Disk 1 of 8)"],
+                         ["Legend of Robin Hood, The - Conquests of the Longbow v1.000 (1992)(Sierra)[1968]"])
+        self.assertEqual(a, b)
+
+    def test_an_sps_release_is_the_floppy_s_release_not_a_second_game_of_its_places(self) -> None:
+        a, b = self.keys(["500 c.c Moto Manager v1.0 (1991)(Simulmondo)(en-it)"], ["500 c.c MotoManager v1.0 (1991)(Simulmondo)(en-it)[2670]"])
+        self.assertEqual(a, b)                          # (one LaunchBox game; the same release twice is no reason to keep them apart)
+
+    def test_a_keep_apart_game_known_by_another_title_is_still_its_publisher_s(self) -> None:
+        legend_crl, legend_ms, crystals = self.keys(["Legend (1989)(CRL)", "Legend v1.01 (1992-03-17)(Mindscape)",
+                                                     "Four Crystals of Trazere, The v1.02 (1992-03-21)(Mindscape)(US)"], [])
+        self.assertEqual(crystals, legend_ms)           # (Mindscape's Legend under its US title)
+        self.assertNotEqual(crystals, legend_crl)
+
+    def test_titles_of_one_game_checked_by_hand_are_one_game(self) -> None:
+        a, b, myth, myth_sys3 = self.keys(["Speedball 2 (1990)(Image Works)", "Speedball 2 - Brutal Deluxe v1.00 (1991-01-07)(Image Works)",
+                                           "Myth (1989)(Magnetic Scrolls)"], ["Myth - History in the Making (1992)(System 3)[0700]"])
+        self.assertEqual(a, b)                          # (alttitles.SAME_GAME)
+        self.assertNotEqual(myth, myth_sys3)            # (two games: not in the list)
 
     def test_known_different_games_that_share_a_title_stay_apart(self) -> None:
         names = ["Overlord (1991)(Virgin Mastertronic)(US)", "Overlord (1994)(Virgin)", "Legend (1989)(CRL)",

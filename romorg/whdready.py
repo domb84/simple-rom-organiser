@@ -65,6 +65,8 @@ def load() -> dict[str, Any]:
 
 _KNOWN: Optional[dict[str, Any]] = None
 _MANUAL_KEPT: Optional[frozenset] = None
+_NEEDS: Optional[dict[str, int]] = None                   # install archive -> the WHDLoad version its slave needs (newer than PUAE's)
+PUAE_WHDLOAD = 19                                         # the WHDLoad PUAE 5.3 comes with (19.1)
 _SHA: Optional[dict[str, str]] = None                     # the first 16 hex digits of a disk's SHA-1 -> its name in the list
 
 
@@ -81,11 +83,12 @@ def _shipped() -> dict[str, Any]:
 
 def known() -> dict[str, Any]:
     """The shipped list: ``{disk names: [level, install archive]}`` (empty when it is missing)."""
-    global _KNOWN, _MANUAL_KEPT, _SHA
+    global _KNOWN, _MANUAL_KEPT, _SHA, _NEEDS
     if _KNOWN is None:
         data = _shipped()
         _KNOWN = data.get("sets") or {}
         _MANUAL_KEPT = frozenset(data.get("manual_kept") or ())
+        _NEEDS = {str(a): int(v) for a, v in (data.get("needs_whdload") or {}).items() if str(v).isdigit()}
         _SHA = {str(h).lower(): n for n, h in (data.get("sha1") or {}).items()}
     return _KNOWN
 
@@ -181,6 +184,13 @@ def release(name: str) -> Optional[list]:
 def has_install(title: str) -> bool:
     """True: the shipped list knows a WHDLoad install of the game of this title (the TOSEC title: the name before " (")."""
     return _title(title) in _index()[1]
+
+
+def needs_whdload(arc: Optional[str]) -> int:
+    """The WHDLoad version this install's slave needs when PUAE's own (:data:`PUAE_WHDLOAD`) is too old for it, else 0. Its sets are
+    known to boot with that WHDLoad in PUAE's ``WHDLoad/C`` drawer: Emerald Mine, Zeewolf, Oilmania ... need WHDLoad 20."""
+    known()
+    return (_NEEDS or {}).get(arc or "", 0)
 
 
 def leaves_manual(arc: Optional[str]) -> bool:

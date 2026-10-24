@@ -1709,7 +1709,9 @@
           title: (n.sources || []).join("\n") || "Nothing known: an A500 by default" }) : el("span", {});
         return el("tr", {}, el("td", {}, el("div", { text: g.title }),
             about || prot ? el("div", { class: "muted small", text: [about, prot].filter(Boolean).join(" · ") }) : null),
-          el("td", {}, info, i && HOW[g.how] ? el("div", { class: "muted small", text: HOW[g.how] }) : null),
+          el("td", {}, info, i && HOW[g.how] ? el("div", { class: "muted small", text: HOW[g.how] }) : null,
+            i && i.whdload ? el("div", { class: "muted small", text: `needs WHDLoad ${i.whdload} (PUAE comes with 19.1)`,
+              title: "Put WHDLoad " + i.whdload + " (whdload.de) in PUAE's WHDLoad/C folder, in RetroArch's saves folder, and it boots" }) : null),
           el("td", {}, mach), el("td", { class: "num", text: i ? fmtBytes(i.size) : "" }), el("td", {}, act));
       }));
       const more = shown.length > this.limit ? el("button", { class: "btn btn-small", text: `Show ${fmt(Math.min(500, shown.length - this.limit))} more`, on: { click: () => { this.limit += 500; this.render(); } } }) : null;
@@ -4208,7 +4210,9 @@
     if (job.status !== "done" || !r.action) return;
     const failed = r.failed || [];
     toast(`WHDLoad games: ${fmt(r.built || 0)} built, ${fmt(r.moved || 0)} moved, ${fmt(r.kept || 0)} already there`
-      + (r.removed ? `, ${fmt(r.removed)} removed` : "") + (failed.length ? `, ${fmt(failed.length)} could not be built` : ""), failed.length ? "error" : "ok", 8000);
+      + (r.removed ? `, ${fmt(r.removed)} removed` : "") + (failed.length ? `, ${fmt(failed.length)} could not be built` : "")
+      + ((r.needs_newer_whdload || []).length ? `. ${fmt(r.needs_newer_whdload.length)} need WHDLoad 20 in PUAE: ${r.needs_newer_whdload.join(", ")}` : ""),
+      failed.length ? "error" : "ok", 8000);
     showFailures("lib-failures", "WHDLoad games not built:", failed, (f) => `${f.title}: ${f.error}`, []);
   };
 

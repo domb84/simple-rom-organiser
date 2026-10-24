@@ -852,21 +852,18 @@ class OnePerGame(unittest.TestCase):
         self.assertEqual(library.select(owned, prof, GBA, lang_games=lg).decisions[owned[0].key].codes, ("language",))
         self.assertEqual(library.select(owned, prof, GBA).decisions[owned[0].key].action, "keep")   # no DAT given: files only
 
-    def test_distinct_products_are_not_merged(self) -> None:
+    def test_one_release_per_game_but_homebrew_and_pre_releases_stay_apart(self) -> None:
         names = ["P (USA)", "P (USA) (Unl)", "P (USA) (Aftermarket)", "P (Europe) (Unl)", "P (USA) (Tengen)",
                  "P (USA) (Beta)", "P (USA) (Beta 2)", "P (USA) (Alt)", "P (Europe) (Virtual Console)"]
         prof = replace(library.default_profile(GBA), exclude=frozenset())
         kept = self.kept(names, prof)
-        # P (USA) / (Alt) / (Virtual Console) are one game: the plain release wins (Europe first by priority,
-        # so the Europe re-release is the best region and, being the only Europe one, is kept)
-        self.assertIn("P (Europe) (Unl)", kept)
+        # an unlicensed cart, another publisher's (Tengen), an Alt dump and a re-release are all the game: one of them is kept; a homebrew
+        # game of the same title and the betas are others
         self.assertIn("P (USA) (Aftermarket)", kept)
-        self.assertIn("P (USA) (Tengen)", kept)
         self.assertIn("P (USA) (Beta)", kept)
         self.assertIn("P (USA) (Beta 2)", kept)
-        self.assertNotIn("P (USA) (Alt)", kept)
-        self.assertNotIn("P (USA)", kept)               # same game as the Europe Virtual Console copy
-        self.assertEqual(len(kept), 6)
+        release = [n for n in kept if n not in ("P (USA) (Aftermarket)", "P (USA) (Beta)", "P (USA) (Beta 2)")]
+        self.assertEqual(len(release), 1, release)
 
     def test_fewer_extra_tags_break_ties(self) -> None:
         self.assertEqual(self.kept(["Q (USA) (Alt)", "Q (USA)"]), ["Q (USA)"])

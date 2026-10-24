@@ -57,7 +57,8 @@ def _final(op: Any) -> Path:
 
 def targets(plan: Any, platform: Any) -> list[Target]:
     """The WHDLoad games of a library plan (``organiser.LibraryPlan``): one a game, from the kept version its install works from best
-    (an ADF set or an SPS release; the floppies first when both are as good), at the place the build leaves its disks."""
+    (an ADF set or an SPS release; of versions as good the best platform - CD32 > AGA > CDTV > ECS > OCS - then the floppies), at the
+    place the build leaves its disks."""
     from . import library, whdready
     sel, owners = plan.selection, getattr(plan, "owners", {}) or {}
     image_sets = set(getattr(platform, "image_set_dats", ()) or ())
@@ -95,7 +96,8 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         title = library._tags_of(it0).title
         stem = _BAD_NAME_RE.sub("", name).strip(" .") or title
         t = Target(title=title, names=names, archive=arc, level=int(level), dest=disks[0][0].parent / f"{stem}.lha", disks=disks, sps=sps)
-        versions.append((library.game_key(it0, getattr(sel, "combine_alt", True)), t))   # (one a game, as the library counts games)
+        rank = library.tags.platform_rank(library._tags_of(it0))     # (of versions as good: the best platform - AGA before OCS)
+        versions.append((library.game_key(it0, getattr(sel, "combine_alt", True)), rank, t))   # (one a game, as the library counts games)
 
     for cs in sel.sets:                                       # (the kept multi-disk sets: their slots in disk order)
         keys = [k for _s, k in sorted(cs.slots.items())]
@@ -122,12 +124,12 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         add(keys, _DISK_RE.sub("", Path(owners[keys[0]][1].rom.name).stem))
     for release, keys in by_release.items():
         add(keys, release)
-    best: dict[tuple, Target] = {}
-    for g, t in versions:
+    best: dict[tuple, tuple[int, Target]] = {}
+    for g, rank, t in versions:
         cur = best.get(g)
-        if cur is None or (t.level, not t.sps) > (cur.level, not cur.sps):
-            best[g] = t
-    return sorted(best.values(), key=lambda t: (t.title.casefold(), str(t.dest)))
+        if cur is None or (t.level, -rank, not t.sps) > (cur[1].level, -cur[0], not cur[1].sps):
+            best[g] = (rank, t)
+    return sorted((t for _r, t in best.values()), key=lambda t: (t.title.casefold(), str(t.dest)))
 
 
 def marker_of(path: Path) -> Optional[dict[str, Any]]:

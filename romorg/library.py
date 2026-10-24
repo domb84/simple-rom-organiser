@@ -838,7 +838,10 @@ def combined_key(dat: str, key: tuple, combine: bool) -> tuple:
     if key[0] == STYLE_TOSEC and len(key) == 6:            # (style, title, countries, publisher, edition, statuses)
         edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language")    # (PAL / NTSC, M3: a release, not a game;
                         and not re.fullmatch(r"[A-Z]{1,3}", f))      #  nor a version's letter: "v1.14C", "v1.00R", "v1.44GE" - your languages choose)
-        key = (key[0], key[1], (), _apart(key[1], key[3]), edition, key[5])
+        g = alttitles.group(dat, key[1])
+        # which game of a KEEP_APART title: by its own title, else by its group's (Mindscape's "Four Crystals of Trazere" is its Legend)
+        apart = _apart(key[1], key[3]) if key[1].strip() in KEEP_APART or not g else _apart(g[1:], key[3])
+        key = (key[0], key[1], (), apart, edition, key[5])
     g = alttitles.group(dat, key[1])                        # (key[1]: the title, casefold)
     if g:
         key = (key[0], g) + key[2:]

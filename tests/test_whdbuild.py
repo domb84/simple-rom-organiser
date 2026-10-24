@@ -96,6 +96,23 @@ class BuildTests(unittest.TestCase):
             with mock.patch.object(whdready, "level", return_value=whdready.IMAGES):
                 self.assertEqual(whdbuild.targets(self.plan(), AMIGA), [])
 
+    def test_of_two_versions_as_good_the_best_platform_is_built(self) -> None:
+        ocs, aga = "Zap (1993)(Acme)[0721]", "Zap (1994)(Acme)(AGA)[1624]"
+        owners, decisions = {}, {}
+        for key, rel in enumerate((ocs, aga), 1):
+            path = self.root / "Games" / f"{rel}.zip"
+            path.write_bytes(b"PK")
+            rom = Rom(name=f"{rel} - Zap_Disk1.ipf", size=1, crc="", md5="", sha1="", game=rel, dat=SPS)
+            op = RenameOp(path, path, "ok")
+            owners[key] = (op, MatchedUnit(path, op, rom, frozenset(), "", SPS, True, True, False, member="Zap_Disk1.ipf"))
+            decisions[key] = library.Decision(key=key, action=library.KEEP)
+        plan = SimpleNamespace(selection=library.Selection(decisions=decisions), owners=owners)
+        levels = {ocs: whdready.BOOTS, aga: whdready.BOOTS}
+        with mock.patch.object(whdready, "release_of", side_effect=lambda rom: [levels[rom.game], "Zap.lha"]):
+            self.assertEqual([t.names for t in whdbuild.targets(plan, AMIGA)], [[aga]])        # (Second Samurai: the AGA release)
+            levels[aga] = whdready.FILES                                                     # (... unless only the OCS one is known to boot)
+            self.assertEqual([t.names for t in whdbuild.targets(plan, AMIGA)], [[ocs]])
+
     def test_a_rebuild_that_fails_keeps_the_archive_its_disks_had(self) -> None:
         self.build(whdbuild.targets(self.plan(), AMIGA))
         (self.root / "Elsewhere").mkdir()
@@ -426,7 +443,8 @@ class WhdloadBuildEndpointTests(unittest.TestCase):
         cat = {"installs": self.installs}
         _app, out, result = self.run_build(self.state(), cat)
         self.assertEqual((out["job"]["kind"], out["job"]["platform"]), ("whdbuild", AMIGA.name))
-        self.assertEqual(result, {"action": "whdbuild", "games": 1, "built": 1, "moved": 0, "kept": 0, "removed": 0, "failed": []})
+        self.assertEqual(result, {"action": "whdbuild", "games": 1, "built": 1, "moved": 0, "kept": 0, "removed": 0, "failed": [],
+                                  "needs_newer_whdload": []})
         lha = self.root / "Games" / "Zap (1993)(Acme)[cr FLT].lha"
         self.assertIsNotNone(whdbuild.marker_of(lha))
         _app, _out, result = self.run_build(self.state(), cat)                          # (the same again: kept as it is)

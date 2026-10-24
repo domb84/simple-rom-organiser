@@ -3394,3 +3394,47 @@ extension. The Overview card says *found*, the Library card *kept*.
   archive is converted only when every member is the disc (counted over all DATs and unmatched files, and listed again just before
   converting), so deleting it cannot lose another game. Discs in a reason folder are never converted. A loose disc's files all show as
   the CHD in the preview rows and tree.
+
+
+**AMENDMENT 60 (v0.3) — No duplicate titles: a game's other DATs, alternate names, products, versions and a hand list.**
+* The user: "fix any duplicate titles, they should also account for alternate names". A sweep of every system's kept games (same normal
+  title, one LaunchBox / OpenRetro / GameTDB group, or one title the other with a subtitle, under different game keys) found:
+* Amiga: alternate titles were learned from the floppy DAT only, and per DAT; the SPS / IPF and CD32 / CDTV DATs (whose games are the
+  floppy DAT's, `library.game_dat`) never met it - "Fire & Ice" / "Fire and Ice", "Legend of Robin Hood" / "... , The", "500 c.c Moto
+  Manager" / "MotoManager". `alttitles.learn` takes in every DAT whose games are a rated DAT's, filed under the games DAT; only the games
+  DAT's own releases count as "places" in the two-games test (an SPS image or a CD of a game is not a second game for the same places).
+  `library.combined_key`: a KEEP_APART title known by another name is still its publisher's game (Mindscape's "Four Crystals of Trazere"
+  is its Legend, not CRL's).
+* No-Intro: the game key kept every product tag - publishers, licence (Tengen's unlicensed carts of the same games), boards, cart
+  sizes, re-release labels, translations: 109 duplicate groups on NES / SNES / GBA / Mega Drive. One release per game: `tags._no_bootleg`
+  keeps only homebrew (`Aftermarket`, a game of its own) and `tags.KEEP_APART_PRODUCTS` (same-title games told apart by a tag: Tetris
+  Tengen / Bullet-Proof, Star Wars Namco, Airwolf Kyugo, Othello Bit Corp.). `_BOOTLEG_REGIONS` is gone.
+* TOSEC versions the parser left in titles: "vA.12", "v2.02-2.00c", "r2.49b", "- release 2".
+* `alttitles.SAME_GAME`: titles of one game no database joins, checked by hand (with and without the subtitle, an edition named in the
+  title, a pirate copy's longer name) - a short title only when the DAT has no other game of it ("Myth" is Magnetic Scrolls', not
+  System 3's). An edition word is no rule: Jeopardy! Sports Edition, Pac-Man Championship Edition are other games.
+* Left as they are (the two-games test keeps them apart, by a third title of the group: "Goal!!" is Goal! Two; Super Copa): Goal! /
+  Moero!! Pro Soccer, Tony Meola / Ramos Ruy, Yu-Gi-Oh! WWE / Duel Monsters 6 Expert 2; Rockman EXE 3 Black is a promo.
+* Real data: kept games Amiga 3,416 -> 3,388, NES 2,316 -> 2,236, SNES 1,873 -> 1,853, GBA 1,746 -> 1,733, N64 403 -> 401, Mega Drive
+  624 -> 621; tree = totals on all of them. The Amiga top 100 is 100 games (was 97 + 2 doubled), all kept, 93 with a booting install.
+* Later (the top 250 by best version): 229 of the Amiga top 250 are kept and built from the best version the DAT has. `whdbuild.targets`
+  chose between kept versions equally good for WHDLoad by floppies-first only, so Second Samurai was built from its OCS SPS release
+  with the AGA one (also known to boot) kept: of versions as good the best platform (CD32 > AGA > CDTV > ECS > OCS) now wins, a
+  version known to boot still before one that is not. Boot runs confirmed the list: Chaos Strikes Back's BTL crack does not boot (an
+  unsupported version), Second Samurai's AGA HLM crack crashes in the install (recorded), its AGA SPS release boots.
+
+
+**AMENDMENT 61 (v0.3) — WHDLoad 20 games; the top 250 checked again.**
+* PUAE 5.3 comes with WHDLoad 19.1; 11 installs' slaves need WHDLoad 20 (`ws_Version`). Dropping 20.1 into PUAE's `WHDLoad/C` before
+  the first run ended at a shell (PUAE then took the drawer for set up and left out its other tools); letting PUAE set the drawer up
+  first and then putting WHDLoad 20.1 in boots them: 39 of 49 versions of 9 games (Emerald Mine 1-3, First Person Pinball, Oilmania,
+  Piracy on the High Seas, Super Tennis Champs, Zeewolf 1-2), each checked by eye. The shipped list records them as booting and names
+  the installs (`needs_whdload`: archive -> version, from the slaves); `whdready.needs_whdload`, the WHDLoad page says "needs WHDLoad
+  20" under the install, the build job lists the games built that need it (`needs_newer_whdload`). In the user's RetroArch they boot
+  once WHDLoad 20 is in `<saves>/PUAE/WHDLoad/C` (not done by the app).
+* Top 250 (by best version): 230 of 250 now. Transarctica: its M3 SPS release boots (recorded); the AGA set's disks 2 and 3 the user
+  has are "[m bamcopy]" dumps (modified: excluded), so the AGA version cannot be kept. Left: Chaos Strikes Back, Ace Ball, Cyberzerk,
+  Kwik Snax, QIX (installs that need the original disk the user lacks - QIX's SPS NTSC release is not the one it supports), Star Trek
+  25th (installs completely, every file's CRC right, black screen in PUAE with WHDLoad 19 and 20 - not solved), five CDTV discs the
+  user lacks, eight games with no install (Kick Off - Extra Time is supported by the Kick Off install only together with Kick Off's
+  disk: a build of two releases, not done).

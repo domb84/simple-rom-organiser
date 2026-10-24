@@ -366,6 +366,16 @@ Script: `~/.cache/whdwork/fullcheck.py`. Results in `fullcheck.json`; archived c
 
 ## STATE AT THE END OF 2026-10-23
 
+### 2026-10-24: WHDLoad 20 games, top 250 (Amendment 61, not committed yet unless the log says so)
+* Boot runs with WHDLoad 20: `~/.cache/whdwork/puae/run20.sh` (PUAE sets up its WHDLoad drawer, then 20.1 goes in) via
+  `PUAE_RUN=run20.sh WHDLOAD_C=~/.cache/whdwork/whdl20/C` in fix90/boot95.py. make_whdknown.py writes `needs_whdload`.
+* Open: Star Trek 25th black screen; data-disk builds (Kick Off - Extra Time); offering the user to put WHDLoad 20 in PUAE's drawer.
+
+### Later on 2026-10-23: duplicate titles (Amendment 60, not committed yet unless the log says so)
+* Alternate titles learned across a system's game DATs (Amiga SPS / CD with the floppies); No-Intro product tags no longer split a game
+  (`tags.KEEP_APART_PRODUCTS` for the exceptions); more TOSEC version forms; `alttitles.SAME_GAME` hand list. Sweep scripts were in the
+  session scratchpad (gone): rebuild from Amendment 60's description if needed.
+
 ### Later on 2026-10-23: CD32 / CDTV discs -> CHD on Build library (Amendment 59, not committed yet unless the log says so)
 * `romorg/cdconvert.py` (new): CHD identified by the files it rebuilds; plan / apply like discsys's conversions. Scanner `containers`
   "chd" (Amiga). `cdimage` reads WAVE tracks. Server: `_convert_plan` adds disc ops (kept discs only), `_run_conversions` runs them,
