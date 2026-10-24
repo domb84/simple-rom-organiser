@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import lzma
 import os
 import subprocess
 import zipfile
@@ -19,7 +20,7 @@ from typing import Any, BinaryIO, Callable, Iterator, Optional
 
 from . import scanner, sevenzip, winproc
 
-__all__ = ["EXTS", "DISC_EXTS", "Member", "list_members", "open_member", "hash_member", "extract_members", "is_disc_archive", "ArchiveError"]
+__all__ = ["EXTS", "DISC_EXTS", "Member", "list_members", "open_member", "iter_files", "hash_member", "hash_members", "extract_members", "is_disc_archive", "ArchiveError"]
 
 EXTS = (".zip", ".7z")
 DISC_EXTS = (".iso", ".cue", ".gdi")
@@ -98,6 +99,51 @@ def open_member(path: Path, name: str) -> Iterator[BinaryIO]:
         proc.wait()
 
 
+def iter_files(path: Path, members: list[Member]) -> Iterator[tuple[Member, bytes]]:
+    """``(member, bytes)`` pieces of several members, read in one pass: a ``.7z``'s solid block is decoded once for all of them (not once
+    per member, as :func:`open_member` does), a zip's members one after the other. Raises :class:`ArchiveError`."""
+    path = Path(path)
+    by_name = {m.name: m for m in members}
+    if path.suffix.lower() == ".7z":
+        try:
+            arc = sevenzip.Archive(path)
+            for name, piece in arc.iter_files(list(by_name)):
+                yield by_name[name], piece
+            return
+        except sevenzip.Unsupported:
+            pass                                          # (a method the reader does not do: one member at a time through 7-Zip)
+        except (ValueError, OSError, KeyError, lzma.LZMAError, EOFError) as exc:
+            raise ArchiveError(f"cannot read {path.name}: {exc}") from exc
+    for m in members:
+        with open_member(path, m.name) as f:
+            got = False
+            for block in iter(lambda: f.read(CHUNK), b""):
+                got = True
+                yield m, block
+            if not got:
+                yield m, b""
+
+
+def hash_members(path: Path, members: list[Member], progress: Optional[Callable[[int], None]] = None,
+                 cancel: Optional[Callable[[], bool]] = None) -> dict[str, tuple[str, str]]:
+    """``{member name: (crc32, sha1)}`` of several members in one pass (:func:`iter_files`). Raises :class:`ArchiveError` when one is
+    shorter or longer than the archive says."""
+    state: dict[str, list] = {m.name: [0, hashlib.sha1(), 0] for m in members}
+    for m, block in iter_files(path, members):
+        if cancel is not None and cancel():
+            raise scanner.ScanCancelled()
+        st = state[m.name]
+        st[0] = zlib.crc32(block, st[0])
+        st[1].update(block)
+        st[2] += len(block)
+        if progress is not None and block:
+            progress(len(block))
+    for m in members:
+        if state[m.name][2] != m.size:
+            raise ArchiveError(f"{m.name} is {state[m.name][2]} bytes in {Path(path).name} (the archive says {m.size})")
+    return {n: (f"{st[0] & 0xFFFFFFFF:08x}", st[1].hexdigest()) for n, st in state.items()}
+
+
 def hash_member(path: Path, member: Member, progress: Optional[Callable[[int], None]] = None,
                 cancel: Optional[Callable[[], bool]] = None) -> tuple[str, str]:
     """``(crc32, sha1)`` of a member, streamed. Raises :class:`ArchiveError` when it is shorter or longer than the archive says."""
@@ -119,26 +165,44 @@ def hash_member(path: Path, member: Member, progress: Optional[Callable[[int], N
 def extract_members(path: Path, members: list[Member], dest: Path, progress: Optional[Callable[[int], None]] = None,
                     cancel: Optional[Callable[[], bool]] = None) -> dict[str, Path]:
     """Write the members into ``dest`` (their paths below it, never outside it); ``{member name: file}``. Every file is checked against
-    the CRC-32 the archive lists."""
+    the CRC-32 the archive lists. One pass over the archive (:func:`iter_files`)."""
     dest = Path(dest)
     out: dict[str, Path] = {}
     root = os.path.realpath(dest)
+    targets: dict[str, Path] = {}
     for m in members:
         target = Path(os.path.realpath(dest / m.name.replace("\\", "/")))
         if os.path.commonpath([root, str(target)]) != root:
             raise ArchiveError(f"{m.name} would be written outside the work folder")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        crc, n = 0, 0
-        with open_member(path, m.name) as src, open(target, "wb") as dst:
-            for block in iter(lambda: src.read(CHUNK), b""):
-                if cancel is not None and cancel():
-                    raise scanner.ScanCancelled()
-                dst.write(block)
-                crc = zlib.crc32(block, crc)
-                n += len(block)
-                if progress is not None:
-                    progress(len(block))
+        targets[m.name] = target
+    sums: dict[str, list[int]] = {m.name: [0, 0] for m in members}
+    current: Optional[str] = None
+    dst: Optional[BinaryIO] = None
+    try:
+        for m, block in iter_files(path, members):
+            if cancel is not None and cancel():
+                raise scanner.ScanCancelled()
+            if m.name != current:
+                if dst is not None:
+                    dst.close()
+                targets[m.name].parent.mkdir(parents=True, exist_ok=True)
+                dst = open(targets[m.name], "wb")
+                current = m.name
+            dst.write(block)
+            s = sums[m.name]
+            s[0] = zlib.crc32(block, s[0])
+            s[1] += len(block)
+            if progress is not None and block:
+                progress(len(block))
+    finally:
+        if dst is not None:
+            dst.close()
+    for m in members:
+        crc, n = sums[m.name]
+        if not targets[m.name].exists() and m.size == 0:
+            targets[m.name].parent.mkdir(parents=True, exist_ok=True)
+            targets[m.name].write_bytes(b"")
         if n != m.size or (m.crc and f"{crc & 0xFFFFFFFF:08x}" != m.crc):
             raise ArchiveError(f"{m.name} did not unpack correctly from {Path(path).name}")
-        out[m.name] = target
+        out[m.name] = targets[m.name]
     return out

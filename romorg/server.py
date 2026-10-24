@@ -299,7 +299,7 @@ LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "dupl
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
-                "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions", "combine_alt_titles",
+                "keep_extras", "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions", "combine_alt_titles",
                 "prefer_whdload", "prefer_unprotected", "build_whdload")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
@@ -1406,6 +1406,7 @@ class App:
             "folder_hint": getattr(platform, "folder_hint", "") or "",
             "extensions": list(getattr(platform, "extensions", ()) or ()),
             "convertible": bool(getattr(platform, "convertible", False)),
+            "compress_7z": bool(getattr(platform, "compress_7z", False)),
             "convert_on_build": self._convert_on_build(platform, cfg),
             "chd": layout == LAYOUT_GAME_FOLDER,
             "disc": self._disc_info(platform, cfg),
@@ -1697,7 +1698,7 @@ class App:
         return state.items[key]
 
     def _convert_plan(self, state: ScanState, latest_only: bool = False) -> list[Any]:
-        if not getattr(state.platform, "convertible", False):
+        if not self._converts(state.platform):
             return []
         if latest_only not in state.convert_plans and self._is_dc(state):
             ops = list(_mod("discsys").plan_convert(state.result, self._chdman() is not None, self._config()))
@@ -1713,7 +1714,15 @@ class App:
             convert = _optional_mod("convert")
             if convert is None:
                 raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "Conversion is not available in this version")
-            ops = list(_call(convert.plan_conversions, state.result, layout=state.layout, latest_only=latest_only))
+            cfg = self._config()
+            seven = self._compress_7z(state.platform, cfg)
+            kw: dict[str, Any] = {}
+            if seven:                                                       # (the 7z repack of the games the library keeps)
+                lplan = self._library_plan(state)
+                kept = {Path(o.src) for o in lplan.ops if not o.folder and not o.unmatched}
+                kw = {"compress_7z": True, "keep": kept.__contains__,
+                      "cleanups": bool(getattr(state.platform, "convertible", False)) and bool(self._profile(state.platform, cfg).convert_first)}
+            ops = list(_call(convert.plan_conversions, state.result, layout=state.layout, latest_only=latest_only, **kw))
             disc_dats = tuple(getattr(state.platform, "disc_dats", ()) or ())
             if disc_dats:                                                    # CD32 / CDTV discs -> CHD
                 keep = None
@@ -2087,6 +2096,9 @@ class App:
             elif getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config()):
                 discs = {Path(f): c for c in self._convert_plan(state, self._latest_arg(state, {}))
                          if c.status == "convert" and isinstance(c, _mod("cdconvert").CdConvertOp) for f, _d in c.moves}   # (each file of the disc)
+            elif self._compress_7z(state.platform):          # (a game the build repacks first: its row shows the .7z, where the game goes)
+                discs = {Path(c.src): c for c in self._convert_plan(state, self._latest_arg(state, {}))
+                         if c.status == "convert" and getattr(c, "container", "") == "7z"}
             for item, op in zip(items, plan.ops):
                 cop = will.get(id(getattr(op, "unit", None))) if will and getattr(op, "unit_kind", "") == "raw" else None
                 if cop is not None:
@@ -2420,9 +2432,20 @@ class App:
         return {"folders": self._folders(cfg)}
 
     def _convert_on_build(self, platform: Any, cfg: dict[str, Any]) -> bool:
-        """The rule "Convert when building" of a system (off by default: it takes a while; your default for every system, which one
-        can override). Only for a system that can convert something."""
-        return bool(getattr(platform, "convertible", False)) and bool(self._profile(platform, cfg).convert_first)
+        """Build library converts first: the rule "Convert when building" of a system that can convert something, or "Compress games
+        as 7z" of a cartridge system RetroArch reads .7z games of (both on by default; your defaults, which a system can override)."""
+        prof = self._profile(platform, cfg)
+        return ((bool(getattr(platform, "convertible", False)) and bool(prof.convert_first))
+                or self._compress_7z(platform, cfg))
+
+    def _compress_7z(self, platform: Any, cfg: dict[str, Any] | None = None) -> bool:
+        """The rule "Compress games as 7z" of a system whose RetroArch cores load .7z games (``Platform.compress_7z``)."""
+        return bool(getattr(platform, "compress_7z", False)) and bool(self._profile(platform, cfg).compress_7z)
+
+    @staticmethod
+    def _converts(platform: Any) -> bool:
+        """The system has a conversion step at all (the Convert page, the convert plan): a clean-up / CHD, or the 7z repack."""
+        return bool(getattr(platform, "convertible", False) or getattr(platform, "compress_7z", False))
 
     def _delete_converted(self, platform: Any, cfg: dict[str, Any] | None = None) -> bool:
         """The rule "Delete the originals after converting" (the originals go to ``_converted_originals`` when it is off)."""
@@ -2839,8 +2862,8 @@ class App:
                 body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
-                    "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"):
+                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "compress_7z",
+                    "prefer_saved", "prefer_editions", "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
         changes.update(self._rating_changes(body, library))
@@ -3785,9 +3808,13 @@ class App:
             ops = self._convert_plan(state, self._latest_arg(state, {}))
             todo = [op for op in ops if op.status == "convert"]
             discs = sum(1 for op in todo if isinstance(op, _mod("cdconvert").CdConvertOp))
-            page["convert"] = {"count": len(todo), "kind": "chd" if self._is_dc(state) or (todo and discs == len(todo)) else "clean",
+            packs = sum(1 for op in todo if getattr(op, "repack", False))
+            kind = ("chd" if self._is_dc(state) or (todo and discs == len(todo)) else "7z" if todo and packs == len(todo) else "clean")
+            page["convert"] = {"count": len(todo), "kind": kind,
                                "archives": sum(1 for op in todo if getattr(op, "archive", False)),
                                "delete": self._delete_converted(state.platform)}
+            if packs:
+                page["convert"]["repack"] = packs                        # (games repacked as .7z: their originals are deleted)
         aside_raw = _str_arg(body.get("aside_to"))
         if aside_raw and not _str_arg(body.get("export_to")):
             aside = self._library_aside_dir(state, body)
@@ -5160,7 +5187,8 @@ class App:
                             "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
         if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
             self._add_conversions(state, entries, treeview)
-        elif getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config()):
+        elif (getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config())) \
+                or self._compress_7z(state.platform):
             self._add_disc_conversions(state, entries, treeview)
         games = self._kind_rows(state, "games")
         try:
@@ -5508,12 +5536,16 @@ class App:
 
     def _add_disc_conversions(self, state: ScanState, entries: list[dict[str, Any]], treeview: Any) -> None:
         """The CD32 / CDTV discs the build converts, as the tree shows them: the game's file where it goes is its CHD, and the
-        original is set aside in ``_converted_originals`` (or deleted with the rule "Delete the originals after converting")."""
+        original is set aside in ``_converted_originals`` (or deleted with the rule "Delete the originals after converting"); a cartridge
+        game the build repacks (the rule "Compress games as 7z"): its file is the .7z, the original is deleted."""
         root = Path(state.root)
         delete = self._delete_converted(state.platform)
         cdconvert = _mod("cdconvert")
         ops = {"/".join(Path(f).relative_to(root).parts): op for op in self._convert_plan(state, self._latest_arg(state, {}))
                if op.status == "convert" and isinstance(op, cdconvert.CdConvertOp) for f, _d in op.moves}      # (each file of the disc)
+        for op in self._convert_plan(state, self._latest_arg(state, {})):   # (a game repacked as .7z: its file is the .7z, the original goes)
+            if op.status == "convert" and getattr(op, "repack", False):
+                ops["/".join(Path(op.src).relative_to(root).parts)] = op
         done: set[int] = set()
         for e in list(entries):
             op = ops.get(e.get("from") or "") if e["side"] == treeview.LIBRARY else None
@@ -5526,7 +5558,7 @@ class App:
             parts = tuple(e["parts"][:-1]) + (Path(op.dst).name,)
             e.update(parts=parts, state=treeview.CONVERTED, size=0, text="/".join(parts).casefold() + " " + e["text"])
             if not delete:
-                for s, d in op.moves:
+                for s, d in getattr(op, "moves", ()):
                     entries.append({"side": treeview.LIBRARY, "parts": tuple(Path(d).relative_to(root).parts), "size": 0,
                                     "state": treeview.MOVED, "from": "/".join(Path(s).relative_to(root).parts), "row": e["row"],
                                     "text": "/".join(Path(d).relative_to(root).parts).casefold()})
@@ -5807,7 +5839,7 @@ class App:
         if "convert" in want:
             with self._lock:
                 state = self._scan
-            if state is not None and state.platform.name == platform.name and getattr(platform, "convertible", False):
+            if state is not None and state.platform.name == platform.name and self._converts(platform):
                 try:
                     out["convert"] = {"games": len(self._convert_plan(state))}
                 except Exception:  # noqa: BLE001 - a tile, never an error
@@ -5902,7 +5934,7 @@ class App:
         state = self._require_scan()
         if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse a cached plan
             self._drop_plans(state)
-        available = bool(getattr(state.platform, "convertible", False))
+        available = self._converts(state.platform)
         latest_only = self._latest_arg(state, body)
         ops = self._convert_plan(state, latest_only) if available else []
         rows = self._convert_rows(state, latest_only) if available else []
@@ -5921,7 +5953,7 @@ class App:
 
     def convert_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
-        if not getattr(state.platform, "convertible", False):
+        if not self._converts(state.platform):
             raise ApiError(HTTPStatus.CONFLICT, f"{state.platform.name} files are not converted")
         latest_only = self._latest_arg(state, body)
         self._convert_plan(state, latest_only)  # errors (e.g. module missing) before starting a job

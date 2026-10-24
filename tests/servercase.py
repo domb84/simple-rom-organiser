@@ -52,6 +52,7 @@ class ServerCase(unittest.TestCase):
              "gb": ["Tetra (World)", "Mono (World)"]}
     BASE: str | None = None                       # the folder the scratch folder is made in (default: the temp folder)
     ARCHIVE = True                                # set the archive folder of Settings to <scratch>/rom-archive
+    COMPRESS_7Z = False                           # the rule "Compress games as 7z" (on in the app): off, so a build leaves the test's zips as zips
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="romorg-coll-", dir=self.BASE)).resolve()
@@ -77,6 +78,8 @@ class ServerCase(unittest.TestCase):
         self.addCleanup(self.srv.shutdown)
         if self.ARCHIVE:                                   # there is no default archive folder: the tests choose one, like the user
             self.call("POST", "/api/settings/archive", {"dir": str(self.tmp / "rom-archive")})
+        if not self.COMPRESS_7Z:
+            self.call("POST", "/api/library/defaults", {"compress_7z": False})
 
     @staticmethod
     def _remove(folder: Path) -> None:

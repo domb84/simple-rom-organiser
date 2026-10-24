@@ -1138,23 +1138,26 @@ def identify_archive(unit: DcUnit, index: DcIndex, hasher_cache: scanner.HashCac
         return
     st = unit.path.stat()
     base = scanner._cache_key(unit.path)
+    keys = {m.name: (f"{base}::{m.name}" if base else None) for m in tracks}
+    known = {n: hasher_cache.get(k, st.st_size, st.st_mtime_ns, scanner.file_ident(st)) for n, k in keys.items() if k}
+    todo = [m for m in tracks if known.get(m.name) is None]
+    if todo:                                   # (every track not remembered, in ONE pass: a solid 7z is decoded once, not once a track)
+        if prog:
+            prog.check()
+            prog.emit(f"Reading {unit.path.name}")
+        try:
+            got_all = discarchive.hash_members(unit.path, todo, progress=(prog.add if prog else None),
+                                               cancel=(prog.cancelled if prog else None))
+        except discarchive.ArchiveError as exc:
+            unit.reason = f"cannot read the archive: {exc}"
+            return
+        for name, got in got_all.items():
+            known[name] = got
+            if keys.get(name):
+                hasher_cache.put(keys[name], st.st_size, st.st_mtime_ns, got[0], got[1], scanner.file_ident(st))
     for i in sorted(range(len(tracks)), key=lambda k: sizes[k]):
         m = tracks[i]
-        key = f"{base}::{m.name}" if base else None
-        got = hasher_cache.get(key, st.st_size, st.st_mtime_ns, scanner.file_ident(st)) if key else None
-        if got is None:
-            if prog:
-                prog.check()
-                prog.emit(f"Reading {m.name} in {unit.path.name}")
-            try:
-                got = discarchive.hash_member(unit.path, m, progress=(prog.add if prog else None),
-                                               cancel=(prog.cancelled if prog else None))
-            except discarchive.ArchiveError as exc:
-                unit.reason = f"cannot read the archive: {exc}"
-                return
-            if key:
-                hasher_cache.put(key, st.st_size, st.st_mtime_ns, got[0], got[1], scanner.file_ident(st))
-        crc, sha1 = got
+        crc, sha1 = known[m.name]
         unit.tracks[i]["crc32"], unit.tracks[i]["sha1"] = crc, sha1
         alive = [g for g in alive if g.tracks[i].sha1 == sha1 and (not g.tracks[i].crc or g.tracks[i].crc == crc)]
         if not alive:

@@ -27,15 +27,18 @@ the original.
 
 from __future__ import annotations
 
+import contextlib
+import lzma
 import os
 import uuid
 import zipfile
 import zlib
 import hashlib
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterable, Iterator, Optional
 
 from . import folders, organiser, scanner, winproc
 from .datfile import archive_stem
@@ -77,6 +80,10 @@ class ConvertOp:
     expected_size: int = 0
     expected_crc: str = ""     # used when the DAT has no sha1
     dat: str = ""              # DAT of the rom (protects its folder from cleanup)
+    container: str = ""        # what is written: "" (as the source: a loose file / a zip) | "7z" (the rule "Compress games as 7z")
+    repack: bool = False       # nothing of the rom changes, only its packing: the original is deleted once the new file is checked
+    deleted: bool = False      # (repack) the original was deleted
+    left: str = ""             # (repack) the original could not be deleted: why
 
 
 # --------------------------------------------------------------------------- transform
@@ -194,8 +201,12 @@ def _pick_rom(match: "Match", transform: str) -> Optional["Rom"]:
 
 
 def plan_conversions(result: "ScanResult", layout: Optional[str] = None,
-                     latest_only: bool = False) -> list[ConvertOp]:
-    """One op per convertible match (see the module doc); conflicts / skips explained."""
+                     latest_only: bool = False, compress_7z: bool = False,
+                     keep: Optional[Callable[[Path], bool]] = None, cleanups: bool = True) -> list[ConvertOp]:
+    """One op per convertible match (see the module doc); conflicts / skips explained. ``compress_7z`` (the rule "Compress games as
+    7z"): what is written is a ``.7z``, and every other game - a loose file or a zip / 7z of one rom, already the DAT's - gets a repack
+    op (``repack``). ``keep(path)``: False for a file the library rules set aside (not converted; None = every file). ``cleanups``
+    False: no clean-up of a dump (the rule "Convert when building" off), only the repacks."""
     root = Path(result.root)
     layout = layout or getattr(result, "layout", scanner.LAYOUT_PER_DAT)
     member_counts = scanner._archive_member_counts(result.matched, result.unmatched)
@@ -206,11 +217,21 @@ def plan_conversions(result: "ScanResult", layout: Optional[str] = None,
     originals: dict[str, ConvertOp] = {}
 
     for m in result.matched:
-        if not scanner.is_convertible(m) or scanner.is_converted_original(m.entry.path, root):
+        if scanner.is_converted_original(m.entry.path, root):
             continue
-        if scanner.is_in_reason_dir(m.entry.path if m.entry.path.is_absolute() else root / m.entry.path, root):
+        apath = m.entry.path if m.entry.path.is_absolute() else root / m.entry.path
+        if scanner.is_in_reason_dir(apath, root):
             continue  # set aside by Build library (excluded / superseded / incomplete / duplicate)
-        if getattr(m, "matched_via", scanner.VIA_RAW) == scanner.VIA_RAW:
+        if keep is not None and not keep(apath):
+            continue  # (the library rules set it aside: not worth converting)
+        repack = False
+        if scanner.is_convertible(m) and not cleanups:
+            continue
+        if not scanner.is_convertible(m):
+            if not compress_7z or not m.primary or apath.suffix.lower() in (".7z", ".rar"):
+                continue                                         # (already a 7z; a rar is not read here)
+            rom, transform, repack = m.primary[0], "", True          # (already the DAT's rom: only its packing changes)
+        elif getattr(m, "matched_via", scanner.VIA_RAW) == scanner.VIA_RAW:
             if sets is None:
                 sets = _set_index(result)
             target = _raw_swapped_target(m, sets)
@@ -225,7 +246,9 @@ def plan_conversions(result: "ScanResult", layout: Optional[str] = None,
         e = m.entry
         src = e.path if e.path.is_absolute() else root / e.path
         folder = organiser.canonical_dir(root, rom.dat, layout)
-        if e.member is None:
+        if compress_7z:
+            dst = folder / organiser.safe_filename(archive_stem(rom) + ".7z")
+        elif e.member is None:
             dst = folder / organiser.safe_filename(rom.name)
         else:
             dst = folder / organiser.safe_filename(archive_stem(rom) + ".zip")
@@ -233,13 +256,13 @@ def plan_conversions(result: "ScanResult", layout: Optional[str] = None,
                        status=CONVERT, rom_name=rom.name,
                        via=getattr(m, "matched_via", "") or scanner.VIA_RAW,
                        transform=transform, expected_sha1=rom.sha1, expected_size=rom.size,
-                       expected_crc=rom.crc, dat=rom.dat)
+                       expected_crc=rom.crc, dat=rom.dat, container="7z" if compress_7z else "", repack=repack)
         ops.append(op)
 
         if e.member is not None:
             n = member_counts.get(e.path, 1)
-            if e.path.suffix.lower() not in scanner.ZIP_EXTS:
-                op.status, op.reason = SKIP, "extract the archive first (only .zip archives are converted)"
+            if e.path.suffix.lower() not in scanner.ZIP_EXTS and e.path.suffix.lower() != ".7z":
+                op.status, op.reason = SKIP, "extract the archive first (only .zip and .7z archives are converted)"
                 continue
             if n != 1:
                 op.status, op.reason = SKIP, f"archive has {n} members - extract it first"
@@ -260,11 +283,12 @@ def plan_conversions(result: "ScanResult", layout: Optional[str] = None,
             op.status, op.reason = CONFLICT, "target exists"
             continue
         okey = organiser._fold(op.original_dst)
-        if organiser._exists(op.original_dst) or okey in originals:
+        if not repack and (organiser._exists(op.original_dst) or okey in originals):
             op.status, op.reason = CONFLICT, "a converted original with this name is already kept"
             continue
         claimed[key] = op
-        originals[okey] = op
+        if not repack:
+            originals[okey] = op
     return ops
 
 
@@ -304,11 +328,8 @@ def _write_loose(op: ConvertOp, original: Path, tmp: Path) -> str:
 
 def _write_zip(op: ConvertOp, original: Path, tmp: Path) -> str:
     """Write the clean single-member zip; returns the sha1 of the zip file itself."""
-    with zipfile.ZipFile(original) as zin:
-        infos = [i for i in zin.infolist() if not i.is_dir()]
-        if len(infos) != 1 or infos[0].filename != op.member:
-            raise ConvertError("the archive changed since the scan - scan again")
-        with zin.open(infos[0]) as f, zipfile.ZipFile(tmp, "x", zipfile.ZIP_DEFLATED) as zout:
+    with _source(op, original) as f:                         # (the one member of its zip / 7z)
+        with zipfile.ZipFile(tmp, "x", zipfile.ZIP_DEFLATED) as zout:
             zi = zipfile.ZipInfo(op.rom_name, date_time=datetime.now().timetuple()[:6])
             zi.compress_type = zipfile.ZIP_DEFLATED
             zi.external_attr = 0o644 << 16
@@ -324,6 +345,84 @@ def _write_zip(op: ConvertOp, original: Path, tmp: Path) -> str:
         assert raw is not None
         _check(op, raw[0], raw[1], infos[0].file_size, "written archive")
     return scanner.hash_file(tmp)[1]
+
+
+@contextlib.contextmanager
+def _source(op: ConvertOp, path: Path) -> Iterator[BinaryIO]:
+    """The rom of ``op`` as a stream: the loose file, or the one member of its zip / 7z (checked: the archive holds nothing else)."""
+    if op.member is None:
+        with open(path, "rb") as f:
+            yield f
+        return
+    from . import discarchive
+    names = [m.name for m in discarchive.list_members(path)]
+    if names != [op.member]:
+        raise ConvertError("the archive changed since the scan - scan again")
+    with discarchive.open_member(path, op.member) as f:
+        yield f
+
+
+def _write_7z(op: ConvertOp, original: Path, tmp: Path, cancel: Any = None) -> str:
+    """Write a ``.7z`` holding the (clean) rom as ``rom_name``; checked against the DAT as written and again read back from disk.
+    Returns the sha1 of the .7z file."""
+    from . import sevenzip
+    t = scanner.StreamTransform(op.transform) if op.transform else None
+    crc_sha = [0, hashlib.sha1(), 0]
+
+    def chunks() -> Iterator[bytes]:
+        with _source(op, original) as f:
+            while True:
+                block = f.read(CHUNK_SIZE)
+                if not block:
+                    break
+                out = t.feed(block) if t else block
+                if out:
+                    yield out
+            tail = t.finish() if t else b""
+            if tail:
+                yield tail
+
+    def counted() -> Iterator[bytes]:
+        for block in chunks():
+            crc_sha[0] = zlib.crc32(block, crc_sha[0])
+            crc_sha[1].update(block)
+            crc_sha[2] += len(block)
+            yield block
+    with open(tmp, "xb"):
+        pass                                                   # (claimed: never over anything)
+    sevenzip.write_one(tmp, op.rom_name, counted(), op.expected_size, cancel=lambda: organiser._is_cancelled(cancel))
+    _check(op, f"{crc_sha[0] & 0xFFFFFFFF:08x}", crc_sha[1].hexdigest(), crc_sha[2], "converted content")
+    arc = sevenzip.Archive(tmp)                                # re-read what is on disk (the 7z's own CRC checked as it is read)
+    if [n for n, _s, _c in arc.files] != [op.rom_name]:
+        raise ConvertError("written archive has unexpected contents")
+    crc, sha, n = 0, hashlib.sha1(), 0
+    for block in arc.iter_member(op.rom_name):
+        crc = zlib.crc32(block, crc)
+        sha.update(block)
+        n += len(block)
+    _check(op, f"{crc & 0xFFFFFFFF:08x}", sha.hexdigest(), n, "written archive")
+    return scanner.hash_file(tmp)[1]
+
+
+def _repack_one(op: ConvertOp, root: Path, journal: Any, created: list[str], tmp: Path, sha1: str) -> None:
+    """Put the checked ``.7z`` of a repack op in place and delete the original (main thread: the journal is written here only).
+    Undo cannot bring a deleted original back, so it never takes the new file away either (its record is marked as not done)."""
+    if organiser._exists(op.dst) and not organiser._same_file(op.src, op.dst):
+        raise FileExistsError(f"target exists: {op.dst}")
+    organiser.make_dirs(op.dst.parent, created, journal)
+    seq = journal.record({"op": "create", "path": organiser.rel_str(op.dst, root), "sha1": sha1, "size": tmp.stat().st_size})
+    try:
+        organiser.move_exclusive(tmp, op.dst)
+    except BaseException:
+        journal.failed(seq)
+        raise
+    journal.useful = True
+    journal.failed(seq)
+    try:
+        os.unlink(op.src)
+        op.deleted = True
+    except OSError as exc:                                     # (open elsewhere, read-only: left where it is, reported; the 7z stays)
+        op.left = f"{op.src}: {exc}"
 
 
 def _convert_one(op: ConvertOp, root: Path, journal: Any, created: list[str]) -> None:
@@ -353,7 +452,9 @@ def _convert_one(op: ConvertOp, root: Path, journal: Any, created: list[str]) ->
         tmp = _temp_name(dst)
         # journalled before it exists: Undo deletes a leftover of an interrupted run
         journal.record({"op": "tmp", "path": organiser.rel_str(tmp, root)})
-        if op.member is None:
+        if op.container == "7z":
+            sha1 = _write_7z(op, orig, tmp)
+        elif op.member is None:
             sha1 = _write_loose(op, orig, tmp)
         else:
             sha1 = _write_zip(op, orig, tmp)
@@ -404,22 +505,77 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
     removed: list[str] = []
     cancelled = False
     error: Optional[str] = None
+    errors = (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error, lzma.LZMAError)
+    done = 0
     try:
-        for i, op in enumerate(todo):
+        cleanups = [op for op in todo if not op.repack]
+        repacks = [op for op in todo if op.repack]
+        for op in cleanups:
             if organiser._is_cancelled(cancel):
                 cancelled = True
                 break
             if progress is not None:
-                progress(i, total, op.src.name)
+                progress(done, total, op.src.name)
+            done += 1
             try:
                 _convert_one(op, root, journal, created)
                 converted.append(op)
             except organiser.UndoLogError:
                 raise
-            except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile,
-                    EOFError, zlib.error) as exc:
+            except errors as exc:
                 failed.append({"src": str(op.src), "dst": str(op.dst),
                                "error": winproc.long_path_hint(exc, op.src, op.dst)})
+        # repacks: compressed in threads (LZMA releases the GIL: ~3 MB/s a core), put in place one by one here
+        workers = max(1, min(len(repacks), os.cpu_count() or 1))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="romorg-7z") as pool:
+            running: dict[Any, tuple[ConvertOp, Path]] = {}
+            queue = list(repacks)
+            while (queue or running) and not cancelled:
+                while queue and len(running) < workers * 2:
+                    if organiser._is_cancelled(cancel):
+                        cancelled = True
+                        break
+                    op = queue.pop(0)
+                    tmp = _temp_name(op.dst)
+                    organiser.make_dirs(op.dst.parent, created, journal)
+                    journal.record({"op": "tmp", "path": organiser.rel_str(tmp, root)})   # (Undo deletes a leftover)
+                    running[pool.submit(_write_7z, op, op.src, tmp, cancel)] = (op, tmp)
+                if not running:
+                    break
+                finished, _rest = wait(list(running), return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    op, tmp = running.pop(fut)
+                    done += 1
+                    if progress is not None:
+                        progress(done, total, op.src.name)
+                    try:
+                        sha1 = fut.result()
+                        _repack_one(op, root, journal, created, tmp, sha1)
+                        converted.append(op)
+                    except organiser.UndoLogError:
+                        raise
+                    except InterruptedError:
+                        cancelled = True
+                    except errors as exc:
+                        failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+                    finally:
+                        if tmp.exists():
+                            try:
+                                tmp.unlink()
+                            except OSError:
+                                pass
+            for fut, (op, tmp) in running.items():          # (cancelled: the ones still running end, their part files go)
+                fut.cancel()
+            for fut, (op, tmp) in running.items():
+                try:
+                    fut.result()
+                except BaseException:  # noqa: BLE001
+                    pass
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
         if progress is not None and not cancelled:
             progress(total, total, "")
 
@@ -440,4 +596,6 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
     finally:
         log_path = journal.close()
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
-            "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error}
+            "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,
+            "repacked": sum(1 for op in converted if op.repack), "deleted": sum(1 for op in converted if op.deleted),
+            "not_deleted": [op.left for op in converted if op.left]}

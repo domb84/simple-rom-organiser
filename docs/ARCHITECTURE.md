@@ -3438,3 +3438,36 @@ extension. The Overview card says *found*, the Library card *kept*.
   25th (installs completely, every file's CRC right, black screen in PUAE with WHDLoad 19 and 20 - not solved), five CDTV discs the
   user lacks, eight games with no install (Kick Off - Extra Time is supported by the Kick Off install only together with Kick Off's
   disk: a build of two releases, not done).
+
+
+**AMENDMENT 62 (v0.3) — 7z: a solid block decoded once; discs unpacked ahead.**
+* Measured on the Deck (Alfred Chicken, a TOSEC CD32 7z: 11 files, 209 MB in one LZMA block): taking the files out one by one decoded
+  the block from its start for each (46.3 s, 4.5 MB/s); one pass is 7.5 s. `sevenzip.Archive.iter_files` decodes each solid block once
+  and hands out its members in order (each CRC checked); `discarchive.iter_files` / `hash_members` / `extract_members` use it (a zip's
+  members one after the other). Callers: the CD32 / disc conversions, the disc scan of a zip / 7z (every track not remembered in one
+  pass), the WHDLoad build's SPS images. 46.3 s -> 9.1 s.
+* LZMA decodes at ~30 MB/s on one core and releases the GIL (4 threads: 113 MB/s); TOSEC's CD32 packs are LZMA (not LZMA2), one stream
+  per archive, so the parallelism is across archives: `cdconvert.apply_conversions` unpacks the next two discs in threads while one is
+  compressed (`UNPACK_AHEAD`, a work folder each, removed whatever happens). The 11-disc check of Amendment 59: 214 s -> 82 s.
+* Zip scans read the central directory only (GBA, 2,820 zips: 0.6 s cold). Loose files are hashed at ~600-1000 MB/s; the N64 folder's
+  cold scan (7.6 GB, 128 s) was bound by the disk, which another process on the host kept busy (I/O pressure "full" ~50 %).
+
+
+**AMENDMENT 63 (v0.3) — Cartridge games are kept as .7z (the rule "Compress games as 7z", on by default).**
+* The user: compress to 7z by default, on every system that supports it. RetroArch (the Steam build: "7zip extraction support: yes";
+  no tar / gz / zstd for content) hands a core the ROM of a .zip or .7z in memory; checked with the installed cores: Genesis Plus GX
+  and PicoDrive say they need a file but override it for cartridges (a Mega Drive and a 32X game loaded from a 7z, same CRC); the
+  others load from memory anyway. `Platform.compress_7z`: NES, SNES, N64, Game Boy, Game Boy Color, GBA, Master System, Game Gear, Mega
+  Drive, 32X (not the Lynx nor the DS: no core here to check them with).
+* Measured on the user's sets (40 games a system): 7z is 6-9 points of the raw size smaller than zip (SNES 59 -> 53 %, GBA 39 -> 32 %,
+  N64 74 -> 67 %); a launch unpacks in at most ~0.35 s (a 64 MB N64 cart). LZMA preset 6 = within 0.1 % of 9 / extreme, ~3 MB/s a core.
+* `sevenzip.write_one`: one file per archive, LZMA2 preset 6, the dictionary sized to the file (<= 64 MiB: the decoder allocates it),
+  streamed, CRC in the header (RetroArch read one: same CRC). `LibraryProfile.compress_7z` (global, overridable; `applicable_fields`
+  for those systems). `convert.plan_conversions(compress_7z=, keep=, cleanups=)`: a game already the DAT's (loose, or a zip / 7z of
+  one rom) gets a repack op: written as `<game>.7z`, read back and checked against the DAT, put in place, the original deleted (nothing
+  of the rom changes; Undo cannot bring it back, so it never takes the .7z away). A dump that needs a clean-up is written clean into a
+  .7z, its original kept aside as before (the user's SNES / N64 choice). Clean-ups now read a 7z of one rom too. Repacks run in a
+  thread pool (LZMA releases the GIL), the journal is written by the main thread only. Build library runs it first (kept games only);
+  the preview, its rows and the tree show the .7z.
+* Real data (a copy of the SNES folder, 2,278 zips): 1,853 kept games repacked in 175 s, none failed, 1,597 -> 1,429 MB (-10.5 %);
+  tree = totals. Tests' ServerCase turns the rule off unless a test asks for it (its zips stay zips).

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import lzma
 import os
 import random
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -94,6 +96,38 @@ class SevenZipReaderTests(unittest.TestCase):
             res = scanner.scan(d, [DatFile("Test", "", "", [rom])], use_cache=False)
         self.assertEqual([m.entry.rel for m in res.matched], ["set.7z::b.rom"])
         self.assertEqual(res.unsupported, [])
+
+
+class SolidBlockTests(unittest.TestCase):
+    """A solid block (every file of a CD32 disc in one LZMA stream) is decoded once for all the files taken out of it."""
+
+    def setUp(self) -> None:
+        from tests.sevenzipmini import write_solid_7z
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.files = {"disc.cue": b"FILE ...\n" * 4, "disc.iso": os.urandom(3 << 20), "empty.txt": b"", "t02.wav": os.urandom(5 << 20)}
+        self.path = write_solid_7z(self.tmp / "disc.7z", self.files)
+
+    def test_every_file_comes_out_whole_from_one_pass(self) -> None:
+        from romorg import discarchive
+        members = discarchive.list_members(self.path)
+        with mock.patch.object(sevenzip, "_folder_bytes", wraps=sevenzip._folder_bytes) as decode:
+            out = discarchive.extract_members(self.path, members, self.tmp / "out")
+        self.assertEqual(decode.call_count, 1)                                   # (one decode of the block, not one per file)
+        self.assertEqual({n: p.read_bytes() for n, p in out.items()}, self.files)
+        sums = discarchive.hash_members(self.path, [m for m in members if m.name != "disc.cue"])
+        self.assertEqual(sums["t02.wav"][1], hashlib.sha1(self.files["t02.wav"]).hexdigest())
+        self.assertEqual(set(sums), {"disc.iso", "empty.txt", "t02.wav"})
+
+    def test_a_file_whose_crc_does_not_match_is_an_error(self) -> None:
+        from romorg import discarchive
+        arc = sevenzip.Archive(self.path)
+        arc.files = [(n, sz, (c ^ 1) if n == "t02.wav" else c) for n, sz, c in arc.files]
+        with self.assertRaisesRegex(ValueError, "CRC mismatch in t02.wav"):
+            for _n, _b in arc.iter_files():
+                pass
+        with self.assertRaises(KeyError):
+            list(arc.iter_files(["nope"]))
 
 
 class SevenZipHeaderTests(unittest.TestCase):

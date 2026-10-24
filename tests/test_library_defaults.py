@@ -101,6 +101,7 @@ class RegionTieLayeringTests(unittest.TestCase):
 
 
 class DefaultsServerTests(ServerCase):
+    COMPRESS_7Z = True                            # (the app's own defaults, untouched)
     def profile(self, name: str = SNES) -> dict:
         return self.call("GET", f"/api/library/profile?platform={q(name)}")
 
@@ -201,6 +202,7 @@ class DefaultsServerTests(ServerCase):
 
 
 class MigrationServerTests(ServerCase):
+    COMPRESS_7Z = True                            # (the app's own defaults, untouched)
     def test_a_server_started_on_an_older_config_migrates_it(self) -> None:
         cfg_path = paths.config_path()
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}

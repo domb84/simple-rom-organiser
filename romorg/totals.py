@@ -39,6 +39,7 @@ def profile_signature(profile: library.LibraryProfile) -> str:
     rules.pop("keep_bios", None)           # (nor do BIOS / firmware files: they are no games)
     rules.pop("keep_extras", None)         # (nor the files that sit with a disc)
     rules.pop("convert_first", None)       # (nor what a build converts first)
+    rules.pop("compress_7z", None)          # (nor how a game is packed)
     rules.pop("delete_converted", None)
     rules.pop("prefer_saved", None)        # (nor which release of a game with saves is kept)
     rules.pop("prefer_editions", None)     # (nor which release of a game: an edition or the plain one)

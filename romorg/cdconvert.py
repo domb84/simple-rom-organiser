@@ -33,6 +33,7 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from . import cdimage, chdtool, chdwrite, discarchive, organiser, scanner, winproc
@@ -48,6 +49,7 @@ CHD_EXT = ".chd"
 CACHE_SUFFIX = "#cd"                   # hash cache rows of a CHD's tracks (not the hash of the file's own bytes)
 CACHE_VERSION = "cd1"
 PART_SUFFIX = ".romorg.part"
+UNPACK_AHEAD = 2                       # discs unpacked ahead of the one being compressed (threads: LZMA / zlib release the GIL)
 
 
 def wav_header(length: int) -> bytes:
@@ -317,8 +319,41 @@ def _op(root: Path, src: Path, files: list[Path], game: str, roms: list, keep: O
     return op
 
 
+def _unpack(op: CdConvertOp, n: int, cancel: Any, progress: Optional[ProgressFn] = None) -> tuple[Path, Path]:
+    """Take the disc of ``op`` out of its zip / 7z into a work folder next to where the CHD goes (the same file system): ``(the work
+    folder, the cue sheet in it)``. Raises :class:`chdtool.ChdmanError`. Runs ahead of the conversions, in a thread (``n``: a work folder
+    of its own) - LZMA decoding releases the GIL, so the next discs unpack while this one is compressed."""
+    unpacked = op.dst.parent / (chdtool.TEMP_PREFIX + f"unpack-{n}")
+    if unpacked.exists():
+        shutil.rmtree(unpacked, ignore_errors=True)
+    is_cancelled = lambda: organiser._is_cancelled(cancel)  # noqa: E731
+    try:
+        listed = discarchive.list_members(op.src)
+        extra = sorted({m.name for m in listed} - {r.name for r in op.roms})
+        if extra:                               # (checked again before anything is written: deleting the archive must lose nothing)
+            raise chdtool.ChdmanError(f"{op.src.name} holds other files too ({extra[0]}): it is not converted")
+        wanted = [m for m in listed if m.name in set(op.members)]
+        done = [0]
+
+        def took(k: int) -> None:
+            done[0] += k
+            if progress:
+                progress(done[0] >> 20, max(1, op.raw_bytes >> 20), f"{op.rom_name}: Unpacking {op.src.name}")
+        try:
+            out = discarchive.extract_members(op.src, wanted, unpacked, progress=took, cancel=is_cancelled)
+        except scanner.ScanCancelled:
+            raise chdtool.ChdmanError("cancelled", cancelled=True) from None
+        except discarchive.ArchiveError as exc:
+            raise chdtool.ChdmanError(f"could not unpack {op.src.name}: {exc}") from exc
+        return unpacked, Path(out[op.sheet])
+    except BaseException:
+        shutil.rmtree(unpacked, ignore_errors=True)
+        raise
+
+
 def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], progress: Optional[ProgressFn], cancel: Any,
-                 preset: str, workers: Optional[int]) -> None:
+                 preset: str, workers: Optional[int], prepared: Any = None) -> None:
+    """``prepared``: the future of the disc's :func:`_unpack` started ahead (None: it is unpacked here)."""
     for s, _d in op.moves:
         if not organiser._exists(s):
             raise FileNotFoundError(f"source missing: {s}")
@@ -335,28 +370,13 @@ def _convert_one(op: CdConvertOp, root: Path, journal: Any, created: list[str], 
         if new.is_file() and not new.is_symlink():
             new.unlink()                      # a leftover of a crashed run (our own distinctive name)
         sheet = Path(op.sheet)
-        if op.archive:                        # the disc is taken out of its zip / 7z next to where the CHD goes (the same file system)
-            unpacked = op.dst.parent / (chdtool.TEMP_PREFIX + "unpack")
-            if unpacked.exists():
-                shutil.rmtree(unpacked, ignore_errors=True)
-            listed = discarchive.list_members(op.src)
-            extra = sorted({m.name for m in listed} - {r.name for r in op.roms})
-            if extra:                           # (checked again before anything is written: deleting the archive must lose nothing)
-                raise chdtool.ChdmanError(f"{op.src.name} holds other files too ({extra[0]}): it is not converted")
-            wanted = [m for m in listed if m.name in set(op.members)]
-            done = [0]
-
-            def took(n: int) -> None:
-                done[0] += n
-                if progress:
-                    progress(done[0] >> 20, max(1, op.raw_bytes >> 20), f"{label}: Unpacking {op.src.name}")
-            try:
-                out = discarchive.extract_members(op.src, wanted, unpacked, progress=took, cancel=is_cancelled)
-            except scanner.ScanCancelled:
-                raise chdtool.ChdmanError("cancelled", cancelled=True) from None
-            except discarchive.ArchiveError as exc:
-                raise chdtool.ChdmanError(f"could not unpack {op.src.name}: {exc}") from exc
-            sheet = Path(out[op.sheet])
+        if op.archive:
+            if prepared is not None:
+                if progress and not prepared.done():
+                    progress(0, 1, f"{label}: Unpacking {op.src.name}")
+                unpacked, sheet = prepared.result()
+            else:
+                unpacked, sheet = _unpack(op, 0, cancel, progress)
 
         def report(done: int, total: int) -> None:
             if progress:
@@ -457,6 +477,12 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
     removed: list[str] = []
     cancelled = False
     error: Optional[str] = None
+    ahead: dict[int, Any] = {}                         # op index -> the future of its unpacking, started ahead
+    pool = ThreadPoolExecutor(max_workers=UNPACK_AHEAD, thread_name_prefix="romorg-unpack")
+
+    def start(k: int) -> None:
+        if k < len(todo) and k not in ahead and todo[k].archive:
+            ahead[k] = pool.submit(_unpack, todo[k], k + 1, cancel)
     try:
         chdtool.sweep_stale(root)
         for i, op in enumerate(todo):
@@ -465,8 +491,10 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
                 break
             if progress:
                 progress(i, len(todo), op.rom_name)
+            for k in range(i, i + UNPACK_AHEAD + 1):         # (this disc and the next ones unpack while this one is compressed)
+                start(k)
             try:
-                _convert_one(op, root, journal, created, progress, cancel, preset, workers)
+                _convert_one(op, root, journal, created, progress, cancel, preset, workers, ahead.pop(i, None))
                 converted.append(op)
             except organiser.UndoLogError:
                 raise
@@ -493,6 +521,12 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
     except organiser.UndoLogError as exc:
         error = str(exc)
     finally:
+        for fut in ahead.values():                     # (unpacked ahead for discs that were not converted: their work folders go)
+            fut.cancel()
+        pool.shutdown(wait=True)
+        for fut in ahead.values():
+            if fut.done() and not fut.cancelled() and fut.exception() is None:
+                shutil.rmtree(fut.result()[0], ignore_errors=True)
         log_path = journal.close()
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed,
             "undo_log": str(log_path) if log_path else None, "cancelled": cancelled, "error": error,

@@ -164,13 +164,15 @@ def _ours(root: Path) -> dict[Path, dict[str, Any]]:
 
 
 def _disk_data(t: Target) -> list[bytes]:
-    from .discarchive import list_members, open_member
+    from .discarchive import iter_files, list_members, open_member
     out = []
     for path, member in t.disks:
-        if t.sps and Path(path).suffix.lower() in (".zip", ".7z"):     # (a release's zip / 7z: its images in order)
-            for m in sorted((m.name for m in list_members(Path(path)) if m.name.lower().endswith(".ipf")), key=str.casefold):
-                with open_member(path, m) as f:
-                    out.append(f.read())
+        if t.sps and Path(path).suffix.lower() in (".zip", ".7z"):     # (a release's zip / 7z: its images in order, read in one pass)
+            images = sorted((m for m in list_members(Path(path)) if m.name.lower().endswith(".ipf")), key=lambda m: m.name.casefold())
+            parts: dict[str, list[bytes]] = {m.name: [] for m in images}
+            for m, piece in iter_files(Path(path), images):
+                parts[m.name].append(piece)
+            out.extend(b"".join(parts[m.name]) for m in images)
         elif member:
             with open_member(path, member) as f:
                 out.append(f.read())

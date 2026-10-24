@@ -61,6 +61,9 @@ class Platform:
     # one game; the best of them is kept, see library.PLATFORM_ORDER)
     disc_dats: tuple[str, ...] = ()
     game_dat: str = ""
+    # Cartridge systems whose RetroArch cores load a ROM from a .7z (RetroArch reads the archive and hands the core the ROM in memory:
+    # checked with the installed cores, 2026-10-24): the rule "Compress games as 7z" repacks their games
+    compress_7z: bool = False
 
 
 _CD32_DATS = ("Commodore Amiga CD32 - Games - [ISO]", "Commodore Amiga CD32 - Games - [IMG]", "Commodore Amiga CD32 - Games - [BIN]")
@@ -299,6 +302,14 @@ def get_platform(name: str) -> Platform:
         return PLATFORMS[name]
     except KeyError:
         raise KeyError(f"unknown platform: {name!r}") from None
+
+
+SEVENZIP_PLATFORMS = ("Nintendo Entertainment System", "Super Nintendo Entertainment System", "Nintendo 64", "Nintendo Game Boy",
+                      "Nintendo Game Boy Color", "Nintendo Game Boy Advance", "Sega Master System", "Sega Game Gear",
+                      "Sega Mega Drive - Genesis", "Sega 32X")      # (not the Lynx nor the DS: no core here to check them with)
+for _name in SEVENZIP_PLATFORMS:
+    if _name in PLATFORMS:
+        PLATFORMS[_name] = replace(PLATFORMS[_name], compress_7z=True)
 
 
 def list_platforms() -> list[Platform]:

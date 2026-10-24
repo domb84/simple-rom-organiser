@@ -296,6 +296,26 @@ class SafetyTests(DiscCase):
             self.assertEqual(prof.delete_converted, delete, name)
 
 
+class UnpackAheadTests(Scratch):
+    """The next discs are unpacked in threads while one is compressed; no work folder stays behind, whatever happens."""
+
+    def test_several_discs_convert_and_leave_no_work_folders(self) -> None:
+        discs = {f"Disc {i} (1994)(Pub)": iso_disc(f"Disc {i} (1994)(Pub)", 30 + i) for i in range(4)}
+        dat = parse_dat(write_dat(self.tmp / "dats", ISO_DAT, discs))
+        root = self.tmp / "roms"
+        for i, (g, files) in enumerate(discs.items()):
+            put_zip(root / f"d{i}.zip", files)
+        res = scanner.scan(root, [dat], containers=("chd",), cache_path=self.tmp / "h.sqlite")
+        ops = cdconvert.plan_conversions(res, [ISO_DAT])
+        real = cdconvert.matches_game
+        with mock.patch.object(cdconvert, "matches_game", side_effect=lambda h, roms: real(h, roms) and "Disc 2" not in roms[0].game):
+            out = cdconvert.apply_conversions(ops, root)
+        self.assertEqual((out["converted"], len(out["failed"])), (3, 1))
+        left = sorted(p.name for p in root.iterdir() if p.is_file() and not p.name.startswith(".romorg"))
+        self.assertEqual(left, ["Disc 0 (1994)(Pub).chd", "Disc 1 (1994)(Pub).chd", "Disc 3 (1994)(Pub).chd", "d2.zip"])   # (the failed one stays)
+        self.assertFalse([p for p in root.rglob("*") if "unpack" in p.name])
+
+
 class BuildLibraryTests(Scratch):
     """Build library on the Amiga with "Convert when building" and "Delete the originals after converting": the kept disc becomes a CHD
     where the game goes, the zip is deleted; a disc the rules exclude is archived as it is."""

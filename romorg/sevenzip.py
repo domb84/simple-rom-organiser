@@ -1,4 +1,4 @@
-"""A small pure-Python reader for ``.7z`` archives (listing + streaming one member), stdlib only.
+"""A small pure-Python reader for ``.7z`` archives (listing + streaming one member), and a writer of one-file archives, stdlib only.
 
 Why: starting ``7z.exe`` costs ~80 ms on Windows, so listing a library of thousands of ``.7z`` files with it
 takes minutes, and a machine without 7-Zip cannot read them at all. The listing (names, sizes, CRC-32) only
@@ -428,6 +428,51 @@ class Archive:
             raise ValueError(f"CRC mismatch in {name}")
 
 
+    def iter_files(self, names=None):
+        """Yield ``(name, bytes)`` pieces of several members - all of them, or those in ``names`` - in the order they are stored, each
+        solid block decoded ONCE (taking members out one by one decodes the block from its start for every one of them: a disc's
+        eleven tracks, eleven times). Every member's CRC-32 is checked when it ends; an empty member yields ``(name, b"")``."""
+        want = None if names is None else set(names)
+        for n in want or ():
+            if n not in self._where:
+                raise KeyError(f"{n} is not in {self.path.name}")
+        info = {n: (sz, c) for n, sz, c in self.files}
+        by_folder: dict[int, list[tuple[int, str]]] = {}
+        for n, (fi, off) in self._where.items():
+            if want is not None and n not in want:
+                continue
+            if fi < 0 or info[n][0] == 0:
+                yield n, b""
+                continue
+            by_folder.setdefault(fi, []).append((off, n))
+        s = self._streams
+        with open(self.path, "rb") as f:
+            for fi in sorted(by_folder):
+                todo = sorted(by_folder[fi])
+                end = max(off + info[n][0] for off, n in todo)
+                pos, k = 0, 0                                  # (bytes of the block seen so far; the next member)
+                crc = 0
+                for chunk in _folder_bytes(f, self._base, s, s.folders[fi], limit=end):
+                    c0, c1 = pos, pos + len(chunk)
+                    pos = c1
+                    while k < len(todo):
+                        off, n = todo[k]
+                        size, want_crc = info[n]
+                        a, b = max(c0, off), min(c1, off + size)
+                        if a < b:
+                            piece = chunk[a - c0:b - c0]
+                            crc = zlib.crc32(piece, crc)
+                            yield n, piece
+                        if off + size <= c1:                   # (the member ends in this chunk)
+                            if want_crc is not None and crc & 0xFFFFFFFF != want_crc:
+                                raise ValueError(f"CRC mismatch in {n}")
+                            crc, k = 0, k + 1
+                            continue
+                        break
+                if k < len(todo):
+                    raise ValueError(f"7z data for {todo[k][1]} ended early")
+
+
 class MemberReader:
     """A read(n) file-like over one member (for code written against a stream)."""
 
@@ -450,3 +495,68 @@ class MemberReader:
 
     def close(self) -> None:
         self._it.close()
+
+
+# --------------------------------------------------------------------------- writing (one file per archive: a cartridge ROM)
+
+PRESET = 6                  # LZMA's "normal": within 0.1 % of the smallest on ROMs (presets 7-9 and "extreme" gain nothing measurable)
+MAX_DICT = 64 << 20         # the decoder allocates the dictionary: never more than 64 MiB, never more than the file needs
+
+
+def _num(n: int) -> bytes:
+    """A 7z variable-length number."""
+    if n < 0x80:
+        return bytes([n])
+    for i in range(1, 9):
+        if n < (1 << (7 * (i + 1))):
+            return bytes([((0xFF << (8 - i)) & 0xFF) | (n >> (8 * i))]) + (n & ((1 << (8 * i)) - 1)).to_bytes(i, "little")
+    return b"\xff" + n.to_bytes(8, "little")
+
+
+def _lzma2_dict(size: int) -> tuple[int, int]:
+    """``(dictionary size, LZMA2 property byte)``: the smallest LZMA2 dictionary that holds a file of ``size`` bytes (4 KiB ..
+    :data:`MAX_DICT`)."""
+    want = min(max(size, 4096), MAX_DICT)
+    for b in range(41):
+        d = (2 | (b & 1)) << (b // 2 + 11)
+        if d >= want:
+            return d, b
+    return MAX_DICT, 40
+
+
+def write_one(path, name: str, chunks, size: int, cancel=None) -> tuple[str, int]:
+    """Write a ``.7z`` holding one file ``name`` of ``size`` bytes, given as an iterable of byte chunks: LZMA2 (:data:`PRESET`), the
+    CRC-32 of the file in the header (every reader checks it). Returns ``(crc32 of the file as 8 hex digits, bytes read)``. ``cancel()``
+    True: raises InterruptedError (the caller removes the part file). What 7-Zip, RetroArch's 7z reader and this module read."""
+    dict_size, prop = _lzma2_dict(size)
+    comp = lzma.LZMACompressor(lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_LZMA2, "preset": PRESET, "dict_size": dict_size}])
+    crc, n, packed = 0, 0, 0
+    with open(path, "wb") as f:
+        f.write(bytes(32))                                       # (the start header, written last)
+        for chunk in chunks:
+            if cancel is not None and cancel():
+                raise InterruptedError("cancelled")
+            crc = zlib.crc32(chunk, crc)
+            n += len(chunk)
+            out = comp.compress(chunk)
+            if out:
+                f.write(out)
+                packed += len(out)
+        out = comp.flush()
+        f.write(out)
+        packed += len(out)
+        names = name.encode("utf-16-le", "surrogatepass") + b"\x00\x00"
+        h = bytearray(b"\x01\x04")                                                   # Header, MainStreamsInfo
+        h += b"\x06" + _num(0) + _num(1) + b"\x09" + _num(packed) + b"\x00"            # PackInfo: one packed stream
+        h += b"\x07\x0b" + _num(1) + b"\x00"                                          # UnpackInfo: one folder
+        h += _num(1) + b"\x21" + LZMA2 + _num(1) + bytes([prop])                       # one coder: LZMA2 with its property byte
+        h += b"\x0c" + _num(n)                                                         # its unpacked size
+        h += b"\x0a\x01" + struct.pack("<I", crc & 0xFFFFFFFF) + b"\x00"               # the CRC, end of UnpackInfo
+        h += b"\x00"                                                                   # end of StreamsInfo
+        h += b"\x05" + _num(1) + b"\x11" + _num(len(names) + 1) + b"\x00" + names + b"\x00"   # FilesInfo: the name
+        h += b"\x00"                                                                   # end of Header
+        f.write(h)
+        tail = struct.pack("<QQI", packed, len(h), zlib.crc32(bytes(h)) & 0xFFFFFFFF)
+        f.seek(0)
+        f.write(SIGNATURE + b"\x00\x04" + struct.pack("<I", zlib.crc32(tail) & 0xFFFFFFFF) + tail)
+    return f"{crc & 0xFFFFFFFF:08x}", n

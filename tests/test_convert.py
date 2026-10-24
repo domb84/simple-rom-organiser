@@ -67,7 +67,9 @@ class TransformStreamTests(unittest.TestCase):
                                            hashlib.sha1(want).hexdigest(), len(want)))
 
 
-class ConvertTests(unittest.TestCase):
+class ConvertFixtures(unittest.TestCase):
+    """Synthetic SNES / N64 DATs and folders."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
@@ -117,6 +119,9 @@ class ConvertTests(unittest.TestCase):
         (r / "Delta (USA) (Rev 1).smc").write_bytes(_rand(512, 5) + self.s_new)
         return r
 
+
+
+class ConvertTests(ConvertFixtures):
     def test_plan(self) -> None:
         r = self._snes_root()
         res = self._scan(r, self.snes, ("snes_header",))
@@ -404,7 +409,7 @@ os._exit(1)
         out = convert.apply_conversions(ops, r)
         self.assertEqual(out["converted"], 1)
 
-    def test_nes_and_7z_not_converted(self) -> None:
+    def test_nes_and_rar_not_converted(self) -> None:
         r = self._root("nes")
         body = _rand(4096, 3)
         hdr = b"NES\x1a" + bytes(12)
@@ -414,15 +419,15 @@ os._exit(1)
         res = self._scan(r, dat, ("nes_header",))
         self.assertEqual([m.matched_via for m in res.matched], ["headerless"])
         self.assertEqual(convert.plan_conversions(res), [])
-        # a 7z member matched headerless -> skip ("extract the archive first")
+        # a rar member matched headerless -> skip ("extract the archive first"); a 7z of one rom is converted like a zip
         r2 = self._root("seven")
-        (r2 / "alpha.7z").write_bytes(b"7z")
-        e = scanner.Entry(r2 / "alpha.7z", "alpha.smc", 512 + len(self.s_a), "00000000", None, r2)
+        (r2 / "alpha.rar").write_bytes(b"Rar!")
+        e = scanner.Entry(r2 / "alpha.rar", "alpha.smc", 512 + len(self.s_a), "00000000", None, r2)
         m = scanner.Match(e, [self.snes.roms[0]], matched_via="headerless", header=512)
         res7 = scanner.ScanResult(r2, [SNES], [m], [], [], [], [], layout="flat")
         ops = convert.plan_conversions(res7)
         self.assertEqual([(op.status, op.reason) for op in ops],
-                         [("skip", "extract the archive first (only .zip archives are converted)")])
+                         [("skip", "extract the archive first (only .zip and .7z archives are converted)")])
 
     def test_cancel_between_files(self) -> None:
         r = self._snes_root()
@@ -447,3 +452,90 @@ os._exit(1)
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SevenZipTests(ConvertFixtures):
+    """The rule "Compress games as 7z": a game that is already the DAT's is repacked (the original deleted once the .7z is checked),
+    a dump that needs cleaning up is written clean into a .7z (its original kept aside, as before)."""
+
+    def _clean_root(self) -> Path:
+        r = self._root("clean")
+        (r / "Alpha (USA).sfc").write_bytes(self.s_a)                                        # loose, the DAT's
+        with zipfile.ZipFile(r / "bravo.zip", "w", zipfile.ZIP_DEFLATED) as zf:              # a zip of the DAT's rom
+            zf.writestr("Bravo (Europe).sfc", self.s_b)
+        with zipfile.ZipFile(r / "multi.zip", "w") as zf:                                    # two files: left alone
+            zf.writestr("Charlie (Japan).sfc", self.s_c)
+            zf.writestr("readme.txt", b"hi")
+        (r / "Delta (USA) (Rev 1).smc").write_bytes(_rand(512, 5) + self.s_new)               # a copier header: cleaned into a .7z
+        return r
+
+    def test_games_are_repacked_and_checked_and_dumps_cleaned_into_7z(self) -> None:
+        from romorg import sevenzip
+        r = self._clean_root()
+        res = self._scan(r, self.snes, ("snes_header",))
+        ops = {op.src.name: op for op in convert.plan_conversions(res, compress_7z=True)}
+        self.assertEqual({n: (o.status, o.repack, o.dst.name) for n, o in ops.items()},
+                         {"Alpha (USA).sfc": ("convert", True, "Alpha (USA).7z"), "bravo.zip": ("convert", True, "Bravo (Europe).7z"),
+                          "multi.zip": ("skip", True, "Charlie (Japan).7z"), "Delta (USA) (Rev 1).smc": ("convert", False, "Delta (USA) (Rev 1).7z")})
+        out = convert.apply_conversions(ops.values(), r)
+        self.assertEqual((out["converted"], out["failed"], out["repacked"], out["deleted"]), (3, [], 2, 2))
+        files = sorted(p.relative_to(r).as_posix() for p in r.rglob("*") if p.is_file() and not p.name.startswith(organiser.UNDO_PREFIX))
+        self.assertEqual(files, ["Alpha (USA).7z", "Bravo (Europe).7z", "Delta (USA) (Rev 1).7z", "_converted_originals/Delta (USA) (Rev 1).smc",
+                                 "multi.zip"])
+        for name, data in (("Alpha (USA)", self.s_a), ("Delta (USA) (Rev 1)", self.s_new)):
+            arc = sevenzip.Archive(r / f"{name}.7z")
+            self.assertEqual(b"".join(arc.iter_member(f"{name}.sfc")), data)
+        again = self._scan(r, self.snes, ("snes_header",))                                      # (the .7z files match the DAT)
+        self.assertEqual(sorted(m.entry.path.name for m in again.matched if m.entry.path.suffix == ".7z"),
+                         ["Alpha (USA).7z", "Bravo (Europe).7z", "Delta (USA) (Rev 1).7z"])
+        self.assertEqual([op.status for op in convert.plan_conversions(again, compress_7z=True) if op.status == "convert"], [])
+
+    def test_a_7z_that_does_not_check_out_changes_nothing_and_the_rules_choose_the_games(self) -> None:
+        r = self._clean_root()
+        res = self._scan(r, self.snes, ("snes_header",))
+        ops = convert.plan_conversions(res, compress_7z=True, keep=lambda p: p.name != "bravo.zip", cleanups=False)
+        self.assertEqual(sorted(op.src.name for op in ops), ["Alpha (USA).sfc", "multi.zip"])     # (no clean-up, nor a game set aside)
+        with mock.patch.object(convert, "_check", side_effect=convert.ConvertError("does not match")):
+            out = convert.apply_conversions(ops, r)
+        self.assertEqual((out["converted"], len(out["failed"])), (0, 1))
+        self.assertTrue((r / "Alpha (USA).sfc").is_file())
+        self.assertFalse(list(r.glob("*.7z")) + list(r.glob("*romorg-convert*")))
+
+    def test_a_dump_in_a_7z_is_cleaned_up_too(self) -> None:
+        from tests.sevenzipmini import write_7z
+        r = self._root("seven")
+        write_7z(r / "delta.7z", {"delta.smc": _rand(512, 6) + self.s_new})
+        res = self._scan(r, self.snes, ("snes_header",))
+        ops = convert.plan_conversions(res)
+        self.assertEqual([(op.status, op.transform) for op in ops], [("convert", "strip512")])
+        out = convert.apply_conversions(ops, r)
+        self.assertEqual(out["failed"], [])
+        with zipfile.ZipFile(r / "Delta (USA) (Rev 1).zip") as zf:
+            self.assertEqual(zf.read("Delta (USA) (Rev 1).sfc"), self.s_new)
+
+
+from tests.servercase import ServerCase, SNES as SNES_PLATFORM, put  # noqa: E402
+
+
+class BuildCompressesTests(ServerCase):
+    """Build library with the default rules on a cartridge system: every kept game ends up a checked .7z where it goes."""
+    COMPRESS_7Z = True
+
+    def test_the_build_repacks_the_kept_games_as_7z(self) -> None:
+        from romorg import sevenzip
+        snes = self.tmp / "snes"
+        put(snes / "in" / "a.sfc", self.rom["Alpha (USA)"])
+        with zipfile.ZipFile(snes / "beta.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Beta (USA).sfc", self.rom["Beta (USA)"])
+        self.job("/api/scan", {"path": str(snes), "platform": SNES_PLATFORM})
+        plan = self.call("POST", "/api/library/plan", {"platform": SNES_PLATFORM})
+        self.assertEqual((plan["convert"]["kind"], plan["convert"]["count"]), ("7z", 2))
+        to = {r["from"]: r.get("to_name") for r in plan["items"] if r.get("from")}
+        self.assertEqual(to["beta.zip"], "Beta (USA).7z")
+        self.job("/api/library/apply", {"platform": SNES_PLATFORM, "plan_id": plan["plan_id"]})
+        files = sorted(p.relative_to(snes).as_posix() for p in snes.rglob("*") if p.is_file() and not p.name.startswith(".romorg"))
+        self.assertEqual(files, ["Alpha (USA).7z", "Beta (USA).7z"])
+        self.assertEqual(b"".join(sevenzip.Archive(snes / "Alpha (USA).7z").iter_member("Alpha (USA).sfc")), self.rom["Alpha (USA)"])
+        self.call("POST", "/api/library/profile", {"platform": SNES_PLATFORM, "compress_7z": False})     # (the rule off: nothing more to do)
+        plan = self.call("POST", "/api/library/plan", {"platform": SNES_PLATFORM})
+        self.assertEqual(plan["convert"]["count"], 0)                              # (the SNES clean-ups only: none to do)

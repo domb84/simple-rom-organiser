@@ -2760,7 +2760,7 @@
     one_per_game: "One per game", borrow_other_editions: "Borrow other editions", keep_other_language: "Keep other languages",
     min_rating: "Minimum rating", top_n: "Top N", min_votes: "Minimum votes", keep_unrated: "Keep unrated games", rank_scope: "Ranking",
     saved_games: "Saves", prefer_editions: "Prefer editions", combine_alt_titles: "Combine alternate titles", prefer_whdload: "Prefer WHDLoad versions", prefer_unprotected: "Prefer cracks to originals that ask for the manual", build_whdload: "Build WHDLoad games", prefer_saved: "Prefer releases with saves", exclude_amiga: "Amiga exclusions", keep_bios: "BIOS and firmware", keep_extras: "Files with a game",
-    convert_first: "Convert when building", delete_converted: "Delete originals" };
+    convert_first: "Convert when building", delete_converted: "Delete originals", compress_7z: "Compress as 7z" };
   const ruleName = (field) => RULE_NAMES[field] || field;
 
   /** Move item i of a list by dir (-1 up, +1 down); returns a new array. */
@@ -3459,7 +3459,7 @@
           el("span", { "data-vanish": "flag_cr" }), " ",
           el("button", { class: "btn btn-small", text: "Keep cracks again", on: { click: () => rctx.save({ keep_flags: [...prof.keep_flags, "cr"] }) } })) : null), "Dump types"));
     }
-    const CHD_RULES = ["convert_first", "delete_converted"];                  // (the CHD rules are one group of their own)
+    const CHD_RULES = ["convert_first", "delete_converted", "compress_7z"];   // (the conversion rules are one group of their own)
     const chdOpts = optionEntries(info).filter((e) => CHD_RULES.includes(e.id));
     const opts = optionEntries(info).filter((e) => !CHD_RULES.includes(e.id) && !amigaOnly(e));
     const amigaOpts = optionEntries(info).filter((e) => amigaOnly(e));
@@ -3492,11 +3492,13 @@
       return unit([e.field], row, plainLabel(e));
     }).filter(Boolean);
     if (chdRows.length) {
+      const chdOnly = chdOpts.every((e) => e.id !== "compress_7z");
       groups.push(el("div", { class: "rules-group", id: "rules-chd" },
-        el("div", { class: "rules-head", text: "Disc images (CHD)" }),
+        el("div", { class: "rules-head", text: chdOnly ? "Disc images (CHD)" : "Converting and compressing" }),
         el("div", { class: "rules-grid" }, chdRows),
-        el("div", { class: "sub" }, "How CHDs are read and written (the built-in writer, chdman, compression, checking while scanning) is set on the ",
-          el("a", { href: "#/chd", text: "Disc images page" }), ".")));
+        chdOpts.some((e) => e.id === "convert_first" || e.id === "delete_converted")
+          ? el("div", { class: "sub" }, "How CHDs are read and written (the built-in writer, chdman, compression, checking while scanning) is set on the ",
+            el("a", { href: "#/chd", text: "Disc images page" }), ".") : null));
     }
     if (avail.languages && cat.some((e) => e.id === "languages")) groups.push(unit(["languages"], languageSection(info)));
     if (avail.region_priority && cat.some((e) => e.id === "region_priority")) groups.push(unit(["region_priority", "region_ties"], regionSection(info)));
@@ -3745,7 +3747,8 @@
       card(fmt(r.kept), "Kept", "ok"),
       card(fmt(r.bios || 0), "BIOS / firmware files kept", r.bios ? "info" : ""),
       ...(asd ? [card(fmt(asd.coming + asd.existing), "To move out to the archive folder", "info")] : []),
-      ...(plan.convert ? [card(fmt(plan.convert.count), plan.convert.kind === "chd" ? "Raw discs to convert to CHD first" : "Dumps to clean up first", plan.convert.count ? "info" : "ok")] : []),
+      ...(plan.convert ? [card(fmt(plan.convert.count), plan.convert.kind === "chd" ? "Raw discs to convert to CHD first"
+        : plan.convert.kind === "7z" ? "Games to compress as 7z first" : "Dumps to clean up first", plan.convert.count ? "info" : "ok")] : []),
       card(fmt((r.renamed || 0) + (r.moved || 0)), `Renamed / moved (${fmt(r.renamed || 0)} / ${fmt(r.moved || 0)})`, "info"),
       card(fmt(r.excluded), aside("Excluded", r.excluded, cats.excluded), r.excluded ? "warn" : ""),
       card(fmt(r.superseded), aside("Superseded", r.superseded, cats.superseded), r.superseded ? "warn" : ""),
@@ -4119,7 +4122,9 @@
       ...(plan.convert && plan.convert.count ? [el("li", { text: plan.convert.kind === "chd"
         ? `${fmt(plan.convert.count)} raw disc(s)${plan.convert.archives ? ` (${fmt(plan.convert.archives)} in a zip or 7z)` : ""} are converted to CHD first (each is checked against its database; this can take a long time). The library counts above are those before the conversion.`
           + (plan.convert.delete ? " THE ORIGINALS ARE DELETED once their CHD is checked: Undo cannot bring them back." : " The originals are kept in _converted_originals.")
-        : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
+        : plan.convert.kind === "7z" || plan.convert.repack
+          ? `${fmt(plan.convert.count)} game(s) are compressed as 7z first (each .7z is checked against the database, then the zip or file it replaces is deleted: the game itself does not change). This can take a while the first time.`
+          : `${fmt(plan.convert.count)} dump(s) are cleaned up first. The library counts above are those before the clean-up.` })] : []),
         el("li", { text: "One undo log is saved as it goes - \"Undo last\" reverts the moves and removes / restores the playlists." }),
         el("li", { text: "The folder is re-scanned afterwards." })));
     if (!(await confirmDialog({ title: "Build library", body, okText: `Build library (${fmt(plan.actionable)} changes)` }))) return;

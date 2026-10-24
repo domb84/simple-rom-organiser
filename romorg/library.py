@@ -175,6 +175,7 @@ class LibraryProfile:
     keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
     convert_first: bool = True                   # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
     delete_converted: bool = True                # ... and deletes the originals once checked (off: they are kept in _converted_originals)
+    compress_7z: bool = True                     # cartridge games are kept as .7z (LZMA: smaller than zip, RetroArch reads it), repacked on Build
     prefer_saved: bool = True                    # of the releases / versions of a game, the one you have saves for is kept (not a newer one, not another region)
     prefer_editions: bool = True                 # of a game's releases a special / limited / premium edition beats the plain release (off: after it)
     combine_alt_titles: bool = True              # the titles a game has in other regions (Biohazard / Resident Evil) are one game (``alttitles``)
@@ -215,6 +216,7 @@ class LibraryProfile:
                 "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
                 "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
+                "compress_7z": self.compress_7z,
                 "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
                 "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload,
                 "prefer_unprotected": self.prefer_unprotected, "build_whdload": self.build_whdload}
@@ -272,6 +274,7 @@ class LibraryProfile:
                    saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides,
                    keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras),
                    convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted),
+                   compress_7z=flag("compress_7z", base.compress_7z),
                    prefer_saved=flag("prefer_saved", base.prefer_saved),
                    prefer_editions=flag("prefer_editions", base.prefer_editions),
                    combine_alt_titles=flag("combine_alt_titles", base.combine_alt_titles),
@@ -312,7 +315,8 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         one_per_game=bool(_dats(platform, "region_dats")),
         borrow_other_editions=_borrow_scope(platform),
         convert_first=bool(getattr(platform, "convertible", False)),               # (where a system converts nothing, or never deletes
-        delete_converted="delete_converted" in applicable_fields(platform))       #  an original - SNES / N64 - the rule is off, not on)
+        delete_converted="delete_converted" in applicable_fields(platform),       #  an original - SNES / N64 - the rule is off, not on)
+        compress_7z=bool(getattr(platform, "compress_7z", False)))
 
 
 # --------------------------------------------------------------------------- defaults and overrides
@@ -322,7 +326,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
-               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "prefer_saved", "prefer_editions",
+               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions",
                "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
@@ -371,6 +375,8 @@ def applicable_fields(platform: "Platform") -> frozenset:
         out.add("convert_first")
         if getattr(platform, "layout", "") == "game_folder" or getattr(platform, "disc_dats", ()):   # (and the Amiga's CD32 / CDTV discs)
             out.add("delete_converted")
+    if getattr(platform, "compress_7z", False):                   # (the cartridge systems RetroArch reads .7z games of)
+        out.add("compress_7z")
     if _ratings_supported(platform):
         out.update(("min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope"))
     if _style_of_platform(platform) in AMIGA_STYLES:
@@ -2639,6 +2645,10 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "files equal the database's; the Amiga's CD32 and CDTV discs become CHDs too. Each result is checked against the database before "
         "the original is touched. It takes a while; "
         "the preview says what will be converted. Settings for the CHDs are on the Disc images page.", _ALL)
+    opt("compress_7z", "compress_7z", "Compress games as 7z", True,
+        "Build library repacks each game into a .7z of its own (LZMA): a quarter to a sixth smaller than a zip, and RetroArch loads it "
+        "like a zip. Each new .7z is checked against the database before the zip or loose file it replaces is deleted (nothing of the game "
+        "changes, only the packing). Off: games stay as they are. For the systems whose RetroArch cores load .7z games.", [STYLE_NOINTRO])
     opt("delete_converted", "delete_converted", "Delete the originals after converting", True,
         "Off: the originals (the .iso, the zip, the cue and its tracks) go to _converted_originals, nothing is deleted. On: they are deleted "
         "once the CHD has been checked against the database. Undo cannot bring a deleted original back.", [STYLE_REDUMP, STYLE_TOSEC])
