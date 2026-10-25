@@ -1730,7 +1730,12 @@
         rows.length ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "Made of" }), el("div", { class: "rows" }, rows)) : null,
         t.missing_games ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "You don't have" }),
           el("div", { class: "rows" }, missing.map((n) => row({ name: n, info: true })),
-            t.missing_games > missing.length ? row({ name: `and ${fmt(t.missing_games - missing.length)} more: Files › Missing`, href: `#/system/${slug}/files?view=missing`, arrow: true }) : null)) : null),
+            t.missing_games > missing.length ? row({ name: `and ${fmt(t.missing_games - missing.length)} more: Files › Missing`, href: `#/system/${slug}/files?view=missing`, arrow: true }) : null)) : null,
+        t.target_system ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "System disks" }),
+          el("div", { class: "rows" },
+            row({ name: `${fmt(t.target_system)} Workbench, Kickstart and firmware disk${t.target_system === 1 ? "" : "s"}`, info: true,
+              sub: `Kept as your rules say, but not counted as games${t.have_games !== null ? `; you have ${fmt(t.have_system || 0)}` : ""}` }),
+            ...(t.missing_system_names || []).map((n) => row({ name: n, sub: "System disk you don't have", info: true })))) : null),
       hints: [["A", "Select"], ["B", "Back"], ["LT RT", "Page"]] };
   });
 

@@ -253,7 +253,8 @@ def _explain_top(items: list[Item], sel: library.Selection, platform: Any, profi
     complete = [u for u in rated if u.complete]
     n = profile.top_n or 0
     name = lambda u: names.get(u.key) or _game_name(u.owner)      # noqa: E731
-    outside = sorted(k for k in kept if k not in in_units)
+    system = system_dats(platform)                          # (system disks: counted apart, never "not ranked" games)
+    outside = sorted(k for k in kept if k not in in_units and k[0] not in system)
     by_dat: dict[str, int] = {}
     for k in outside:
         by_dat[k[0]] = by_dat.get(k[0], 0) + 1
@@ -312,21 +313,38 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     return UserPart(games, time.time(), time.time() - t0, len(items), problems)
 
 
-def combine(target: Target, user: Optional[UserPart]) -> dict[str, Any]:
-    """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part."""
-    out: dict[str, Any] = {"target_games": target.count, "target_incomplete": target.incomplete, "by_dat": {d: {"target": n} for d, n in target.by_dat.items()},
+def system_dats(platform: Any) -> frozenset:
+    """The DATs of a system that hold no games - the Amiga's Workbench, Kickstart disks and firmware: kept as the rules say, but counted
+    apart from the games ("system disks"). Empty for a system whose DATs are all games."""
+    game = getattr(platform, "game_dat", "") or ""
+    if not game:
+        return frozenset()
+    games = {game, *(getattr(platform, "image_set_dats", ()) or ()), *(getattr(platform, "disc_dats", ()) or ())}
+    return frozenset(d for d in (getattr(platform, "dats", ()) or ()) if d not in games)
+
+
+def combine(target: Target, user: Optional[UserPart], system: frozenset = frozenset()) -> dict[str, Any]:
+    """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part. The games of the ``system`` DATs
+    (:func:`system_dats`) are counted apart: ``target_system`` / ``have_system`` / ``missing_system_names``, never as games."""
+    sys_keys = {k for k in target.games if k[0] in system}
+    out: dict[str, Any] = {"target_games": target.count - len(sys_keys), "target_system": len(sys_keys),
+                           "target_incomplete": target.incomplete, "by_dat": {d: {"target": n} for d, n in target.by_dat.items()},
                            "rating": target.rating, "rating_coverage": target.coverage,
                            "rated_all": target.rated_all, "rated_target": target.rated_target, "explain": target.explain}
     if user is None:
         return out
-    have = outside = incomplete = excluded = not_preferred = 0
+    have = outside = incomplete = excluded = not_preferred = have_system = 0
     for key, (state, names) in user.games.items():
         if state == HAVE:
             if key not in target.games:
                 outside += 1           # kept by the rules but not a game of the target (a changed DAT, a borrowed disk)
                 continue
-            have += 1
             row = out["by_dat"].setdefault(key[0], {"target": 0})
+            if key in sys_keys:
+                have_system += 1
+                row["have"] = row.get("have", 0) + 1
+                continue
+            have += 1
             row["have"] = row.get("have", 0) + 1
             if not (names & target.games[key]):
                 not_preferred += 1
@@ -336,10 +354,12 @@ def combine(target: Target, user: Optional[UserPart]) -> dict[str, Any]:
             excluded += 1
     for row in out["by_dat"].values():
         row.setdefault("have", 0)
-    total = target.count
+    total = target.count - len(sys_keys)
     owned = {key for key, (state, _n) in user.games.items() if state == HAVE}
-    lacking = sorted(target.names.get(k, k[0]) for k in target.games if k not in owned)
+    lacking = sorted(target.names.get(k, k[0]) for k in target.games if k not in owned and k not in sys_keys)
     out["missing_names"] = lacking[:50]                 # (which games of the rules you do not have: shown when there are few)
+    out["have_system"] = have_system
+    out["missing_system_names"] = sorted(target.names.get(k, k[0]) for k in sys_keys if k not in owned)[:50]
     out.update(have_games=have, missing_games=total - have, percent=round(100.0 * have / total, 1) if total else 0.0,
                not_preferred=not_preferred, owned_but_excluded=excluded, owned_incomplete=incomplete,
                owned_outside_target=outside, owned_games=len(user.games))
@@ -639,7 +659,7 @@ class TotalsManager:
         out.update(target_games=None, have_games=None, missing_games=None, percent=None, not_preferred=None,
                    owned_but_excluded=None, owned_incomplete=None, owned_games=None, by_dat={})
         if t_ok and not isinstance(t[1], Exception) and u_ok and (want.ukey is None or not isinstance(u[1], Exception)):
-            out.update(combine(t[1], u[1] if want.ukey is not None else None))
+            out.update(combine(t[1], u[1] if want.ukey is not None else None, system_dats(platform)))
             out["computed_at"] = t[1].computed_at if want.ukey is None else max(t[1].computed_at, u[1].computed_at)
             return out
         if out["error"]:
@@ -648,7 +668,7 @@ class TotalsManager:
         out["working"] = self._working(name, t, u)
         # the previous numbers (other rules / folder) stay visible, flagged stale, until the new ones are ready
         if t is not None and not isinstance(t[1], Exception) and (want.ukey is None or (u is not None and not isinstance(u[1], Exception))):
-            out.update(combine(t[1], u[1] if want.ukey is not None and u is not None else None))
+            out.update(combine(t[1], u[1] if want.ukey is not None and u is not None else None, system_dats(platform)))
             out["stale"] = True
             out["computed_at"] = t[1].computed_at
         return out

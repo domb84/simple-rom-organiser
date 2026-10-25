@@ -3811,3 +3811,16 @@ detector; each merge was made only where the copies were the same code.
   is never counted as a WHDLoad game, also when the shipped list says it boots.
 * User's data, top-100 rule: 92 WHDLoad games, 10 played from disks (playlists with a save disk), 16 of our playlists removed; the
   whole collection: 2,084 WHDLoad games, 1,596 save-disk playlists (1,323 of one disk).
+
+**AMENDMENT 83 (v0.5) — System disks are counted apart from games.**
+
+* The user: the top 100 said they were missing "EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)", which is no game (a
+  free Kickstart replacement for the A1000, in TOSEC's Kickstart-Disks DAT). The rating rule ranks games only, so Workbench and
+  Kickstart disks stayed in the target as they are and were counted - "109 games", one of them missing.
+* `totals.system_dats(platform)`: a system's DATs that hold no games - the ones besides its Games DAT, image-set DATs and disc DATs
+  (Amiga: Workbench, Kickstart-Disks, Firmware; empty elsewhere). `combine(..., system)` counts their entries apart: `target_games`,
+  `have_games`, `missing_games`, `percent` and `missing_names` are games only; `target_system`, `have_system` and
+  `missing_system_names` are the system disks; `by_dat` still has every DAT. `_explain_top` no longer lists them as "not ranked".
+* The new UI's "Your library" page shows them in a "System disks" section (how many the rules keep, how many you have, the ones you
+  lack). They are kept and built as before.
+* User's data, top 100: 100 of 100 games; 8 of 9 system disks (EmuTOS lacking).

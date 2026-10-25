@@ -200,6 +200,19 @@ class UserTests(unittest.TestCase):
         u = totals.compute_user_items([*items_of(["Alpha (1990)(Pub)"]), *items_of(["Kickstart v1.3 (1987)(Commodore)"], fw)], AMIGA, EN)
         self.assertEqual(totals.combine(t, u)["have_games"], 1)
 
+    def test_system_disks_are_counted_apart_from_the_games(self) -> None:
+        wb, ks = "Commodore Amiga - Operating Systems - Workbench", "Commodore Amiga - Kickstart-Disks"
+        self.assertEqual(totals.system_dats(AMIGA), frozenset({wb, ks, "Commodore Amiga - Firmware"}))
+        self.assertEqual(totals.system_dats(GBA), frozenset())
+        t = totals.compute_target(AMIGA, [dat_of(["Alpha (1990)(Pub)", "Beta (1991)(Pub)"]), dat_of(["Workbench v1.3 (1988)(Commodore)"], wb),
+                                          dat_of(["EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)"], ks)], EN)
+        u = totals.compute_user_items([*items_of(["Alpha (1990)(Pub)"]), *items_of(["Workbench v1.3 (1988)(Commodore)"], wb)], AMIGA, EN)
+        out = totals.combine(t, u, totals.system_dats(AMIGA))
+        self.assertEqual((out["target_games"], out["have_games"], out["missing_games"], out["percent"]), (2, 1, 1, 50.0))
+        self.assertEqual((out["target_system"], out["have_system"]), (2, 1))
+        self.assertEqual(out["missing_names"], ["Beta (1991)(Pub)"])                     # (EmuTOS is no game you lack ...)
+        self.assertEqual(out["missing_system_names"], ["EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)"])   # (... but a system disk)
+
     def test_no_intro_unit_is_the_game(self) -> None:
         def ni(names: list[str]) -> list[Item]:
             return [Item(key=i, dat=GBA_DAT, rom=Rom(name=n + ".gba", size=1, crc="", md5="", sha1="", game=n,
