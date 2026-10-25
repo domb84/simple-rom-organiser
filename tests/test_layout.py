@@ -71,7 +71,7 @@ class LayoutBase(unittest.TestCase):
         self.data = {n: random.Random(i).randbytes(700) for i, n in enumerate(
             (ALPHA, BAD, BETA, OLD, NEW, DISK1, "Multi (1992)(Pub)(Disk 2 of 2).adf"))}
         self.dat = DatFile(GAMES, "", "", [_rom(n, d) for n, d in self.data.items()])
-        self.profile = library.LibraryProfile()
+        self.profile = library.LibraryProfile(exclude=frozenset(library.RULES))   # (every rule on: a bad dump is excluded here)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

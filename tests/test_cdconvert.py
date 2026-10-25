@@ -363,7 +363,9 @@ class BuildLibraryTests(Scratch):
     def test_build_converts_the_kept_disc_and_archives_the_other(self) -> None:
         self.call("/api/scan", {"path": str(self.root), "platform": PLAT})
         self.assertEqual(self.job()["status"], "done")
-        self.call("/api/library/profile", {"platform": PLAT, "convert_first": True, "delete_converted": True})
+        from romorg import library               # (the bad disc is excluded: every rule on - bad dumps are allowed by default)
+        self.call("/api/library/profile", {"platform": PLAT, "convert_first": True, "delete_converted": True,
+                                           "exclude": sorted(library.RULES)})
         aside = self.tmp / "rom-archive"
         plan = self.call("/api/library/plan", {"aside_to": str(aside)})
         self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 1, "delete": True})

@@ -1828,6 +1828,8 @@ class NextUiTests(UiTestCase):
         super().setUp()
         self.page.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.page.call("Emulation.setDeviceMetricsOverride", width=1280, height=720, deviceScaleFactor=1, mobile=False)
+        from romorg import library               # (the fixture's counts are those of every rule on: bad dumps excluded too)
+        LibraryDefaultsTests.api(self, "POST", "/api/library/defaults", {"exclude": sorted(library.RULES)})
 
     def start(self, hash_: str = "#/", scanned: bool = True) -> None:
         self.page.goto(self.fx.root_url)

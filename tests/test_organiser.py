@@ -1000,7 +1000,7 @@ class LibraryPlanTests(unittest.TestCase):
         self.root.mkdir()
         self.roms: list[Rom] = []
         self.blobs: dict[str, bytes] = {}
-        self.profile = library.LibraryProfile()
+        self.profile = library.LibraryProfile(exclude=frozenset(library.RULES))   # (every rule on: bad dumps too)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -1508,7 +1508,7 @@ class BugCheckPlanTests(unittest.TestCase):
         plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
         ops = {op.src.name: op for op in plan.ops}
         self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "skip"))
-        self.assertEqual([p.lines[-1] for p in plan.playlists], [f"../in/Game disk 2.zip#{d2}|Disk 2"])
+        self.assertEqual([p.lines[-2:] for p in plan.playlists], [[f"../in/Game disk 2.zip#{d2}|Disk 2", "#SAVEDISK:"]])
 
     def test_your_choice_for_a_game_in_an_archive_with_other_files_holds(self) -> None:
         data = _rand(600, 99)
@@ -1697,6 +1697,48 @@ class UnicodeNormalisationTests(unittest.TestCase):
         (self.root / GAMES / self.NFC).write_bytes(data)
         op, = self.plan().ops
         self.assertEqual((op.status, op.dst.name), ("move", self.NFD))
+
+
+class SaveDiskPlaylistTests(unittest.TestCase):
+    """Amiga games played from their disks get a playlist with a blank save disk - one disk or several; a game built for WHDLoad is
+    played from its .lha and gets none (and our old playlist of it goes)."""
+
+    setUp, tearDown, have, scan, plan, files, build = (LibraryPlanTests.setUp, LibraryPlanTests.tearDown, LibraryPlanTests.have,
+                                                       LibraryPlanTests.scan, LibraryPlanTests.plan, LibraryPlanTests.files,
+                                                       LibraryPlanTests.build)
+    AMIGA = platforms.get_platform("Commodore Amiga")
+    SOLO, D1, D2 = "Solo (1990)(Pub).adf", "Pair (1991)(Pub)(Disk 1 of 2).adf", "Pair (1991)(Pub)(Disk 2 of 2).adf"
+
+    def playlists(self, profile=None, whd=()) -> dict[str, list[str]]:
+        from romorg import whdbuild
+
+        def targets(plan, platform):
+            return [whdbuild.Target(title=n, names=[n], archive="X.lha", level=3, dest=self.root / GAMES / "x.lha",
+                                    disks=[(self.root / GAMES / n, None)]) for n in whd]
+        with mock.patch.object(whdbuild, "targets", targets):
+            plan = self.plan(profile=profile or library.default_profile(self.AMIGA), platform=self.AMIGA)
+        self.last = plan
+        return {p.path.name: p.lines[1:] for p in plan.playlists}
+
+    def test_every_game_played_from_its_disks_gets_a_save_disk(self) -> None:
+        for n in (self.SOLO, self.D1, self.D2):
+            self.have(n, f"{GAMES}/{n}")
+        pl = self.playlists()
+        self.assertEqual(pl["Solo (1990)(Pub).m3u"], [f"{self.SOLO}|Disk 1", "#SAVEDISK:"])
+        self.assertEqual(pl["Pair (1991)(Pub).m3u"], [f"{self.D1}|Disk 1", f"{self.D2}|Disk 2", "#SAVEDISK:"])
+
+    def test_a_game_built_for_whdload_gets_no_playlist_and_loses_ours(self) -> None:
+        for n in (self.SOLO, self.D1, self.D2):
+            self.have(n, f"{GAMES}/{n}")
+        old = self.root / GAMES / "Pair (1991)(Pub).m3u"
+        old.write_text(m3u.M3U_MARKER + f"\n{self.D1}\n{self.D2}\n", encoding="utf-8")
+        pl = self.playlists(whd=(self.SOLO, self.D1))
+        self.assertEqual(pl, {})
+        gone = [op for op in self.last.ops if op.kind == "m3u" and op.status == organiser.DELETE_STATUS]
+        self.assertEqual([op.src.name for op in gone], [old.name])
+        self.assertIn("WHDLoad", gone[0].reason)
+        off = dataclasses.replace(library.default_profile(self.AMIGA), build_whdload=False)     # (no WHDLoad builds: playlists for all)
+        self.assertEqual(sorted(self.playlists(off, whd=(self.SOLO, self.D1))), ["Pair (1991)(Pub).m3u", "Solo (1990)(Pub).m3u"])
 
 
 class BiosExclusionTests(unittest.TestCase):

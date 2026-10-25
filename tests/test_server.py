@@ -1047,8 +1047,8 @@ class RealModulesIntegrationTests(unittest.TestCase):
         replan = self.call("POST", "/api/library/plan", {})
         self.assertEqual(replan["actionable"], 0, replan)
 
-        m3u = self.call("POST", "/api/m3u/plan", {"labels": True})
-        self.assertEqual(m3u["counts"], {"ok": 1})                                         # the library build wrote it
+        m3u = self.call("POST", "/api/m3u/plan", {"labels": True, "savedisk": True})
+        self.assertEqual(m3u["counts"], {"ok": 1})                                         # the library build wrote it (with a save disk)
         self.assertEqual(m3u["items"][0]["dir"], GAMES)
         self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
 
@@ -2155,7 +2155,7 @@ class LibraryServerTests(ServerTestCase):
     def test_profile_defaults_save_and_reset(self) -> None:
         info = self.get("/api/library/profile?platform=Commodore%20Amiga")
         self.assertEqual(info["platform"], "Commodore Amiga")
-        self.assertTrue(all(r["on"] for r in info["rules"]))
+        self.assertEqual({r["key"] for r in info["rules"] if not r["on"]}, {"bad_dump", "modified"})   # (allowed: kept only as a last resort)
         self.assertEqual([r["key"] for r in info["rules"]][:2], ["bad_dump", "virus"])
         self.assertTrue(all(isinstance(r["label"], str) and r["label"] for r in info["rules"]))
         self.assertEqual({k: info["available"][k] for k in ("latest_only", "best_variant", "complete_only")},

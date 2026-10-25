@@ -599,6 +599,21 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(by[names[2]].codes, ("rating_low",))
         self.assertEqual([cs.name for cs in sel.sets], ["Quest (1990)(Pub)"])   # Dull's playlist is gone
 
+    def test_an_incomplete_set_the_rating_drops_is_excluded_not_reported(self) -> None:
+        names = ["Low (1990)(Pub)(Disk 1 of 2)", "Odd (1990)(Pub)(Disk 1 of 3)", "Good (1990)(Pub)(Disk 1 of 2)"]
+        table = {"Low": (3.0, 50), "Good": (9.0, 50)}                       # Odd: unrated
+        prof = replace(library.default_profile(AMIGA), min_rating=7.0)
+        _items, sel, by = decide(names, prof, table, items_fn=amiga_items, platform=AMIGA)
+        self.assertEqual([x.name for x in sel.incomplete], ["Good (1990)(Pub)"])  # only the one the rules would keep
+        self.assertEqual((by[names[0]].action, by[names[0]].codes), (EXCLUDED, ("rating_low",)))
+        self.assertEqual(by[names[1]].codes, ("rating_unrated",))
+        self.assertIn("missing disk 2, 3", by[names[1]].reason)
+        self.assertEqual(by[names[2]].action, "incomplete")
+        _i, top, tby = decide(names, replace(library.default_profile(AMIGA), top_n=1, keep_unrated=True), table,
+                              cutoff=(-9.0, -50, "good"), items_fn=amiga_items, platform=AMIGA)
+        self.assertEqual(sorted(x.name for x in top.incomplete), ["Good (1990)(Pub)", "Odd (1990)(Pub)"])
+        self.assertEqual(tby[names[0]].codes, ("rating_not_top",))
+
     def test_dats_without_games_are_not_rated(self) -> None:
         wb = "Commodore Amiga - Operating Systems - Workbench"
         items = [Item(key=1, dat=wb, rom=Rom(name="Workbench 3.1.adf", size=1, crc="", md5="", sha1="", game="W", dat=wb),

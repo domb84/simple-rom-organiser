@@ -32,7 +32,10 @@ GAMES = "Commodore Amiga - Games - [ADF]"
 WB = "Commodore Amiga - Operating Systems - Workbench"
 KSD = "Commodore Amiga - Kickstart-Disks"
 AMIGA = platforms.get_platform("Commodore Amiga")
-RESCUE = replace(library.default_profile(AMIGA), rescue_only_dump=True)
+# (these tests are of the rules themselves: every exclusion on, as the app's defaults were before bad dumps and modified copies were
+#  allowed - the defaults of today are tested in FlawedCopies)
+EVERY_RULE = replace(library.default_profile(AMIGA), exclude=frozenset(library.RULES))
+RESCUE = replace(EVERY_RULE, rescue_only_dump=True)
 ALL_LANGS = replace(library.default_profile(AMIGA), languages=())
 
 
@@ -49,7 +52,7 @@ def ni_items(names: list[str], dat: str) -> list[Item]:
 
 def run(names: list[str], profile: LibraryProfile | None = None, dat: str = GAMES):
     items = amiga_items(names, dat)
-    sel = library.select(items, profile or library.default_profile(AMIGA), AMIGA)
+    sel = library.select(items, profile or EVERY_RULE, AMIGA)
     by = {names[k - 1]: d for k, d in sel.decisions.items()}
     return items, sel, by
 
@@ -371,6 +374,36 @@ class CoveredIncompleteSets(unittest.TestCase):
         self.assertEqual(len(why), 1)
 
 
+class FlawedCopies(unittest.TestCase):
+    """The defaults allow bad dumps and modified copies, as a last resort: ranked below every clean version, and superseded by a clean
+    dump of the same version where every version is kept (firmware, Workbench)."""
+
+    DEFAULT = library.default_profile(AMIGA)
+
+    def test_the_defaults_allow_them(self) -> None:
+        self.assertFalse({"bad_dump", "modified"} & self.DEFAULT.exclude)
+        self.assertTrue({"virus", "faked", "pre_release"} <= self.DEFAULT.exclude)
+
+    def test_the_only_copy_of_a_game_is_kept(self) -> None:
+        by = run(["Lone (1990)(P)[b corrupt file]", "Mod (1990)(P)[m bamcopy]"], self.DEFAULT)[2]
+        self.assertEqual(set(actions(by).values()), {KEEP})
+
+    def test_a_clean_version_beats_a_newer_flawed_one(self) -> None:
+        names = ["G v1.0 (1990)(P)[cr A]", "G v1.1 (1991)(P)[cr B][b corrupt file]", "G v1.2 (1992)(P)[cr C][m doscopy]"]
+        by = run(names, self.DEFAULT)[2]
+        self.assertEqual(actions(by), {names[0]: KEEP, names[1]: SUPERSEDED, names[2]: SUPERSEDED})
+
+    def test_beside_a_clean_dump_of_the_same_version_it_goes(self) -> None:
+        fw = ["Kickstart v1.0 (1985)(Commodore)[!]", "Kickstart v1.0 (1985)(Commodore)[b]", "Action Replay Mk II v2.14 (1990)(Datel)[m]"]
+        self.assertEqual(actions(run(fw, self.DEFAULT, dat=FW)[2]), {fw[0]: KEEP, fw[1]: SUPERSEDED, fw[2]: KEEP})
+        wb = ["Workbench v1.3 rev 34.20 (1988)(Commodore)(Disk 1 of 2)", "Workbench v1.3 rev 34.20 (1988)(Commodore)(Disk 2 of 2)",
+              "Workbench v1.3 rev 34.20 (1988)(Commodore)(Disk 1 of 2)[m]", "Workbench v1.3 rev 34.20 (1988)(Commodore)(Disk 2 of 2)[m]",
+              "Workbench v1.4 rev 34.99 (1990)(Commodore)(Disk 1 of 2)[b]", "Workbench v1.4 rev 34.99 (1990)(Commodore)(Disk 2 of 2)"]
+        _i, sel, by = run(wb, self.DEFAULT, dat=WB)
+        self.assertEqual([by[n].action for n in wb], [KEEP, KEEP, SUPERSEDED, SUPERSEDED, KEEP, KEEP])
+        self.assertEqual(len(sel.sets), 2)                     # v1.3 clean, and v1.4 (its only disk 1 is a bad dump)
+
+
 class Rules(unittest.TestCase):
     NAMES = ["R (1990)(P)", "R2 (1990)(P)(pre-release)", "R3 (1990)(P)[b]", "R4 (1990)(P)[v Foo]",
              "R5 (1990)(P)[o]", "R6 (1990)(P)(demo-playable)", "R7 (1990)(P)[m bamcopy]", "R8 (1990)(P)[faked x]",
@@ -419,7 +452,7 @@ class OverrideTests(unittest.TestCase):
     """The user's per-game "always keep" / "always exclude" beat every rule."""
 
     def prof(self, *overrides: tuple[str, str]) -> LibraryProfile:
-        return replace(library.default_profile(AMIGA), overrides=tuple((GAMES, n + ".adf", a) for n, a in overrides))
+        return replace(EVERY_RULE, overrides=tuple((GAMES, n + ".adf", a) for n, a in overrides))
 
     # an override names the game as the DAT does: the set name (No-Intro) or the rom name with its extension (TOSEC)
 
@@ -527,7 +560,7 @@ class ProfileTests(unittest.TestCase):
         self.assertFalse(library.load_profile(cfg, AMIGA).latest_only)
         library.store_profile(cfg, AMIGA, LibraryProfile(exclude=frozenset({"demo"})))
         self.assertEqual(library.load_profile(cfg, AMIGA).exclude, frozenset({"demo"}))
-        self.assertEqual(library.exclusion_of("X (1990)(P)[b corrupt file].adf", "tosec", LibraryProfile()),
+        self.assertEqual(library.exclusion_of("X (1990)(P)[b corrupt file].adf", "tosec", LibraryProfile(exclude=frozenset(library.RULES))),
                          (("bad_dump",), "[b corrupt file]"))
 
 

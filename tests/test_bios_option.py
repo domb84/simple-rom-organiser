@@ -38,6 +38,10 @@ class BiosOption(ServerCase):
         put(self.root / "notes.bin", b"not a bios at all" * 30)
 
     def scan(self) -> dict:
+        if not getattr(self, "_every_rule", False):  # (these tests are of the rules on a BIOS: every one on, bad dump and modified too)
+            from romorg import library
+            self.call("POST", "/api/library/defaults", {"exclude": sorted(library.RULES)})
+            self._every_rule = True
         self.job("/api/scan", {"path": str(self.root), "platform": SNES})
         return self.call("GET", "/api/status")["scan"]["summary"]
 
@@ -129,10 +133,13 @@ class BiosOption(ServerCase):
         rows = {Path(i["from"]).name: i for i in self.call("POST", "/api/library/plan", {"limit": 500})["items"]}
         self.assertEqual((rows["patched.bin"]["category"], rows["patched.bin"]["reasons"]), ("excluded", ["modified"]))
         self.assertEqual(rows["whatever.rom"]["category"], "bios")                          # (the good dump of the same list is kept)
-        self.call("POST", "/api/library/defaults", {"exclude": ["bad_dump"]})                # "modified" off: as for a ROM, it stays
+        self.call("POST", "/api/library/defaults", {"exclude": ["bad_dump"]})                # "modified" off: as for a ROM, it is allowed ...
         rows = {Path(i["from"]).name: i for i in self.call("POST", "/api/library/plan", {"limit": 500})["items"]}
-        self.assertEqual(rows["patched.bin"]["category"], "bios")
-        self.assertEqual(rows["patched.bin"]["to"], "boot[m].bin")
+        self.assertEqual((rows["patched.bin"]["category"], rows["patched.bin"]["to"]), ("superseded", "_superseded/patched.bin"))
+        (self.root / "BIOS Files" / "whatever.rom").unlink()                                   # ... and kept when no clean dump is
+        self.scan()
+        rows = {Path(i["from"]).name: i for i in self.call("POST", "/api/library/plan", {"limit": 500})["items"]}
+        self.assertEqual((rows["patched.bin"]["category"], rows["patched.bin"]["to"]), ("bios", "boot[m].bin"))
 
     def test_a_bad_dump_is_excluded_like_a_game_with_that_flag(self) -> None:
         put(self.root / "damaged.bin", DAMAGED)
@@ -142,9 +149,9 @@ class BiosOption(ServerCase):
         self.assertTrue(rows["damaged.bin"]["to"].startswith("_excluded"))
         plan = self.call("POST", "/api/library/plan", {})
         self.assertEqual(plan["reasons"]["excluded_bad_dump"], 1)
-        self.call("POST", "/api/library/defaults", {"exclude": ["virus"]})                    # "bad dump" is not a rule any more: as for a ROM, it stays
+        self.call("POST", "/api/library/defaults", {"exclude": ["virus"]})                    # "bad dump" off: beside a clean dump it is superseded
         rows = {Path(i["from"]).name: i for i in self.call("POST", "/api/library/plan", {"limit": 500})["items"]}
-        self.assertEqual((rows["damaged.bin"]["category"], rows["damaged.bin"]["to"]), ("bios", "boot[b].bin"))
+        self.assertEqual((rows["damaged.bin"]["category"], rows["damaged.bin"]["to"]), ("superseded", "_superseded/damaged.bin"))
 
     def test_the_same_bios_twice_is_a_rom_twice_the_spare_goes_to_duplicates(self) -> None:
         put(self.root / "copy of it.bin", FIRMWARE)
@@ -176,6 +183,8 @@ class BiosOption(ServerCase):
         self.assertEqual(rows["old name.rom"]["to"], "BIOS Files/boot.bin")                     # (out of _unmatched, named as its list names it)
         self.assertEqual((rows["bad.bin"]["status"], rows["bad.bin"]["category"]), ("ok", "excluded"))    # (a bad dump stays where it is ...)
         self.call("POST", "/api/library/defaults", {"exclude": ["virus"]})                       # ... until its rule is off: then it comes back
+        (self.root / "_unmatched" / "BIOS Files" / "old name.rom").unlink()                     # (when no clean dump is kept)
+        self.scan()
         rows = {Path(i["from"]).name: i for i in self.call("POST", "/api/library/plan", {"limit": 500})["items"]}
         self.assertEqual(rows["bad.bin"]["to"], "boot[b].bin")
 

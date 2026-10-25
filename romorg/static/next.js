@@ -150,7 +150,7 @@
   /** The options of a build of system ``p``: where it is built and where what it sets aside goes (the saved choices). */
   function buildOptions(p) {
     const e = (S.status && S.status.library_export) || {};
-    const o = { labels: Prefs.get(`labels:${p.name}`, !isGameFolder(p)), savedisk: Prefs.get(`savedisk:${p.name}`, false) };
+    const o = { labels: Prefs.get(`labels:${p.name}`, !isGameFolder(p)) };
     if (e.enabled && e.dest) Object.assign(o, { export_to: e.dest, export_mode: e.mode, export_sidecars: e.sidecars, export_sync: e.sync });
     else if (e.aside !== false && archiveFor(p)) o.aside_to = archiveFor(p);
     return o;
@@ -1825,7 +1825,8 @@
         save: async (on) => { await saveExport({ aside: on }); return on; } }),
       row({ name: "Archive folder", icon: "archive", value: own ? archiveText(own) : "Same as every system", arrow: true, href: `#/settings/archive/folder?system=${slug}` }),
       switchRow({ name: "Disk labels in playlists", on: Prefs.get(`labels:${p.name}`, !isGameFolder(p)), key: "labels", save: async (on) => { Prefs.set(`labels:${p.name}`, on); return on; } }),
-      isGameFolder(p) ? null : switchRow({ name: "Add a save disk", sub: "#SAVEDISK in playlists", on: Prefs.get(`savedisk:${p.name}`, false), key: "savedisk", save: async (on) => { Prefs.set(`savedisk:${p.name}`, on); return on; } }),
+      p.name === "Commodore Amiga" ? row({ name: "Save disks", static: true,
+        sub: "Every game played from its disks gets a playlist with a blank save disk; a game built for WHDLoad is played from its .lha, with no playlist" }) : null,
       p.name === "Nintendo Switch" ? switchRow({ name: "Read every file in full when scanning", sub: "Slower; checks each part against its own checksum", key: "swverify",
         on: await get("/api/switch").then((x) => !!x.config.verify_scan).catch(() => false), save: async (on) => (await post("/api/switch/config", { verify_scan: on })).config.verify_scan }) : null,
       row({ name: "Recalculate checksums", icon: "rescan", sub: "Reads every file again", onClick: async () => {

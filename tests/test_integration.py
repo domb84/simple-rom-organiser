@@ -776,13 +776,14 @@ class LibraryIntegrationTest(unittest.TestCase):
             self.assertEqual(dst[f"abc/disk{i + 1}.adf"], f"{GAMES}/{n}")
         self.assertEqual(dst["abc/pre.adf"], f"_excluded/abc/pre.adf")
         self.assertIn((self.ABC_M3U, "write"), [(p.path.name, p.status) for p in plan.playlists])
-        # Hero: cracked v1.0 beats uncracked v1.1; [b] v1.2 and the demo are excluded; the rest superseded
+        # Hero: cracked v1.0 beats uncracked v1.1 and the newer [b] v1.2 (bad dumps are allowed, below every clean version); the demo
+        # is excluded
         self.assertEqual(dst["hero/h0.adf"], f"{GAMES}/{self.HERO[0]}")
         self.assertEqual((code["hero/h1.adf"], code["hero/h2.adf"], code["hero/h3.adf"]),
-                         ("superseded", "excluded", "excluded"))
+                         ("superseded", "superseded", "excluded"))
         self.assertEqual(code["hero/copy of h1.adf"], "duplicate")
-        # Workbench: every version kept (no latest/best rule), the [m] variant excluded, two playlists
-        self.assertEqual([code[f"wb/w{i}.adf"] for i in range(5)], ["", "", "", "", "excluded"])
+        # Workbench: every version kept (no latest/best rule), the [m] variant superseded by the clean disk of the version, two playlists
+        self.assertEqual([code[f"wb/w{i}.adf"] for i in range(5)], ["", "", "", "", "superseded"])
         self.assertEqual(sorted(p.path.name for p in plan.playlists),
                          sorted([self.ABC_M3U, "Workbench v1.2 (1986)(Commodore).m3u",
                                  "Workbench v1.3 (1988)(Commodore).m3u"]))
@@ -792,7 +793,7 @@ class LibraryIntegrationTest(unittest.TestCase):
         self.assertEqual(res.summary()["duplicates"], organiser.plan_counts(plan.ops)["to_duplicates"])
         rc = organiser.reason_counts(plan)
         self.assertEqual((rc["excluded"], rc["superseded"], rc["duplicates"], rc["incomplete"], rc["playlists_write"]),
-                         (4, 1, 1, 0, 3))
+                         (2, 3, 1, 0, 3))
 
         out = organiser.apply_renames(plan.ops, self.root, dat_names=self.platform.dats, playlists=plan.playlists)
         self.assertEqual(out["failed"], [], out)
@@ -979,9 +980,10 @@ class LibraryScenarioTest(unittest.TestCase):
         dats, missing = platforms.load_platform_dats(self.platform, self.dats_dir)
         self.assertEqual(missing, [])
         res = scanner.scan(self.root, dats, use_cache=False)
-        # per-region "latest" semantics: one_per_game is covered by its own tests
+        # per-region "latest" semantics: one_per_game is covered by its own tests; every exclusion on (bad dumps and modified copies,
+        # allowed by default, are tested in test_amiga_a_set_completed_only_by_a_bad_dump_is_kept_by_default)
         profile = profile or dataclasses.replace(library.default_profile(self.platform), one_per_game=False,
-                                                          languages=())
+                                                          languages=(), exclude=frozenset(library.RULES))
         return res, organiser.plan_library(res, profile, missing_dats=missing)
 
     def _apply(self, plan) -> dict:
@@ -1043,7 +1045,7 @@ class LibraryScenarioTest(unittest.TestCase):
 
         # rule off -> the demo returns to its canonical place on the next build (and stays there)
         prof = library.default_profile(self.platform)
-        prof = library.LibraryProfile(exclude=prof.exclude - {"demo"}, latest_only=prof.latest_only,
+        prof = library.LibraryProfile(exclude=frozenset(library.RULES) - {"demo"}, latest_only=prof.latest_only,
                                       best_variant=prof.best_variant, complete_only=prof.complete_only)
         _, plan3 = self._plan(prof)
         m3 = _rels(plan3, self.root)
@@ -1053,6 +1055,15 @@ class LibraryScenarioTest(unittest.TestCase):
         self.assertTrue((self.root / GAMES / self.DEMO).is_file())
         _, plan4 = self._plan(prof)
         self._assert_empty(plan4)
+
+    def test_amiga_a_set_completed_only_by_a_bad_dump_is_kept_by_default(self) -> None:
+        self._amiga()
+        prof = dataclasses.replace(library.default_profile(self.platform), one_per_game=False, languages=())
+        _, plan = self._plan(prof)
+        m = _rels(plan, self.root)
+        self.assertEqual((m["fragile/a.adf"][1], m["fragile/b.adf"][1]), ("", ""))     # (its only disk 2 is a bad dump: the last resort)
+        self.assertTrue([s.name for s in plan.selection.sets if s.name.startswith("Fragile (1991)(Pub)")])
+        self.assertEqual(m["lonely/a.adf"][1], "incomplete")
 
     def test_amiga_all_sets_complete_have_exactly_one_per_game(self) -> None:
         self._amiga()
@@ -1093,9 +1104,10 @@ class LibraryScenarioTest(unittest.TestCase):
         self.assertEqual(missing, [])
         res = scanner.scan(self.root, dats, use_cache=False, alt_hashes=self.platform.alt_hashes,
                            layout=self.platform.layout)
-        # per-region "latest" semantics: one_per_game is covered by its own tests
+        # per-region "latest" semantics: one_per_game is covered by its own tests; every exclusion on (bad dumps and modified copies,
+        # allowed by default, are tested in test_amiga_a_set_completed_only_by_a_bad_dump_is_kept_by_default)
         profile = profile or dataclasses.replace(library.default_profile(self.platform), one_per_game=False,
-                                                          languages=())
+                                                          languages=(), exclude=frozenset(library.RULES))
         return res, organiser.plan_library(res, profile, missing_dats=missing)
 
     def test_nointro_build_rebuild_and_rule_toggle(self) -> None:

@@ -70,7 +70,7 @@ What it does:
    files into one folder per DAT under their exact TOSEC name, console files under their exact
    No-Intro name, flat in the console folder. Following the **library rules** (each can be
    switched off; the panel shows the exact TOSEC / No-Intro tags behind every rule and how
-   many files it moves): bad dumps, betas, demos and other unwanted variants
+   many files it moves): betas, demos and other unwanted variants
    are archived, only the languages you tick are kept (English by default), only the latest
    version (and for Amiga games the one best variant, for consoles one version per game in
    your region order) is kept,
@@ -364,17 +364,21 @@ the one already at its canonical path and name, else exact DAT content, else a l
 an archive, else the shortest path, then alphabetical. The rest go to `_duplicates/`. The scan's
 *Duplicates* number equals the moves the build would make.
 
-**Excluded** (`_excluded/`): bad dumps `[b]`, `[b1]`, `[b reason]`; `(pre-release)`, `(beta)`,
+**Excluded** (`_excluded/`): `(pre-release)`, `(beta)`,
 `(alpha)`, `(preview)` (No-Intro also `(Debug)`, `(Test Program)`); `(proto)` (No-Intro
 `(Proto)`, `(Possible Proto)`); all demos `(demo-playable)`, `(demo-rolling)`, `(demo-slideshow)`,
 `(demo)` (No-Intro `(Demo)`, `(Sample)`, `(Kiosk)`); `[faked ...]`; `[unreleased]` /
-`(unreleased)`; modified `[m ...]`; virus-infected `[v ...]`; over- and under-dumps `[o]` / `[u]`.
+`(unreleased)`; virus-infected `[v ...]`; over- and under-dumps `[o]` / `[u]`.
 **Kept:** cracks `[cr]`, hacks `[h]`, trainers `[t]`, alternates `[a]`, fixes `[f]`,
 translations `[tr]`, and for consoles `(Unl)`, `(Aftermarket)`, `(Pirate)`, Virtual Console etc.
+**Kept as a last resort:** bad dumps `[b]`, `[b1]`, `[b reason]` and modified copies `[m ...]`.
+They rank below every clean version of a game, and one beside a clean dump of the same version
+(a Kickstart `[b]` next to its `[!]`, the `[m]` of a Workbench disk you also have clean) goes to
+`_superseded/`. So they are kept only for a game that has nothing else - on the Amiga about 20
+games, and 34 that WHDLoad installs only from such a copy (often an `[b uncracked]` original or
+an `[m bamcopy]`). Tick *Bad dumps* / *Modified* to exclude them altogether.
 Each rule can be switched off on its own. `[bootable]` is a note, not a bad dump. A
 `[m baddump]` file is a *modified* dump, not a bad one.
-The exclusions apply to all Amiga DATs, so Workbench loses its `[m ...]` modified disks too -
-untick *Modified* or tick *Keep the only dump of a version* if you want those.
 
 **Latest versions only** (`_superseded/`; Amiga *Games - [ADF]* and the No-Intro consoles
 only - never Firmware, Kickstart-Disks or Workbench, where every version is kept). Consoles:
@@ -1067,7 +1071,14 @@ with no RetroArch found, and none chosen, nothing on its card matters.
 - The `.m3u` is written next to disk 1 (after organising: inside the DAT folder) and lists the
   disks in order by their **current** file names (relative paths). With *Disk labels* on,
   entries are `file|Disk 1` etc. so the labels show in RetroArch's Disk Control menu.
-  *Add save disk* appends a `#SAVEDISK:` line.
+  *Add save disk* appends a `#SAVEDISK:` line (the separate playlist tool of the classic page).
+- **Build library** (Amiga): every game played from its disks gets a playlist ending in `#SAVEDISK:` -
+  also a game of one disk, and an SPS release (its images in name order) - so PUAE adds a blank disk
+  to save to (it makes it in RetroArch's saves folder, under `PUAE/`). A game the build makes a WHDLoad
+  `.lha` for is played from that archive and gets **no playlist**, for none of its releases; a playlist
+  of ours for it is removed. If its install fails here, that is remembered, and the next build gives the
+  game a playlist instead (a failed download is not remembered). With *Build WHDLoad games* off,
+  every game gets a playlist.
 - Load the `.m3u` in RetroArch (PUAE core) instead of disk 1, then swap disks from
   Quick Menu > Disk Control.
 - Existing playlists are only replaced if this app created them (first line

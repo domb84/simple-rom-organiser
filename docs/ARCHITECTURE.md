@@ -3767,3 +3767,47 @@ detector; each merge was made only where the copies were the same code.
   X on its screen or from the list.
 * Number tiles not worked out yet are a shimmering bone with a small spinner and what they wait for ("Whole database · 12 s of
   ~40 s"); lists being worked out are shimmering rows. The big "working" view is gone.
+
+**AMENDMENT 80 (v0.5) — An incomplete set the rating rule drops is excluded, not reported.**
+
+* Incomplete sets are decided before the rating filter, which rates only kept games, so under "top 100" a set of a game far outside
+  the 100 (Goal!, RanX, Leisure Suit Larry 1 with a disk missing) was still listed in Needs a look. `library._rate_incomplete` (end
+  of `apply_ratings`) rates each such set's game like a kept one (rating, votes, `min_rating`, the top-N cutoff, unrated): when the
+  rule would drop it, its disks become `excluded` with the rating code (the reason also says which disk is missing) and the set leaves
+  `sel.incomplete`. A set of a game the rule would keep, and the Redump sets that stay where they are, are reported as before.
+* On the user's Amiga data with top 100: 19 sets listed before, 1 after (an unrated Workbench disk, which no rating rule touches).
+
+**AMENDMENT 81 (v0.5) — Bad dumps and modified copies are allowed by default, as a last resort.**
+
+* The user: "set to allow modified and bad to default". Of the user's Amiga files 21 games are kept only through a `[b]` / `[m]` copy,
+  and 34 are WHDLoad-ready only from one (Chaos Engine, Chuck Rock, Cool Spot, the Electronic Arts `[b uncracked]` originals ...).
+* `library.FLAWED_RULES` (`bad_dump`, `modified`) are left out of the app's defaults (`LibraryProfile.exclude`, `default_profile`);
+  the rules stay, and ticking them excludes as before. A profile stored with them on is unchanged.
+* So that allowing them never swaps a clean copy for a flawed one: `_pick_best` ranks a set with a `[b]` / `[m]` disk below every clean
+  one, right after the language and WHDLoad readiness (a version WHDLoad boots from still wins); and `_flawed_beside_clean` (in
+  `select`, after the base rules) supersedes a kept flawed copy beside a kept clean copy of the same version where every version is kept
+  (firmware, Workbench, Kickstart disks, No-Intro): a kept multi-disk set counts as one copy, a disk a clean set shares stays, a borrowed
+  disk stays with its set. `organiser.bios_flawed_beside_clean` does the same for BIOS files.
+* On the user's Amiga files (rating rule off): 418 bad / modified disks give way to clean copies of the same games, none comes in, and no
+  game is lost (Bravo Romeo Delta, Virocop and a Falcon mission disk move to a clean release).
+* Tests of the rules themselves pin every exclusion on (`EVERY_RULE` in test_library, the plan tests' profiles); `FlawedCopies` and
+  `test_amiga_a_set_completed_only_by_a_bad_dump_is_kept_by_default` test the new default.
+
+**AMENDMENT 82 (v0.5) — Amiga playlists: a save disk for every game played from its disks, none for a WHDLoad game.**
+
+* The user: "for games that we cant build using whdload, we should create a playlist with a save disk even if its a single disk. for
+  whdload installs, we should not create a playlist at all".
+* `organiser._plan_library` (Amiga only: the systems with `build_whdload`): `_whdload_games` takes `whdbuild.targets` of the plan
+  (the same list "Build WHDLoad games" makes) - the disks each is built from (where they are and where the build puts them) and its game
+  (`library.game_key`). A kept set or release of such a game gets no playlist, for none of its releases (81 SPS originals kept beside
+  the floppies a top-100 Amiga library builds from would otherwise have had one); our old playlist of it is removed
+  (`m3u.plan_stale(..., whdload=)`, "the game is played from its WHDLoad build").
+* Every other kept game of the Games DAT or an SPS DAT gets a playlist with `#SAVEDISK:` (`PlaylistSpec.savedisk`): the multi-disk sets
+  as before, and now `_single_game_specs` - a game of one disk (named after it) and an SPS release (its images in name order, one line
+  an image). Workbench and the other DATs keep the request's `savedisk` (off). The new UI's per-browser "Add a save disk" switch is
+  gone (an explanation row in its place); the classic playlist tool keeps its option.
+* An install that fails in `whdbuild.build` is recorded in `ready.json` as not installing (`whdready.record`, not for an SPS release),
+  so the next plan drops the target and gives the game a playlist; a failed download is not recorded. A target whose own check failed
+  is never counted as a WHDLoad game, also when the shipped list says it boots.
+* User's data, top-100 rule: 92 WHDLoad games, 10 played from disks (playlists with a save disk), 16 of our playlists removed; the
+  whole collection: 2,084 WHDLoad games, 1,596 save-disk playlists (1,323 of one disk).

@@ -282,6 +282,8 @@ class LibraryTest(ps.PsServerCase):
     def test_a_bad_firmware_dump_is_set_aside_as_a_bad_dump_like_a_game_with_that_flag(self) -> None:
         import zlib
         from romorg import paths
+        from romorg import library
+        self.call("/api/library/defaults", {"exclude": sorted(library.RULES)})               # (bad dumps allowed by default: on here)
         damaged = b"a damaged playstation bios" * 30
         (paths.dats_dir() / "Sony PlayStation - Firmware (TOSEC-v2023-11-07_CM).dat").write_text(
             '<?xml version="1.0"?><datafile><header><name>Sony PlayStation - Firmware</name><version>2023-11-07</version></header>'

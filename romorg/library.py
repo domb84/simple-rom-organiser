@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .platforms import Platform
 
 RULES = tags.RULES
+FLAWED_RULES = frozenset({"bad_dump", "modified"})      # allowed by default: ranked below every clean version, kept as a last resort
 
 KEEP, EXCLUDED, SUPERSEDED, INCOMPLETE = "keep", "excluded", "superseded", "incomplete"
 
@@ -138,7 +139,7 @@ def _norm_votes(v: Any) -> int:
 
 @dataclass(frozen=True)
 class LibraryProfile:
-    exclude: frozenset[str] = frozenset(RULES)   # enabled exclusion rules
+    exclude: frozenset[str] = frozenset(RULES) - FLAWED_RULES   # enabled exclusion rules
     latest_only: bool = True
     best_variant: bool = True                    # Amiga Games only (implies latest for that DAT)
     complete_only: bool = True                   # multi-disk sets
@@ -305,9 +306,11 @@ def _borrow_scope(platform: Any) -> bool:
 
 
 def default_profile(platform: "Platform") -> LibraryProfile:
-    """All rules on, minus the options that do not apply to the platform."""
+    """All rules on, minus the options that do not apply to the platform, and minus bad dumps and modified copies: allowed, they are
+    ranked below every clean version (:func:`_pick_best`), so they are kept only for a game that has nothing else (34 Amiga games are
+    WHDLoad-ready only from one)."""
     return LibraryProfile(
-        exclude=frozenset(RULES),
+        exclude=frozenset(RULES) - FLAWED_RULES,
         latest_only=bool(_dats(platform, "latest_dats")),
         best_variant=bool(_dats(platform, "best_variant_dats")),
         complete_only=bool(complete_dats(platform)),
@@ -1181,16 +1184,20 @@ def _newer(s: _Set) -> tuple:
 
 
 def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
-    """Best language, then (``prefer_whdload``) the version WHDLoad works best from (``whdready.level``), then cracked, then best platform
-    (AGA > ECS > OCS: the floppies' chipset - discs are ranked across DATs, :func:`_rank_across`), then newest, then fewest
-    modification flags ([t] [h] [tr] [f] [a]), then name."""
+    """Best language, then (``prefer_whdload``) the version WHDLoad works best from (``whdready.level``), then clean (no disk a bad dump
+    or modified: allowed, those are kept only when nothing clean is), then cracked, then best platform (AGA > ECS > OCS: the floppies'
+    chipset - discs are ranked across DATs, :func:`_rank_across`), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]),
+    then name."""
     from . import whdready
     pool = sets
 
     def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
         return -(whdready.level_of(it.rom for it in s.slots.values()) or 0) if prefer_whdload else 0
 
-    for key in (lambda s: s.lang_rank, whd, lambda s: not s.cracked, lambda s: s.platform_rank):
+    def flawed(s: _Set) -> bool:
+        return any(tags.exclusion_rules(_tags_of(it)) & FLAWED_RULES for it in s.slots.values())
+
+    for key in (lambda s: s.lang_rank, whd, flawed, lambda s: not s.cracked, lambda s: s.platform_rank):
         best = min(key(s) for s in pool)
         pool = [s for s in pool if key(s) == best]
     newest = max(_newer(s) for s in pool)
@@ -1248,6 +1255,7 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     if profile.rating_active and ratings is None:
         raise RatingsUnavailable("a rating filter is set but no rating data was supplied")
     sel = _select_base(items, profile, platform, lang_games)
+    _flawed_beside_clean(items, sel)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
     if saved and profile.prefer_saved:
@@ -1258,6 +1266,61 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     sel.vanished = _vanished(items, sel)
     _mark_covered(items, sel)
     return sel
+
+
+def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
+    """A bad dump or modified copy (allowed: ``FLAWED_RULES`` not excluded) is kept only when no clean copy of the same version is: one
+    beside a kept clean dump of that version (a Kickstart [b] next to its [!], the [m] of a Workbench disk you also have clean, a No-Intro
+    [b]) is superseded by it. A kept multi-disk set counts as one copy, flawed when one of its disks is."""
+    by_key = {it.key: it for it in items}
+    in_set: dict[int, ChosenSet] = {k: cs for cs in sel.sets for k in cs.slots.values()}
+
+    def version(it: Item, drop_disk: bool) -> tuple:
+        t = _tags_of(it)
+        flags = list(t.flags)
+        d = tags._disk(t) if drop_disk else None
+        if d is not None:
+            del flags[d[0]]
+            if d[0] < len(flags) and flags[d[0]].casefold() in tags._DISK_LABELS:
+                del flags[d[0]]
+        return (it.dat, t.style, t.title.casefold(), t.regions, () if t.languages_implied else t.languages, t.status, tuple(flags),
+                t.version, tags.date_key(t.date))
+
+    groups: dict[tuple, list[tuple[str, list[Item], Optional[ChosenSet]]]] = {}
+    seen: set[int] = set()
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is None or d.action != KEEP or it.key in seen:
+            continue
+        cs = in_set.get(it.key)
+        if cs is not None:
+            members = [by_key[k] for k in cs.slots.values() if k in by_key]
+            seen.update(m.key for m in members)
+            anchor = by_key.get(cs.slots.get(min(cs.slots)), it)
+            groups.setdefault(version(anchor, True) + (cs.total,), []).append((cs.name, members, cs))
+        else:
+            seen.add(it.key)
+            groups.setdefault(version(it, False) + (0,), []).append((_rom_name(it), [it], None))
+    gone: set[int] = set()
+    for copies in groups.values():
+        if len(copies) < 2:
+            continue
+        flawed = [c for c in copies if any(tags.exclusion_rules(_tags_of(m)) & FLAWED_RULES for m in c[1])]
+        clean = [c for c in copies if c not in flawed]
+        if not flawed or not clean:
+            continue
+        winner = min(c[0] for c in clean)
+        used = {m.key for c in clean for m in c[1]}             # (a disk the clean set shares with the flawed one stays)
+        for _name, members, cs in flawed:
+            for m in members:
+                if m.key in used or sel.decisions[m.key].codes == (BORROWED_CODE,):
+                    continue                                   # (a disk borrowed from another edition stays with its own set)
+                sel.decisions[m.key] = Decision(key=m.key, action=SUPERSEDED, superseded_by=winner,
+                                                reason=f"superseded by {winner} (a clean dump of the same version)")
+            if cs is not None:
+                gone.add(cs.id)
+    if gone:
+        sel.sets = [cs for cs in sel.sets if cs.id not in gone]
 
 
 def title_key(it: Item) -> str:
@@ -2065,10 +2128,54 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
     if gone:
         sel.sets = [cs for cs in sel.sets if not (set(cs.slots.values()) & gone)]
         sel.incomplete = [x for x in sel.incomplete if not (x.kept and set(x.present.values()) <= gone)]
+    _rate_incomplete(sel, items, profile, platform, ctx, cutoff)
     sel.rating = {"min_rating": profile.min_rating, "top_n": profile.top_n, "min_votes": profile.min_votes,
                   "keep_unrated": profile.keep_unrated, "rank_scope": profile.rank_scope,
                   "games": len(units), "rated": rated_games, "unrated": len(units) - rated_games,
                   "kept": kept_games, "excluded": len(units) - kept_games, "excluded_by": dropped}
+
+
+def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProfile, platform: Any,
+                     ctx: RatingContext, cutoff: tuple) -> None:
+    """An incomplete set the rating filter would drop anyway is no problem to report: its disks are excluded for their rating like
+    a kept game's (the set was set aside before the filter ran, so it is no unit of :func:`apply_ratings`)."""
+    from . import ratings as _ratings
+
+    rdats = set(_ratings.rated_dats(platform))
+    by_key = {it.key: it for it in items}
+    still: list[IncompleteSet] = []
+    for x in sel.incomplete:
+        mine = [by_key[k] for k in x.present.values() if k in by_key]
+        if x.kept or not mine or (mine[0].dat not in rdats and game_dat(mine[0].dat) not in rdats):
+            still.append(x)
+            continue
+        owner = mine[0]
+        title = _tags_of(owner).title
+        r = None if tags.bonus_disc(_tags_of(owner)) else ctx.lookup(title)
+        if r is not None and r[1] < profile.min_votes:
+            r = None
+        codes: list[str] = []
+        if r is None:
+            if not profile.keep_unrated:
+                codes.append(RATING_UNRATED)
+            detail = "no usable rating"
+        else:
+            detail = f"rated {r[0]:.1f} ({r[1]} vote{'' if r[1] == 1 else 's'})"
+            if profile.min_rating is not None and r[0] < profile.min_rating:
+                codes.append(RATING_LOW)
+            if profile.top_n is not None and _rank_key(r[0], r[1], title, game_key(owner, profile.combine_alt_titles))[:3] > cutoff:
+                codes.append(RATING_NOT_TOP)
+        if not codes:
+            still.append(x)
+            continue
+        missing = ", ".join(str(m) for m in x.missing)
+        for it in mine:
+            d = sel.decisions.get(it.key)
+            if d is not None and d.action == INCOMPLETE:
+                sel.decisions[it.key] = Decision(
+                    key=it.key, action=EXCLUDED, codes=tuple(codes), detail=detail,
+                    reason=f"excluded: {_describe([(c, '') for c in codes]).strip()} ({detail}; incomplete: missing disk {missing})")
+    sel.incomplete = still
 
 
 def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:
@@ -2566,7 +2673,8 @@ _REDUMP_DESCRIPTIONS = {
             "every disc Redump files under the Demos or Coverdiscs categories.",
 }
 _RULE_DESCRIPTIONS = {
-    "bad_dump": "Dumps marked as bad or corrupt. Never useful.",
+    "bad_dump": "Dumps marked as bad or corrupt. Allowed by default: a bad dump is kept only when the game has no clean version "
+                "(some still install with WHDLoad: it reads only the files it needs).",
     "virus": "Disks that carry a virus.",
     "bad_size": "Over- or under-sized dumps.",
     "pre_release": "Betas, alphas, previews and debug builds.",
@@ -2574,7 +2682,8 @@ _RULE_DESCRIPTIONS = {
     "demo": "Demos, samples, kiosk and slideshow disks.",
     "faked": "Fake releases (a release pretending to be something else).",
     "unreleased": "Games that were never released.",
-    "modified": "Disks modified from the original dump (a common reason a Workbench disk is listed).",
+    "modified": "Disks modified from the original dump (a copy tool's mark, a saved high-score table; a common reason a Workbench disk is "
+                "listed). Allowed by default: kept only when the game has no clean version.",
     "budget": "Budget re-releases (the Best, Greatest Hits, Platinum, @barai ...): set aside when another release of the game is there; "
               "the only release of a game is kept.",
     "online": "Titles that only ran online on servers that are gone: browsers, start-up and network discs, the Passport discs, "

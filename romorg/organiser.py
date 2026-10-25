@@ -428,6 +428,30 @@ def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
                 _send_to_reason(op, root, "duplicate", f"duplicate of {text}", keeper=text)
 
 
+def bios_flawed_beside_clean(ops: Sequence[RenameOp], root: Path) -> None:
+    """A bad dump or modified BIOS (allowed: ``library.FLAWED_RULES`` not excluded) is kept only when no clean dump of the same entry is,
+    as for a ROM (``library._flawed_beside_clean``): one beside a kept clean dump of that version is superseded by it."""
+    from . import library
+
+    groups: dict[tuple, list[tuple[RenameOp, bool]]] = {}
+    for op in ops:
+        if op.bios and op.bios_game and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
+            t = library.tags.parse_name(op.bios_game, library.STYLE_TOSEC)
+            key = (op.dat, t.title.casefold(), t.regions, t.languages, t.status, tuple(t.flags), t.version, t.date)
+            groups.setdefault(key, []).append((op, bool(library.tags.exclusion_rules(t) & library.FLAWED_RULES)))
+    for group in groups.values():
+        clean = [op for op, flawed in group if not flawed]
+        if not clean:
+            continue
+        keeper = min(clean, key=lambda o: str(o.dst).casefold())
+        rel = _rel_to(keeper.dst, root)
+        text = rel.as_posix() if rel is not None else str(keeper.dst)
+        for op, flawed in group:
+            if flawed:
+                op.bios = False
+                _send_to_reason(op, root, "superseded", f"superseded by {text} (a clean dump of the same version)", superseded_by=text)
+
+
 def _one_bios(path: Path) -> bool:
     """True unless ``path`` is a zip of more than one file (a BIOS zip holds BIOS files only: ``bios.identify_archive``)."""
     if path.suffix.lower() != ".zip":
@@ -898,6 +922,7 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
         for op in ops:
             bios_exclude(op, root, profile)
     bios_duplicates(ops, root)
+    bios_flawed_beside_clean(ops, root)
     ops.sort(key=lambda o: (o.unmatched, o.dat, str(o.src).casefold()))
     _resolve_conflicts(ops, root)
     for op in ops:   # legacy layout: say why the file leaves _unmatched/<reason>/ ; record the target folder
@@ -996,23 +1021,40 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     ops = core.ops
     sel = core.selection if core.selection is not None else library.Selection()
 
+    whd, whd_games = _whdload_games(sel, core.owners, profile, platform)
+    games = _amiga_game_dats(profile, platform)
+    combine = getattr(sel, "combine_alt", True)
+
+    def whdload_game(keys: Iterable[int]) -> bool:
+        """True when the game of these disks is played from its WHDLoad build."""
+        keys = [k for k in keys if k in core.owners]
+        return bool(whd_games) and bool(keys) and library.game_key(_item_of(keys[0], core.owners), combine) in whd_games
     specs: list["m3u.PlaylistSpec"] = []
     counts: dict[str, int] = {}
+    in_sets: set[int] = set()
+
+    def disk_of(key: int, slot: int, label: str) -> Optional["m3u.PlaylistDisk"]:
+        owner = core.owners.get(key)
+        if owner is None:
+            return None
+        op, unit = owner
+        final = _final_path(op)
+        if unit.archive and unit.members > 1:
+            counts[str(final)] = unit.members
+        return m3u.PlaylistDisk(slot, final, unit.member if unit.archive else None, label)
+
     for cs in sel.sets:
-        disks = []
-        for slot, key in sorted(cs.slots.items()):
-            owner = core.owners.get(key)
-            if owner is None:
-                continue
-            op, unit = owner
-            final = _final_path(op)
-            if unit.archive and unit.members > 1:
-                counts[str(final)] = unit.members
-            disks.append(m3u.PlaylistDisk(slot, final, unit.member if unit.archive else None,
-                                          cs.labels.get(slot, "")))
+        in_sets.update(cs.slots.values())
+        disks = [d for slot, key in sorted(cs.slots.items()) if (d := disk_of(key, slot, cs.labels.get(slot, ""))) is not None]
         if len(disks) == len(cs.slots) and disks:
+            if any(_fold(d.path) in whd for d in disks) or (cs.dat in games and whdload_game(cs.slots.values())):
+                continue                                      # (the game is played from its WHDLoad build: no playlist)
             specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks,
-                                          [b["text"] for _i, b in sorted(cs.borrowed.items())]))
+                                          [b["text"] for _i, b in sorted(cs.borrowed.items())],
+                                          savedisk=True if cs.dat in games else None))
+    if games:
+        specs += _single_game_specs(sel, core.owners, games, frozenset(getattr(platform, "image_set_dats", ()) or ()), in_sets, whd,
+                                    disk_of, whdload_game)
     playlists = m3u.plan_playlists(specs, root, savedisk=savedisk, labels=labels, member_counts=counts)
 
     moving = [str(op.src) for op in ops if op.status in MOVE_STATUSES]
@@ -1034,12 +1076,89 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
             deleting.add(_fold(op.src))
             op.reason = _library_delete_reason(op, by_src)
         kept_ops.append(op)
-    for st in m3u.plan_stale(root, playlists, moving):
+    for st in m3u.plan_stale(root, playlists, moving, whd):
         if _fold(st.path) in deleting or rewritten(st.path):
             continue
         deleting.add(_fold(st.path))
         kept_ops.append(RenameOp(st.path, st.path, DELETE_STATUS, st.reason, "", "m3u"))
     return LibraryPlan(kept_ops, playlists, sel, profile, core.owners)
+
+
+def _amiga_game_dats(profile: Any, platform: Any) -> frozenset:
+    """The DATs whose kept games get a playlist with a blank save disk when they have no WHDLoad build - one disk or several (the
+    Amiga's games: its Games DAT and the SPS releases); empty on every other system."""
+    from . import library
+    if platform is None or "build_whdload" not in library.applicable_fields(platform):
+        return frozenset()
+    return frozenset(d for d in (getattr(platform, "game_dat", "") or "",) + tuple(getattr(platform, "image_set_dats", ()) or ()) if d)
+
+
+def _item_of(key: int, owners: dict) -> Any:
+    """The ``library.Item`` of a kept unit (what ``library.game_key`` takes)."""
+    from . import library
+    op, u = owners[key]
+    return library.Item(key=key, dat=u.dat, rom=u.rom, style=u.style, path=_final_path(op), member=u.member)
+
+
+def _whdload_games(sel: Any, owners: dict, profile: Any, platform: Any) -> tuple[set[str], set[tuple]]:
+    """``(disks, games)`` of the WHDLoad games this build makes ("Build WHDLoad games" on): the folded paths of the disks each is built
+    from (where they are and where the build puts them) and the games (``library.game_key``). A game played from its ``.lha`` gets no
+    playlist, for none of its releases (an SPS original kept beside the floppies it is built from included)."""
+    from types import SimpleNamespace
+
+    from . import library, whdbuild, whdready
+    if platform is None or not getattr(profile, "build_whdload", False) or "build_whdload" not in library.applicable_fields(platform):
+        return set(), set()
+    places: dict[str, tuple[str, str]] = {}
+    by_place: dict[str, int] = {}
+    for key, (op, _u) in owners.items():
+        pair = (_fold(op.src), _fold(_final_path(op)))
+        places[pair[0]] = places[pair[1]] = pair
+        by_place.setdefault(pair[0], key)
+        by_place.setdefault(pair[1], key)
+    disks: set[str] = set()
+    games: set[tuple] = set()
+    combine = getattr(sel, "combine_alt", True)
+    for t in whdbuild.targets(SimpleNamespace(selection=sel, owners=owners), platform):
+        if not t.sps and (whdready.checked(t.names) or {}).get("ok") is False:
+            continue                                          # (its install failed here: played from its disks, with a playlist)
+        for path, _member in t.disks:
+            disks.update(places.get(_fold(path), (_fold(path),)))
+        key = by_place.get(_fold(t.disks[0][0])) if t.disks else None
+        if key is not None:
+            games.add(library.game_key(_item_of(key, owners), combine))
+    return disks, games
+
+
+def _single_game_specs(sel: Any, owners: dict, games: frozenset, image_sets: frozenset, in_sets: set[int], whd: set[str],
+                       disk_of: Callable[[int, int, str], Any], whdload_game: Callable[[Iterable[int]], bool]) -> list[Any]:
+    """Playlists of the kept Amiga games that are no multi-disk set and have no WHDLoad build: a game of one disk, and an SPS release
+    (its images in name order), each with a blank save disk to save to."""
+    from . import library, m3u
+    groups: dict[tuple[str, str], list[int]] = {}             # (DAT, playlist name) -> its disks
+    for key, d in sel.decisions.items():
+        if d.action != library.KEEP or key in in_sets or key not in owners:
+            continue
+        op, u = owners[key]
+        if u.dat not in games or getattr(op, "bios", False):
+            continue
+        if u.dat in image_sets:
+            if u.rom.game:
+                groups.setdefault((u.dat, u.rom.game), []).append(key)
+            continue
+        disk = library.tags._disk(library.tags.parse_name(u.rom.name, library.STYLE_TOSEC))
+        if disk is None or disk[2] < 2:                       # (a disk of a multi-disk release with no set: left alone)
+            groups.setdefault((u.dat, Path(u.rom.name).stem), []).append(key)
+    out = []
+    for (dat, name), keys in sorted(groups.items()):
+        keys.sort(key=lambda k: (owners[k][1].rom.name.casefold(), k))
+        units: dict[tuple, int] = {}
+        for k in keys:                                        # (one line a disk: a file, or an image in the release's zip / 7z)
+            units.setdefault((_fold(_final_path(owners[k][0])), owners[k][1].member if owners[k][1].archive else None), k)
+        disks = [d for i, k in enumerate(units.values(), 1) if (d := disk_of(k, i, "")) is not None]
+        if disks and not any(_fold(d.path) in whd for d in disks) and not whdload_game(keys):
+            out.append(m3u.PlaylistSpec(name, dat, len(disks), disks, savedisk=True))
+    return out
 
 
 def _partial_decided(op: RenameOp, d: Any, root: Path) -> None:

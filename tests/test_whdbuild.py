@@ -39,8 +39,9 @@ class BuildTests(unittest.TestCase):
         self.disk = self.root / "Games" / NAME
         self.disk.write_bytes(make_adf("Zap", {"game": b"the game"}))
         self.pkg = install_package(self.tmp)
-        patch = mock.patch.multiple(whdready, level=mock.Mock(return_value=whdready.BOOTS), archive=mock.Mock(return_value="Zap.lha"))
-        patch.start()
+        patch = mock.patch.multiple(whdready, level=mock.Mock(return_value=whdready.BOOTS), archive=mock.Mock(return_value="Zap.lha"),
+                                    record=mock.DEFAULT)          # (never the real data folder's ready.json)
+        self.mocks = patch.start()
         self.addCleanup(patch.stop)
 
     def plan(self) -> SimpleNamespace:
@@ -126,6 +127,19 @@ class BuildTests(unittest.TestCase):
             out = whdbuild.build(whdbuild.targets(self.plan(), AMIGA), self.root, installs, fetch=offline, decruncher=lambda: None)
             self.assertEqual((len(out["failed"]), out["removed"]), (1, []))
             self.assertTrue((self.root / "Elsewhere" / "Zap (1993)(Acme)[cr FLT].lha").exists())
+
+    def test_an_install_that_fails_is_recorded_and_a_download_that_fails_is_not(self) -> None:
+        todo = whdbuild.targets(self.plan(), AMIGA)
+
+        def offline(inst):
+            raise OSError("network is unreachable")
+        whdbuild.build(todo, self.root, [{"archive": "Zap.lha", "title": "Zap", "date": "2024-01-01"}], fetch=offline, decruncher=lambda: None)
+        self.mocks["record"].assert_not_called()                                       # (says nothing of the game: tried again next time)
+        with mock.patch.object(ai.Package, "install", side_effect=ai.InstallError("no such file: Zap:game")):
+            out = self.build(todo)
+        self.assertEqual(len(out["failed"]), 1)
+        rows = self.mocks["record"].call_args.args[0]
+        self.assertEqual(rows, {whdready.key_of([NAME]): {"ok": False, "archive": "Zap.lha", "reason": "no such file: Zap:game"}})
 
     def test_a_write_that_fails_leaves_nothing_half_written(self) -> None:
         import errno

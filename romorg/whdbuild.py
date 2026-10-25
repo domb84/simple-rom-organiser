@@ -256,8 +256,20 @@ def build(todo: list[Target], root: Path, installs: list[dict[str, Any]], progre
             if t.archive not in packages:
                 packages.clear()                              # (one package held at a time: they are small, the list is not)
                 packages[t.archive] = fetch(inst)
-            with ai.Package(packages[t.archive]) as pkg:
-                res = pkg.install(_disk_data(t), cd=False, decruncher=decruncher, hints=ai.chipset_hints(t.names), system=system)
+        except Exception as exc:  # noqa: BLE001 - a download that failed says nothing of the game: tried again next time
+            out["failed"].append({"title": t.title, "error": (str(exc) or type(exc).__name__)[:300]})
+            keep_old(t)
+            continue
+        try:
+            try:
+                with ai.Package(packages[t.archive]) as pkg:
+                    res = pkg.install(_disk_data(t), cd=False, decruncher=decruncher, hints=ai.chipset_hints(t.names), system=system)
+            except Exception as exc:  # noqa: BLE001
+                if not t.sps:                                 # (the install does not work from these disks: they get a playlist instead)
+                    from . import whdready
+                    whdready.record({whdready.key_of(t.names): {"ok": False, "archive": t.archive,
+                                                                "reason": (str(exc) or type(exc).__name__)[:300]}})
+                raise
             files = ai.alias_icons(res.files)
             files[MARKER] = json.dumps({"app": "simple-rom-organiser", **t.key(inst.get("date", "")), "built": time.time()},
                                        indent=1).encode()

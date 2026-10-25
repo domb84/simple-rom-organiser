@@ -767,9 +767,10 @@ def plan_m3us(result: "ScanResult", savedisk: bool = False, labels: bool = True,
     return ops
 
 
-def _stale_ops(root: Path, ops: list[M3UOp], moving: Collection[str] = ()) -> list[M3UOp]:
-    """Our playlists not in the plan that point at missing (or moving) files or duplicate a planned one."""
+def _stale_ops(root: Path, ops: list[M3UOp], moving: Collection[str] = (), whdload: Collection[str] = ()) -> list[M3UOp]:
+    """Our playlists not in the plan that point at missing (or moving) files, duplicate a planned one or play a WHDLoad build's disks."""
     moving_set = {_fold(Path(p)) for p in moving}
+    whd_set = set(whdload)
     planned: dict[str, list[Path]] = {}
     for op in ops:
         planned.setdefault(_fold(op.path), []).append(Path(op.path))
@@ -807,6 +808,8 @@ def _stale_ops(root: Path, ops: list[M3UOp], moving: Collection[str] = ()) -> li
                                                 "exist at that place - it will be removed"))
         elif twin is not None and entries:
             out.append(M3UOp(path, [], "stale", f"made by this app; replaced by {twin.name} - it will be removed"))
+        elif entries and any(_fold(e) in whd_set for e in entries):
+            out.append(M3UOp(path, [], "stale", "made by this app; the game is played from its WHDLoad build - it will be removed"))
     return out
 
 
@@ -882,6 +885,7 @@ class PlaylistSpec:
     disks: list[PlaylistDisk]
     notes: list[str] = field(default_factory=list)    # one line per disk borrowed from another edition
     directory: Optional[Path] = None                  # where the playlist goes (default: next to the lowest slot's disk)
+    savedisk: Optional[bool] = None                   # a blank save disk at the end (None: the call's ``savedisk``)
 
 
 def content_of(lines: list[str]) -> str:
@@ -925,7 +929,7 @@ def plan_playlists(specs: Iterable[PlaylistSpec], root: Path, savedisk: bool = F
             if labels:
                 line = f"{rel}|{(d.label or f'Disk {d.slot}').replace(chr(10), ' ').strip()}"
             lines.append(line)
-        if savedisk:
+        if spec.savedisk if spec.savedisk is not None else savedisk:
             lines.append("#SAVEDISK:")
         if bad:
             ops.append(M3UOp(path, lines, "conflict",
@@ -940,10 +944,11 @@ def plan_playlists(specs: Iterable[PlaylistSpec], root: Path, savedisk: bool = F
     return ops
 
 
-def plan_stale(root: Path, planned: list[M3UOp], moving: Collection[str] = ()) -> list[M3UOp]:
+def plan_stale(root: Path, planned: list[M3UOp], moving: Collection[str] = (), whdload: Collection[str] = ()) -> list[M3UOp]:
     """Our own playlists not in ``planned`` whose disks are gone, about to move (``moving`` =
-    absolute disk paths) or that a planned playlist replaces; status ``stale``."""
-    return _stale_ops(root, planned, moving)
+    absolute disk paths), that a planned playlist replaces, or that plays a disk of a WHDLoad build (``whdload``: their
+    folded absolute paths - the game is played from its ``.lha``); status ``stale``."""
+    return _stale_ops(root, planned, moving, whdload)
 
 
 def write_playlist(path: Path, text: str, replace_own: bool = False) -> tuple[str, int]:
