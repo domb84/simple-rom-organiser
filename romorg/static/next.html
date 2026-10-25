@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="romorg-token" content="__ROMORG_TOKEN__">
+  <meta name="romorg-deck" content="__ROMORG_DECK__">
+  <title>ROM Organiser</title>
+  <link rel="stylesheet" href="/static/next.css">
+</head>
+<body class="mouse">
+  <div id="app">
+    <div id="topline" class="topline hidden" aria-hidden="true"><span></span></div>
+    <header id="head" class="head" data-section="head">
+      <button class="head-back hidden" id="head-back" type="button" aria-label="Back">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>
+      </button>
+      <div class="head-where">
+        <span class="head-crumbs" id="head-crumbs"></span>
+        <h1 class="head-title" id="head-title">ROM Organiser</h1>
+      </div>
+      <div class="head-aside" id="head-aside"></div>
+      <button class="activity hidden" id="head-activity" type="button" tabindex="-1" aria-live="polite"><span class="mini" aria-hidden="true"></span><span id="head-activity-text"></span></button>
+      <button class="head-menu" id="head-menu" type="button" aria-label="Menu" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"></circle><circle cx="12" cy="12" r="1.6"></circle><circle cx="19" cy="12" r="1.6"></circle></svg>
+      </button>
+    </header>
+    <main id="main" class="main" data-section="main" tabindex="-1"></main>
+    <footer id="strip" class="strip" role="note" aria-label="Buttons"></footer>
+  </div>
+  <div id="overlays"></div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <script src="/static/next.js" defer></script>
+</body>
+</html>

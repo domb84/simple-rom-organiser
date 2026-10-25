@@ -27,7 +27,10 @@ and sorts the files, and - for the Amiga - writes M3U playlists for multi-disk g
 **WHDLoad installs (Amiga).** The Amiga's Files page lists, under **WHDLoad installs**, which of your games has a WHDLoad
 install on [whdload.de](https://www.whdload.de/) - 2,843 game installs; about two thirds of a typical TOSEC collection has one. An
 install is a game's WHDLoad slave, installer script, icons and ReadMe (some hundred KB, no game data); it installs the game from its disks
-to a hard drive. **Download** one, or **Download all**: each is unpacked next to the game's disks, in `<game> (WHDLoad install)/` (with a
+to a hard drive. They come by themselves: at every start (and with **Check for updates**) the app downloads the install of every
+Amiga game you have that lacks one, and downloads an install again when its date changed on whdload.de; nothing is asked of the network
+when they are all current, and the round waits for the next start while a scan or build runs. **Download** one, or **Download all**,
+still does it at once. Each is unpacked next to the game's disks, in `<game> (WHDLoad install)/` (with a
 small `.romorg-whdload.json` note), checked first (a real LhA archive, every file's CRC). Scans, builds and the counts leave those folders
 alone; the Files tree shows their files as *WHDLoad install*. A game is matched by its title, the same letters (`Push-Over` /
 `Pushover`), another title of the game (`Die Siedler` / `The Settlers`) or its subtitle / main title; a data, course or scenario disk gets
@@ -1250,6 +1253,33 @@ You can also just `chmod +x` the AppImage and double-click it.
 **Desktop Mode is the main target.** In Game Mode the browser window may not appear. If that happens, open a browser yourself at the URL in `app.log`. Setting the launch option `--port 8765` keeps that URL fixed.
 
 When you are done, use **Quit** so that Steam sees the "game" exit.
+
+**The big-screen interface (v0.5).** It is the app's main page (the old pages are at `/classic` for now): big tiles, one job per screen, made for 1280x720 and larger, and driven the same way by a controller,
+a keyboard or a mouse. It covers Home, every system (files, needs a look, rules, settings, WHDLoad, saves), Build library and all the settings;
+nothing needs the classic page any more, but the menu still opens it ("Classic interface"). Backups of saves go to
+`~/.local/share/simple-rom-organiser/save-backups` unless you choose another folder in Emulators › RetroArch › Saves and states. Disc images has two checks: "Fully check DVD images" and "Check audio tracks on CDs". Keys:
+arrows move, Enter selects, Esc goes back, `/` searches, `x` is the screen's second action, `[` `]` switch, Ctrl+Enter is the main
+action, F10 the menu. Long tasks (a scan, a build, a restore) go on when you leave their screen: a line along the top and a chip in the
+header show what is running (select it for the list, or Stop), and a message says when a task is done.
+
+**Using a controller (v0.5).** Every page can be used with a gamepad: press any button and a ring shows the control you are on and a strip at
+the bottom names the buttons that apply (it goes away when you use the mouse or touch). The same works with a keyboard layout in
+Steam Input (arrows, Enter, Escape).
+
+| Button | Does |
+| --- | --- |
+| D-pad, left stick | move to the nearest control in that direction (the side list, the top bar and the page are separate parts: a move stays in its part until nothing lies that way) |
+| A | press it (on a text field: take the focus, then **Steam + X** opens Steam's keyboard; on a choice list: the next choice) |
+| B | back: closes the open dialog or menu, else collapses the section you are in, else goes up a level |
+| Y | the search box of the page |
+| LB / RB | the previous / next tab |
+| LT / RT, right stick | scroll |
+| Menu | the **More** menu (updates, Quit) |
+| View | all systems |
+
+`--deck` (or `ROMORG_DECK=1`; Steam's own `SteamGamepadUI` / `SteamDeck` variables also turn it on, `ROMORG_DECK=0` turns it off) keeps the
+strip always on. This is the first part of the Deck mode; opening the window reliably in Game Mode and the layout for a handheld come next
+(docs/PLAN-v0.5.md).
 
 More detail is in [docs/PACKAGING.md](docs/PACKAGING.md).
 

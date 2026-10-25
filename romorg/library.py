@@ -656,6 +656,7 @@ class IncompleteSet:
     present: dict[int, int]       # disk number -> Item.key
     missing: tuple[int, ...]
     kept: bool = False            # Redump: the discs stay where they are (no ``_incomplete`` move), only reported
+    covered_by: str = ""          # a complete version of the same game is kept (its name): nothing to report (:func:`_mark_covered`)
 
 
 @dataclass
@@ -1255,7 +1256,44 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
         apply_saved(sel, items, saved, profile, platform.name)
     apply_overrides(sel, items, profile)
     sel.vanished = _vanished(items, sel)
+    _mark_covered(items, sel)
     return sel
+
+
+def title_key(it: Item) -> str:
+    """The game an item is of, as a person would say it: its title in lower case, letters and digits only (``Push-Over`` = ``pushover``)
+    - the same for every release, edition, publisher, region and DAT of a system (floppies, an SPS release, another region's discs).
+    An edition named after the title is the same game (``Wing Commander - Platinum Edition`` = ``Wing Commander``); any other subtitle
+    is not (``Lemmings - Oh No! More Lemmings`` is a game of its own)."""
+    title = _EDITION_RE.sub("", _tags_of(it).title.casefold())
+    return re.sub(r"[^0-9a-z]+", "", title)
+
+
+_EDITION_RE = re.compile(r"\s+-\s+[^-]*\bedition\s*$")
+
+
+def kept_titles(items: Sequence[Item], sel: Selection) -> dict[str, str]:
+    """``{title_key: name}`` of the games ``sel`` keeps complete (a kept item with no disk missing)."""
+    out: dict[str, str] = {}
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is not None and d.action == KEEP and not d.missing:
+            out.setdefault(title_key(it), it.rom.game or _rom_name(it))
+    return out
+
+
+def _mark_covered(items: Sequence[Item], sel: Selection) -> None:
+    """An incomplete set of a game that is kept complete in another version (the original SPS disks next to cracked floppies with
+    a disk missing, another region's discs) is no problem to report: ``covered_by`` names the version that is kept. The set is
+    still set aside as before."""
+    if not sel.incomplete:
+        return
+    have = kept_titles(items, sel)
+    by_key = {it.key: it for it in items}
+    for x in sel.incomplete:
+        mine = [by_key[k] for k in x.present.values() if k in by_key]
+        if mine:
+            x.covered_by = have.get(title_key(mine[0]), "")
 
 
 def content_names(item: Item) -> tuple[str, ...]:
@@ -1608,11 +1646,20 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
     image_sets = set(_dats(platform, "image_set_dats"))
     by_key = {it.key: it for it in items}
     in_set = {k: cs for cs in sel.sets for k in cs.slots.values()}
+    releases: dict[tuple[str, str], list[Item]] = {}            # an SPS release's images (once: looking them up per image was n²)
+    for it in items:
+        if it.dat in image_sets:
+            releases.setdefault((it.dat, it.rom.game), []).append(it)
+    verdicts: dict[tuple, bool] = {}
 
     def boots(members: list[Item]) -> bool:
-        if members[0].dat in image_sets:
-            return (whdready.release_of(members[0].rom) or [None])[0] == whdready.BOOTS
-        return whdready.level_of(m.rom for m in members) == whdready.BOOTS
+        key = tuple(sorted(m.key for m in members))
+        if key not in verdicts:
+            if members[0].dat in image_sets:
+                verdicts[key] = (whdready.release_of(members[0].rom) or [None])[0] == whdready.BOOTS
+            else:
+                verdicts[key] = whdready.level_of(m.rom for m in members) == whdready.BOOTS
+        return verdicts[key]
 
     running: set[tuple] = set()
     for it in items:
@@ -1621,19 +1668,23 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
             continue
         cs = in_set.get(it.key)
         members = [by_key[k] for k in cs.slots.values() if k in by_key] if cs is not None else \
-            [m for m in items if m.dat in image_sets and m.dat == it.dat and m.rom.game == it.rom.game] if it.dat in image_sets else [it]
+            releases[(it.dat, it.rom.game)] if it.dat in image_sets else [it]
         if boots(members):
             running.add(game_key(it, profile.combine_alt_titles))
     lang_out = [it for it in items if (it.dat == gdat or it.dat in image_sets) and (d := sel.decisions.get(it.key)) is not None
                 and d.action == EXCLUDED and d.codes == (LANGUAGE_CODE,) and not it.link]
     by_name = {whdready.shipped_name(it.rom.name, it.rom.sha1 or ""): it for it in lang_out if it.dat == gdat}
+    lang_releases: dict[tuple[str, str], list[Item]] = {}
+    for it in lang_out:
+        if it.dat in image_sets:
+            lang_releases.setdefault((it.dat, it.rom.game), []).append(it)
     done: set[tuple] = set()
     for it in sorted(lang_out, key=lambda i: (i.rom.name.casefold(), i.key)):
         g = game_key(it, profile.combine_alt_titles)
         if g in running or g in done:
             continue
         if it.dat in image_sets:
-            members = [m for m in lang_out if m.dat == it.dat and m.rom.game == it.rom.game]
+            members = lang_releases[(it.dat, it.rom.game)]
             ok = boots(members)
         else:
             members, ok = [], False

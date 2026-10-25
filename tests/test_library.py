@@ -337,6 +337,40 @@ class Ranking(unittest.TestCase):
         self.assertTrue(all(d.action == KEEP for d in run(names, prof)[2].values()))
 
 
+class CoveredIncompleteSets(unittest.TestCase):
+    """An incomplete set of a game that is kept complete in another version is no problem to report (``covered_by``), on every
+    system: it is still set aside, but neither the build nor the totals call the game incomplete."""
+
+    APART = replace(library.default_profile(AMIGA), combine_alt_titles=False)     # (two publishers' releases: two games)
+
+    def test_another_complete_release_covers_it(self) -> None:
+        names = ["N (1990)(P)(Disk 1 of 2)[cr A]", "N (1991)(Q)(Disk 1 of 2)", "N (1991)(Q)(Disk 2 of 2)"]
+        _items, sel, by = run(names, self.APART)
+        self.assertEqual(by[names[0]].action, INCOMPLETE)
+        self.assertEqual([x.covered_by for x in sel.incomplete], ["N (1991)(Q)(Disk 1 of 2)"])
+
+    def test_an_edition_of_the_game_counts_as_the_game_and_another_subtitle_does_not(self) -> None:
+        names = ["W (1990)(P)(Disk 1 of 2)", "W (1990)(P)(Disk 2 of 2)", "W - Platinum Edition (1993)(H)(Disk 1 of 2)",
+                 "W - The Secret Missions (1991)(P)(Disk 1 of 2)"]
+        _items, sel, _by = run(names, self.APART)
+        covered = {x.name: x.covered_by for x in sel.incomplete}
+        self.assertEqual(covered["W - Platinum Edition (1993)(H)"], "W (1990)(P)(Disk 1 of 2)")
+        self.assertEqual(covered["W - The Secret Missions (1991)(P)"], "")          # a game of its own: still reported
+
+    def test_with_no_complete_version_it_is_reported(self) -> None:
+        _items, sel, _by = run(["M (1990)(P)(Disk 1 of 3)", "M (1990)(P)(Disk 3 of 3)"])
+        self.assertEqual([x.covered_by for x in sel.incomplete], [""])
+
+    def test_the_totals_do_not_count_it_as_incomplete(self) -> None:
+        from romorg import totals
+        names = ["N (1990)(P)(Disk 1 of 2)[cr A]", "N (1991)(Q)(Disk 1 of 2)", "N (1991)(Q)(Disk 2 of 2)", "M (1990)(P)(Disk 1 of 3)"]
+        user = totals.compute_user_items(amiga_items(names), AMIGA, self.APART)
+        states = sorted(state for state, _names in user.games.values())
+        self.assertEqual(states.count(totals.INCOMPLETE_OWNED), 1)                  # only M: N is kept complete in its other release
+        why = [w for st, _n, w in user.problems.values() if "complete version is kept" in w]
+        self.assertEqual(len(why), 1)
+
+
 class Rules(unittest.TestCase):
     NAMES = ["R (1990)(P)", "R2 (1990)(P)(pre-release)", "R3 (1990)(P)[b]", "R4 (1990)(P)[v Foo]",
              "R5 (1990)(P)[o]", "R6 (1990)(P)(demo-playable)", "R7 (1990)(P)[m bamcopy]", "R8 (1990)(P)[faked x]",

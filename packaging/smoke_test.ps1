@@ -82,9 +82,12 @@ try {
     }
     if (-not $up) { throw "smoke test failed: the UI did not answer on port $port" }
 
-    $index = Get-Text "/"
+    $main = Get-Text "/"
+    Assert-Match $main 'src="/static/next.js"' "the main page is not the big-screen UI"
+    $index = Get-Text "/classic"
     $status = Get-Text "/api/status"
-    Write-Host "GET /           -> $($index.Length) characters"
+    Write-Host "GET /           -> $($main.Length) characters"
+    Write-Host "GET /classic    -> $($index.Length) characters"
     Write-Host "GET /api/status -> $($status.Substring(0, [Math]::Min(160, $status.Length)))..."
     Assert-Match $status '"version"' "status missing version"
     Assert-Match $status '"nointro"' "status missing the No-Intro block"
@@ -96,7 +99,7 @@ try {
     foreach ($view in "view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases", "view-bios") {
         Assert-Match $index ('id="' + $view + '"') "the page lacks $view"
     }
-    foreach ($file in [regex]::Matches($index, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value }) {
+    foreach ($file in [regex]::Matches($index + $main, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique) {
         if ((Get-Text $file).Length -lt 1000) { throw "smoke test failed: $file is empty" }
         Write-Host "GET $file -> ok"
     }

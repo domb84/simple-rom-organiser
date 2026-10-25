@@ -377,7 +377,7 @@ APP_MODULES = (
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",
 )
-STATIC_FILES = ("index.html", "app.js", "style.css")
+STATIC_FILES = ("index.html", "app.js", "style.css", "deck.js", "deck.css", "next.html", "next.js", "next.css")
 # the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added
 UI_VIEWS = ("view-home", "view-system", "view-retroarch", "view-chd", "view-saves", "view-settings", "view-databases", "view-bios")
 

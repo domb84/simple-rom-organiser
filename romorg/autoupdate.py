@@ -173,6 +173,10 @@ class UpdateManager:
         self._openretro_error: Optional[str] = None
         self._openretro_offline = False
         self._updating: Optional[str] = None   # source being downloaded right now
+        # After a full run (at start, "Check for updates"): ``after_update(cancel, progress) -> dict | None``, what the app does with
+        # the fresh databases that is not a database itself - the WHDLoad installs of the Amiga games you have (set by the server).
+        self.after_update: Optional[Callable[[Any, Callable[[int, int, str], None]], Optional[dict[str, Any]]]] = None
+        self._after_result: Optional[dict[str, Any]] = None
         self._load_state()
 
     # ------------------------------------------------------------------ persistence
@@ -384,6 +388,7 @@ class UpdateManager:
                 "gametdb": self._extra_status("gametdb"),
                 "whdinstalls": self._extra_status("whdinstalls"),
                 "openretro": self._extra_status("openretro"),
+                "whdload_games": self._after_result,
             }
 
     def _tosec_status(self, installed: Optional[str]) -> str:
@@ -428,14 +433,17 @@ class UpdateManager:
         return all(n in have for n in names)
 
     def start_background(self) -> None:
-        """Server startup: download every database that is *missing* (the first start) on a daemon thread. Nothing is asked of the
-        network when all of them are installed: later starts need the "Check for updates" button (idempotent)."""
+        """Server startup: download every database that is *missing* (the first start) on a daemon thread. When all of them are
+        installed, only the WHDLoad round runs (the list of installs when it is older than a week, then :attr:`after_update`: the
+        installs of your Amiga games); the other databases need the "Check for updates" button (idempotent)."""
         with self._lock:
             if self._started or not self.enabled:
                 return
             self._started = True
         if self.missing():
             self._spawn()
+        elif self.whdinstalls is not None or self.after_update is not None:
+            self._spawn(scope=("whdload", ()))
 
     def check(self, force: bool = False) -> bool:
         """The "Check for updates" button. False if disabled or an update is already running."""
@@ -545,6 +553,8 @@ class UpdateManager:
                 return self.ratings is not None and self.ratings.installed() is not None
             if src == "extra":
                 return False
+            if src == "whdload":
+                return True                  # (the start-up round: offline only means "next time")
             if src == "tosec":
                 return self._installed_tosec() is not None
             if src == "redump":
@@ -573,6 +583,10 @@ class UpdateManager:
             return
         if scope is not None and scope[0] == "extra":              # the "DAT" of a system is made from one of the title databases
             self._do_extra(scope[1][0], token, forward, True)
+            return
+        if scope is not None and scope[0] == "whdload":            # a later start: the list of installs (a week old) and the installs
+            self._do_extra("whdinstalls", token, forward, False)
+            self._do_after(token, forward)
             return
         want_tosec = scope is None or scope[0] == "tosec"
         want_nointro = scope is None or scope[0] == "nointro"
@@ -758,8 +772,32 @@ class UpdateManager:
             self._do_extra("gametdb", token, forward, True)
             self._do_extra("whdinstalls", token, forward, True)
             self._do_extra("openretro", token, forward, True)
+            self._do_after(token, forward)
         if errors:
             raise UpdateError("failed", "; ".join(errors))
+
+    def _do_after(self, token: _Token, forward: Optional[Progress]) -> None:
+        """:attr:`after_update`, its result kept for :meth:`status` (``whdload_games``). Its errors never fail the update."""
+        hook = self.after_update
+        if hook is None:
+            return
+        if token.is_set():
+            raise Cancelled()
+        with self._lock:
+            self._updating = "whdload_games"
+        try:
+            res = hook(token, lambda d, t, m: self._set_progress(d, t, m, "whdload_games", forward))
+            if res is not None:
+                with self._lock:
+                    self._after_result = res
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the databases are up to date whatever happens here
+            with self._lock:
+                self._after_result = {"error": str(exc) or type(exc).__name__}
+        finally:
+            with self._lock:
+                self._updating = None
 
     def _do_ratings(self, token: _Token, forward: Optional[Progress], explicit: bool) -> None:
         """The LaunchBox ratings, then the user's own IGDB key (when there is one)."""

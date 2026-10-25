@@ -117,6 +117,8 @@ class UiTestCase(unittest.TestCase):
             self.skipTest(_unavailable or "no browser")
         self.fx = Fixture()
         self.addCleanup(self.fx.close)
+        self.fx.root_url = self.fx.url                   # the big-screen UI (v0.5: the main page)
+        self.fx.url = self.fx.url + "classic"            # the old UI, which every older test drives
         self.page = _browser.new_page()
         self.addCleanup(self.page.close)
 
@@ -222,7 +224,7 @@ class LibraryDefaultsTests(UiTestCase):
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         import json
         import urllib.request
-        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+        req = urllib.request.Request(self.fx.root_url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
                                      headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -614,7 +616,7 @@ class FileDetailTests(UiTestCase):
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         import json
         import urllib.request
-        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+        req = urllib.request.Request(self.fx.root_url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
                                      headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -748,7 +750,7 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         import json
         import urllib.request
-        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+        req = urllib.request.Request(self.fx.root_url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
                                      headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -1078,7 +1080,7 @@ class ConvertDropdownTests(UiTestCase):
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         import json
         import urllib.request
-        req = urllib.request.Request(self.fx.url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
+        req = urllib.request.Request(self.fx.root_url.rstrip("/") + path, method=method, data=json.dumps(body or {}).encode() if method == "POST" else None,
                                      headers={"X-Romorg-Token": "t", "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -1399,6 +1401,170 @@ class SettingsTests(UiTestCase):
         self.no_js_errors()
 
 
+class DeckUiTests(UiTestCase):
+    """The controller layer (static/deck.js), driven with a mocked Gamepad API: a pad whose buttons the test presses and releases."""
+
+    PAD = """(() => {
+      const pad = { id: 'mock', index: 0, connected: true, mapping: 'standard', axes: [0, 0, 0, 0],
+                    buttons: Array.from({length: 17}, () => ({pressed: false, value: 0})) };
+      window.__pad = pad;
+      navigator.getGamepads = () => [pad, null, null, null];
+      window.__tap = (i) => new Promise((done) => { pad.buttons[i].pressed = true;
+        setTimeout(() => { pad.buttons[i].pressed = false; setTimeout(done, 90); }, 90); });
+      window.dispatchEvent(new Event('gamepadconnected'));
+    })()"""
+    BUTTON = {"A": 0, "B": 1, "X": 2, "Y": 3, "LB": 4, "RB": 5, "LT": 6, "RT": 7, "View": 8, "Menu": 9,
+              "up": 12, "down": 13, "left": 14, "right": 15}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.page.call("Emulation.setFocusEmulationEnabled", enabled=True)       # (a headless page is not "focused": no :focus without it)
+        self.page.call("Emulation.setDeviceMetricsOverride", width=1280, height=800, deviceScaleFactor=1, mobile=False)    # the Deck's screen
+
+    def start(self, hash_: str = "", query: str = "") -> None:
+        self.page.goto(self.fx.url + query)
+        self.page.eval("localStorage.clear()")
+        self.page.goto(self.fx.url + query + hash_)
+        self.page.wait("!!window.RomorgDeck && document.querySelectorAll('#home-groups a, #home-groups button').length > 0", timeout=30)
+        self.page.eval(self.PAD)
+
+    def tap(self, name: str) -> None:
+        self.page.eval(f"window.__tap({self.BUTTON[name]})")
+
+    def wake(self) -> None:
+        """The first press of a controller only shows where the focus is: make that press (X does nothing else)."""
+        self.page.eval("RomorgDeck.press('X')")
+
+    def active(self) -> str:
+        return self.page.eval("""(() => { const e = document.activeElement; if (!e || e === document.body) return '';
+            return e.id || (e.getAttribute('href') || '') || (e.textContent || '').trim().slice(0, 40); })()""")
+
+    def test_the_first_press_shows_the_focus_and_the_strip_names_the_buttons(self) -> None:
+        self.start()
+        self.assertFalse(self.page.eval("document.getElementById('deck-hints').classList.contains('on')"))   # (no controller used yet)
+        self.assertFalse(self.page.eval("document.body.classList.contains('pad')"))
+        self.tap("A")
+        self.assertTrue(self.page.eval("document.body.classList.contains('pad')"))
+        self.assertNotEqual(self.active(), "")                                          # the first press only shows where the focus is
+        strip = self.page.eval("document.getElementById('deck-hints').textContent")
+        for word in ("Move", "Select", "Back", "Scroll", "More"):
+            self.assertIn(word, strip)
+        self.assertEqual(self.page.eval("getComputedStyle(document.activeElement).outlineStyle"), "solid")     # a ring you can see
+        self.page.eval("document.dispatchEvent(new MouseEvent('mousemove', {movementX: 5, movementY: 3, bubbles: true}))")
+        self.assertFalse(self.page.eval("document.body.classList.contains('pad')"))          # the mouse takes over: no ring, no strip
+        self.no_js_errors()
+
+    def test_the_d_pad_walks_the_page_and_a_presses(self) -> None:
+        self.start()
+        self.tap("A")
+        seen = {self.active()}
+        for _ in range(6):
+            self.tap("down")
+            seen.add(self.active())
+        self.assertGreaterEqual(len(seen), 5, seen)                                      # each press moved to another control
+        self.assertNotIn("", seen)
+        self.page.eval("document.getElementById('chd-link').focus()")                    # a nav entry: A follows it
+        self.tap("A")
+        self.page.wait("location.hash === '#/chd'")
+        self.assertTrue(self.page.eval("!document.getElementById('view-chd').classList.contains('hidden')"))
+        self.tap("B")                                                                    # B: up a level (home, which opens the last system)
+        self.page.wait("document.getElementById('view-chd').classList.contains('hidden')")
+        self.no_js_errors()
+
+    def test_a_move_stays_in_its_part_of_the_page_until_nothing_lies_that_way(self) -> None:
+        self.start()
+        self.scan()                                                                      # (a scanned system: its files are listed)
+        self.page.goto(self.fx.url + "#/system/commodore-amiga/files")
+        self.page.wait("document.querySelectorAll('#files-tree .tree-row').length > 0", timeout=60)
+        self.page.eval(self.PAD)
+        self.wake()
+        in_side = "!!document.activeElement.closest('#side')"
+        self.page.eval("document.getElementById('tabbtn-files').focus()")
+        for _ in range(8):                                                               # down the page: never into the list at its side
+            self.tap("down")
+            self.assertFalse(self.page.eval(in_side), self.active())
+        self.page.eval("document.getElementById('tabbtn-files').focus()")
+        self.tap("left")                                                                 # nothing to the left in the page: the side list
+        self.assertTrue(self.page.eval(in_side))
+        self.tap("right")                                                                # and back
+        self.assertFalse(self.page.eval(in_side))
+        self.no_js_errors()
+
+    def test_focus_stays_in_a_dialog_and_comes_back_when_it_closes(self) -> None:
+        self.start("#/settings")
+        self.page.wait("!document.getElementById('view-settings').classList.contains('hidden')")
+        self.wake()
+        self.page.eval("document.getElementById('set-archive-browse').focus()")
+        self.tap("A")                                                                    # opens the folder browser
+        self.page.wait("!document.getElementById('folder-modal').classList.contains('hidden')")
+        inside = "document.getElementById('folder-modal').contains(document.activeElement)"
+        for name in ("down", "down", "right", "up", "left", "down"):
+            self.tap(name)
+            self.assertTrue(self.page.eval(inside), name)                                # the D-pad never leaves the dialog
+        self.assertIn("Cancel", self.page.eval("document.getElementById('deck-hints').textContent"))
+        self.tap("B")
+        self.page.wait("document.getElementById('folder-modal').classList.contains('hidden')")
+        self.page.wait("document.activeElement && document.activeElement.id === 'set-archive-browse'", timeout=10)   # back where it was
+        self.no_js_errors()
+
+    def test_the_bumpers_switch_tabs_and_y_finds_the_search_box(self) -> None:
+        self.start("#/system/commodore-amiga")
+        self.page.wait("!!document.querySelector('#sys-tabs [aria-selected=true]')", timeout=30)
+        first = self.page.eval("document.querySelector('#sys-tabs [aria-selected=true]').dataset.tab")
+        self.tap("RB")
+        self.page.wait(f"document.querySelector('#sys-tabs [aria-selected=true]').dataset.tab !== {first!r}")
+        self.tap("LB")
+        self.page.wait(f"document.querySelector('#sys-tabs [aria-selected=true]').dataset.tab === {first!r}")
+        self.tap("Y")
+        self.assertEqual(self.page.eval("document.activeElement.type"), "search")
+        self.assertIn("Keyboard", self.page.eval("document.getElementById('deck-hints').textContent"))   # (Steam's keyboard types in it)
+        self.no_js_errors()
+
+    def test_menu_opens_the_more_menu_and_b_closes_it(self) -> None:
+        self.start()
+        self.tap("Menu")
+        self.page.wait("!document.getElementById('more-pop').classList.contains('hidden')")
+        self.page.wait("document.getElementById('more-pop').contains(document.activeElement)")
+        self.tap("down")
+        self.assertTrue(self.page.eval("document.getElementById('more-pop').contains(document.activeElement)"))
+        self.tap("B")
+        self.page.wait("document.getElementById('more-pop').classList.contains('hidden')")
+        self.no_js_errors()
+
+    def test_a_triggers_scroll_the_page(self) -> None:
+        self.start("#/settings")
+        self.page.wait("!document.getElementById('view-settings').classList.contains('hidden')")
+        self.page.eval("window.scrollTo(0, 0)")
+        self.tap("A")
+        self.tap("RT")
+        self.page.wait("window.scrollY > 100", timeout=10)
+        self.tap("LT")
+        self.page.wait("window.scrollY < 50", timeout=10)
+
+    def test_arrow_keys_do_the_same_where_steam_input_acts_as_a_keyboard(self) -> None:
+        self.start("", "?deck=1")
+        self.assertTrue(self.page.eval("document.body.classList.contains('deck')"))
+        self.assertTrue(self.page.eval("document.getElementById('deck-hints').classList.contains('on')"))   # (the Deck layout: always on)
+        self.page.eval("document.getElementById('brand-link').focus()")
+        seen = {self.active()}
+        for _ in range(4):
+            self.page.eval("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true, cancelable: true}))")
+            seen.add(self.active())
+        self.assertGreaterEqual(len(seen), 4, seen)
+        self.page.eval("document.getElementById('side-q').focus()")                        # in a line of text left / right are the caret's ...
+        self.page.eval("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true, cancelable: true}))")
+        self.assertEqual(self.active(), "side-q")
+        self.page.eval("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true, cancelable: true}))")
+        self.assertNotEqual(self.active(), "side-q")                                       # ... but down leaves it
+        self.no_js_errors()
+
+    def test_the_page_is_unchanged_without_a_controller_or_the_deck_flag(self) -> None:
+        self.start()
+        self.assertFalse(self.page.eval("document.body.classList.contains('deck') || document.body.classList.contains('pad')"))
+        self.assertEqual(self.page.eval("getComputedStyle(document.getElementById('deck-hints')).display"), "none")
+        self.assertEqual(self.page.eval("getComputedStyle(document.body).paddingBottom"), "0px")
+
+
 class S3ArchiveUiTests(UiTestCase):
     """The S3 connection in Settings (the secret never shown again), its test, and the Archive side of the file tree as the bucket."""
 
@@ -1650,5 +1816,421 @@ class WhdloadInstallsTests(UiTestCase):
         self.files_ready("nintendo-game-boy-advance")
         self.assertTrue(self.page.eval("document.getElementById('ov-whdload').classList.contains('hidden')"))
         self.no_js_errors()
+
+
+class NextUiTests(UiTestCase):
+    """The big-screen UI at /next (v0.5): the same screens by controller (a mocked Gamepad API), keyboard and mouse."""
+
+    PAD = DeckUiTests.PAD
+    BUTTON = DeckUiTests.BUTTON
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.page.call("Emulation.setFocusEmulationEnabled", enabled=True)
+        self.page.call("Emulation.setDeviceMetricsOverride", width=1280, height=720, deviceScaleFactor=1, mobile=False)
+
+    def start(self, hash_: str = "#/", scanned: bool = True) -> None:
+        self.page.goto(self.fx.root_url)
+        if scanned:
+            self.scan()
+        self.page.goto(self.fx.root_url + hash_)
+        self.page.wait("!!window.RomorgNext && document.querySelector('#main').children.length > 0", timeout=30)
+        self.page.eval(self.PAD)
+
+    def pad(self) -> None:
+        """Use the controller from now on (its first press would otherwise only show the focus)."""
+        self.page.eval("RomorgNext.setMode('pad')")
+
+    def go(self, hash_: str, ready: str) -> None:
+        self.page.eval(f"location.hash = {hash_!r}")
+        self.page.wait(ready, timeout=60)
+
+    def tap(self, name: str) -> None:
+        self.page.eval(f"window.__tap({self.BUTTON[name]})")
+
+    def key(self, key: str, **mods: bool) -> None:
+        self.page.call("Input.dispatchKeyEvent", type="keyDown", key=key, code=mods.pop("code", ""), windowsVirtualKeyCode=mods.pop("vk", 0), **mods)
+        self.page.call("Input.dispatchKeyEvent", type="keyUp", key=key)
+
+    def active(self) -> str:
+        return self.page.eval("(() => { const e = document.activeElement; return e ? (e.id || e.dataset.key || e.getAttribute('href') || e.textContent.trim().slice(0, 40)) : ''; })()")
+
+    def strip(self) -> str:
+        return self.page.eval("document.getElementById('strip').textContent")
+
+    def test_home_lists_the_jobs_and_the_systems_and_a_controller_brings_the_focus_and_the_strip(self) -> None:
+        self.start()
+        self.page.wait("!!document.getElementById('home-archive')")
+        self.assertFalse(self.page.eval("!!document.getElementById('home-build')"))   # (no Build tile: a build is a system's)
+        self.assertEqual(self.page.eval("getComputedStyle(document.getElementById('strip')).display"), "none")     # the mouse: no strip
+        self.assertIn("83%", self.page.eval("document.querySelector('[data-key=commodore-amiga]')?.textContent"))
+        self.tap("down")                                       # the first press only shows where the focus is
+        self.page.wait("document.body.classList.contains('pad')")
+        self.assertEqual(self.active(), "commodore-amiga")              # the system used last
+        self.assertIn("Find a system", self.strip())
+        self.tap("Y")                                          # Y: the search box
+        self.assertEqual(self.active(), "home-find")
+        self.page.eval("(() => { const f = document.getElementById('home-find'); f.value = 'lynx'; f.dispatchEvent(new Event('input')); })()")
+        visible = "[...document.querySelectorAll('#home-systems .tile')].filter(t => !t.classList.contains('hidden')).map(t => t.dataset.key)"
+        self.assertEqual(self.page.eval(visible), ["atari-lynx"])
+        self.no_js_errors()
+
+    def test_a_system_shows_the_tiles_of_the_setting_and_the_size_of_the_next_build(self) -> None:
+        self.start("#/system/commodore-amiga")
+        self.page.wait("document.querySelector('#sys-build .tile-sub')?.textContent === '10 files will change'", timeout=60)
+        self.page.wait("!!document.getElementById('sys-tiles') && !document.querySelector('#sys-tiles .loading')", timeout=60)
+        keys = self.page.eval("[...document.querySelectorAll('#sys-tiles > *')].map(e => e.dataset.key || e.id)")
+        self.assertEqual(keys, ["have_all", "have_rules", "sys-build", "needs_look", "files_to_change"])  # unmatched, BIOS, saves: none
+        self.assertIn("10of 12", self.page.eval("document.querySelector('[data-key=have_all]')?.textContent"))
+        self.tap("down")
+        self.assertEqual(self.active(), "sys-build")
+        self.tap("B")                                          # B: home
+        self.page.wait("!!document.getElementById('home-archive')")
+        self.no_js_errors()
+
+    def test_the_tiles_setting_changes_what_a_system_shows(self) -> None:
+        self.start("#/settings/tiles")
+        self.page.wait("document.querySelectorAll('#main [data-key]').length > 5")
+        self.page.eval("document.querySelector('#main [data-key=have_all]').click()")
+        self.page.wait("document.querySelector('#main [data-key=have_all]')?.getAttribute('aria-checked') === 'false'")
+        self.go("#/system/commodore-amiga", "!!document.getElementById('sys-tiles')")
+        self.assertFalse(self.page.eval("!!document.querySelector('#sys-tiles [data-key=have_all]')"))
+        self.no_js_errors()
+
+    def test_build_library_by_controller_moves_the_files(self) -> None:
+        self.start("#/system/commodore-amiga/build")
+        self.page.wait("!!document.getElementById('build-start')", timeout=60)
+        self.assertIn("10 files will change", self.page.eval("document.getElementById('main').textContent"))
+        self.tap("down")                                       # the focus is on Start build
+        self.assertEqual(self.active(), "build-start")
+        self.tap("A")
+        self.page.wait("document.getElementById('main').textContent.includes('Library built')", timeout=120)
+        self.assertTrue((self.fx.root / "Commodore Amiga - Games - [ADF]").is_dir())
+        self.assertIn("10 files moved or renamed", self.page.eval("document.getElementById('main').textContent"))
+        self.no_js_errors()
+
+    def test_the_keyboard_moves_goes_back_and_names_its_keys(self) -> None:
+        self.start("#/settings")
+        self.page.wait("!!document.getElementById('set-archive')")
+        self.key("ArrowDown", code="ArrowDown", vk=40)
+        self.page.wait("document.body.classList.contains('keys')")
+        self.assertEqual(self.active(), "set-rules")
+        self.key("ArrowRight", code="ArrowRight", vk=39)
+        self.assertEqual(self.active(), "set-archive")
+        self.assertIn("Enter", self.strip())
+        self.assertIn("Esc", self.strip())
+        self.key("Escape", code="Escape", vk=27)
+        self.page.wait("!!document.getElementById('home-archive')")
+        self.no_js_errors()
+
+    def test_the_folder_browser_goes_up_and_picks_a_folder(self) -> None:
+        self.start("#/system/commodore-amiga/folder")
+        self.page.wait("document.querySelector('.crumb-path')?.textContent.endsWith('amiga')")
+        self.tap("B")                                          # B: up a folder
+        self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(self.fx.tmp)!r}")
+        self.tap("Y")                                          # Y: use this folder
+        self.page.wait("!!document.getElementById('sys-tiles') || !!document.getElementById('sys-scan')", timeout=30)
+        folders = self.page.eval("fetch('/api/status').then(r => r.json()).then(s => s.folders['Commodore Amiga'])")
+        self.assertEqual(folders, str(self.fx.tmp))
+        self.no_js_errors()
+
+    def test_s3_needs_its_fields_before_it_saves(self) -> None:
+        self.start("#/settings/archive/s3", scanned=False)
+        self.page.wait("!!document.getElementById('s3-save')")
+        self.page.eval("document.getElementById('s3-save').click()")
+        self.assertIn("Endpoint, access key and bucket are needed", self.page.eval("document.querySelector('.panel')?.textContent"))
+        self.page.eval("document.getElementById('s3-service').click()")
+        self.page.wait("!!document.querySelector('.sheet')")
+        self.assertIn("Choose", self.strip())
+        self.tap("down"); self.tap("up"); self.tap("A")        # MEGA S4
+        self.page.wait("!document.querySelector('.sheet')")
+        self.assertEqual(self.page.eval("document.getElementById('s3-endpoint').value"), "s3.g.megas4.com")
+        self.no_js_errors()
+
+    def api(self, method: str, path: str, body: object = None):
+        import json
+        return self.page.eval("""(async()=>{const t=document.querySelector('meta[name=romorg-token]').content;
+          const r=await fetch(%s,{method:%s,headers:{'Content-Type':'application/json','X-Romorg-Token':t},body:%s});
+          return r.json()})()""" % (json.dumps(path), json.dumps(method), "undefined" if body is None else json.dumps(json.dumps(body))))
+
+    def rows(self) -> list[str]:
+        return self.page.eval("[...document.querySelectorAll('#main [data-section=list] .row .row-name')].map(e => e.firstChild ? e.firstChild.textContent : '')")
+
+    def test_files_opens_folders_and_a_game_can_be_always_kept(self) -> None:
+        self.start("#/system/commodore-amiga/files?view=changes")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
+        self.assertEqual(self.page.eval("document.querySelector('.chip.on')?.textContent"), "Changes 7")
+        self.click("#main [data-section=list] .row", "_excluded")
+        self.page.wait("document.querySelector('.crumb-path')?.textContent === '_excluded'", timeout=30)
+        self.assertTrue(any("Delta Force" in r for r in self.rows()), self.rows())
+        self.click("#main [data-section=list] .row", "Delta Force")
+        self.page.wait("!!document.querySelector('.sheet')")
+        self.pad()
+        self.tap("A")                                          # the first choice: Always keep
+        self.page.wait("!document.querySelector('.sheet')")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Always kept'))", timeout=30)
+        prof = self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")
+        self.assertIn("Delta Force", str(prof["profile"]["overrides"]))
+        self.tap("B")                                          # up a folder
+        self.page.wait("document.querySelector('.crumb-path')?.textContent === 'amiga'", timeout=30)
+        self.no_js_errors()
+
+    def test_files_search_finds_games_in_every_folder(self) -> None:
+        self.start("#/system/commodore-amiga/files")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
+        self.tap("down")
+        self.tap("Y")
+        self.assertEqual(self.active(), "files-q")
+        self.page.eval("(() => { const q = document.getElementById('files-q'); q.value = 'epsilon'; q.dispatchEvent(new Event('input')); })()")
+        self.page.wait("document.getElementById('main').textContent.includes('found')", timeout=30)
+        names = self.rows()
+        self.assertTrue(names and all("Epsilon" in n for n in names), names)
+        self.no_js_errors()
+
+    def test_files_filters_narrow_the_view(self) -> None:
+        self.start("#/system/commodore-amiga/files?view=changes")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
+        self.tap("down")
+        self.tap("X")
+        self.page.wait("!!document.querySelector('.sheet')")
+        self.click(".sheet .row", "Language")
+        self.page.wait("document.querySelectorAll('.sheet').length === 2")
+        self.click(".sheet:last-of-type .row", "De")
+        self.page.wait("document.querySelectorAll('.sheet').length === 0 && !!document.querySelector('.views .tag')", timeout=30)
+        self.page.wait("document.querySelector('.chip.on')?.textContent === 'Changes 1'", timeout=30)
+        self.no_js_errors()
+
+    def test_archived_files_are_ticked_and_restored(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        mine = arch / self.fx.root.name / "_unmatched" / "notes"
+        mine.mkdir(parents=True)
+        (mine / "readme.txt").write_bytes(b"my notes")
+        self.page.goto(self.fx.root_url)
+        self.set_archive(str(arch))
+        self.start("#/system/commodore-amiga/files?view=archive")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
+        self.click("#main [data-section=list] .row", "_unmatched")
+        self.page.wait("document.querySelector('.crumb-path')?.textContent === '_unmatched'", timeout=30)
+        self.click("#main [data-section=list] .row", "notes")
+        self.page.wait("document.querySelector('.crumb-path')?.textContent === '_unmatched/notes'", timeout=30)
+        self.tap("down")
+        self.tap("Y")                                          # tick it
+        self.page.wait("document.querySelector('.panel-title')?.textContent === '1 ticked'")
+        self.page.eval("RomorgNext.press('Start')")
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Restored 1'))", timeout=60)
+        self.assertEqual((self.fx.root / "notes" / "readme.txt").read_bytes(), b"my notes")
+        self.assertTrue((mine / "readme.txt").is_file())       # the archive keeps its copy
+        self.no_js_errors()
+
+    def test_a_rule_set_for_one_system_goes_back_to_every_system(self) -> None:
+        self.start("#/system/commodore-amiga/rules")
+        self.page.wait("!!document.querySelector('#main [data-key=bad_dump]')", timeout=30)
+        tag = "document.querySelector('#main [data-key=bad_dump] .tag')?.textContent"
+        self.assertEqual(self.page.eval(tag), "Every system")
+        self.page.eval("document.querySelector('#main [data-key=bad_dump]').click()")
+        self.page.wait(f"{tag} === 'This system'", timeout=30)
+        self.assertNotIn("bad_dump", self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["exclude"])
+        self.tap("down")
+        self.page.eval("document.querySelector('#main [data-key=bad_dump]').focus()")
+        self.tap("X")
+        self.page.wait(f"{tag} === 'Every system'", timeout=30)
+        self.assertIn("bad_dump", self.api("GET", "/api/library/profile?platform=Commodore%20Amiga")["profile"]["exclude"])
+        self.no_js_errors()
+
+    def test_the_region_order_is_changed_by_picking_a_row_up(self) -> None:
+        self.start("#/settings/rules", scanned=False)
+        self.page.wait("!!document.querySelector('#main [data-key=region_priority]')", timeout=30)
+        before = self.api("GET", "/api/library/defaults")["profile"]["region_priority"]
+        self.page.eval("document.querySelector('#main [data-key=region_priority]').click()")
+        self.page.wait("!!document.querySelector('.sheet .order-row')")
+        self.pad()
+        self.tap("A")                                          # pick the first one up
+        self.page.wait("!!document.querySelector('.sheet .row.lifted')")
+        self.tap("down")
+        self.tap("A")                                          # put it down
+        self.page.wait("!document.querySelector('.sheet .row.lifted')")
+        self.page.eval("RomorgNext.press('Start')")            # Done
+        self.page.wait("!document.querySelector('.sheet')")
+        self.page.wait(f"document.querySelector('#main [data-key=region_priority] .row-value')?.textContent.startsWith({before[1]!r})", timeout=30)
+        after = self.api("GET", "/api/library/defaults")["profile"]["region_priority"]
+        self.assertEqual(after[:2], [before[1], before[0]])
+        self.no_js_errors()
+
+    def test_disc_images_has_the_two_checks_and_keeps_chdman(self) -> None:
+        self.start("#/settings/disc", scanned=False)
+        self.page.wait("!!document.querySelector('#main [data-key=dvd]')", timeout=30)
+        self.assertTrue(self.page.eval("!!document.querySelector('#main [data-key=chdman]') && !!document.querySelector('#main [data-key=engine]')"))
+        self.page.eval("document.querySelector('#main [data-key=dvd]').click()")
+        self.page.wait("document.querySelector('#main [data-key=dvd]')?.getAttribute('aria-checked') === 'true'")
+        info = self.api("GET", "/api/chdman")
+        self.assertEqual((info["verify_dvd"], info["verify_audio"]), (True, False))
+        self.no_js_errors()
+
+    def test_needs_a_look_leaves_out_what_the_rules_exclude_on_purpose(self) -> None:
+        self.start("#/system/commodore-amiga/look")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
+        text = self.page.eval("document.getElementById('main').textContent")
+        self.assertNotIn("Eta Escape", text)                  # (excluded by the language rule: a choice, not a problem)
+        self.assertIn("Nothing to look at here", text)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('.views .chip')].map(c => c.textContent)"), ["Incomplete 0", "Better versions 0"])
+        self.go("#/system/commodore-amiga", "!!document.querySelector('[data-key=needs_look]') && !document.querySelector('#sys-tiles .loading')")
+        self.assertIn("0games", self.page.eval("document.querySelector('[data-key=needs_look]')?.textContent.replace(/\\s/g, '')"))
+        self.no_js_errors()
+
+    def test_your_library_says_what_the_rules_keep_and_what_you_lack(self) -> None:
+        self.start("#/system/commodore-amiga")
+        self.page.wait("!!document.querySelector('a[data-key=have_rules]')", timeout=60)
+        self.click("a[data-key=have_rules]")
+        self.page.wait("document.getElementById('main').textContent.includes('with your rules')", timeout=60)
+        text = self.page.eval("document.getElementById('main').textContent")
+        self.assertIn("7 games with your rules", text)
+        self.assertIn("You have 5; 2 missing.", text)
+        self.assertIn("Theta Tower", text)                    # the games you lack, by name
+        self.no_js_errors()
+
+    def test_the_library_count_stays_the_library_count_on_the_archive_view(self) -> None:
+        self.start("#/system/commodore-amiga/files")
+        self.page.wait("document.querySelector('.chip.on')?.textContent === 'Library 5'", timeout=60)
+        self.click(".views .chip", "Archive")
+        self.page.wait("document.querySelector('.chip.on')?.textContent.startsWith('Archive')", timeout=60)
+        self.assertEqual(self.page.eval("[...document.querySelectorAll('.views .chip')][0].textContent"), "Library 5")
+        self.no_js_errors()
+
+    def test_the_side_panel_stays_in_view_down_a_long_folder(self) -> None:
+        self.start("#/system/commodore-amiga/files?view=changes")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
+        self.click("#main [data-section=list] .row", "Commodore Amiga - Games")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 7", timeout=30)
+        self.pad()
+        self.page.eval("[...document.querySelectorAll('#main [data-section=list] .row')].pop().focus()")
+        self.page.wait("document.getElementById('main').scrollTop > 0")                # the list scrolled to the last row
+        box = self.page.eval("""(() => { const p = document.querySelector('#main .panel').getBoundingClientRect(),
+            m = document.getElementById('main').getBoundingClientRect(); return [p.top >= m.top - 1, p.bottom <= m.bottom + 1,
+            document.querySelector('#main .panel .panel-title')?.textContent || ''] })()""")
+        self.assertEqual(box[:2], [True, True])                                       # pinned: still on screen
+        self.assertTrue(box[2])                                                      # and it describes the focused row
+        self.no_js_errors()
+
+    def test_a_task_carries_on_when_its_screen_is_left_and_says_when_it_is_done(self) -> None:
+        self.start("#/system/commodore-amiga")
+        self.page.wait("!!document.getElementById('sys-build')", timeout=60)
+        self.pad()
+        self.page.eval("""(() => { const real = window.fetch; window.fetch = async (u, o) => {        // (a scan that takes a moment)
+            if (String(u).includes('/api/job') && !window.__slowDone) { window.__slowDone = true; await new Promise(r => setTimeout(r, 400)); }
+            return real(u, o); }; })()""")
+        self.tap("X")                                          # rescan
+        self.page.wait("document.getElementById('main').textContent.includes('carries on')", timeout=30)
+        self.tap("B")                                          # leave it: it goes on
+        self.page.wait("location.hash === '#/'", timeout=30)
+        self.page.wait("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Scan finished'))", timeout=60)
+        self.no_js_errors()
+
+    def test_tiles_shimmer_until_their_numbers_are_ready_and_the_chip_says_why(self) -> None:
+        self.start("#/system/commodore-amiga")
+        self.page.wait("!!document.getElementById('sys-tiles')", timeout=60)
+        seen = self.page.eval("""new Promise(done => { const t0 = Date.now(); const look = () => {
+            const loading = document.querySelector('#sys-tiles .loading .bone');
+            const chip = !document.getElementById('head-activity').classList.contains('hidden');
+            if (loading || chip || Date.now() - t0 > 5000) done([!!loading, chip]); else setTimeout(look, 20); }; look(); })""")
+        self.assertTrue(any(seen), seen)                       # something said it was working (a shimmering tile or the chip)
+        self.page.wait("!document.querySelector('#sys-tiles .loading')", timeout=60)
+        self.page.wait("document.getElementById('topline').classList.contains('hidden')", timeout=60)
+        self.no_js_errors()
+
+    def test_asking_first_starts_on_the_safe_button(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.page.goto(self.fx.root_url)
+        self.set_archive(str(arch))
+        self.start("#/settings/archive", scanned=False)
+        self.click("#main .row", "Stop archiving")
+        self.page.wait("!!document.getElementById('confirm-no')")
+        self.page.eval("RomorgNext.setMode('pad')")
+        self.assertEqual(self.active(), "confirm-no")
+        self.tap("A")
+        self.page.wait("!document.getElementById('confirm-no')")
+        self.assertEqual(self.api("GET", "/api/status")["archive"]["dir"], str(arch))
+        self.no_js_errors()
+
+    def retroarch(self, cfg_text: str) -> tuple[Path, Path]:
+        """A RetroArch of its own (a folder with retroarch.cfg) chosen as the one the app uses: ``(its folder, a work folder)``."""
+        base = Path(tempfile.mkdtemp(prefix="romorg-ui-ra-"))
+        self.addCleanup(shutil.rmtree, base, True)
+        ra = base / "ra"
+        ra.mkdir()
+        (ra / "retroarch.cfg").write_text(cfg_text.replace("{base}", str(base)))
+        self.page.goto(self.fx.root_url)
+        self.assertIn("installs", self.api("POST", "/api/retroarch/select", {"custom": str(ra), "backup_dir": str(base / "backups")}))
+        return ra, base
+
+    def test_retroarch_saves_are_moved_by_controller(self) -> None:
+        ra, base = self.retroarch('savefile_directory = "{base}/old"\nsavestate_directory = "{base}/old"\n'
+                                  'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n')
+        (base / "old" / "bsnes").mkdir(parents=True)
+        (base / "old" / "bsnes" / "Mario (USA).srm").write_bytes(b"s")
+        (base / "old" / "bsnes" / "Mario (USA).state1").write_bytes(b"t")
+        (base / "new" / "saves").mkdir(parents=True)
+        self.start("#/settings/retroarch", scanned=False)
+        self.page.wait("!!document.getElementById('ra-saves')", timeout=30)
+        self.click("#ra-saves")
+        self.page.wait("!!document.getElementById('ra-save-dir')", timeout=30)
+        self.click("#ra-save-dir")                             # the folder browser, at the folder used now
+        self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(base / 'old')!r}", timeout=30)
+        self.page.eval("RomorgNext.press('B')")                # up a folder
+        self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(base)!r}", timeout=30)
+        self.click("#main [data-section=list] .row", "new")
+        self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(base / 'new')!r}", timeout=30)
+        self.click("#main [data-section=list] .row", "saves")
+        self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(base / 'new' / 'saves')!r}", timeout=30)
+        self.page.eval("RomorgNext.press('Y')")                # use it
+        self.page.wait(f"document.querySelector('#ra-save-dir .row-value')?.textContent.startsWith({str(base / 'new' / 'saves')!r})", timeout=30)
+        self.page.eval("RomorgNext.press('Start')")            # preview
+        self.page.wait("document.getElementById('main').textContent.includes('files will move')", timeout=60)
+        self.assertIn("savefile_directory", self.page.eval("document.getElementById('main').textContent"))
+        self.assertTrue((base / "old" / "bsnes" / "Mario (USA).srm").is_file())            # nothing moved by the preview
+        self.page.eval("RomorgNext.press('Start')")            # move
+        self.page.wait("document.getElementById('head-title').textContent === 'Saves moved'", timeout=60)
+        self.assertTrue((base / "new" / "saves" / "bsnes" / "Mario (USA).srm").is_file())
+        self.assertTrue((base / "new" / "saves" / "bsnes" / "Mario (USA).state1").is_file())
+        self.assertIn(str(base / "new" / "saves"), (ra / "retroarch.cfg").read_text())
+        self.assertTrue(list((base / "backups").glob("saves-*.zip")))                   # the backup zip, in the folder chosen
+        self.no_js_errors()
+
+    def test_retroarch_points_at_one_shared_folder(self) -> None:
+        ra, base = self.retroarch('playlist_directory = "{base}/shared/playlists"\n')
+        (base / "shared" / "playlists").mkdir(parents=True)
+        (base / "shared" / "thumbnails").mkdir(parents=True)
+        self.start("#/settings/retroarch/assets", scanned=False)
+        self.page.wait("document.querySelectorAll('#main .row').length >= 5", timeout=30)
+        self.pad()
+        self.tap("X")                                          # one shared folder for all
+        self.page.wait("!!document.getElementById('ra-shared-go')", timeout=30)
+        self.assertEqual(self.page.eval("document.querySelector('#main [data-key=thumbnails_directory]')?.getAttribute('aria-checked')"), "true")
+        self.assertIn("Already used", self.page.eval("document.getElementById('main').textContent"))   # (playlists)
+        self.page.eval("RomorgNext.press('Start')")
+        self.page.wait("location.hash === '#/settings/retroarch/assets'", timeout=30)
+        self.assertIn(str(base / "shared" / "thumbnails"), (ra / "retroarch.cfg").read_text())
+        self.no_js_errors()
+
+    def test_a_systems_databases_with_their_counts(self) -> None:
+        self.start("#/system/commodore-amiga/databases")
+        self.page.wait("document.querySelectorAll('#main .row').length >= 1", timeout=30)
+        text = self.page.eval("document.getElementById('main').textContent")
+        self.assertIn("Commodore Amiga - Games - [ADF]", text)
+        self.assertIn("10 of 12", text)
+        self.assertIn("Installed", text)
+        self.no_js_errors()
+
+    def test_the_menu_opens_and_b_closes_it(self) -> None:
+        self.start(scanned=False)
+        self.page.wait("!!document.getElementById('home-archive')")
+        self.page.eval("document.getElementById('head-menu').click()")
+        self.page.wait("!!document.querySelector('.sheet')")
+        self.tap("B")
+        self.page.wait("!document.querySelector('.sheet')")
+        self.no_js_errors()
+
+
 if __name__ == "__main__":
     unittest.main()

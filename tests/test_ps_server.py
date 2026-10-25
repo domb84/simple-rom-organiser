@@ -78,9 +78,14 @@ class Ps2EndpointTests(PsServerCase):
         res = self.scan_ps2()
         s = res
         self.assertEqual((s["verified"], s["identified"], s["system"], s["have"]), (3, 1, "ps2", 4))
-        self.call("/api/chdman", {"verify_scan": True})                # "Check every track while scanning": the DVD image is read too
+        self.call("/api/chdman", {"verify_audio": True})               # the audio of CDs only: the DVD is still taken by its header
+        self.assertEqual((self.scan_ps2()["verified"], self.call("/api/chdman")["verify_dvd"]), (3, False))
+        info = self.call("/api/chdman", {"verify_dvd": True, "verify_audio": False})        # "Fully check DVD images": it is read
+        self.assertEqual((info["verify_dvd"], info["verify_audio"], info["verify_scan"]), (True, False, False))
         full = self.scan_ps2()
         self.assertEqual((full["verified"], full["identified"]), (4, 0))
+        self.call("/api/chdman", {"verify_scan": True})                # the classic page's one switch sets both
+        self.assertEqual({k: self.call("/api/chdman")[k] for k in ("verify_dvd", "verify_audio")}, {"verify_dvd": True, "verify_audio": True})
         self.call("/api/chdman", {"verify_scan": False})
         plan = self.call("/api/library/plan", {"platform": PS2})
         row = [r for r in plan["items"] if r.get("game") == "Alpha (USA)"][0]

@@ -333,9 +333,20 @@ class DcEndpointTests(DcServerCase):
         s = self.scan()
         self.assertEqual((s["identified"], s["verified"]), (1, 0))                       # data tracks hashed, audio checked by length
         self.assertFalse(self.call("/api/chdman")["verify_scan"])
-        self.assertTrue(self.call("/api/chdman", {"verify_scan": True})["verify_scan"])
+        self.assertTrue(self.call("/api/chdman", {"verify_dvd": True})["verify_dvd"])
+        s = self.scan()
+        self.assertEqual((s["identified"], s["verified"]), (1, 0))                       # DVDs only: a CD's audio is still checked by length
+        self.assertTrue(self.call("/api/chdman", {"verify_audio": True})["verify_audio"])
         s = self.scan()
         self.assertEqual((s["identified"], s["verified"]), (0, 1))                       # now every track was read in the scan
+
+    def test_the_older_single_switch_stands_for_both_checks(self) -> None:
+        from romorg import paths
+        paths.update_config(lambda cfg: cfg.__setitem__("chd_verify_scan", True))
+        info = self.call("/api/chdman")
+        self.assertEqual((info["verify_dvd"], info["verify_audio"]), (True, True))
+        info = self.call("/api/chdman", {"verify_audio": False})
+        self.assertEqual((info["verify_dvd"], info["verify_audio"]), (True, False))
 
     def test_the_library_build_converts_raw_discs_first_when_the_option_is_on(self) -> None:
         self.use_fake_chdman()

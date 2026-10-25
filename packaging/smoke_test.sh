@@ -49,15 +49,18 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 
-INDEX="$(curl -fsS "$URL/")"
+MAIN="$(curl -fsS "$URL/")"
+grep -q 'src="/static/next.js"' <<<"$MAIN" || { echo "the main page is not the big-screen UI" >&2; exit 1; }
+INDEX="$(curl -fsS "$URL/classic")"
 STATUS="$(curl -fsS "$URL/api/status")"
-echo "GET /           -> ${#INDEX} bytes"
+echo "GET /           -> ${#MAIN} bytes"
+echo "GET /classic    -> ${#INDEX} bytes"
 echo "GET /api/status -> $STATUS"
 grep -q '"version"' <<<"$STATUS" || { echo "status missing version" >&2; exit 1; }
 grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >&2; exit 1; }
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
-# the pages of v0.2 (also checked by packaging/smoke_test.ps1 on Windows)
+# the pages of the classic UI (also checked by packaging/smoke_test.ps1 on Windows)
 for view in view-home view-system view-retroarch view-chd view-settings view-databases view-bios; do
   grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
 done

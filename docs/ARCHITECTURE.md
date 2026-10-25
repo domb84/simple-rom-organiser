@@ -3586,3 +3586,184 @@ detector; each merge was made only where the copies were the same code.
 * Also not merged: where a platform's facts live. Its name appears as a key in `savecarry` (which saves convert), `emulators`,
   `keyfiles`, `ratings` (LaunchBox names) and `igdb`, next to `platforms.py`'s own definition. Moving them onto `Platform` would put
   everything about a system in one place; it is a redesign of five tables, not a clean-up.
+
+
+**AMENDMENT 69 (v0.5) — The controller layer of the Steam Deck UI (phase 1 of docs/PLAN-v0.5.md).**
+* The user chose a gamepad mode of the existing web UI (not a second app), Game Mode first. `static/deck.js` + `static/deck.css`
+  (listed in `server.STATIC_TYPES` and `selfcheck.STATIC_FILES`; the packagers copy the static folder whole) add it; the page is
+  unchanged until a controller is used (`body.pad`) or it was served for a Deck (`body.deck`).
+* Deck flag: `--deck`, `ROMORG_DECK=1`, or the environment Steam gives a program (`SteamGamepadUI=1` Game Mode, `SteamDeck=1`);
+  `ROMORG_DECK=0` turns it off (`server.deck_mode`). `main()` computes it, `make_server(deck=)` sets `App.deck`, the page gets it as
+  `<meta name="romorg-deck">` (replaced like the token, so there is no flash of the wrong layout) and `/api/status` as `deck`. (These
+  variables are what Steam is believed to set: to be confirmed on the Deck; `--deck` is the sure way.) `?deck=1` does the same for one page.
+* Input: the Gamepad API (a rAF poller starts on `gamepadconnected`; standard mapping; D-pad and left stick with a 420 ms / 120 ms
+  repeat) and, for a Steam Input layout that acts as a keyboard, the arrow keys (up / down also leave a line of text; left / right,
+  a number, a list and a slider keep theirs). Buttons: D-pad / left stick move, A activates (a text field takes the focus; a
+  `<select>` takes its next choice, the browser's own list being out of reach), B = back (the page's own Escape handling closes a
+  dialog or menu; else an open `<details>` collapses; else the back link / home), Y = search box, LB / RB = tabs, LT / RT and the right
+  stick scroll, Menu = More menu, View = home. The first press after the controller was idle only shows the focus.
+* Moving: geometric nearest control in the direction, but the page is three sections (`#side`, `#topbar`, the rest) and a move
+  crosses to another only when nothing in its own section lies that way (without it the nearest control wins and "down" in the page
+  lands in the system list). A dialog (or the open More menu) is the whole scope; the focus returns to what had it when it closes;
+  a page drawn again under the focus re-focuses the first control of the view.
+* The strip at the bottom names the buttons that apply (dialog, menu, text field with "Steam+X: keyboard", list, page; Search and
+  Tabs only where there is one), a big focus ring replaces the browser's.
+* Tested with a mocked Gamepad API in the headless browser (`DeckUiTests`): focus, the D-pad walk, A, B, dialog trap and restore,
+  the bumpers, Y, Menu, the triggers, the arrow keys, sections, "unchanged without a controller"; `move()` costs 15 ms at 3,000
+  controls. Not testable here (a Flatpak under Desktop Mode): Steam Input's two layouts, Game Mode, the on-screen keyboard.
+
+
+**AMENDMENT 70 (v0.5) — The big-screen UI at /next (phases 1-2 of the rewritten docs/PLAN-v0.5.md).**
+* Seeing Amendment 69 at 1280x720 the user found the old UI too wordy for a controller, chose a new design (the "Deck big-screen UI"
+  canvas) as **the** UI, for controller, keyboard and mouse alike, built as our own small kit with no framework. It grows beside the
+  old one: `static/next.html`, `next.css`, `next.js`, served at `/next` and `/next/` (`server.NEXT_PATHS`; token and Deck flag
+  replaced as in `index.html`; listed in `STATIC_TYPES` and `selfcheck.STATIC_FILES`). The old UI stays at `/` until the new one
+  covers it; pages not rebuilt yet are tiles that open the classic page at its old address.
+* Sizes are rem, 16 px at 1280x720 (`html { font-size: clamp(16px, min(1.25vw, 2.22vh), 28px) }`): a bigger window scales up, never
+  down. The CSP has no `'unsafe-inline'` for styles, so `style=""` attributes are ignored: `el()` sets `style` through the CSSOM.
+* Input: one layer for the three. Gamepad API (as in Amendment 69), keys (arrows, Enter, Esc / Backspace = B, `/` = Y, `x` = X,
+  `[` `]` = LB / RB, PgUp / PgDn, Ctrl+Enter = the screen's main action, F10 = menu), mouse / touch. The input in use is a class on
+  `<body>` (`mouse`: no ring, no strip; `keys`: ring, key names in the strip; `pad`: ring, controller buttons); `body.deck` keeps the
+  strip on. The Menu (Start) button runs the screen's main action when it has one, else opens the app menu.
+* Screens are hash routes returning `{title, crumbs, aside, back, body, hints, keys, focus}`; a navigation serial drops what a
+  screen started once another is shown (`ctx.alive()`), and its timers are cleared. Overlays (list picker, confirm, app menu) trap
+  the focus and give it back.
+* The system screen draws the tiles of "System page tiles" (`/api/settings/tiles`, kept configurable on purpose) that it knows
+  (have all / with rules / needs a look / files to change / unmatched / BIOS / saves / database / last scan / convert); the others
+  are still drawn by the classic page only, and the setting's screen says so. Build uses the saved build choices (in place, the
+  archive for what is set aside, or another folder) exactly as the old page did, then runs the WHDLoad build the result asks for.
+* Tested in the headless browser (`NextUiTests`): home and the strip, the system's tiles and build size, the tiles setting, a real
+  build by controller, the keyboard, the folder browser, S3 field checks and the service picker, the menu.
+
+
+**AMENDMENT 71 (v0.5) — The rest of the big-screen UI, and two CHD checks (phases 3-5 of docs/PLAN-v0.5.md).**
+* CHD scanning: `discsys.match_chd / identify_unit / scan / _estimate` take `full_dvd` (read a DVD CHD in full instead of trusting the
+  SHA-1 its header claims) and `full_audio` (hash the audio tracks of a CD CHD); each defaults to the old `full`. Settings
+  `chd_verify_dvd` / `chd_verify_audio` (`App._verify_flags`; the older `chd_verify_scan` stands for both until either is set);
+  `/api/chdman` reports and takes `verify_dvd`, `verify_audio`, and still `verify_scan` (= both, the classic page's one switch); a saved
+  scan is reused only with the same two (`_scan_options`). The progress estimate now counts a DVD that is read in full.
+* `/api/tree` `show=changed` (an entry whose state is what a build does: moved, renamed, new, converted, deleted, incoming, copy, saves)
+  and `show=excluded` (category excluded): the Changes and Excluded views of the new Files screen; their counts come with the facets.
+* New screens in `static/next.js`: Files (views, folder at a time, paging, search by walking the view's folders with `q`, filters,
+  side panel, the keep / exclude menu = `/api/library/override`, More details = `/api/scan/checksums`, archive ticks and
+  `/api/archive/restore`), Needs a look (`/api/library/vanished` with its fixes, the plan's incomplete sets, `/api/library/upgrades`),
+  WHDLoad, a system's Saves (`/api/scan/results?kind=saves`), a system's Settings and Rules, and Settings: Rules, Databases, BIOS and
+  firmware, Emulators, Saves, Disc images, Advanced. Rules of one system: A changes a rule for this system (the server's
+  `store_profile` makes the override), X goes back to every system (`override: {on: false}`).
+* Kit additions: `switchRow`, `choiceRow`, `sheet`, `multiPicker` (tick several, Done), `orderSheet` (A picks a row up, up / down move
+  it, A puts it down, B puts it back; arrows and remove for the mouse), `runJob`, overlay `onPress` (an overlay can take buttons
+  before the screen), `put()` (replaceChildren that skips null pieces), `Prefs` (this browser's playlist label / save disk / hidden
+  folder choices). A confirm dialog starts on its safe button. Focus moves are scheduled with timers, not animation frames (a page
+  in the background gets no frames).
+* Still opened on the classic page from rows of the new screens: RetroArch's move of saves and states and its asset folders, and the
+  per-database options of a system.
+
+
+**AMENDMENT 72 (v0.5) — RetroArch and a system's databases in the big-screen UI: nothing left on the classic page.**
+* RetroArch (`#/settings/retroarch`): the install (`/api/retroarch/select {cfg | custom}`), saves and states, asset folders, renaming
+  saves with their ROMs. While RetroArch runs (`running`) a banner says so and the buttons that would write retroarch.cfg are off.
+* Move saves and states: the choices are kept in the page while they are made (`raMove`: save folder, state folder or "same",
+  one folder per core for each) and chosen with the folder browser; the backup switch and its folder are saved at once
+  (`/api/retroarch/select {backup, backup_dir}`; the default folder is `<data>/save-backups`). Preview = `/api/retroarch/plan`
+  (counts, the retroarch.cfg changes, bytes, free space, up to 300 rows behind X); the move = `/api/retroarch/apply` as a job; the
+  result lists what moved, the backup zip and the old retroarch.cfg. The split into save files / save states is shown only when the
+  rows the server sent are all of them.
+* Asset folders: `/api/retroarch/assets` rows (Own / Shared), one changed with the folder browser or put back to RetroArch's own
+  (`/assets/set`); "One shared folder for all" = `/api/retroarch/shared {base}` with a switch per setting whose sub-folder exists there
+  (on by default only where RetroArch uses its own folder now), applied with `/shared/apply {base, keys}`.
+* A system's databases (`#/system/<slug>/databases`): each DAT's version, folder in the library, playlists, installed or not, and
+  have / total from the scan's `per_dat` - all the classic "DAT" section showed (it had nothing to change).
+* Tests: `cdp.Page.wait` treats a script that throws as "met", so the new tests' lookups use `?.`.
+
+
+**AMENDMENT 73 (v0.5) — The big-screen UI is the main page.**
+* `server.MAIN_PATHS` (`/`, `/index.html`, `/next`, `/next/`) serve `next.html`; `CLASSIC_PATHS` (`/classic`, `/classic/`) serve the old
+  `index.html` (its own files at `/static/...` as before). The browser the app opens goes to `/`, so the new UI is what starts.
+* The smoke tests check that `/` is the big-screen UI and the classic pages at `/classic`. The older browser tests drive
+  `/classic` (`UiTestCase` sets `fx.url` to it and keeps `fx.root_url`); `NextUiTests` drive `/`.
+* Built: `dist/Simple_ROM_Organiser-0.5.0-x86_64.AppImage` (smoke test passed with `EXTRACT_AND_RUN=1`, the sandbox has no FUSE) and
+  `dist/simple-rom-organiser.pyz` (0.5.0).
+
+
+**AMENDMENT 74 (v0.5) — The WHDLoad installs of your Amiga games come by themselves, like the databases.**
+* The user found it not obvious that installs had to be downloaded by hand. `UpdateManager.after_update(cancel, progress)` (set by the
+  server to `App._sync_whd_installs`) runs at the end of every full update ("Check for updates", the first start) and, on every
+  later start, in a small round of its own (`scope ("whdload", ())`: the list of installs only when it is older than a week - the
+  usual gate - then the hook). Its result is `status()["whdload_games"]` ({downloaded, updated, failed, games, at} / {skipped} /
+  {error}); its errors never fail the update, and offline only means "next start".
+* `_sync_whd_installs`: needs the Amiga's scan (in memory or on disk) and the list; skipped while a job runs (a scan or build works in
+  the same folder). Downloads the install of every game that has one and lacks it, and again when the install's date on whdload.de
+  differs from the one in its `.romorg-whdload.json` (`_whd_games` rows now carry `downloaded_date`). One at a time with a pause
+  (whdload.de is a small site); the first network failure ends the round.
+* The new UI: Databases says what the last round did; the WHDLoad screen says installs come by themselves (its button still does it
+  at once). Tests: `WhdloadRoundTest` (updater), `AutomaticInstalls` (server).
+
+
+**AMENDMENT 75 (v0.5) — Counts that say what they count (the user's top-100 Amiga test).**
+* Files: the counts on the Library / Changes / Excluded / Missing views come from the library side's facets only. The archive side's
+  facets count the archive's files, and `show=have` does not narrow the archive, so opening Archive used to turn "Library 106" into
+  "Library 4422". The archive count is `sides.archive` of an archive-side request.
+* "Needs a look" counts genuine problems only: incomplete sets and versions you could improve (`not_preferred + owned_incomplete`).
+  What your rules exclude on purpose (`owned_but_excluded`: 4,145 games under a top-100 rule) is a choice, not a problem; it stays
+  in Files › Excluded, where a game can still be kept. The Needs a look screen has two views: Incomplete, Better versions.
+* `totals.Target` keeps a display name per game (`names`) and, with a top-N rule, `explain` (:func:`totals._explain_top`): the N best
+  rated complete games; complete games ranked after the N-th that tie with it (same rating, votes and title stay or go together);
+  rated games incomplete in the DAT (never counted towards N, kept when they rank high enough); unrated games kept by "Keep unrated
+  games"; and games the rating rule does not rank at all (a DAT without ratings: only the Games DAT is rated on the Amiga), by DAT.
+  `combine()` adds `missing_names` (the games of the rules you do not have, up to 50). The new "Your library" screen (the "With your
+  rules" tile) shows both: why the rules keep the number of games they keep, and which ones you lack.
+
+
+**AMENDMENT 76 (v0.5) — WHDLoad installs four at a time; "working on it" shows what and how long; the side panel is pinned.**
+* `App._fetch_whd_installs` downloads installs `WHD_PARALLEL` (4) at a time on a thread pool, for the start-up round and for the
+  Download button alike (one at a time with a pause was very slow for hundreds of games; whdload.de is a small site, so a few at a
+  time, never dozens). A network error stops the downloads not started yet; progress counts finished ones.
+* `TotalsManager._working`: while a system's totals are worked out, the answer carries `working` {step: target | user | queued,
+  seconds, expect: what that step took the last time}. The new UI shows it on the tiles ("Whole database · 12 s of ~40 s") and as a
+  big working view (a moving bar, or a filling one when the last time is known) on Your library; the plan-bound screens (Build,
+  Needs a look, Files, RetroArch preview) show the working view with its elapsed time.
+* The side panel of a list screen is `position: sticky` inside the scrolling main area (with its own scroll when it is taller), so
+  the facts of the focused row stay in view down a long folder.
+
+
+**AMENDMENT 77 (v0.5) — An incomplete copy of a game that is kept complete is no problem to report (every system).**
+* The user's Amiga build reported Leisure Suit Larry 1 (floppies with a bad disk 3), RanX (disk 2 only as `[m savegame]`) and Wing
+  Commander - Platinum Edition (disk 3 missing) as incomplete although the complete SPS originals / the original release are kept.
+* `library.title_key(item)`: the game as a person names it - its title, letters and digits only, the same across releases, editions,
+  publishers, regions and the system's DATs; a trailing "- ... Edition" is the same game, any other subtitle is not.
+  `library.kept_titles(items, sel)`: the titles kept complete. `select()` ends with `_mark_covered`: an `IncompleteSet` of a title that
+  is kept complete gets `covered_by` (that version's name). The set is still set aside as before.
+* The plan lists and counts only the sets that are not covered (`incomplete_sets`, `incomplete_total`; `incomplete_covered` = the
+  others); `totals.compute_user_items` counts such a game as excluded ("a complete version is kept: ..."), not incomplete - so the
+  Needs a look tile and screen, and the classic page's Incomplete box, show genuine problems only.
+
+
+**AMENDMENT 78 (v0.5) — The first build preview of a big system is ~3x faster; no Build tile on Home.**
+* Measured on a copy of the user's data (Amiga, 36,296 files, a top-100 rule): the first preview after a start took ~150 s in the app
+  (101 s alone, the rest the totals worker doing the same whole-database selection at once). Now ~51 s for the preview and the
+  totals together:
+  * `library._whdload_language` looked up an SPS release's images by scanning every item, per image (n²): 17 s. The releases are
+    grouped once, and a release's verdict is remembered.
+  * `whdready.load` stat'ed its file on each of ~64,000 calls: a load is reused for 2 s without a stat (`record` / `clear_cache`
+    forget it).
+  * `/api/library/plan {summary: true}` returns the counts without rows (the big-screen UI asks for nothing else), and rows are
+    annotated (rating, checksum reference) only for the page shown - unless sorted by rating; `_annotate_library` with no rows does
+    nothing (its game list takes 16 s to build the first time).
+  * `_rating_context` takes the top-N cutoff from the totals worker's target (`TotalsManager.cutoff`, waiting while the worker is on
+    that very target) instead of selecting the whole database a second time in parallel.
+  Still costly and left for later: the plan's and the totals' selections of the user's files are separate (~20 s each).
+* Home has no "Build library" tile (it built the system used last, which was not obvious); a build starts from a system's screen.
+  Home shows the systems first, the focus on the one used last, with Archive and Settings below.
+
+
+**AMENDMENT 79 (v0.5) — Work goes on behind: a line and a chip for it, tiles that shimmer until ready (options C and D).**
+* `Activity` (static/next.js) knows what is going on: the server's task (`/api/job`, polled every 1.5 s), the database updates
+  (`/api/updates`), and what the screen shown waits for (`Activity.set(key, text)`, cleared when the next screen is shown). While
+  anything is, a thin moving line runs along the top and a chip in the header names the first thing (+N); the chip, or Menu ›
+  What's running, lists them all, with Stop for a task that can be stopped.
+* The progress screen of a task (scan, build, restore, WHDLoad, RetroArch, BIOS) can be left with B: the task runs on in the server
+  as before; the screen that started it follows it to the end and, when you are elsewhere, a toast says how it went (once -
+  `Activity.told`). A library build that asks for the WHDLoad build next starts it also when nobody watches. A scan is stopped with
+  X on its screen or from the list.
+* Number tiles not worked out yet are a shimmering bone with a small spinner and what they wait for ("Whole database · 12 s of
+  ~40 s"); lists being worked out are shimmering rows. The big "working" view is gone.

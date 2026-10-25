@@ -42,6 +42,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+import urllib.error
 from urllib.parse import parse_qs, urlsplit
 
 PACKAGE = "romorg"
@@ -49,8 +50,16 @@ STATIC_TYPES = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
+    "deck.js": "text/javascript; charset=utf-8",
+    "deck.css": "text/css; charset=utf-8",
+    "next.html": "text/html; charset=utf-8",
+    "next.js": "text/javascript; charset=utf-8",
+    "next.css": "text/css; charset=utf-8",
 }
+MAIN_PATHS = ("/", "/index.html", "/next", "/next/")        # the big-screen UI (v0.5; /next was its address while it grew)
+CLASSIC_PATHS = ("/classic", "/classic/")                   # the old UI, kept for a while
 TOKEN_PLACEHOLDER = "__ROMORG_TOKEN__"
+DECK_PLACEHOLDER = "__ROMORG_DECK__"
 TOKEN_HEADER = "X-Romorg-Token"
 MAX_BODY = 1 << 20  # 1 MiB of JSON is plenty
 DEFAULT_LIMIT = 100
@@ -833,10 +842,13 @@ class App:
 
     def __init__(self, token: str | None = None, auto_update: bool = True) -> None:
         self.token = token or secrets.token_urlsafe(24)
+        self.deck = False                  # the Steam Deck layout (see ``deck_mode``): bigger targets, the controller hints always on
         self.jobs = JobManager()
         self._lock = threading.Lock()
         self._fallback_dat_lock = threading.Lock()
         self.updates = self._make_updates(auto_update)
+        if hasattr(self.updates, "after_update"):
+            self.updates.after_update = self._sync_whd_installs
         self._scan: ScanState | None = None
         self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
         self._s3_inv: dict[str, Any] = {}                         # the inventories of the S3 archives in use (s3archive), by stand-in folder
@@ -1072,8 +1084,13 @@ class App:
             if cached is not None and cached[0] == key:
                 cutoff = cached[1]
             else:
-                items = totals.target_items(platform, list(dats))
-                cutoff = library.target_cutoff(items, profile, platform, lookup)
+                # the totals worker selects the same whole database for its target: take its cutoff (waiting while it works on it)
+                # rather than doing that half-minute job a second time at once
+                tkey = (key[0], totals.signature_text(tuple(self._dats_signature(platform)) + (self._ratings_sig(),)))
+                known, cutoff = self._totals().cutoff(platform.name, tkey, wait=900)
+                if not known:
+                    items = totals.target_items(platform, list(dats))
+                    cutoff = library.target_cutoff(items, profile, platform, lookup)
                 self._cutoffs[platform.name] = (key, cutoff)
         return library.RatingContext(lookup, cutoff)
 
@@ -1527,7 +1544,8 @@ class App:
             result = _mod("discsys").scan(
                 root, dats, progress=rep, cancel=job.cancel if cancellable else None,
                 chdman=self._chdman(), engine=str(cfg.get("chd_engine") or "auto"),
-                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")), full=bool(cfg.get("chd_verify_scan")),
+                workers=_mod("chdsched").default_workers(cfg.get("chd_workers")),
+                full_dvd=self._verify_flags(cfg)[0], full_audio=self._verify_flags(cfg)[1],
                 protected_dirs=tuple(getattr(platform, "protected_dirs", ()) or ()), refresh_cache=force)
         else:
             result = _call(_mod("scanner").scan, root, dats, recursive=True, progress=rep,
@@ -1563,7 +1581,18 @@ class App:
 
     def _scan_options(self) -> tuple:
         """The settings that change what a scan finds (a saved scan made with others is not used)."""
-        return (bool(self._config().get("chd_verify_scan")), bool(self._switch_cfg().get("verify_scan")), _mod("bios").signature())
+        return (*self._verify_flags(self._config()), bool(self._switch_cfg().get("verify_scan")), _mod("bios").signature())
+
+    @staticmethod
+    def _verify_flags(cfg: dict[str, Any]) -> tuple[bool, bool]:
+        """``(dvd, audio)``: a scan reads DVD CHDs in full instead of trusting their header SHA-1, and hashes the audio tracks of
+        CD CHDs (data tracks are always hashed). The one older setting ``chd_verify_scan`` stands for both until either is set."""
+        both = bool(cfg.get("chd_verify_scan"))
+        return bool(cfg.get("chd_verify_dvd", both)), bool(cfg.get("chd_verify_audio", both))
+
+    def _verify_info(self, info: dict[str, Any]) -> None:
+        dvd, audio = self._verify_flags(self._config())
+        info["verify_dvd"], info["verify_audio"], info["verify_scan"] = dvd, audio, dvd and audio
 
     def _keep_scan_on_disk(self, state: ScanState) -> None:
         """Save the finished scan of a system, so it is there after a restart (``scancache``; never raises)."""
@@ -2328,7 +2357,7 @@ class App:
             "release": None, "dats_count": 0, "default_platform": None,
             "last_platform": None, "last_dir": None, "folders": {},
             "has_7z": _which_7z() is not None,
-            "data_dir": None, "scan": None, "os": _os_name(),
+            "data_dir": None, "scan": None, "os": _os_name(), "deck": self.deck,
             "nointro": {"dir": None, "count": 0, "dats": []}, "redump": {"dir": None, "count": 0, "dats": []},
             "updates": None,
         }
@@ -2623,7 +2652,7 @@ class App:
             rows.append({"title": row["title"], "disks": len(row["disks"]), "dir": rel,
                          "install": ({**{k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")},
                                       "whdload": _mod("whdready").needs_whdload(inst.get("archive"))} if inst else None),
-                         "how": hit[1] if hit else "", "downloaded": bool(done),
+                         "how": hit[1] if hit else "", "downloaded": bool(done), "downloaded_date": (done or {}).get("date", ""),
                          "folder": os.path.relpath(done["folder"], state.root) if done else "",
                          # (what the game needs - TOSEC's tags, OpenRetro's release - and what OpenRetro knows of it)
                          "machine": needs["machine"] if needs else "",
@@ -2631,6 +2660,78 @@ class App:
                          "info": {k: g[k] for k in ("year", "publisher", "developer", "hol", "lemon", "moby") if g.get(k)} or None,
                          "protection": (release or {}).get("protection", "")})
         return cat, rows
+
+    def _sync_whd_installs(self, cancel: Any, progress: Callable[[int, int, str], None]) -> dict[str, Any] | None:
+        """Run by the database updater after a full update (at start, "Check for updates"): every Amiga game you have that has a WHDLoad
+        install gets it next to its disks, and an install whose date changed on whdload.de is downloaded again - the same as the
+        databases, so nobody has to know the installs exist. Needs the system's scan (None without one) and the list of installs;
+        skipped while a job runs (it would write into the folder a scan or build is working on). One download at a time; the first
+        failure that is a network error ends the round (offline: the next start tries again)."""
+        try:
+            platform = self._resolve_platform(DEFAULT_PLATFORM)
+            cat, rows = self._whd_games(platform)
+        except ApiError:
+            return None
+        if cat is None:
+            return None
+        job = self.jobs.current
+        if job is not None and job.status == "running":
+            return {"skipped": "busy", "at": time.time()}
+        state = self._state_of(platform)
+        if state is None:
+            return None
+        todo = [(r, "downloaded") for r in rows if r["install"] and not r["downloaded"]]
+        todo += [(r, "updated") for r in rows if r["install"] and r["downloaded"] and (r["install"].get("date") or "")
+                 and r.get("downloaded_date") != r["install"]["date"]]
+        res: dict[str, Any] = {"downloaded": 0, "updated": 0, "failed": [], "games": sum(1 for r in rows if r["install"]), "at": time.time()}
+        done, failed = self._fetch_whd_installs([(r, why) for r, why in todo], Path(state.root), cancel, progress)
+        for _r, why, _folder in done:
+            res[why] += 1
+        res["failed"] = failed[:20]
+        return res
+
+    WHD_PARALLEL = 4             # installs downloaded at once: whdload.de is a small site - a few at a time, never dozens
+
+    @staticmethod
+    def _fetch_whd_installs(todo: list[tuple[dict[str, Any], str]], root: Path, cancel: Any,
+                            report: Callable[[int, int, str], None]) -> tuple[list[tuple[dict[str, Any], str, Path]], list[dict[str, str]]]:
+        """Download the installs of ``todo`` (rows of :meth:`_whd_games`, each with a tag) next to their disks, :attr:`WHD_PARALLEL` at a
+        time: ``(done [(row, tag, folder)], failed [{title, error}])``. A network error stops the downloads not started yet (offline:
+        the rest would only fail one by one); ``cancel`` does the same."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        whd = _mod("whdinstalls")
+        stop = threading.Event()
+        done: list[tuple[dict[str, Any], str, Path]] = []
+        failed: list[dict[str, str]] = []
+        lock = threading.Lock()
+        finished = [0]
+
+        def one(r: dict[str, Any], tag: str) -> None:
+            if stop.is_set() or cancel.is_set():
+                return
+            try:
+                folder = whd.download_install(r["install"], root / r["dir"], game=r["title"], cancel=cancel)
+                with lock:
+                    done.append((r, tag, folder))
+            except InterruptedError:
+                stop.set()
+            except Exception as exc:  # noqa: BLE001 - one install that fails does not stop the others
+                with lock:
+                    failed.append({"title": r["title"], "error": str(exc) or type(exc).__name__})
+                if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
+                    stop.set()
+            finally:
+                with lock:
+                    finished[0] += 1
+                    n = finished[0]
+                report(n, len(todo), f"WHDLoad installs: {n} of {len(todo)} ({r['title']})")
+
+        if todo:
+            report(0, len(todo), f"WHDLoad installs: 0 of {len(todo)}")
+            with ThreadPoolExecutor(max_workers=min(App.WHD_PARALLEL, len(todo)), thread_name_prefix="romorg-whd") as ex:
+                for fut in as_completed([ex.submit(one, r, tag) for r, tag in todo]):
+                    fut.result()
+        return done, failed
 
     def whdload_installs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """The Amiga games you have and their WHDLoad installs (``available``: the list of installs has been fetched)."""
@@ -2645,7 +2746,6 @@ class App:
         """Download the installs of some games (``titles``) or of every game that has one and lacks it (``all``), next to their disks."""
         body = body if isinstance(body, dict) else {}
         platform = self._resolve_platform(body.get("platform") or DEFAULT_PLATFORM)
-        whd = _mod("whdinstalls")
         cat, rows = self._whd_games(platform)
         if cat is None:
             raise ApiError(HTTPStatus.CONFLICT, "The list of WHDLoad installs has not been fetched yet (it is fetched with the other "
@@ -2657,22 +2757,10 @@ class App:
             raise ApiError(HTTPStatus.BAD_REQUEST, "No game with a WHDLoad install to download.")
 
         def work(job: Job) -> Any:
-            done, failed = [], []
-            for n, r in enumerate(todo):
-                if job.cancel.is_set():
-                    break
-                job.report(n, len(todo), f"WHDLoad install of {r['title']}")
-                try:
-                    folder = whd.download_install(r["install"], Path(state.root) / r["dir"], game=r["title"], cancel=job.cancel)
-                    done.append({"title": r["title"], "folder": os.path.relpath(folder, state.root)})
-                except InterruptedError:
-                    break
-                except Exception as exc:  # noqa: BLE001 - one install that fails does not stop the others
-                    failed.append({"title": r["title"], "error": str(exc) or type(exc).__name__})
-                if n + 1 < len(todo):
-                    time.sleep(0.3)                  # (one download at a time, a pause between: whdload.de is a small site)
+            got, failed = self._fetch_whd_installs([(r, "") for r in todo], Path(state.root), job.cancel, job.report)
             job.report(len(todo), len(todo), "WHDLoad installs downloaded")
-            return {"action": "whdload", "downloaded": done, "failed": failed}
+            done = [{"title": r["title"], "folder": os.path.relpath(folder, state.root)} for r, _tag, folder in got]
+            return {"action": "whdload", "downloaded": sorted(done, key=lambda d: d["title"].casefold()), "failed": failed}
 
         return {"job": self.jobs.start("whdload", work, platform=platform.name).to_dict()}
 
@@ -3740,7 +3828,12 @@ class App:
                     if (not status or r[0]["status"] == status) and (not reason or r[0]["category"] == reason)
                     and (not dest or r[0].get("dest") == folder)
                     and (not why or (r[0]["category"] == "excluded" and r[0].get("reasons", [""])[:1] == [why]))]
-        self._annotate_library(state, rows)
+        summary = _bool_arg(body.get("summary"))         # the counts only (the big-screen UI): no rows, so nothing to annotate
+        if summary:
+            rows = []
+        sort = _str_arg(body.get("sort"))
+        if "rating" in sort or "votes" in sort:          # (ordered by rating: every row needs it first)
+            self._annotate_library(state, rows)
         rows = _sort_rows(rows, _str_arg(body.get("sort")),
                           lambda i: i.get("to_name") or Path(i.get("path") or "").name)
         if _str_arg(body.get("sort")) in ("saves_asc", "saves_desc"):
@@ -3758,11 +3851,15 @@ class App:
         writes = statuses.count("write")
         actionable = sum(1 for op in ops if op.status in ACTIONABLE) + writes
         incomplete = []
-        for entry in list(getattr(plan.selection, "incomplete", ()) or ())[:200]:
+        # (an incomplete set of a game that is kept complete in another version is no problem: not listed, only counted)
+        open_sets = [e for e in (getattr(plan.selection, "incomplete", ()) or ()) if not getattr(e, "covered_by", "")]
+        for entry in open_sets[:200]:
             present = getattr(entry, "present", ()) or ()
             incomplete.append({"name": entry.name, "dat": entry.dat, "total": entry.total,
                                "missing": sorted(entry.missing), "present": sorted(present)})
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
+        if not ("rating" in sort or "votes" in sort):     # (only the rows shown get their rating / checksum reference)
+            self._annotate_library(state, [(it, "") for it in page["items"]])
         page.update(
             plan_id=self._plan_id(state, key), files=len(ops),
             root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile, state.platform.name),
@@ -3772,7 +3869,8 @@ class App:
                        "conflict": statuses.count("conflict")},
             incomplete_sets=incomplete,
             borrowed=self._borrow_summary(plan),
-            incomplete_total=len(getattr(plan.selection, "incomplete", ()) or ()),
+            incomplete_total=len(open_sets),
+            incomplete_covered=len(getattr(plan.selection, "incomplete", ()) or ()) - len(open_sets),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
             rating=dict(getattr(plan.selection, "rating", None) or {}),
             warnings=[w["text"] for w, _ in state.items[wkey]],
@@ -3835,6 +3933,8 @@ class App:
     def _annotate_library(self, state: ScanState, rows: list[tuple[dict[str, Any], str]]) -> None:
         """Library rows: ``rating`` / ``votes`` of the game the file belongs to, and ``cs_kind`` / ``cs_id`` - the scan
         result row (matched, unmatched or game) whose checksums ``/api/scan/checksums`` shows for it."""
+        if not rows:
+            return                                   # (nothing to annotate: the game list it needs takes seconds to build)
         games = self._kind_rows(state, "games")
         try:
             self._annotate_ratings(state, games)
@@ -5877,7 +5977,8 @@ class App:
                                     "state": treeview.MOVED, "from": "/".join(Path(s).relative_to(root).parts), "row": e["row"],
                                     "text": "/".join(Path(d).relative_to(root).parts).casefold()})
 
-    TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves", "kept_saves")
+    TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves", "kept_saves", "changed", "excluded")
+    TREE_CHANGED = frozenset(("moved", "renamed", "new", "converted", "deleted", "incoming", "copy", "saves"))
 
     @staticmethod
     def _tree_pass(entry: dict[str, Any], f: dict[str, str], skip: str = "") -> bool:
@@ -5902,6 +6003,10 @@ class App:
         if show == "unmatched" and cat != "unmatched" and entry["state"] != "ignored":
             return False
         if show == "saves" and cat != "saves" and entry["state"] != "saves" and not (row.get("saves") or {}).get("total"):
+            return False
+        if show == "changed" and entry["state"] not in App.TREE_CHANGED:      # (the big-screen UI's "Changes" view: what a build does)
+            return False
+        if show == "excluded" and cat != "excluded":
             return False
         if skip != "state" and f.get("state") and entry["state"] != f["state"]:
             return False
@@ -6333,7 +6438,7 @@ class App:
         """chdman detection result (``?refresh=1`` forces a new look)."""
         info = self._chdman_info(refresh=_bool_arg(query.get("refresh")))
         info["engine"] = str(self._config().get("chd_engine") or "auto")
-        info["verify_scan"] = bool(self._config().get("chd_verify_scan"))
+        self._verify_info(info)
         self._engine_facts(info)
         self._writer_facts(info)
         return info
@@ -6370,14 +6475,17 @@ class App:
             if preset == "zstd" and not _mod("chdwrite").zstd_available():
                 raise ApiError(HTTPStatus.CONFLICT, "Zstandard compression needs a Zstandard library (libzstd)")
             values["chd_preset"] = preset
-        if "verify_scan" in body:
-            values["chd_verify_scan"] = _bool_arg(body.get("verify_scan"))
+        if "verify_scan" in body:                       # (the one switch of the classic page: both checks)
+            values["chd_verify_dvd"] = values["chd_verify_audio"] = _bool_arg(body.get("verify_scan"))
+        for key in ("verify_dvd", "verify_audio"):
+            if key in body:
+                values[f"chd_{key}"] = _bool_arg(body.get(key))
         if not values:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path, engine, writer, preset or verify_scan)")
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to save (expected path, engine, writer, preset, verify_dvd or verify_audio)")
         self._config_update(strict=True, **values)
         info = self._chdman_info(refresh=True)
         info["engine"] = str(self._config().get("chd_engine") or "auto")
-        info["verify_scan"] = bool(self._config().get("chd_verify_scan"))
+        self._verify_info(info)
         self._engine_facts(info)
         self._writer_facts(info)
         if raw and not info.get("found"):
@@ -6641,8 +6749,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
             return
-        name = "index.html" if path in ("/", "/index.html") else path.rsplit("/", 1)[-1]
-        if path not in ("/", "/index.html", f"/static/{name}", f"/{name}") or name not in STATIC_TYPES:
+        name = "next.html" if path in MAIN_PATHS else "index.html" if path in CLASSIC_PATHS else path.rsplit("/", 1)[-1]
+        if path not in (*MAIN_PATHS, *CLASSIC_PATHS, f"/static/{name}", f"/{name}") or name not in STATIC_TYPES:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
         try:
@@ -6650,8 +6758,9 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
-        if name == "index.html":
+        if name in ("index.html", "next.html"):
             data = data.replace(TOKEN_PLACEHOLDER.encode(), self.server.app.token.encode())
+            data = data.replace(DECK_PLACEHOLDER.encode(), b"1" if self.server.app.deck else b"")
         self._send(HTTPStatus.OK, data, STATIC_TYPES[name])
 
     def _send_json(self, status: int, data: Any) -> None:
@@ -6681,14 +6790,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
 
+def deck_mode(flag: bool = False, env: dict[str, str] | None = None) -> bool:
+    """Is this the Steam Deck? ``--deck`` (``flag``), ``ROMORG_DECK=1``, or the environment Steam gives what it starts on a Deck
+    (``SteamGamepadUI=1``: Game Mode; ``SteamDeck=1``). ``ROMORG_DECK=0`` forces it off."""
+    env = os.environ if env is None else env
+    forced = env.get("ROMORG_DECK", "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return False
+    return bool(flag or forced in ("1", "true", "yes", "on") or env.get("SteamGamepadUI") == "1" or env.get("SteamDeck") == "1")
+
+
 def make_server(host: str = "127.0.0.1", port: int = 0, token: str | None = None,
-                verbose: bool = False, auto_update: bool = True) -> RomorgServer:
+                verbose: bool = False, auto_update: bool = True, deck: bool = False) -> RomorgServer:
     """Create (but do not start) the server; ``port=0`` picks a free port.
 
     Unless ``auto_update`` is off (or ``ROMORG_OFFLINE=1``), the DAT update check starts in the
     background right after the port is bound."""
     server = RomorgServer((host, port), App(token, auto_update=auto_update), verbose=verbose)
     server.app.shutdown_hook = server.shutdown
+    server.app.deck = deck
     try:
         server.app.sweep_chd_temp()
     except Exception:  # noqa: BLE001 - housekeeping only
@@ -6788,6 +6908,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--new-instance", action="store_true",
                         help="start a new server even if one is already running")
     parser.add_argument("--verbose", action="store_true", help="log every HTTP request")
+    parser.add_argument("--deck", action="store_true",
+                        help="the Steam Deck layout: bigger targets and the controller hints always shown (also set by "
+                             "ROMORG_DECK=1 and by the environment Steam gives a program on a Deck; ROMORG_DECK=0 turns it off)")
     parser.add_argument("--no-update", action="store_true",
                         help="do not check for / download newer DATs at startup (cached DATs are still used)")
     args = parser.parse_args(argv)
@@ -6809,7 +6932,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     try:
-        server = make_server(args.host, args.port, verbose=args.verbose, auto_update=not args.no_update)
+        server = make_server(args.host, args.port, verbose=args.verbose, auto_update=not args.no_update, deck=deck_mode(args.deck))
     except OSError as exc:
         print(f"Could not start server: {exc}", file=sys.stderr)
         return 1

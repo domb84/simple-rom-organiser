@@ -710,6 +710,20 @@ class TotalsRatingTests(unittest.TestCase):
         self.assertEqual(t3.coverage["games"], 7)
         self.assertEqual(t3.coverage["rated"], 5)
 
+    def test_a_top_n_says_what_it_is_made_of_and_which_games_you_lack(self) -> None:
+        dat = dat_of(GBA_NAMES)
+        t = totals.compute_target(GBA, [dat], replace(FILTER, top_n=3, keep_unrated=True), self.lookup)
+        x = t.explain
+        self.assertEqual((x["top_n"], x["top"], x["tie_count"], x["incomplete_count"], x["unrated"], x["not_ranked_count"]), (3, 3, 0, 0, 2, 0))
+        self.assertEqual(t.count, 5)                                         # 3 best rated + 2 unrated kept in addition
+        self.assertIsNone(totals.compute_target(GBA, [dat], FILTER, self.lookup).explain)   # (no top N: nothing to explain)
+        user = totals.compute_user_items(gba_items(["Ace (USA)", "Bolt (USA)"]), GBA, replace(FILTER, top_n=3, keep_unrated=True),
+                                         library.RatingContext(self.lookup, t.cutoff))
+        out = totals.combine(t, user)
+        self.assertEqual((out["have_games"], out["missing_games"]), (2, 3))
+        self.assertEqual(out["missing_names"], ["Cube (USA)", "Flux (USA)", "Gust (USA)"])
+        self.assertEqual(out["explain"]["top"], 3)
+
     def test_coverage_and_histogram_without_a_filter(self) -> None:
         t = totals.compute_target(GBA, [dat_of(GBA_NAMES)], FILTER, self.lookup)
         self.assertEqual((t.count, t.coverage["games"], t.coverage["rated"]), (7, 7, 5))

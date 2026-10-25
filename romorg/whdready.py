@@ -42,8 +42,16 @@ def key_of(names: Iterable[str]) -> str:
     return "\n".join(sorted(str(n) for n in names))
 
 
+_RECENT = 2.0                  # seconds a load is reused without even a stat (a library plan asks tens of thousands of times)
+_LAST: list = [0.0, "", None]  # [when, path, data] of the last load
+
+
 def load() -> dict[str, Any]:
     p = path()
+    now = time.monotonic()
+    with _LOCK:
+        if _LAST[2] is not None and _LAST[1] == str(p) and now - _LAST[0] < _RECENT:
+            return _LAST[2]
     try:
         st = p.stat()
         sig = (st.st_mtime_ns, st.st_size)
@@ -52,6 +60,7 @@ def load() -> dict[str, Any]:
     with _LOCK:
         hit = _CACHE.get(str(p))
         if hit is not None and hit[0] == sig:
+            _LAST[:] = [now, str(p), hit[1]]
             return hit[1]
     try:
         data = json.loads(p.read_text(encoding="utf-8")).get("sets") or {}
@@ -59,6 +68,7 @@ def load() -> dict[str, Any]:
         data = {}
     with _LOCK:
         _CACHE[str(p)] = (sig, data)
+        _LAST[:] = [time.monotonic(), str(p), data]
     return data
 
 
@@ -266,8 +276,10 @@ def record(rows: dict[str, dict[str, Any]]) -> None:
             sets[k] = {**v, "at": now}
         paths.atomic_write(p, json.dumps({"sets": sets}, ensure_ascii=False), ".ready-")
         _CACHE.pop(str(p), None)
+        _LAST[:] = [0.0, "", None]
 
 
 def clear_cache() -> None:
     with _LOCK:
         _CACHE.clear()
+        _LAST[:] = [0.0, "", None]

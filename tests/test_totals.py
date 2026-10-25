@@ -271,6 +271,8 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(self.started.wait(5))
         again = self.mgr.request(AMIGA, EN, "d1")                  # polling while it runs: still one run
         self.assertTrue(again["calculating"])
+        self.assertEqual(again["working"]["step"], "target")       # what it is doing, for how long (shown while it works)
+        self.assertGreaterEqual(again["working"]["seconds"], 0)
         self.gate.set()
         self.assertTrue(self.mgr.wait_idle(10))
         done = self.mgr.request(AMIGA, EN, "d1")

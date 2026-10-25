@@ -552,3 +552,62 @@ class SwitchDatabaseTest(Base):
 
     def test_not_managed_by_default(self) -> None:
         self.assertEqual(self.make().status()["switchdb"], {"managed": False, "status": "absent"})
+
+
+class WhdloadRoundTest(Base):
+    """The WHDLoad installs of the Amiga games come with the databases: a later start runs only their round (the list of installs
+    when it is a week old, then the server's ``after_update``); "Check for updates" runs it after the databases."""
+
+    install_everything = StartupTest.install_everything
+
+    def hooked(self, **kw) -> tuple[autoupdate.UpdateManager, list]:
+        calls: list = []
+        mgr = self.make(**kw)
+
+        def after(cancel, progress):
+            progress(0, 1, "WHDLoad install of Turrican")
+            calls.append(cancel.is_set())
+            return {"downloaded": 1, "updated": 0, "failed": []}
+        mgr.after_update = after
+        return mgr, calls
+
+    def test_a_later_start_runs_only_the_whdload_round(self) -> None:
+        self.install_everything()
+        checks: list[str] = []
+        original = self.nointro.check_updates
+        self.nointro.check_updates = lambda *a, **k: (checks.append("nointro"), original(*a, **k))[1]
+        whd = FakeSwitchdb()
+        whd.available = True
+        whd.answer = {"status": "up_to_date", "skipped": True}
+        mgr, calls = self.hooked(whdinstalls=whd)
+        mgr.start_background()
+        time.sleep(0.2)
+        wait_idle(mgr)
+        self.assertEqual((checks, whd.checks, whd.builds, calls), ([], [True], 0, [False]))     # (gate: a list younger than a week is kept)
+        st = mgr.status()
+        self.assertEqual((st["whdload_games"]["downloaded"], st["error"]), (1, None))
+
+    def test_check_for_updates_runs_it_after_the_databases(self) -> None:
+        self.install_everything()
+        mgr, calls = self.hooked()
+        self.assertTrue(mgr.check())
+        wait_idle(mgr)
+        self.assertEqual(calls, [False])
+        self.assertEqual(mgr.status()["whdload_games"]["downloaded"], 1)
+
+    def test_a_failing_round_does_not_fail_the_update(self) -> None:
+        self.install_everything()
+        mgr = self.make()
+        mgr.after_update = lambda cancel, progress: (_ for _ in ()).throw(RuntimeError("whdload.de said no"))
+        mgr.check()
+        wait_idle(mgr)
+        st = mgr.status()
+        self.assertEqual((st["error"], st["whdload_games"]), (None, {"error": "whdload.de said no"}))
+
+    def test_without_the_list_or_a_round_a_later_start_does_nothing(self) -> None:
+        self.install_everything()
+        mgr = self.make()
+        mgr.start_background()
+        time.sleep(0.1)
+        self.assertFalse(mgr.status()["running"])
+        self.assertIsNone(mgr.status()["whdload_games"])

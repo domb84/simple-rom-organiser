@@ -404,7 +404,7 @@ class ServerTestCase(unittest.TestCase):
 
 class StaticAndSecurityTests(ServerTestCase):
     def test_index_has_token_and_security_headers(self) -> None:
-        status, body, headers = self.request("GET", "/")
+        status, body, headers = self.request("GET", "/classic")
         self.assertEqual(status, 200)
         html = body.decode()
         self.assertIn('content="test-token"', html)
@@ -415,11 +415,58 @@ class StaticAndSecurityTests(ServerTestCase):
             self.assertIn(f'id="{element_id}"', html)
 
     def test_static_assets(self) -> None:
-        for path, ctype in (("/static/app.js", "text/javascript"), ("/static/style.css", "text/css")):
+        for path, ctype in (("/static/app.js", "text/javascript"), ("/static/style.css", "text/css"),
+                            ("/static/deck.js", "text/javascript"), ("/static/deck.css", "text/css")):
             status, body, headers = self.request("GET", path)
             self.assertEqual(status, 200, path)
             self.assertTrue(headers["Content-Type"].startswith(ctype))
             self.assertGreater(len(body), 100)
+
+    def test_the_big_screen_ui_is_the_main_page_and_the_old_one_is_at_classic(self) -> None:
+        for path in ("/classic", "/classic/"):
+            self.assertIn('src="/static/app.js"', self.request("GET", path)[1].decode())
+        for path in ("/", "/index.html", "/next", "/next/"):
+            status, body, headers = self.request("GET", path)
+            self.assertEqual(status, 200, path)
+            html = body.decode()
+            self.assertIn('content="test-token"', html)
+            self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
+            self.assertIn('<meta name="romorg-deck" content="">', html)
+            self.assertIn('src="/static/next.js"', html)
+            self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+        for path, ctype in (("/static/next.js", "text/javascript"), ("/static/next.css", "text/css")):
+            status, body, headers = self.request("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertTrue(headers["Content-Type"].startswith(ctype))
+        self.assertEqual(self.request("GET", "/next/other")[0], 404)
+        self.assertEqual(self.request("GET", "/classic/other")[0], 404)
+        self.srv.app.deck = True
+        self.assertIn('<meta name="romorg-deck" content="1">', self.request("GET", "/")[1].decode())
+
+    def test_the_page_says_it_is_not_for_a_deck_by_default_and_loads_the_controller_layer(self) -> None:
+        _status, body, _headers = self.request("GET", "/classic")
+        html = body.decode()
+        self.assertIn('<meta name="romorg-deck" content="">', html)
+        self.assertNotIn(server.DECK_PLACEHOLDER, html)
+        self.assertIn('href="/static/deck.css"', html)
+        self.assertIn('src="/static/deck.js"', html)
+        self.assertIs(self.get("/api/status")["deck"], False)
+
+    def test_the_page_and_status_say_so_when_served_for_a_deck(self) -> None:
+        self.srv.app.deck = True
+        _status, body, _headers = self.request("GET", "/classic")
+        self.assertIn('<meta name="romorg-deck" content="1">', body.decode())
+        self.assertIs(self.get("/api/status")["deck"], True)
+
+    def test_what_makes_it_a_deck(self) -> None:
+        deck = server.deck_mode
+        self.assertFalse(deck(False, {}))
+        self.assertTrue(deck(True, {}))                                              # --deck
+        self.assertTrue(deck(False, {"ROMORG_DECK": "1"}))
+        self.assertTrue(deck(False, {"SteamGamepadUI": "1"}))                        # Game Mode
+        self.assertTrue(deck(False, {"SteamDeck": "1"}))
+        self.assertFalse(deck(True, {"ROMORG_DECK": "0"}))                           # off wins over everything
+        self.assertFalse(deck(False, {"SteamDeck": "1", "ROMORG_DECK": "off"}))
 
     def test_ui_ids_exist(self) -> None:
         """Every $("id") used by app.js must exist in index.html."""
@@ -2890,10 +2937,11 @@ class ZipappTests(unittest.TestCase):
                     break
                 except OSError:
                     time.sleep(0.1)
-            self.assertIn("Simple ROM Organiser", html)
+            self.assertIn('src="/static/next.js"', html)              # the big-screen UI is the main page
             self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/static/app.js", timeout=2) as resp:
-                self.assertIn(b"X-Romorg-Token", resp.read())
+            for script in ("next.js", "app.js"):
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/static/{script}", timeout=2) as resp:
+                    self.assertIn(b"X-Romorg-Token", resp.read())
         finally:
             proc.terminate()
             try:

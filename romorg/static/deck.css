@@ -1,0 +1,36 @@
+/* Simple ROM Organiser - the controller layer (deck.js): what shows when a controller is used (body.pad) or the page was served for a
+   Steam Deck (body.deck). Without either of the two classes nothing in this file applies. */
+
+.deck-hints {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
+  flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 8px 18px;
+  background: rgba(18, 21, 27, 0.97); border-top: 1px solid var(--border);
+  font-size: 15px; color: var(--muted);
+}
+.deck-hints.on { display: flex; }
+body.pad, body.deck { padding-bottom: 58px; }              /* the strip never covers the end of a page */
+body.pad .toasts, body.deck .toasts { bottom: 66px; }
+
+.deck-hint { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pad-btn {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 7px;
+  border-radius: 13px; border: 2px solid var(--border); background: var(--panel-2); color: var(--text);
+  font-size: 13px; font-weight: 700; line-height: 1;
+}
+.pad-btn[data-btn="A"] { border-color: var(--ok); color: var(--ok); }
+.pad-btn[data-btn="B"] { border-color: var(--bad); color: var(--bad); }
+.pad-btn[data-btn="X"], .pad-btn[data-btn="Steam+X"] { border-color: var(--accent); color: var(--accent); }
+.pad-btn[data-btn="Y"] { border-color: var(--warn); color: var(--warn); }
+.pad-btn[data-btn="dpad"] { font-size: 16px; }
+
+/* a ring that cannot be missed from across a room, wherever the focus is (the page's own offsets still apply) */
+body.pad :focus, body.deck :focus {
+  outline: 4px solid var(--accent);
+  box-shadow: 0 0 0 7px rgba(79, 156, 255, 0.28);
+}
+body.pad input:focus, body.deck input:focus, body.pad select:focus, body.deck select:focus, body.pad textarea:focus, body.deck textarea:focus {
+  outline-offset: 1px;
+}
+
+/* rows inside a scrolling list are clipped by it: the ring goes inside them */
+body.pad .fb-dirs li:focus, body.deck .fb-dirs li:focus { outline-offset: -4px; box-shadow: none; }

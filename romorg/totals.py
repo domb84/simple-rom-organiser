@@ -140,6 +140,8 @@ class Target:
     rated_all: Optional[dict] = None            # {games, rated} of EVERY title of the DAT, whatever the rules say (None = no ratings / not rated)
     rated_target: Optional[dict] = None         # {games, rated} of the titles that stay after ALL the rules, the rating filter too
     borrowed: dict[tuple, frozenset] = field(default_factory=dict)   # game key -> the disks of other editions its kept set borrows
+    names: dict[tuple, str] = field(default_factory=dict)            # game key -> a name to show for it (the DAT's game name)
+    explain: Optional[dict] = None              # why a "top N" keeps the number of games it keeps (:func:`_explain_top`)
 
     @property
     def count(self) -> int:
@@ -216,8 +218,49 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
     broken = {library.game_key(it, profile.combine_alt_titles) for it in items
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
+    names = _names(items, kept, profile)
+    explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel))
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain)
+
+
+def _game_name(it: Item) -> str:
+    return getattr(it.rom, "game", "") or library._tags_of(it).title
+
+
+def _names(items: list[Item], kept: dict[tuple, set[str]], profile: library.LibraryProfile) -> dict[tuple, str]:
+    """A name to show for each kept game: the DAT game name of its first rom (sorted, so it is the same every time)."""
+    out: dict[tuple, str] = {}
+    for it in items:
+        key = library.game_key(it, profile.combine_alt_titles)
+        if key in kept:
+            name = _game_name(it)
+            if key not in out or name < out[key]:
+                out[key] = name
+    return out
+
+
+def _explain_top(items: list[Item], sel: library.Selection, platform: Any, profile: library.LibraryProfile,
+                 lookup: Callable[[str], Optional[tuple[float, int]]], kept: dict[tuple, set[str]],
+                 names: dict[tuple, str]) -> dict[str, Any]:
+    """Why "top N" keeps the games it keeps (the user cannot see it otherwise): the N best rated complete games; games ranked after
+    the N-th that tie with it (the same rating, votes and title: they stay or go together); rated games that are incomplete in the DAT
+    (never counted towards N, kept when they rank high enough); unrated games kept by "Keep unrated games"; and games the rating
+    filter does not rank at all (a DAT without ratings: CD32 / CDTV discs and others), by DAT."""
+    units = library._units(items, sel, platform, profile, lookup)
+    in_units = {u.key for u in units}
+    rated = sorted((u for u in units if u.rated is not None), key=lambda u: u.rank())
+    complete = [u for u in rated if u.complete]
+    n = profile.top_n or 0
+    name = lambda u: names.get(u.key) or _game_name(u.owner)      # noqa: E731
+    outside = sorted(k for k in kept if k not in in_units)
+    by_dat: dict[str, int] = {}
+    for k in outside:
+        by_dat[k[0]] = by_dat.get(k[0], 0) + 1
+    return {"top_n": n, "top": min(n, len(complete)), "ties": [name(u) for u in complete[n:]][:50],
+            "tie_count": max(0, len(complete) - n), "incomplete": [name(u) for u in rated if not u.complete][:50],
+            "incomplete_count": sum(1 for u in rated if not u.complete), "unrated": sum(1 for u in units if u.rated is None),
+            "not_ranked": [names.get(k, k[0]) for k in outside][:50], "not_ranked_count": len(outside), "not_ranked_by_dat": by_dat}
 
 
 def _borrowed(items: list[Item], sel: library.Selection) -> dict[tuple, frozenset]:
@@ -242,6 +285,7 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     t0 = time.time()
     sel = library.select(items, profile, platform, ratings=ratings, lang_games=lang_games)
     kept = _kept(items, sel)
+    complete = library.kept_titles(items, sel)       # (an incomplete copy of a game kept complete in another version is no problem)
     games: dict[tuple, tuple[str, frozenset]] = {}
     problems: dict[tuple, tuple[str, list[str], str]] = {}
     for it in items:
@@ -254,6 +298,8 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
         why = ""
         if d is not None:
             why = d.reason or ", ".join(library._RULE_SHORT.get(c, c) for c in d.codes)
+        if state == INCOMPLETE_OWNED and library.title_key(it) in complete:
+            state, why = EXCLUDED_OWNED, f"a complete version is kept: {complete[library.title_key(it)]}"
         old = problems.get(key)
         if old is None or (state == INCOMPLETE_OWNED and old[0] != INCOMPLETE_OWNED):
             problems[key] = (state, [library._rom_name(it)], why)
@@ -270,7 +316,7 @@ def combine(target: Target, user: Optional[UserPart]) -> dict[str, Any]:
     """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part."""
     out: dict[str, Any] = {"target_games": target.count, "target_incomplete": target.incomplete, "by_dat": {d: {"target": n} for d, n in target.by_dat.items()},
                            "rating": target.rating, "rating_coverage": target.coverage,
-                           "rated_all": target.rated_all, "rated_target": target.rated_target}
+                           "rated_all": target.rated_all, "rated_target": target.rated_target, "explain": target.explain}
     if user is None:
         return out
     have = outside = incomplete = excluded = not_preferred = 0
@@ -291,6 +337,9 @@ def combine(target: Target, user: Optional[UserPart]) -> dict[str, Any]:
     for row in out["by_dat"].values():
         row.setdefault("have", 0)
     total = target.count
+    owned = {key for key, (state, _n) in user.games.items() if state == HAVE}
+    lacking = sorted(target.names.get(k, k[0]) for k in target.games if k not in owned)
+    out["missing_names"] = lacking[:50]                 # (which games of the rules you do not have: shown when there are few)
     out.update(have_games=have, missing_games=total - have, percent=round(100.0 * have / total, 1) if total else 0.0,
                not_preferred=not_preferred, owned_but_excluded=excluded, owned_incomplete=incomplete,
                owned_outside_target=outside, owned_games=len(user.games))
@@ -323,6 +372,7 @@ class TotalsManager:
         self._users: dict[str, tuple[tuple, Any]] = {}
         self._insights: dict[str, tuple[tuple, dict[str, Any]]] = {}      # platform -> (key, {tile: numbers})
         self._busy: Optional[tuple] = None
+        self._busy_since = 0.0             # when the job in ``_busy`` started (the "working" block of an answer)
         self._thread: Optional[threading.Thread] = None
         self.discarded = 0           # results dropped because their key was superseded while they ran
         self.target_runs = 0
@@ -350,6 +400,21 @@ class TotalsManager:
                 self._thread.start()
             self._cv.notify_all()
             return self._answer(platform, sig, want)
+
+    def cutoff(self, name: str, tkey: tuple, wait: float = 0.0) -> tuple[bool, Optional[tuple]]:
+        """``(known, cutoff)``: the top-N cutoff of the target worked out with ``tkey`` (``(profile signature, dats signature)``). While
+        the worker is on that very target, wait up to ``wait`` seconds for it - a library plan then reuses it instead of selecting the
+        whole database a second time in parallel (the Amiga's takes half a minute)."""
+        end = time.time() + wait
+        with self._cv:
+            while True:
+                t = self._targets.get(name)
+                if t is not None and t[0] == tkey and not isinstance(t[1], Exception):
+                    return True, t[1].cutoff
+                busy = self._busy
+                if busy is None or busy[:3] != ("target", name, tkey) or time.time() >= end:
+                    return False, None
+                self._cv.wait(min(1.0, max(0.05, end - time.time())))
 
     def upgrades(self, name: str) -> Optional[list[tuple[tuple, list[str], list[str]]]]:
         """``(game key, the names you own, the names the rules prefer)`` of each owned game that is not the preferred version
@@ -580,12 +645,23 @@ class TotalsManager:
         if out["error"]:
             return out
         out["calculating"] = True
+        out["working"] = self._working(name, t, u)
         # the previous numbers (other rules / folder) stay visible, flagged stale, until the new ones are ready
         if t is not None and not isinstance(t[1], Exception) and (want.ukey is None or (u is not None and not isinstance(u[1], Exception))):
             out.update(combine(t[1], u[1] if want.ukey is not None and u is not None else None))
             out["stale"] = True
             out["computed_at"] = t[1].computed_at
         return out
+
+    def _working(self, name: str, t: Optional[tuple], u: Optional[tuple]) -> dict[str, Any]:
+        """(lock held) What is being worked out for this system: ``step`` "target" (the whole database with your rules), "user" (your
+        files) or "queued" (another system's turn first), its ``seconds`` so far and ``expect``: what that step took the last time."""
+        busy = self._busy
+        if busy is None or busy[1] != name:
+            return {"step": "queued", "seconds": 0, "expect": None}
+        prev = t if busy[0] == "target" else u
+        expect = getattr(prev[1], "seconds", None) if prev is not None and not isinstance(prev[1], Exception) else None
+        return {"step": busy[0], "seconds": round(time.time() - self._busy_since, 1), "expect": round(expect, 1) if expect else None}
 
     # ---- worker
 
@@ -622,6 +698,7 @@ class TotalsManager:
                     self._cv.wait()
                     job = self._next_job()
                 self._busy = job
+                self._busy_since = time.time()
                 kind, name, key = job
                 want = self._want[name]
             value: Any

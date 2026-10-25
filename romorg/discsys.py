@@ -865,11 +865,12 @@ def _rom_ok(rom: Rom, tr: dict) -> bool:
 
 
 def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], None],
-              full: bool = False) -> tuple[list[DcGame], str, str]:
+              full: bool = False, full_dvd: Optional[bool] = None, full_audio: Optional[bool] = None) -> tuple[list[DcGame], str, str]:
     """Candidates by track sizes, then by the hashes of the data tracks (smallest first), then audio if needed.
 
     ``hasher(indexes)`` fills ``meta[i]["crc32" / "md5" / "sha1"]`` for the 0-based track indexes it is given. ``full``: every
-    track is read and compared (audio too), so a match is always ``verified``.
+    track is read and compared (audio too), so a match is always ``verified``. The two halves of it: ``full_dvd`` reads a DVD
+    image whose header only claims its SHA-1, ``full_audio`` hashes the audio tracks of a CD (each defaults to ``full``).
     Returns ``(matching games, level, reason)``; ``level`` is ``verified`` only when every track is hashed
     and equal, else ``identified`` (audio by length) or ``""``.
     """
@@ -877,13 +878,15 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
     cands = list(index.by_sizes.get(sizes, ()))
     if not cands:
         return [], "", "no Redump game has these track sizes"
+    dvd = full if full_dvd is None else full_dvd
+    audio_too = full if full_audio is None else full_audio
     data = sorted((i for i, m in enumerate(meta) if not m["audio"]), key=lambda i: meta[i]["size"])
     order = data or sorted(range(len(meta)), key=lambda i: meta[i]["size"])
     alive = cands
     for i in order:
         if not meta[i]["sha1"]:
             hasher([i])
-        elif full and meta[i].get("claimed"):          # a DVD CHD's header only claims its SHA-1: read the disc
+        elif dvd and meta[i].get("claimed"):           # a DVD CHD's header only claims its SHA-1: read the disc
             try:
                 hasher([i])
             except chdlib.ChdUnsupported:              # it cannot be decoded here: the claim stands (identified)
@@ -891,7 +894,7 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
         alive = [g for g in alive if _rom_ok(g.tracks[i], meta[i])]
         if not alive:
             return [], "", "the data tracks do not match any Redump game with this track layout"
-    if len(alive) > 1 or full:     # same sizes and data: only the audio can tell them apart (or the audio is wanted anyway)
+    if len(alive) > 1 or audio_too:    # same sizes and data: only the audio can tell them apart (or the audio is wanted anyway)
         audio = [i for i in range(len(meta)) if i not in order]
         todo = [i for i in audio if not meta[i]["sha1"]]
         if todo:
@@ -911,7 +914,7 @@ def match_chd(index: DcIndex, meta: list[dict], hasher: Callable[[list[int]], No
 
 def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chdman: Optional[chdtool.Chdman],
                   engine: str, prog: Optional[_Progress], pool: Optional[chdsched.Scheduler] = None,
-                  full: bool = False) -> None:
+                  full: bool = False, full_dvd: Optional[bool] = None, full_audio: Optional[bool] = None) -> None:
     """Fill ``unit.game`` / ``level`` / ``tracks`` / ``reason`` for a CHD unit (cache first).
 
     Engine policy: ``auto`` / ``python`` decode with the built-in reader (parallel scheduler + native FLAC);
@@ -986,7 +989,7 @@ def identify_unit(unit: DcUnit, index: DcIndex, cache: ChdCache, root: Path, chd
                 meta[i].update(h)
                 meta[i].pop("claimed", None)
 
-        games, level, reason = match_chd(index, meta, hasher, full)
+        games, level, reason = match_chd(index, meta, hasher, full, full_dvd, full_audio)
         unit.via = via[0] if any(_is_hashed(m) for m in meta) else ("header" if info.is_dvd else "")
         if games:
             unit.game, unit.level, unit.reason = games[0], level, ""
@@ -1228,8 +1231,11 @@ class DcScanResult(scanner.ScanResult):
         }
 
 
-def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full: bool = False) -> tuple[int, int]:
+def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full: bool = False,
+              full_dvd: Optional[bool] = None, full_audio: Optional[bool] = None) -> tuple[int, int]:
     """``(bytes, files)`` that reading these units will take: what is not in the cache yet."""
+    dvd = full if full_dvd is None else full_dvd
+    full = full if full_audio is None else full_audio
     total = 0
     files_todo = 0
     for u in units:
@@ -1242,7 +1248,8 @@ def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full
                     cached = cache.get(str(u.path), st.st_size, st.st_mtime_ns, info.sha1)
                     all_hashed = all(t.get("sha1") for t in (cached or {}).get("tracks", [{}])) and bool(cached)
                     if info.is_dvd:
-                        pass            # identified by the header SHA-1: nothing to decode
+                        if dvd and not all_hashed:      # read in full; else identified by the header SHA-1: nothing to decode
+                            total += sum(t.size for t in info.tracks)
                     elif not cached:
                         total += sum(t.size for t in info.tracks if use_chdman or full or not t.is_audio) * (2 if use_chdman else 1)
                     elif (use_chdman or full) and not all_hashed:
@@ -1263,7 +1270,8 @@ def _estimate(units: Sequence[DcUnit], cache: "ChdCache", use_chdman: bool, full
 def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
          cache_path: Optional[Path] = None, use_cache: bool = True, chdman: Optional[chdtool.Chdman] = None,
          engine: str = "auto", protected_dirs: Sequence[str] = (), workers: int = 1, full: bool = False,
-         refresh_cache: bool = False, **_ignored: Any) -> DcScanResult:
+         refresh_cache: bool = False, full_dvd: Optional[bool] = None, full_audio: Optional[bool] = None,
+         **_ignored: Any) -> DcScanResult:
     """Scan ``root`` for CHDs and raw sets and match them to the Redump DAT (``dats``: one DatFile or a list)."""
     root = Path(root).expanduser().absolute()
     if not root.is_dir():
@@ -1284,7 +1292,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
     sched = chdsched.make_scheduler(workers)
     try:
         # progress total: what has to be decoded / hashed (cached CHDs cost nothing)
-        total, files_todo = _estimate(units, cache, use_chdman, full)
+        total, files_todo = _estimate(units, cache, use_chdman, full, full_dvd, full_audio)
         prog = _Progress(progress, max(total, 1), cancel)
         prog.files_total = files_todo
         prog.emit("Scanning...")
@@ -1296,7 +1304,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                 def work(u: DcUnit) -> None:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full, full_dvd, full_audio)
                     if u.decoded:
                         prog.file_done()
                 # several CHDs at once: their chunks share the worker processes (the early-reject strategy of one
@@ -1308,7 +1316,7 @@ def scan(root, dats, progress: Optional[ProgressFn] = None, cancel: Any = None,
                 for u in chd_units:
                     prog.check()
                     prog.emit(f"Checking {u.path.name}")
-                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full)
+                    identify_unit(u, index, cache, root, chdman, engine, prog, pool, full, full_dvd, full_audio)
                     if u.decoded:
                         prog.file_done()
             for u in units:
