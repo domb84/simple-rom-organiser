@@ -16,6 +16,7 @@ list knows. It also lists the installs whose ReadMe does not say they take the g
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -47,20 +48,23 @@ _LAST: list = [0.0, "", None]  # [when, path, data] of the last load
 
 
 def load() -> dict[str, Any]:
-    p = path()
     now = time.monotonic()
+    where = os.environ.get("ROMORG_DATA_DIR", "")             # (what the path depends on: finding it costs more than the answer)
     with _LOCK:
-        if _LAST[2] is not None and _LAST[1] == str(p) and now - _LAST[0] < _RECENT:
+        if _LAST[2] is not None and _LAST[1] == where and now - _LAST[0] < _RECENT:
             return _LAST[2]
+    p = path()
     try:
         st = p.stat()
         sig = (st.st_mtime_ns, st.st_size)
     except OSError:
+        with _LOCK:
+            _LAST[:] = [now, where, {}]                        # (no check made yet: nothing, for a moment too)
         return {}
     with _LOCK:
         hit = _CACHE.get(str(p))
         if hit is not None and hit[0] == sig:
-            _LAST[:] = [now, str(p), hit[1]]
+            _LAST[:] = [now, where, hit[1]]
             return hit[1]
     try:
         data = json.loads(p.read_text(encoding="utf-8")).get("sets") or {}
@@ -68,7 +72,7 @@ def load() -> dict[str, Any]:
         data = {}
     with _LOCK:
         _CACHE[str(p)] = (sig, data)
-        _LAST[:] = [time.monotonic(), str(p), data]
+        _LAST[:] = [time.monotonic(), where, data]
     return data
 
 

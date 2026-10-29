@@ -122,6 +122,23 @@ class Trees(ServerCase):
     def tree(self, side: str, path: str = "") -> dict:
         return self.call("GET", f"/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side={side}&path={path}")
 
+    def test_the_files_list_is_made_in_the_background_after_the_build_preview(self) -> None:
+        import time
+        root = self.tmp / "gba-roms"
+        root.mkdir()
+        (root / "run.gba").write_bytes(self.rom["Run (USA)"])
+        self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
+        self.wait()
+        self.call("POST", "/api/library/plan", {"platform": GBA, "limit": 1, "summary": True})    # (what the system page asks)
+        app = self.srv.app
+        deadline = time.time() + 20
+        while time.time() < deadline and ("library", "tree") not in app._scan.items:
+            time.sleep(0.05)
+        self.assertIn(("library", "tree"), app._scan.items)                                     # (made before Files is opened)
+        made = app._scan.items[("library", "tree")]
+        self.assertTrue(self.tree("library")["ready"])
+        self.assertIs(app._scan.items[("library", "tree")], made)                                # (Files took it: not made again)
+
     def test_the_trees_show_where_every_file_ends_up_and_change_nothing(self) -> None:
         root = self.tmp / "gba-roms"
         root.mkdir()

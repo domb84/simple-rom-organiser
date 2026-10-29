@@ -3824,3 +3824,122 @@ detector; each merge was made only where the copies were the same code.
 * The new UI's "Your library" page shows them in a "System disks" section (how many the rules keep, how many you have, the ones you
   lack). They are kept and built as before.
 * User's data, top 100: 100 of 100 games; 8 of 9 system disks (EmuTOS lacking).
+
+**AMENDMENT 84 (v0.5) — Opening a system at once; the whole-database count twice as fast.**
+
+* The user: clicking the Amiga on Home took ~10 s before its page showed, with nothing on screen ("this didnt happen on the classic
+  ui"). Measured on a copy of their data: `POST /api/scan/select` 8.2 s (reading the saved scan) + `GET /api/status` 2.3 s.
+* `scancache.load` summed the whole result up only to check it could be (~6 s), and the status summed it up again. The summary is now
+  saved with the scan (`extra["summary"]` -> `ScanState.summary`); a scan saved before this gets it written back in the background
+  the first time it is read (`_load_kept_scan`).
+* `App.preload_last_scan` (in `make_server`, `preload=True`): the saved scan of the system used last is read at the start, in the
+  background; one read at a time (`_disk_load`: a click waits for it rather than reading it twice). Such a scan is `unchecked` until
+  opened: then its folder stamp, DATs and scan options are compared once (`_still_current`, ~1 s on 35,000 files) - changed since the
+  start, it is dropped and a new scan is asked for.
+* The new UI shows the system page at once (placeholder tiles, "Loading the last scan" in the header chip) when the select takes
+  longer than 150 ms.
+* The totals' whole-database target, 46 s -> ~18 s: no second selection for "rated titles of the whole DAT" (every item kept is a
+  `Selection` built directly); `tags.identity_key` / `game_key` / `classify_token` / `exclusion_info` remembered (pure functions of a
+  frozen `Tags`); `library.combined_key` remembered while `alttitles.state()` (registered titles + sources) stays the same;
+  `whdready.load` answers from memory without working out its path (and remembers "no file yet"). The target also applies
+  `_flawed_beside_clean` now, as `select` does.
+* User's data, top 100: the click 10.5 s -> 1.2 s (0.1 s when the scan was already open); totals 50 s -> 24 s; the build preview
+  56 s -> 34 s. Left: the preview and the totals each run the rules over the user's files (~10 s each); sharing that is the next step.
+
+**AMENDMENT 85 (v0.5) — "Games you have" counts games, not disks.**
+
+* The user: the Amiga said "34,975 of 38,933 games" - the DAT entries, and a TOSEC entry is one disk ("Disk 1 of 3" is an entry of
+  its own), Workbench and Kickstart disks included.
+* `App._game_counts` (in `_summary`, systems with a `game_dat`): the releases of the game DATs (a version's disks, an SPS release, a
+  disc) grouped into games by `library.game_key` (alternate titles combined, as the rules do by default); a game is yours when you have
+  every disk of one of its releases. System disks (`totals.system_dats`) and [BIOS] entries are no games. It sets `games_total` /
+  `games_have` / `games_missing` and `count_by: "game"`, which the tiles, the Missing tile, the Home cards and the classic page read.
+* The saved summary has a version (`SUMMARY_VERSION` 2): one saved before is worked out again (in the background, then saved).
+* User's data: 4,484 of 4,780 games (was 34,975 of 38,933 disks).
+
+**AMENDMENT 86 (v0.5) — Needs a look counts games: 2, not 8.**
+
+* The user, top 100: the tile said 8 games to look at, the page showed two, one of them "7 better versions" - the 7 disks of one.
+* The tile is `not_preferred + owned_incomplete` of the totals. 6 of its 7 incomplete games were outside the top 100: Amendment 80
+  rated only the disks of the reported incomplete sets, so a disk of another partial copy of the game stayed INCOMPLETE and the totals
+  (any INCOMPLETE disk = an incomplete game) counted it. `library._rate_incomplete` now rates every INCOMPLETE disk by its game
+  (`game_key`): a game the rating drops has all of them excluded for its rating, and reported sets left with none go.
+* `TotalsManager.describe_upgrades`: one better version is a release, all its disks (`totals._release_of`: the name without the disk
+  number and the per-disk `[..]` flags - "[cr]" on disk 1, "[cr SR]" on 2 and 3); a CD's cue and tracks are one too.
+* The plan's `incomplete_sets` carry their `game` (and `incomplete_games` the count): the page shows one row a game, its copies in the
+  panel ("You have 3 copies, each only in part").
+* User's data: tile 2; Incomplete 1 (a Workbench disk), Better versions 1 (Elvira II: one 7-disk release).
+
+**AMENDMENT 87 (v0.5) — A translation is played in its own language only.**
+
+* The user: "translations would be their own language". `tags.variant_languages`: a `[tr <code> ...]` release's languages are the
+  translation's only (`[tr pl]` of an English game: Polish; `[tr en]` of a German one: English; `[tr en-de x]`: English and German) -
+  before, the translation was added to the original's, so an English-only library could prefer a Polish translation (Elvira II).
+* User's data, top 100: Needs a look 1 (a Workbench disk); Elvira II's own English copy is the preferred one now.
+
+**AMENDMENT 88 (v0.5) — Files does not wait for its own long list after the system page.**
+
+* The user: after a system's page has worked everything out, opening Files (or Needs a look) "calculates again". It was not the build
+  preview again (both reuse the cached plan): the first `GET /api/tree` makes the Files list - every file with its game, title,
+  rating and reason, where the archive puts what is set aside, the folder tree - which took 27 s on the user's Amiga (cached after).
+* Faster: `treeview._rel` and `server._rel` work on strings (`_rel` was raising and catching an exception for every path that was
+  relative already, ~40,000 a list): 27 s -> 20 s.
+* Made in the background (`App.warm_tree`, from `POST /api/library/plan` with `summary`, which only the system page sends): after the
+  totals (it queues them and waits, so their tiles are never slowed), not while a job runs, not for a system no longer open. One list
+  at a time (`_tree_lock`): Files opened meanwhile waits for it rather than making a second. User's Amiga: Files opened 25 s after
+  the tiles: 0.4 s.
+* Needs a look shows its placeholder rows only when its answer takes longer than 150 ms (it is ~0.1 s after the system page): no
+  flash of "working" for a cached answer.
+
+**AMENDMENT 89 (v0.5) — The Missing tile counts what your rules keep.**
+
+* The user: the Missing tile said 296 games, Files › Missing listed 1 - the tile counted the scan's games missing from the whole TOSEC
+  database, the list what the rules keep that you lack.
+* The system page's Missing tile now reads the totals: `missing_games` and the system disks lacking (`target_system - have_system`),
+  e.g. "1 system disk"; hidden until the totals are known and when nothing is missing; the scan's whole-database count only when the
+  totals cannot be worked out. User's Amiga, top 100: "1 system disk" (EmuTOS), as Files › Missing.
+
+**AMENDMENT 90 (v0.5) — Every system's tiles count games; updates and DLC are no games.**
+
+* The user: "are the other platforms tiles calculated correctly as well?" Checked on a copy of their data, all 16 systems: Missing
+  equals Files › Missing and Needs a look equals its page everywhere. Two things were wrong.
+* "Games you have" counted database entries on every system but the Amiga: a No-Intro entry is one region or revision, a Redump
+  entry one disc of one region (SNES 2,271 of 3,730 entries; PlayStation 5 of 10,914). `App._game_counts` now covers every
+  system: `totals.target_items` of the game DATs grouped into games by `library.game_key`; a game is yours when you have a complete
+  release of it - every disc of a Redump release, every image of an SPS release, and for a TOSEC set every disk number from any dump
+  of the version (the release is the name before "(Disk N of M)": what follows - "(Game)", "(Reel 1)", "(A)", "[cr]" on disk 1 and
+  "[cr SR]" on disk 2 - is the disk's own). What you own is every matched file (each image of an SPS zip, each track of a CD; a Redump
+  system: its disc games). `SUMMARY_VERSION` 4.
+* The Switch's "with your rules" was 6 of 28,007 and Files › Missing 28,001: its update (11,823) and DLC (16,084) DATs counted as games.
+  `totals.addon_dats` (names ending " (Updates)" / " (DLC)"): counted apart (`target_addons` / `have_addons`, a "Updates and DLC" line
+  on Your library), never missing (`TotalsManager.missing_names`), not in "Games you have". They are kept and built as before. A
+  newer update you lack is still a better version (Needs a look counts `not_preferred` over every kept key, as its page lists them).
+* After the fix, all 16 systems on the user's data: Games you have (e.g. SNES 1,854 of 2,099, PlayStation 3 of 6,278, Switch 3 of
+  23,137, Amiga 4,247 of 4,534), Missing = Files › Missing, Needs a look = its page.
+
+**AMENDMENT 91 (v0.5) — Calculating the library rules: less repeated work.**
+
+* The user: "improve calculation times for library rules". Measured on a copy of their Amiga data (no profiler; the profiler makes it
+  2.3x slower). A change of top-N or minimum rating took about 39 s of calculations one after the other (totals 13.6, preview 10.2,
+  rows 2.8, Files 12.7); now about 23 s (4.4, 5.4, 3.6, 9.5). A change to a rule the version choice reads (languages, flags, ...) gains
+  only the smaller items below.
+* The version choice (`library._select_base`, ~4 s) ran three times per change: the whole database, your files, the preview.
+  `library.base_selection` remembers it (newest 4, `_BASES`), keyed by the 16 profile fields it reads (`BASE_FIELDS`), the platform,
+  the exact items (key, DAT, rom, style, path, member, form, link, holds, disc total) and the data it consults (alternate titles,
+  WHDLoad list, OpenRetro, disc files); a copy is returned each time (`_clone_selection`), so nobody changes the memory. The rating
+  filter, per-game overrides, saves and build options are applied after it and are no part of the key. `tests/test_base_selection.py`
+  checks the field list against `LibraryProfile` (a new rule must be a base field or declared a later one).
+* `totals.target_items` (every game of the databases, ~1 s) was made five or six times per change; made once per set of DAT objects
+  (`_TARGETS`, newest 3) and a new list is handed out each time (items are never changed).
+* `library._gkey` remembers a game key on the item while `alttitles.state()` stays the same.
+* Plain text instead of `Path` objects in loops over tens of thousands of files: `s3archive.Inventory.key`, `sortroot.plan_sweep`,
+  `treeview.collect` (the folder walk); `sortroot.count_sweep` counts the set-aside files for the preview without planning them;
+  `library.select(report=False)` skips the vanished / covered report for the totals' own selection; `organiser._finish_op` folds
+  the parents once.
+* Not a database matter: the ratings index is one query per system (0.04 s, primary key on system + title) held in memory; matching
+  4,171 titles takes 0.1 s, so indexing would gain nothing.
+* Not done, on purpose: starting the totals when a rule is saved, or letting them finish before the preview (tiles sooner, the same
+  total; a second quick change would waste a started run); remembering the whole-database rated count (its lookup is a closure, so a
+  key could not tell two apart safely).
+* Verified: all 16 of the user's systems on four rule sets each give the same numbers, lists, plans, rows and Files entries as the code
+  before (a snapshot comparison), then the full test suite.

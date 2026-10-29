@@ -83,6 +83,7 @@ class Inventory:
 
     def __init__(self, client: Optional[s3.Client], target: Target, base: Path, meta_file: Optional[Path] = None) -> None:
         self.client, self.target, self.base = client, target, Path(base)
+        self._base_text = str(self.base)
         self._tops: Dict[str, Dict[str, s3.ObjectInfo]] = {}
         self._dirs: Dict[str, set] = {}                    # top -> every "folder/" an object lies in (names are checked often)
         self._lock = threading.Lock()
@@ -100,6 +101,11 @@ class Inventory:
                 pass
 
     def key(self, path: Path) -> Optional[str]:
+        if os.sep == "/":                    # (plain text for the usual, already plain, path: Path.relative_to is slow in a loop of 50,000)
+            text, base = os.fspath(path), self._base_text
+            if text.startswith(base) and text[len(base):len(base) + 1] == "/" and "//" not in text and "/./" not in text \
+                    and not text.endswith(("/", "/.")) and "/../" not in text:
+                return self.target.prefix + text[len(base) + 1:]
         try:
             rel = Path(path).relative_to(self.base)
         except ValueError:

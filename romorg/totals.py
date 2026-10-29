@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 import threading
 import time
 import traceback
@@ -63,9 +64,32 @@ def _no_bios(items: list[Item]) -> list[Item]:
     return [dataclasses.replace(it, key=n) for n, it in enumerate(out)] if len(out) != len(items) else items
 
 
+_TARGETS: list[tuple[tuple, list, list[Item]]] = []      # [(what they were made from, those DATs kept alive, the items)], the newest last
+_TARGETS_LOCK = threading.Lock()
+_TARGETS_KEPT = 3
+
+
 def target_items(platform: Any, dats: Iterable[Any]) -> list[Item]:
     """One :class:`library.Item` per game-unit of the platform's DATs: a rom (TOSEC), a set
-    (No-Intro: the first of its alternate roms) or a disc (Redump), as if every file was present."""
+    (No-Intro: the first of its alternate roms) or a disc (Redump), as if every file was present.
+
+    The items depend on the DATs alone, and a rule change asks for them half a dozen times (the totals, the preview, the language
+    games ...): made once for the same DAT objects, the items are shared (a new list each time; no one changes an item)."""
+    dats = list(dats)
+    key = (getattr(platform, "name", ""), tuple(getattr(platform, "dats", ()) or ()),
+           tuple((id(d), getattr(d, "name", ""), len(getattr(d, "roms", ()))) for d in dats))
+    with _TARGETS_LOCK:
+        for k, _refs, hit in _TARGETS:
+            if k == key:
+                return list(hit)
+    items = _target_items(platform, dats)
+    with _TARGETS_LOCK:
+        _TARGETS.append((key, dats, items))
+        del _TARGETS[:-_TARGETS_KEPT]
+    return list(items)
+
+
+def _target_items(platform: Any, dats: list[Any]) -> list[Item]:
     from . import discsys
 
     wanted = set(getattr(platform, "dats", ()) or ())
@@ -195,7 +219,7 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
     if profile.rating_active:
         if lookup is None:
             raise library.RatingsUnavailable("ratings are not installed")
-        sel = library._select_base(items, profile, platform)
+        sel = library.base_selection(items, profile, platform)      # (as select() does: the target agrees with your files' selection)
         coverage = library.rating_coverage(items, sel, platform, profile, lookup)
         cutoff = library.target_cutoff(items, profile, platform, lookup, sel)
         library.apply_ratings(sel, items, profile, platform, library.RatingContext(lookup, cutoff))
@@ -205,11 +229,9 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
             coverage = library.rating_coverage(items, sel, platform, profile, lookup)
     rated_all = rated_target = None
     if lookup is not None:
-        everything = dataclasses.replace(
-            library.LibraryProfile(exclude=frozenset(), latest_only=False, best_variant=False, complete_only=False, languages=(),
-                                   keep_flags=frozenset(tags.KEEP_FLAGS), one_per_game=False, borrow_other_editions=False,
-                                   keep_other_language=True), min_votes=profile.min_votes)
-        rated_all = _rated(items, library.select(items, everything, platform), platform, profile, lookup)
+        # every title of the DAT, whatever the rules say: every item kept (no rule at all would keep each - no selection needed for that)
+        everything = library.Selection(decisions={it.key: library.Decision(key=it.key, action=KEEP) for it in items})
+        rated_all = _rated(items, everything, platform, library.LibraryProfile(min_votes=profile.min_votes), lookup)
         rated_target = _rated(items, sel, platform, profile, lookup)
     kept = _kept(items, sel)
     by_dat: dict[str, int] = {}
@@ -284,7 +306,7 @@ def compute_user(result: Any, platform: Any, profile: library.LibraryProfile,
 def compute_user_items(items: list[Item], platform: Any, profile: library.LibraryProfile,
                        ratings: Optional[library.RatingContext] = None, lang_games: Optional[frozenset] = None) -> UserPart:
     t0 = time.time()
-    sel = library.select(items, profile, platform, ratings=ratings, lang_games=lang_games)
+    sel = library.select(items, profile, platform, ratings=ratings, lang_games=lang_games, report=False)
     kept = _kept(items, sel)
     complete = library.kept_titles(items, sel)       # (an incomplete copy of a game kept complete in another version is no problem)
     games: dict[tuple, tuple[str, frozenset]] = {}
@@ -313,6 +335,16 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     return UserPart(games, time.time(), time.time() - t0, len(items), problems)
 
 
+_RELEASE_PART_RE = re.compile(r"\s*\((?:Dis[ck] \d+ of \d+|Disc \d+)\)")     # (a disk / disc of a release: the release is the version)
+
+
+def _release_of(name: str) -> str:
+    """The release a disk is of, as one better version: its name without the disk number and the per-disk ``[..]`` flags (the disks
+    of one set carry their own: "[cr]" on disk 1, "[cr SR]" on 2 and 3, none on the rest)."""
+    stem = _RELEASE_PART_RE.sub("", Path(name).stem)
+    return re.sub(r"\s*\[[^\]]*\]", "", stem).strip() or stem or name
+
+
 def system_dats(platform: Any) -> frozenset:
     """The DATs of a system that hold no games - the Amiga's Workbench, Kickstart disks and firmware: kept as the rules say, but counted
     apart from the games ("system disks"). Empty for a system whose DATs are all games."""
@@ -323,31 +355,41 @@ def system_dats(platform: Any) -> frozenset:
     return frozenset(d for d in (getattr(platform, "dats", ()) or ()) if d not in games)
 
 
-def combine(target: Target, user: Optional[UserPart], system: frozenset = frozenset()) -> dict[str, Any]:
+def addon_dats(platform: Any) -> frozenset:
+    """The DATs of a system that hold add-ons of its games, no games of their own - the Switch's updates and DLC: kept as the rules
+    say, but counted apart from the games and never "missing" (the whole catalogue's DLC is nothing to complete)."""
+    return frozenset(d for d in (getattr(platform, "dats", ()) or ()) if d.endswith((" (Updates)", " (DLC)")))
+
+
+def combine(target: Target, user: Optional[UserPart], system: frozenset = frozenset(), addons: frozenset = frozenset()) -> dict[str, Any]:
     """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part. The games of the ``system`` DATs
-    (:func:`system_dats`) are counted apart: ``target_system`` / ``have_system`` / ``missing_system_names``, never as games."""
-    sys_keys = {k for k in target.games if k[0] in system}
-    out: dict[str, Any] = {"target_games": target.count - len(sys_keys), "target_system": len(sys_keys),
+    (:func:`system_dats`) are counted apart: ``target_system`` / ``have_system`` / ``missing_system_names``, never as games; so are
+    those of the ``addons`` DATs (:func:`addon_dats`): ``target_addons`` / ``have_addons``, never missing."""
+    add_keys = {k for k in target.games if k[0] in addons}
+    sys_keys = {k for k in target.games if k[0] in system} | add_keys      # (neither is a game)
+    out: dict[str, Any] = {"target_games": target.count - len(sys_keys), "target_system": len(sys_keys - add_keys),
+                           "target_addons": len(add_keys),
                            "target_incomplete": target.incomplete, "by_dat": {d: {"target": n} for d, n in target.by_dat.items()},
                            "rating": target.rating, "rating_coverage": target.coverage,
                            "rated_all": target.rated_all, "rated_target": target.rated_target, "explain": target.explain}
     if user is None:
         return out
-    have = outside = incomplete = excluded = not_preferred = have_system = 0
+    have = outside = incomplete = excluded = not_preferred = have_system = have_addons = 0
     for key, (state, names) in user.games.items():
         if state == HAVE:
             if key not in target.games:
                 outside += 1           # kept by the rules but not a game of the target (a changed DAT, a borrowed disk)
                 continue
             row = out["by_dat"].setdefault(key[0], {"target": 0})
-            if key in sys_keys:
-                have_system += 1
-                row["have"] = row.get("have", 0) + 1
-                continue
-            have += 1
             row["have"] = row.get("have", 0) + 1
             if not (names & target.games[key]):
-                not_preferred += 1
+                not_preferred += 1             # (a better version - of a game, a system disk, an update: Needs a look lists them all)
+            if key in add_keys:
+                have_addons += 1
+            elif key in sys_keys:
+                have_system += 1
+            else:
+                have += 1
         elif state == INCOMPLETE_OWNED:
             incomplete += 1
         else:
@@ -358,8 +400,8 @@ def combine(target: Target, user: Optional[UserPart], system: frozenset = frozen
     owned = {key for key, (state, _n) in user.games.items() if state == HAVE}
     lacking = sorted(target.names.get(k, k[0]) for k in target.games if k not in owned and k not in sys_keys)
     out["missing_names"] = lacking[:50]                 # (which games of the rules you do not have: shown when there are few)
-    out["have_system"] = have_system
-    out["missing_system_names"] = sorted(target.names.get(k, k[0]) for k in sys_keys if k not in owned)[:50]
+    out["have_system"], out["have_addons"] = have_system, have_addons
+    out["missing_system_names"] = sorted(target.names.get(k, k[0]) for k in sys_keys - add_keys if k not in owned)[:50]
     out.update(have_games=have, missing_games=total - have, percent=round(100.0 * have / total, 1) if total else 0.0,
                not_preferred=not_preferred, owned_but_excluded=excluded, owned_incomplete=incomplete,
                owned_outside_target=outside, owned_games=len(user.games))
@@ -563,7 +605,8 @@ class TotalsManager:
             if want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
                 return None
             owned = u[1].games
-            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE
+            addons = addon_dats(want.platform) if getattr(want, "platform", None) is not None else frozenset()
+            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE and key[0] not in addons
                              for n in (*names, *t[1].borrowed.get(key, ())))
 
     def borrowed_names(self, name: str) -> frozenset:
@@ -608,9 +651,12 @@ class TotalsManager:
             found = [(n, files.get((key[0], n)) or [reps[(key[0], n)]]) for n in better if (key[0], n) in reps]
             rep = reps[(key[0], found[0][0])] if found else None
             title = library.rom_title(rep, getattr(rep, "dat", "") or key[0]) if rep is not None else have[0]
+            releases: dict[str, list[Any]] = {}               # (one better version: a release, all its disks - not a disk each)
+            for n, roms in found:
+                releases.setdefault(_release_of(n), []).extend(roms)
             out.append({"title": title, "dat": key[0], "have": have,
                         "better": [{"name": n, "files": [{"name": r.name, "size": r.size, "crc": r.crc, "md5": r.md5, "sha1": r.sha1}
-                                                         for r in roms]} for n, roms in found]})
+                                                         for r in roms]} for n, roms in releases.items()]})
         out.sort(key=lambda r: (r["title"].lower(), r["dat"]))
         return out
 
@@ -659,7 +705,7 @@ class TotalsManager:
         out.update(target_games=None, have_games=None, missing_games=None, percent=None, not_preferred=None,
                    owned_but_excluded=None, owned_incomplete=None, owned_games=None, by_dat={})
         if t_ok and not isinstance(t[1], Exception) and u_ok and (want.ukey is None or not isinstance(u[1], Exception)):
-            out.update(combine(t[1], u[1] if want.ukey is not None else None, system_dats(platform)))
+            out.update(combine(t[1], u[1] if want.ukey is not None else None, system_dats(platform), addon_dats(platform)))
             out["computed_at"] = t[1].computed_at if want.ukey is None else max(t[1].computed_at, u[1].computed_at)
             return out
         if out["error"]:
@@ -668,7 +714,7 @@ class TotalsManager:
         out["working"] = self._working(name, t, u)
         # the previous numbers (other rules / folder) stay visible, flagged stale, until the new ones are ready
         if t is not None and not isinstance(t[1], Exception) and (want.ukey is None or (u is not None and not isinstance(u[1], Exception))):
-            out.update(combine(t[1], u[1] if want.ukey is not None and u is not None else None, system_dats(platform)))
+            out.update(combine(t[1], u[1] if want.ukey is not None and u is not None else None, system_dats(platform), addon_dats(platform)))
             out["stale"] = True
             out["computed_at"] = t[1].computed_at
         return out

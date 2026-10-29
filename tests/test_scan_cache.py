@@ -4,6 +4,7 @@ moved or renamed), "recalculate" reads everything again, and coming back to a sy
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -112,11 +113,12 @@ class KeptOnDisk(Counting):
         put(root / "b.sfc", self.rom["Beta (USA)"])
         return root
 
-    def restart(self) -> None:
-        """A new app on the same data folder: nothing is in memory."""
+    def restart(self, preload: bool = False) -> None:
+        """A new app on the same data folder: nothing is in memory (``preload``: the saved scan of the system used last is read at the
+        start, as the app does - off here, so a test can change what it was made from first)."""
         self.srv.shutdown()
         self.srv.server_close()
-        self.srv = server.make_server("127.0.0.1", 0, token="t", auto_update=False)
+        self.srv = server.make_server("127.0.0.1", 0, token="t", auto_update=False, preload=preload)
         self.port = self.srv.port
         import threading
         threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
@@ -158,6 +160,22 @@ class KeptOnDisk(Counting):
         dat = next((self.tmp / "data" / "nointro").glob("*Super*.dat"))
         later = dat.stat().st_mtime_ns + 5_000_000_000
         os.utime(dat, ns=(later, later))
+        self.assertFalse(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
+
+    def test_the_system_used_last_is_read_at_the_start_and_checked_when_opened(self) -> None:
+        root = self.make()
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.restart(preload=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and SNES not in self.srv.app._scans:
+            time.sleep(0.02)
+        self.assertIn(SNES, self.srv.app._scans)                                   # (read before anything asks for it)
+        self.assertTrue(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
+        self.restart(preload=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and SNES not in self.srv.app._scans:
+            time.sleep(0.02)
+        put(root / "c.sfc", self.rom["Gamma (USA)"])                               # (changed after the start, before it is opened)
         self.assertFalse(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
 
     def test_the_scan_options_are_part_of_it(self) -> None:

@@ -407,7 +407,7 @@ class FlawedCopies(unittest.TestCase):
 class Rules(unittest.TestCase):
     NAMES = ["R (1990)(P)", "R2 (1990)(P)(pre-release)", "R3 (1990)(P)[b]", "R4 (1990)(P)[v Foo]",
              "R5 (1990)(P)[o]", "R6 (1990)(P)(demo-playable)", "R7 (1990)(P)[m bamcopy]", "R8 (1990)(P)[faked x]",
-             "R9 (1990)(P)[unreleased]", "S (1990)(P)(proto)", "S1 (1990)(P)[cr X][h Y][t +1 Z][tr de][f][a]"]
+             "R9 (1990)(P)[unreleased]", "S (1990)(P)(proto)", "S1 (1990)(P)[cr X][h Y][t +1 Z][tr en][f][a]"]
 
     def test_defaults_exclude_but_keep_cracks_hacks(self) -> None:
         by = run(self.NAMES)[2]
@@ -671,9 +671,10 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(self.langs("X (1990)(P)(DE)(de-en).adf"), {"De", "En"})  # all listed
         self.assertEqual(self.langs("X (1990)(P)(en).adf"), {"En"})
         self.assertEqual(self.langs("X (1990)(P)(CH).adf"), {"De"})
-        self.assertEqual(self.langs("X (1990)(P)(DE)[tr en].adf"), {"De", "En"})
-        self.assertEqual(self.langs("X (1990)(P)[tr de Foo].adf"), {"En", "De"})
-        self.assertEqual(self.langs("X (1990)(P)(FR)[tr en-de x].adf"), {"Fr", "En", "De"})
+        self.assertEqual(self.langs("X (1990)(P)[tr de Foo].adf"), {"De"})                 # (a translation: its own language only)
+        self.assertEqual(self.langs("X (1990)(P)(DE)[tr en].adf"), {"En"})
+        self.assertEqual(self.langs("X (1990)(P)[tr pl].adf"), {"Pl"})
+        self.assertEqual(self.langs("X (1990)(P)(FR)[tr en-de x].adf"), {"En", "De"})
         self.assertEqual(self.langs("X (1990)(P)(DE)(M3).adf"), {"De", "En"})
 
     def test_nointro_language_rules(self) -> None:
@@ -753,7 +754,7 @@ class KeepFlagTests(unittest.TestCase):
         self.assertEqual(tags.flag_types(tos("X (1990)(P)[bootable][!].adf")), frozenset())
 
     def test_unticked_flag_excludes_with_flag_code(self) -> None:
-        names = ["O (1990)(P)[cr A]", "O (1990)(P)", "Only (1990)(P)[cr B]", "H (1990)(P)[h X]", "Tr (1990)(P)[tr de]"]
+        names = ["O (1990)(P)[cr A]", "O (1990)(P)", "Only (1990)(P)[cr B]", "H (1990)(P)[h X]", "Tr (1990)(P)[tr en]"]
         for f in ("cr", "h", "tr"):
             prof = replace(library.default_profile(AMIGA), keep_flags=frozenset(tags.KEEP_FLAGS) - {f})
             by = run(names, prof)[2]

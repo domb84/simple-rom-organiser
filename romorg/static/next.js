@@ -797,7 +797,16 @@
     }
 
     let sel = { selected: false };
+    // (reading a big folder's saved scan takes a few seconds the first time: the page shows at once and says so)
+    const waiting = setTimeout(() => {
+      if (!ctx.alive()) return;
+      Activity.set("screen", "Loading the last scan");
+      ctx.show({ ...head, body: el("div", { class: "screen" }, el("p", { class: "lead", text: "Loading the last scan of this folder…" }), skeletonTiles(5)),
+        hints: [["B", "Back"], ["LB RB", "Next system"]] });
+    }, 150);
     try { sel = await post("/api/scan/select", { platform: p.name }); } catch (_) { /* no scan */ }
+    clearTimeout(waiting);
+    Activity.clear("screen");
     if (!ctx.alive()) return null;
     const rescan = () => startScan(ctx, p);
     if (!sel.selected) {
@@ -822,7 +831,23 @@
       if (focused) { const again = stats.querySelector(`[data-key="${focused}"], #${focused}`); if (again) focusEl(again); }
     };
     drawTiles();
-    const missing = data.summary ? (data.summary.games_missing ?? data.summary.missing) : 0;
+    // Missing: what YOUR RULES keep that you do not have (Files › Missing lists the same), from the totals; shown once they are known
+    const missingTile = tile({ title: "Missing", icon: "search", short: true, sub: "", href: `#/system/${slug}/files?view=missing` });
+    missingTile.classList.add("hidden");
+    const drawMissing = (failed = false) => {
+      const t = data.totals;
+      let games = 0, disks = 0;
+      if (t && !t.calculating && t.have_games !== null && t.have_games !== undefined) {
+        games = t.missing_games || 0;
+        disks = Math.max(0, (t.target_system || 0) - (t.have_system || 0));
+      } else if (failed && data.summary) {
+        games = data.summary.games_missing ?? data.summary.missing ?? 0;          // (no totals: against the whole database)
+      } else return;
+      const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
+      missingTile.querySelector(".tile-sub").textContent = [games ? plural(games, "game", "games") : "", disks ? plural(disks, "system disk", "system disks") : ""]
+        .filter(Boolean).join(", ");
+      missingTile.classList.toggle("hidden", !(games + disks));
+    };
     const isAmiga = p.source === "tosec" && /amiga/i.test(p.name);
     const actions = el("div", { class: "grid", style: "--cols:4" },
       tile({ title: "Files", icon: "list", short: true, sub: "Every file and game", href: `#/system/${slug}/files` }),
@@ -830,8 +855,7 @@
       tile({ title: "Rules", icon: "toggle", short: true, sub: "This system's library", href: `#/system/${slug}/rules` }),
       tile({ title: "Settings", icon: "gear", short: true, sub: "Building, archive", href: `#/system/${slug}/settings` }),
       folderTile,
-      missing ? tile({ title: "Missing", icon: "search", short: true, sub: `${fmt(missing)} ${data.summary.count_by === "rom" ? "ROMs" : "games"}`,
-        href: `#/system/${slug}/files?view=missing` }) : null,
+      missingTile,
       isAmiga ? tile({ title: "WHDLoad", icon: "play", short: true, sub: "Installs from your disks", href: `#/system/${slug}/whdload` }) : null,
       data.saves && data.saves.files ? tile({ title: "Saves", icon: "save", short: true, sub: `${fmt(data.saves.files)} files`, href: `#/system/${slug}/saves` }) : null);
     const warn = (scan.missing_dats || []).length && !(p.dats || []).some((d) => d.present)
@@ -853,9 +877,10 @@
     })();
     (async () => {
       for (let i = 0; i < 900 && ctx.alive(); i++) {
-        try { data.totals = await get(`/api/library/totals?${qs({ platform: p.name })}`); } catch (_) { Activity.clear("totals"); break; }
+        try { data.totals = await get(`/api/library/totals?${qs({ platform: p.name })}`); } catch (_) { Activity.clear("totals"); drawMissing(true); break; }
         if (!ctx.alive()) return;
         drawTiles();
+        drawMissing();
         if (!data.totals.calculating) { Activity.clear("totals"); break; }
         Activity.set("totals", `Working out the library · ${workText(data.totals.working)}`);
         await sleep(1000);
@@ -1647,16 +1672,29 @@
     try { sel = await post("/api/scan/select", { platform: p.name }); } catch (_) { /* below */ }
     const head = { title: "Needs a look", crumbs: [[p.name, `#/system/${slug}`]], back: `#/system/${slug}` };
     if (!sel.selected) return { ...head, body: el("div", { class: "screen" }, message("Scan this system first.", "warn")), hints: [["B", "Back"]] };
-    ctx.show({ ...head, body: el("div", { class: "screen" }, skeletonRows(5)), hints: [["B", "Back"]] });
-    Activity.set("screen", "Looking for problems");
+    // (the build preview is usually worked out already: the placeholder rows only when the answer takes a moment)
+    const waiting = setTimeout(() => {
+      if (!ctx.alive()) return;
+      ctx.show({ ...head, body: el("div", { class: "screen" }, skeletonRows(5)), hints: [["B", "Back"]] });
+      Activity.set("screen", "Looking for problems");
+    }, 150);
     const opts = buildOptions(p);
     const [plan, upgrades] = await Promise.all([
       post("/api/library/plan", { ...opts, limit: 1, summary: true }).catch(() => ({})),
       get(`/api/library/upgrades?${qs({ platform: p.name })}`).catch(() => ({ items: [] }))]);
+    clearTimeout(waiting);
+    Activity.clear("screen");
     if (!ctx.alive()) return null;
     // (only genuine issues: what your rules exclude on purpose is in Files › Excluded, where a game can still be kept)
+    // (one row a game: the incomplete copies of one game - three cracks each missing disk 2 - are one game to look at)
+    const byGame = new Map();
+    for (const set of Array.isArray(plan.incomplete_sets) ? plan.incomplete_sets : []) {
+      const k = set.game || set.name;
+      if (!byGame.has(k)) byGame.set(k, { name: set.name, copies: [] });
+      byGame.get(k).copies.push(set);
+    }
     const views = [
-      { key: "incomplete", label: "Incomplete", items: Array.isArray(plan.incomplete_sets) ? plan.incomplete_sets : [] },
+      { key: "incomplete", label: "Incomplete", items: [...byGame.values()] },
       { key: "better", label: "Better versions", items: upgrades.items || [] },
     ];
     let view = views.find((v) => v.items.length) || views[0];
@@ -1666,18 +1704,22 @@
     const describe = (it) => {
       if (view.key === "incomplete") {
         put(panel, el("span", { class: "panel-title", text: it.name }),
-          el("p", { class: "note", text: `Missing ${it.missing.join(", ")} of ${it.total}. You have ${it.present.length ? it.present.join(", ") : "none"}.` }));
+          el("p", { class: "note", text: it.copies.length === 1 ? "You have this copy only in part:" : `You have ${it.copies.length} copies, each only in part:` }),
+          ...it.copies.map((c) => el("p", { class: "note", text: `${c.name}: missing disk ${c.missing.join(", ")} of ${c.total}; you have ${c.present.length ? c.present.join(", ") : "none"}.` })));
       } else {
         put(panel, el("span", { class: "panel-title", text: it.title || it.name }),
-          el("p", { class: "note", text: "Your rules prefer a version you do not have:" }),
-          ...(it.better || []).map((b) => el("p", { class: "note", text: b.name })));
+          el("p", { class: "note", text: (it.better || []).length === 1 ? "Your rules prefer a version you do not have:" : "Your rules prefer versions you do not have:" }),
+          ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })));
       }
     };
     const draw = () => {
       put(nav, el("span", { class: "glyph" }, "LB"), ...views.map((v) => el("button", { class: `chip${v === view ? " on" : ""}`, type: "button", tabindex: "-1",
         on: { click: () => { view = v; draw(); } } }, `${v.label} ${fmt(v.items.length)}`)), el("span", { class: "glyph" }, "RB"));
       const rows = view.items.map((it) => {
-        const sub = view.key === "incomplete" ? `Missing ${it.missing.join(", ")} of ${it.total}` : `${(it.better || []).length} better version${(it.better || []).length === 1 ? "" : "s"}`;
+        const missingOf = (c) => `missing disk ${c.missing.join(", ")} of ${c.total}`;
+        const sub = view.key === "incomplete"
+          ? (it.copies.length === 1 ? missingOf(it.copies[0]).replace(/^m/, "M") : `${it.copies.length} copies, each incomplete`)
+          : `${(it.better || []).length} better version${(it.better || []).length === 1 ? "" : "s"}`;
         const r = row({ name: it.title || it.name, sub, tag: view.key === "incomplete" ? ["Incomplete", "warn"] : null, onClick: () => describe(it) });
         r.addEventListener("focus", () => describe(it));
         return r;
@@ -1735,7 +1777,10 @@
           el("div", { class: "rows" },
             row({ name: `${fmt(t.target_system)} Workbench, Kickstart and firmware disk${t.target_system === 1 ? "" : "s"}`, info: true,
               sub: `Kept as your rules say, but not counted as games${t.have_games !== null ? `; you have ${fmt(t.have_system || 0)}` : ""}` }),
-            ...(t.missing_system_names || []).map((n) => row({ name: n, sub: "System disk you don't have", info: true })))) : null),
+            ...(t.missing_system_names || []).map((n) => row({ name: n, sub: "System disk you don't have", info: true })))) : null,
+        t.target_addons ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "Updates and DLC" }),
+          el("div", { class: "rows" }, row({ name: `${fmt(t.target_addons)} update${t.target_addons === 1 ? "" : "s"} and DLC in the catalogue`, info: true,
+            sub: `Kept as your rules say, but not counted as games${t.have_addons !== null && t.have_addons !== undefined ? `; you have ${fmt(t.have_addons)}` : ""}` }))) : null),
       hints: [["A", "Select"], ["B", "Back"], ["LT RT", "Page"]] };
   });
 

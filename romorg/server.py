@@ -370,6 +370,8 @@ class ScanState:
     # once per scan so paging / searching is a cheap slice.
     items: dict[Any, list[tuple[dict[str, Any], str]]] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
+    unchecked: bool = False            # read from disk at the start: checked against the folder and the DATs when first opened
+    options: tuple | None = None       # the scan options it was made with (a scan read from disk)
     # The scan objects behind the rows of each checksum kind (same index as the row's ``id``), a lazy
     # entry-path -> Match index and the multi-disk sets of the matched disks (built on first use).
     sources: dict[str, list[Any]] = field(default_factory=dict)
@@ -405,6 +407,8 @@ def _rel(path: Any, root: Path) -> str:
     text, base = os.fspath(path), os.fspath(root).rstrip(os.sep)
     if text.startswith(base + os.sep):
         return text[len(base) + 1:].replace(os.sep, "/")
+    if not os.path.isabs(text):
+        return text                                   # (relative already: what the fallback below gives, without its exception)
     try:
         return Path(path).relative_to(root).as_posix()
     except (ValueError, TypeError):
@@ -837,6 +841,10 @@ class _NoUpdates:
                             "checked_at": None}}
 
 
+_DISK_TOKEN_RE = re.compile(r"\s*\(Dis[ck] \d+ of \d+\)")
+SUMMARY_VERSION = 4            # what a scan's summary holds: a saved one of another version is worked out again (4: games on every system)
+
+
 class App:
     """Server-side application state shared by all request handlers."""
 
@@ -851,6 +859,8 @@ class App:
             self.updates.after_update = self._sync_whd_installs
         self._scan: ScanState | None = None
         self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
+        self._disk_load = threading.Lock()                         # (one saved scan read at a time: a click waits for the start's)
+        self._tree_lock = threading.RLock()                        # (one Files list made at a time: a request waits for the one being made)
         self._s3_inv: dict[str, Any] = {}                         # the inventories of the S3 archives in use (s3archive), by stand-in folder
         self._archive_scans: dict[str, tuple[Any, dict[str, str]]] = {}   # archive folder -> (its stamp, {game: path}) of its last scan
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
@@ -1600,7 +1610,8 @@ class App:
             scancache = _mod("scancache")
             stamp = state.stamp if state.stamp is not None else scancache.folder_stamp(state.root)
             scancache.save(state.platform.name, state.root, stamp, state.dats_sig, self._scan_options(), state.result,
-                           {"dat_names": state.dat_names, "missing_dats": state.missing_dats, "layout": state.layout})
+                           {"dat_names": state.dat_names, "missing_dats": state.missing_dats, "layout": state.layout,
+                            "summary": self._summary(state), "summary_version": SUMMARY_VERSION})   # (seconds on a big folder: kept)
         except Exception:  # noqa: BLE001 - a convenience only
             traceback.print_exc()
 
@@ -1614,9 +1625,11 @@ class App:
             extra = got["extra"]
             result = got["result"]
             result.cache_units = True
+            summary = extra.get("summary") if extra.get("summary_version") == SUMMARY_VERSION else None   # (an older one: made again)
             return ScanState(result=result, root=root, platform=platform, dat_names=list(extra["dat_names"]),
                              missing_dats=list(extra["missing_dats"]), layout=extra["layout"],
-                             dats_sig=self._dats_signature(platform), stamp=got["stamp"])
+                             dats_sig=self._dats_signature(platform), stamp=got["stamp"],
+                             summary=dict(summary) if isinstance(summary, dict) else None, options=tuple(self._scan_options()))
         except Exception:  # noqa: BLE001 - then the scan is simply done again
             traceback.print_exc()
             return None
@@ -1682,10 +1695,15 @@ class App:
             state = self._scans.get(platform.name)
             current = self._scan
         folder = self._folders().get(platform.name)
+        if state is not None and state.unchecked and not self._still_current(state):
+            with self._lock:                                       # (read at the start, changed since: a new scan is needed)
+                if self._scans.get(platform.name) is state:
+                    self._scans.pop(platform.name)
+            _mod("scancache").forget(platform.name)
+            self._shed_state(state)
+            return {"selected": False}
         if state is None and folder and Path(folder).is_dir():
-            state = self._scan_from_disk(platform, folder)         # the scan made before the app was last closed
-            if state is not None:
-                self._remember_scan(state, on_disk=False)
+            state = self._load_kept_scan(platform, folder)         # the scan made before the app was last closed
         if state is None or not folder or os.path.normcase(str(state.root)) != os.path.normcase(os.path.abspath(os.path.expanduser(folder))):
             return {"selected": False}
         if current is not state:
@@ -1694,6 +1712,111 @@ class App:
                 self._scan = state
             self._config_update(last_platform=platform.name)
         return {"selected": True, "platform": platform.name}
+
+    def _load_kept_scan(self, platform: Any, folder: str) -> ScanState | None:
+        """The saved scan of a system, read once (a second asker waits for the first and takes what it read) and remembered. One saved
+        before its summary was kept with it gets it, in the background, so the next start reads it at once."""
+        with self._disk_load:
+            with self._lock:
+                state = self._scans.get(platform.name)
+            if state is not None:
+                return state
+            state = self._scan_from_disk(platform, folder)
+            if state is None:
+                return None
+            self._remember_scan(state, on_disk=False)
+        if state.summary is None:
+            def resave() -> None:
+                self._summary(state)
+                self._keep_scan_on_disk(state)
+            threading.Thread(target=resave, name="romorg-scan-resave", daemon=True).start()
+        return state
+
+    def _still_current(self, state: ScanState) -> bool:
+        """For a scan read at the start: nothing it was made from changed since (the folder's files, the DATs). Checked once."""
+        try:
+            same = (_mod("scancache").folder_stamp(state.root) == state.stamp and self._dats_signature(state.platform) == state.dats_sig
+                    and (state.options is None or tuple(self._scan_options()) == state.options))
+        except Exception:  # noqa: BLE001
+            same = False
+        if same:
+            state.unchecked = False
+        return same
+
+    def preload_last_scan(self) -> None:
+        """At the start: read the saved scan of the system used last, in the background, so opening it needs no wait (a big folder's
+        takes seconds). Never raises."""
+        def run() -> None:
+            try:
+                cfg = self._config()
+                name = cfg.get("last_platform") or ""
+                folder = self._folders().get(name) if name else None
+                if folder and Path(folder).is_dir():
+                    platform = self._resolve_platform(name)
+                    with self._lock:
+                        known = platform.name in self._scans
+                    state = self._load_kept_scan(platform, folder)
+                    if state is not None and not known:
+                        state.unchecked = True                     # (the folder may change before it is opened: checked then)
+                        self._summary(state)
+            except Exception:  # noqa: BLE001 - a convenience only: the click reads it then
+                traceback.print_exc()
+        threading.Thread(target=run, name="romorg-scan-preload", daemon=True).start()
+
+    def _game_counts(self, state: ScanState) -> dict[str, Any]:
+        """Games, not database entries, on every system: an entry is one disk of an Amiga game, one region or revision of a cartridge
+        (No-Intro), one disc of one region (Redump). ``games_total``: the entries of the system's game DATs grouped into games as the
+        library groups them (``library.game_key``: every version, region, revision, disc, SPS original and CD32 disc of a game is one
+        game, alternate titles combined); ``games_have``: those you have a complete release of (every disk / disc of one version or
+        region - ``library._release_of_parts``). System disks (Workbench, Kickstart, firmware) and [BIOS] entries are no games.
+        {} when the databases cannot be read here (the catalogue systems: Switch, Wii U)."""
+        platform = state.platform
+        library, totals = self._library_mod(), _mod("totals")
+        try:
+            dats, _missing = self._platform_dats(platform)
+        except Exception:  # noqa: BLE001 - then the scan's own count stands
+            return {}
+        system = totals.system_dats(platform) | totals.addon_dats(platform)     # (system disks, updates and DLC: no games)
+        dats = [d for d in dats if getattr(d, "name", "") not in system]
+        try:
+            target = totals.target_items(platform, dats)
+            if hasattr(state.result, "units") and hasattr(state.result, "index"):    # (a Redump system: a disc game you have)
+                have = {(library.game_dat(it.dat), library._rom_name(it)) for it in totals.user_items(state.result)}
+            else:                                              # (every file of yours: each image of an SPS zip, each track of a CD)
+                have = {(library.game_dat(r.dat), getattr(r, "set_name", "") or r.name)
+                        for m in state.result.matched for r in (m.roms or ())}
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            return {}
+        if not target:
+            return {}
+        releases: dict[tuple, list[Any]] = {}
+        for it in target:
+            rel = library._release_of_parts(it)
+            if rel is not None and rel[0] == "disk":
+                # (the release is the name before "(Disk N of M)": what follows is the disk's own - its label, "(Game)", "(Reel 1)", "(A)",
+                #  and its dump flags, "[cr]" on disk 1 and "[cr SR]" on disk 2 - so a set is one release whatever its disks carry)
+                name = library._rom_name(it)
+                cut = _DISK_TOKEN_RE.search(name)
+                rel = ("disk", it.dat, name[:cut.start()] if cut else name)
+            releases.setdefault(rel or ("one", it.dat, library._rom_name(it)), []).append(it)
+        tags = _mod("tags")
+
+        def complete(rel: tuple, members: list[Any]) -> bool:
+            mine = [m for m in members if (library.game_dat(m.dat), library._rom_name(m)) in have]
+            if rel[0] != "disk":
+                return len(mine) == len(members)              # (an SPS release's images, a disc game's discs, a single entry)
+            disks = [tags._disk(library._tags_of(m)) for m in members]
+            total = max((d[2] for d in disks if d), default=0)
+            slots = {d[1] for m, d in zip(members, disks) if d and m in mine}
+            return bool(total) and slots >= set(range(1, total + 1))   # (every disk number, from any dump of the version: slot by slot)
+
+        games: dict[tuple, bool] = {}
+        for rel, members in releases.items():
+            key = library.game_key(members[0], True)
+            games[key] = games.get(key, False) or complete(rel, members)
+        n_have = sum(games.values())
+        return {"games_total": len(games), "games_have": n_have, "games_missing": len(games) - n_have, "count_by": "game"}
 
     def _record_scan(self, state: ScanState) -> None:
         """Remember the last scan summary of this system (cards survive a restart; never raises)."""
@@ -1714,6 +1837,7 @@ class App:
             summary["missing_dats"] = list(state.missing_dats)
             bios = _mod("bios")        # (the files no game matched that are BIOS files, and the games of a "- Firmware" DAT: the Amiga's Kickstarts)
             summary["bios_files"] = len(getattr(state.result, "bios_files", None) or {}) + bios.count_firmware_matches(state.result)
+            summary.update(self._game_counts(state))
             state.summary = summary
         return dict(state.summary)
 
@@ -3752,6 +3876,21 @@ class App:
         out["rank_scope"] = profile.rank_scope if profile.top_n is not None else None
         return out
 
+    def _incomplete_game(self, profile: Any, owners: dict) -> Callable[[Any], str]:
+        """The game an incomplete set is a copy of (a text, the same for every copy of one game; its own name when not known)."""
+        library = self._library_mod()
+        organiser = _mod("organiser")
+
+        def game(entry: Any) -> str:
+            keys = [k for k in (getattr(entry, "present", None) or {}).values() if k in owners]
+            if not keys:
+                return entry.name
+            try:
+                return repr(library.game_key(organiser._item_of(keys[0], owners), getattr(profile, "combine_alt_titles", True)))
+            except Exception:  # noqa: BLE001
+                return entry.name
+        return game
+
     def library_upgrades(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/upgrades?platform=``: the owned games that are not the preferred version (the ``not_preferred`` of
         the totals), with the name, size and checksums of the version the rules prefer."""
@@ -3798,6 +3937,8 @@ class App:
             self._drop_plans(state)
         plan = self._library_plan(state, *key)
         rows = self._library_rows(state, key)
+        if _bool_arg(body.get("summary")):
+            self.warm_tree(state)                                  # (the system page: Files is likely next)
         file_rows = [r for r in rows if r[0].get("item") == "file"]
         reasons = self._reason_counts(plan, rows)
         # rows per category, whether they move or already sit in place (``reasons`` counts only what this build changes)
@@ -3853,10 +3994,13 @@ class App:
         incomplete = []
         # (an incomplete set of a game that is kept complete in another version is no problem: not listed, only counted)
         open_sets = [e for e in (getattr(plan.selection, "incomplete", ()) or ()) if not getattr(e, "covered_by", "")]
+        owners = getattr(plan, "owners", None) or {}
+        game_of = self._incomplete_game(plan.profile, owners)
         for entry in open_sets[:200]:
             present = getattr(entry, "present", ()) or ()
             incomplete.append({"name": entry.name, "dat": entry.dat, "total": entry.total,
-                               "missing": sorted(entry.missing), "present": sorted(present)})
+                               "missing": sorted(entry.missing), "present": sorted(present),
+                               "game": game_of(entry)})          # (the copies of one game are one game to look at)
         page = _page(rows, body.get("offset"), body.get("limit"), body.get("q"))
         if not ("rating" in sort or "votes" in sort):     # (only the rows shown get their rating / checksum reference)
             self._annotate_library(state, [(it, "") for it in page["items"]])
@@ -3870,6 +4014,7 @@ class App:
             incomplete_sets=incomplete,
             borrowed=self._borrow_summary(plan),
             incomplete_total=len(open_sets),
+            incomplete_games=len({game_of(e) for e in open_sets}),
             incomplete_covered=len(getattr(plan.selection, "incomplete", ()) or ()) - len(open_sets),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
             rating=dict(getattr(plan.selection, "rating", None) or {}),
@@ -3905,7 +4050,7 @@ class App:
         aside_raw = _str_arg(body.get("aside_to"))
         if aside_raw and not _str_arg(body.get("export_to")):
             aside = self._library_aside_dir(state, body)
-            existing = len(_mod("sortroot").plan_sweep({state.platform.name: state.root}, aside)) if aside else 0
+            existing = _mod("sortroot").count_sweep({state.platform.name: state.root}) if aside else 0
             r = page["reasons"]
             page["aside"] = {"path": self._archive_where(aside), "existing": existing, "s3": self._s3_inventory(aside) is not None if aside else False,
                              "coming": sum(r.get(k, 0) for k in ("excluded", "superseded", "incomplete", "duplicates", "unmatched"))}
@@ -5556,6 +5701,39 @@ class App:
             return None
 
     def _tree_entries(self, state: ScanState) -> tuple[list[dict[str, Any]], Path | None, str]:
+        """:meth:`_make_tree_entries`, one at a time: a Files request while the list is being made in the background waits for it."""
+        with self._tree_lock:
+            return self._make_tree_entries(state)
+
+    def warm_tree(self, state: ScanState) -> None:
+        """Make the Files list of a system in the background once its build preview is there (it takes as long as the preview on a big
+        folder), so opening Files finds it made. Not while a job runs (the files may be changing), nor when it is made already."""
+        if not self._tree_lock.acquire(blocking=False):
+            return                                                 # (being made)
+        self._tree_lock.release()
+        job = self.jobs.current
+        if job is not None and job.status == "running":
+            return
+
+        def run() -> None:
+            try:
+                try:
+                    self.library_totals({"platform": state.platform.name}, None)   # (queued if they are not: the totals first ...)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._totals().wait_idle(900)                      # (... their tiles are on the screen, Files is not yet)
+                with self._lock:
+                    if self._scan is not state:
+                        return                                     # (another system was opened meanwhile)
+                job = self.jobs.current
+                if job is not None and job.status == "running":
+                    return
+                self._tree_entries(state)
+            except Exception:  # noqa: BLE001 - a head start only: Files makes it when it is opened
+                traceback.print_exc()
+        threading.Thread(target=run, name="romorg-tree-warm", daemon=True).start()
+
+    def _make_tree_entries(self, state: ScanState) -> tuple[list[dict[str, Any]], Path | None, str]:
         """Every file of the system's ROM folder and of its part of the archive as a build with the current rules would leave them,
         each a dict (``side``, ``parts``, ``size``, ``state``, ``from``, and - when it is a file of the plan - ``row``: its row of the
         build list, with its game's tags, rating, saves and the reason the rules kept or dropped it), plus one ``missing`` entry
@@ -6801,7 +6979,7 @@ def deck_mode(flag: bool = False, env: dict[str, str] | None = None) -> bool:
 
 
 def make_server(host: str = "127.0.0.1", port: int = 0, token: str | None = None,
-                verbose: bool = False, auto_update: bool = True, deck: bool = False) -> RomorgServer:
+                verbose: bool = False, auto_update: bool = True, deck: bool = False, preload: bool = True) -> RomorgServer:
     """Create (but do not start) the server; ``port=0`` picks a free port.
 
     Unless ``auto_update`` is off (or ``ROMORG_OFFLINE=1``), the DAT update check starts in the
@@ -6817,6 +6995,8 @@ def make_server(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         server.app.updates.start_background()
     except Exception:  # noqa: BLE001 - updates are a convenience, never fatal
         traceback.print_exc()
+    if preload:
+        server.app.preload_last_scan()                     # (the system used last: its saved scan read now, not on the first click)
     return server
 
 

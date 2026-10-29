@@ -1865,7 +1865,7 @@ class NextUiTests(UiTestCase):
         self.page.wait("!!document.getElementById('home-archive')")
         self.assertFalse(self.page.eval("!!document.getElementById('home-build')"))   # (no Build tile: a build is a system's)
         self.assertEqual(self.page.eval("getComputedStyle(document.getElementById('strip')).display"), "none")     # the mouse: no strip
-        self.assertIn("83%", self.page.eval("document.querySelector('[data-key=commodore-amiga]')?.textContent"))
+        self.assertIn("78%", self.page.eval("document.querySelector('[data-key=commodore-amiga]')?.textContent"))   # (7 of 9 games)
         self.tap("down")                                       # the first press only shows where the focus is
         self.page.wait("document.body.classList.contains('pad')")
         self.assertEqual(self.active(), "commodore-amiga")              # the system used last
@@ -1883,7 +1883,17 @@ class NextUiTests(UiTestCase):
         self.page.wait("!!document.getElementById('sys-tiles') && !document.querySelector('#sys-tiles .loading')", timeout=60)
         keys = self.page.eval("[...document.querySelectorAll('#sys-tiles > *')].map(e => e.dataset.key || e.id)")
         self.assertEqual(keys, ["have_all", "have_rules", "sys-build", "needs_look", "files_to_change"])  # unmatched, BIOS, saves: none
-        self.assertIn("10of 12", self.page.eval("document.querySelector('[data-key=have_all]')?.textContent"))
+        self.assertIn("7of 9", self.page.eval("document.querySelector('[data-key=have_all]')?.textContent"))   # (games: 10 of 12 disks)
+        # Missing: what the rules keep that is not here (as Files › Missing), not every game of the database
+        t = LibraryDefaultsTests.api(self, "GET", "/api/library/totals?platform=Commodore%20Amiga")
+        games, disks = t["missing_games"], t["target_system"] - t["have_system"]
+        want = ", ".join(x for x in (f"{games} game{'s' if games != 1 else ''}" if games else "",
+                                     f"{disks} system disk{'s' if disks != 1 else ''}" if disks else "") if x)
+        missing = "[...document.querySelectorAll('#main a.tile')].find(a => a.textContent.startsWith('Missing'))"
+        if want:
+            self.page.wait(f"{missing}?.querySelector('.tile-sub')?.textContent === {want!r} && !{missing}.classList.contains('hidden')", timeout=60)
+        else:
+            self.page.wait(f"{missing}?.classList.contains('hidden')", timeout=60)
         self.tap("down")
         self.assertEqual(self.active(), "sys-build")
         self.tap("B")                                          # B: home

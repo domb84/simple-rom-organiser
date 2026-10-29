@@ -114,7 +114,9 @@ def load(name: str, root: Path, dats_sig: tuple, options: tuple) -> Optional[Dic
         stamp = folder_stamp(root)
         if payload["stamp"] != stamp:
             return None
-        payload["result"].summary()                            # (a result that cannot even be summed up is no result)
+        if not isinstance((payload.get("extra") or {}).get("summary"), dict) or (payload.get("extra") or {}).get("summary_version") is None:
+            payload["result"].summary()                        # (a result that cannot be summed up is no result; one kept with its
+                                                               #  summary was summed up when it was saved)
         return {"result": payload["result"], "stamp": stamp, "extra": payload["extra"]}
     except Exception:  # noqa: BLE001 - damaged, or made by other code: gone
         forget(name)

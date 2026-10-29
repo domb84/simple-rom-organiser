@@ -1028,6 +1028,8 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["matched_files"], 4)
         self.assertEqual(summary["per_dat"][GAMES]["have"], 2)
         self.assertEqual(summary["per_dat"][GAMES]["missing"], 1)
+        # games, not disks: "Game" (its two disks, both here) and "Missing Game"; Workbench and the Kickstart are no games
+        self.assertEqual((summary["games_total"], summary["games_have"], summary["games_missing"], summary["count_by"]), (2, 1, 1, "game"))
         matched = self.call("GET", f"/api/scan/results?kind=matched&dat={urllib.request.quote(WB)}")
         self.assertEqual([i["file"] for i in matched["items"]], ["incoming/deep/wb.adf"])
 
@@ -2436,7 +2438,7 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual(plan["reasons"]["excluded"], 1)
         self.assertEqual(plan["playlists"], {"write": 1, "ok": 0, "remove": 1, "conflict": 0})
         self.assertEqual(plan["incomplete_sets"], [{"name": "Lost (1990)(Pub)", "dat": GAMES, "total": 3,
-                                                    "missing": [1, 3], "present": [2]}])
+                                                    "missing": [1, 3], "present": [2], "game": "Lost (1990)(Pub)"}])
         self.assertEqual(plan["profile"]["exclude"], sorted(plan["profile"]["exclude"]))
         self.assertFalse(plan["empty"])
         self.assertEqual(plan["actionable"], 7 + 1 - 0)  # six moves/renames + one delete + one playlist write

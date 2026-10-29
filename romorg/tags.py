@@ -722,6 +722,7 @@ def _paren_rules(text: str, style: str = STYLE_TOSEC) -> list[str]:
     return out
 
 
+@functools.lru_cache(maxsize=262144)    # (pure: the same name gives the same key - asked ~10 times an item)
 def classify_token(kind: str, text: str, style: str = STYLE_TOSEC) -> Optional[str]:
     """Exclusion rule key for one tag (``kind`` ``"("`` or ``"["``, ``text`` without delimiters), else None.
 
@@ -736,6 +737,16 @@ def classify_token(kind: str, text: str, style: str = STYLE_TOSEC) -> Optional[s
 
 
 def exclusion_info(t: Tags) -> list[tuple[str, str]]:
+    """:func:`_exclusion_info`, remembered per name (asked many times an item by the library rules); a fresh list each time."""
+    return list(_exclusion_info(t))
+
+
+@functools.lru_cache(maxsize=262144)
+def _exclusion_info(t: Tags) -> tuple[tuple[str, str], ...]:
+    return tuple(_exclusion_info_of(t))
+
+
+def _exclusion_info_of(t: Tags) -> list[tuple[str, str]]:
     """``[(rule, exact text incl. delimiters)]`` of every excluding tag, in name order, de-duplicated.
 
     Looks at the status and the ``(..)`` flags (the TOSEC publisher paren is skipped) and every ``[..]`` flag."""
@@ -853,6 +864,7 @@ def chipset_compatible(anchor: Tags, other: Tags) -> bool:
     return chipset_classes(anchor) <= chipset_classes(other)
 
 
+@functools.lru_cache(maxsize=262144)    # (pure: the same name gives the same key - asked ~10 times an item)
 def identity_key(t: Tags) -> tuple:
     """What makes two names the *same game* across versions, years, disks, dump variants,
     languages and chipsets.
@@ -882,6 +894,7 @@ def partition_key(t: Tags) -> tuple:
 _GAME_KEY_SKIP_KINDS = frozenset({"date", "video", "serial", "alt", "distribution", "language", "feature"})
 
 
+@functools.lru_cache(maxsize=262144)    # (pure: the same name gives the same key - asked ~10 times an item)
 def game_key(t: Tags) -> tuple:
     """Identity of a *game* across regions, languages, revisions and re-releases.
 
@@ -1121,7 +1134,11 @@ def variant_languages(t: Tags) -> frozenset[str]:
     A language tag lists them (``(de-en)``, ``(En,Fr,De)`` = all of them); without one the country's
     official language counts (``(DE)`` -> De); no language and no country (TOSEC convention) or
     only a language-neutral region (World / Asia / Unknown) = English; a TOSEC ``(M3)`` multi-language
-    tag adds English; ``[tr <code> ...]`` adds that language."""
+    tag adds English. A translation (``[tr <code> ...]``) is played in its own language only: its text is no longer the original's
+    (``[tr pl]`` of an English game is Polish, ``[tr en]`` of a German one English)."""
+    translated = tr_languages(t)
+    if translated:
+        return frozenset(translated)
     langs: set[str] = set(t.languages)
     if t.languages_implied:
         for r in t.regions:
@@ -1132,7 +1149,6 @@ def variant_languages(t: Tags) -> frozenset[str]:
             langs.add("En")
     if t.style == STYLE_TOSEC and any(_M_RE.match(f) for f in t.flags):
         langs.add("En")
-    langs.update(tr_languages(t))
     return frozenset(langs)
 
 

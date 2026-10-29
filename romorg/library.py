@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import dataclasses
 import functools
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -761,7 +762,15 @@ def game_key(item: Item, combine: bool = False) -> tuple:
 
 
 def _gkey(item: Item, combine: bool) -> tuple:
-    return combined_key(game_dat(item.dat), tags.game_key(_tags_of(item)), combine)
+    """:func:`game_key`'s key, remembered on the item (asked of the same item a dozen times in a run) while the alternate titles stay."""
+    state = alttitles.state() if combine else None
+    memo = item.__dict__.setdefault("_gkeys", {})
+    hit = memo.get(combine)
+    if hit is not None and hit[0] == state:
+        return hit[1]
+    value = combined_key(game_dat(item.dat), tags.game_key(_tags_of(item)), combine)
+    memo[combine] = (state, value)
+    return value
 
 
 _GAME_DATS: Optional[dict[str, str]] = None
@@ -839,12 +848,28 @@ def _apart(title: str, publisher: str) -> str:
     return "#0"
 
 
+_COMBINED: dict[tuple, tuple] = {}
+_COMBINED_STATE: list = [None]
+
+
 def combined_key(dat: str, key: tuple, combine: bool) -> tuple:
     """A game key of ``dat`` (``tags.game_key`` / ``identity_key``) as "Combine alternate titles" makes it: the title of a group of
     alternate titles is the group's (``alttitles``) and, of a TOSEC name, the country and the publisher are no part of the game (the
-    German release of another publisher is the same game: the best variant is chosen by your languages)."""
+    German release of another publisher is the same game: the best variant is chosen by your languages). Remembered while the
+    alternate titles stay the same (``alttitles.state``): a library is asked it hundreds of thousands of times."""
     if not combine or len(key) < 2:
         return key
+    now = alttitles.state()
+    if _COMBINED_STATE[0] != now:
+        _COMBINED.clear()
+        _COMBINED_STATE[0] = now
+    hit = _COMBINED.get((dat, key))
+    if hit is None:
+        hit = _COMBINED[(dat, key)] = _combined_key(dat, key)
+    return hit
+
+
+def _combined_key(dat: str, key: tuple) -> tuple:
     if key[0] == STYLE_TOSEC and len(key) == 6:            # (style, title, countries, publisher, edition, statuses)
         edition = tuple(f for f in key[4] if tags.flag_kind(f) not in ("video", "language")    # (PAL / NTSC, M3: a release, not a game;
                         and not re.fullmatch(r"[A-Z]{1,3}", f))      #  nor a version's letter: "v1.14C", "v1.00R", "v1.44GE" - your languages choose)
@@ -1245,7 +1270,7 @@ def language_games(items: Iterable[Item], profile: LibraryProfile, platform: "Pl
 
 def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
            ratings: Optional[RatingContext] = None, lang_games: Optional[frozenset] = None,
-           saved: Optional[frozenset] = None) -> Selection:
+           saved: Optional[frozenset] = None, report: bool = True) -> Selection:
     """Decide keep / excluded / superseded / incomplete per item (see the module docstring).
 
     With a rating filter in ``profile`` (``profile.rating_active``) ``ratings`` is required (:class:`RatingsUnavailable`
@@ -1254,8 +1279,7 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     profile's, or its own in ``saved_overrides``) is never set aside (:func:`apply_saved`); None / empty = nothing changes."""
     if profile.rating_active and ratings is None:
         raise RatingsUnavailable("a rating filter is set but no rating data was supplied")
-    sel = _select_base(items, profile, platform, lang_games)
-    _flawed_beside_clean(items, sel)
+    sel = base_selection(items, profile, platform, lang_games)
     if profile.rating_active:
         apply_ratings(sel, items, profile, platform, ratings)  # type: ignore[arg-type]
     if saved and profile.prefer_saved:
@@ -1263,9 +1287,86 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     if saved:
         apply_saved(sel, items, saved, profile, platform.name)
     apply_overrides(sel, items, profile)
-    sel.vanished = _vanished(items, sel)
-    _mark_covered(items, sel)
+    if report:                                   # (the lists a page shows: a count of the games does not read them)
+        sel.vanished = _vanished(items, sel)
+        _mark_covered(items, sel)
     return sel
+
+
+# --------------------------------------------------------------------------- the base selection, remembered
+
+# The rules ``_select_base`` (and everything it calls) reads. The rating filter, your own per-game choices, saves and the build's own
+# options are applied after it, so changing one of those does not change it. (tests/test_base_selection.py checks both lists.)
+BASE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump", "region_priority",
+               "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "prefer_editions", "combine_alt_titles",
+               "prefer_whdload", "prefer_unprotected")
+_BASES: list[tuple[tuple, Any, Selection]] = []       # (key, what keeps the key's ids alive, the selection), oldest first
+_BASES_LOCK = threading.Lock()
+_BASES_KEPT = 4                                        # the whole database, your files and the build preview of a system, and one more
+
+
+def _clone_selection(sel: Selection) -> Selection:
+    """A copy of ``sel`` that the later rules may change (decisions, sets and incomplete sets are changed in place by them). A decision
+    that sits in two places (``before_borrow`` and ``decisions``) stays one decision in the copy."""
+    seen: dict[int, Decision] = {}
+
+    def dec(d: Optional[Decision]) -> Optional[Decision]:
+        if d is None:
+            return None
+        c = seen.get(id(d))
+        if c is None:
+            c = seen[id(d)] = dataclasses.replace(d)
+        return c
+
+    out = Selection(rating=dict(sel.rating), combine_alt=sel.combine_alt)
+    out.decisions = {k: dec(d) for k, d in sel.decisions.items()}
+    out.before_borrow = {k: dec(d) for k, d in sel.before_borrow.items()}
+    out.sets = [replace(cs, slots=dict(cs.slots), labels=dict(cs.labels), borrowed={n: dict(b) for n, b in cs.borrowed.items()})
+                for cs in sel.sets]
+    out.incomplete = [replace(x, present=dict(x.present)) for x in sel.incomplete]
+    out.vanished = list(sel.vanished)
+    return out
+
+
+def _base_key(items: Sequence[Item], profile: LibraryProfile, platform: "Platform", lang_games: Optional[frozenset]) -> tuple[tuple, tuple]:
+    """``(key, refs)``: everything the base selection depends on, and the objects whose ids the key holds (kept alive with the entry, so
+    an id is never given to another object while the entry is there)."""
+    from . import openretro, whdready
+    ready, known = whdready.load(), whdready.known()
+    disc = tuple(_DISC_FILES.get(d) for d in sorted(_disc_dats()))
+    checks = openretro.database()                       # (the protection checks an original is judged by)
+    reads = tuple(getattr(whdready, n) for n in ("level_of", "has_install", "leaves_manual", "needs_whdload", "release_of", "sets_with"))
+    refs = (ready, known, disc, checks, reads)
+    key = (repr(platform), tuple(getattr(profile, f) for f in BASE_FIELDS), lang_games, alttitles.state(),
+           id(ready) if ready else 0, id(known) if known else 0, tuple(id(d) if d else 0 for d in disc), id(checks), tuple(map(id, reads)),
+           tuple((it.key, it.dat, id(it.rom), it.style, it.path, it.member, it.form, it.link, it.holds, it.disc_total) for it in items))
+    return key, refs
+
+
+def base_selection(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
+                   lang_games: Optional[frozenset] = None) -> Selection:
+    """Every rule except the rating filter, with a bad / modified copy beside a clean one set aside (:func:`_select_base` and
+    :func:`_flawed_beside_clean`), as a copy the caller may change. The same files under rules that differ only in what comes after
+    (the rating filter, your game choices, saves, build options) are decided once: the totals of the whole database and of your files and
+    the build preview all ask for it."""
+    key, refs = _base_key(items, profile, platform, lang_games)
+    with _BASES_LOCK:
+        for entry in _BASES:
+            if entry[0] == key:
+                _BASES.remove(entry)
+                _BASES.append(entry)
+                hit = entry[2]
+                break
+        else:
+            hit = None
+    if hit is None:
+        hit = _select_base(items, profile, platform, lang_games)
+        _flawed_beside_clean(items, hit)
+        with _BASES_LOCK:
+            _BASES.append((key, (refs, list(items)), hit))
+            del _BASES[:-_BASES_KEPT]
+        return _clone_selection(hit)
+    return _clone_selection(hit)
 
 
 def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
@@ -2137,19 +2238,19 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
 
 def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProfile, platform: Any,
                      ctx: RatingContext, cutoff: tuple) -> None:
-    """An incomplete set the rating filter would drop anyway is no problem to report: its disks are excluded for their rating like
-    a kept game's (the set was set aside before the filter ran, so it is no unit of :func:`apply_ratings`)."""
+    """A game the rating filter would drop anyway is no problem to report when you have it only in part: every disk of it set aside as
+    incomplete - of a set that is reported or of none - is excluded for the game's rating like a kept game's (they were set aside before
+    the filter ran, so they are no unit of :func:`apply_ratings`); the reported sets left with no such disk go."""
     from . import ratings as _ratings
 
     rdats = set(_ratings.rated_dats(platform))
-    by_key = {it.key: it for it in items}
-    still: list[IncompleteSet] = []
-    for x in sel.incomplete:
-        mine = [by_key[k] for k in x.present.values() if k in by_key]
-        if x.kept or not mine or (mine[0].dat not in rdats and game_dat(mine[0].dat) not in rdats):
-            still.append(x)
-            continue
-        owner = mine[0]
+    games: dict[tuple, list[Item]] = {}
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is not None and d.action == INCOMPLETE and (it.dat in rdats or game_dat(it.dat) in rdats):
+            games.setdefault(game_key(it, profile.combine_alt_titles), []).append(it)
+    for key, mine in games.items():
+        owner = min(mine, key=lambda it: (_rom_name(it), it.key))
         title = _tags_of(owner).title
         r = None if tags.bonus_disc(_tags_of(owner)) else ctx.lookup(title)
         if r is not None and r[1] < profile.min_votes:
@@ -2163,19 +2264,19 @@ def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProf
             detail = f"rated {r[0]:.1f} ({r[1]} vote{'' if r[1] == 1 else 's'})"
             if profile.min_rating is not None and r[0] < profile.min_rating:
                 codes.append(RATING_LOW)
-            if profile.top_n is not None and _rank_key(r[0], r[1], title, game_key(owner, profile.combine_alt_titles))[:3] > cutoff:
+            if profile.top_n is not None and _rank_key(r[0], r[1], title, key)[:3] > cutoff:
                 codes.append(RATING_NOT_TOP)
         if not codes:
-            still.append(x)
             continue
-        missing = ", ".join(str(m) for m in x.missing)
         for it in mine:
-            d = sel.decisions.get(it.key)
-            if d is not None and d.action == INCOMPLETE:
-                sel.decisions[it.key] = Decision(
-                    key=it.key, action=EXCLUDED, codes=tuple(codes), detail=detail,
-                    reason=f"excluded: {_describe([(c, '') for c in codes]).strip()} ({detail}; incomplete: missing disk {missing})")
-    sel.incomplete = still
+            d = sel.decisions[it.key]
+            missing = ", ".join(str(m) for m in d.missing)
+            sel.decisions[it.key] = Decision(
+                key=it.key, action=EXCLUDED, codes=tuple(codes), detail=detail,
+                reason=f"excluded: {_describe([(c, '') for c in codes]).strip()} ({detail}"
+                       + (f"; incomplete: missing disk {missing})" if missing else "; incomplete)"))
+    sel.incomplete = [x for x in sel.incomplete
+                      if x.kept or any(sel.decisions.get(k) is not None and sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
 
 
 def _vanished(items: Sequence[Item], sel: Selection) -> list[Vanished]:

@@ -248,6 +248,7 @@ STYLES = ("nointro", "redump", "tosec")
 _DATS: dict[str, tuple[str, dict[str, tuple[frozenset, int]]]] = {}    # DAT -> (system, {title (casefold): (its regions, releases)})
 _MAPS: dict[str, tuple[Any, dict[str, str]]] = {}
 _SIG: Optional[tuple[float, tuple]] = None
+_GEN = [0]                     # bumped whenever the registered titles change (what a cached game key depends on, with the sources)
 
 
 def learn(platform: Any, dats: Any) -> None:
@@ -276,6 +277,7 @@ def learn(platform: Any, dats: Any) -> None:
         for dat, titles in per.items():
             _DATS[dat] = (name, titles)
             _MAPS.pop(dat, None)
+        _GEN[0] += 1
 
 
 def _places(t: Any) -> frozenset:
@@ -289,6 +291,7 @@ def _places(t: Any) -> frozenset:
 
 def forget(dat: Optional[str] = None) -> None:
     with _LOCK:
+        _GEN[0] += 1
         if dat is None:
             _DATS.clear()
             _MAPS.clear()
@@ -367,3 +370,9 @@ def clear_cache() -> None:
         _CACHE.clear()
         _MAPS.clear()
         _SIG = None
+        _GEN[0] += 1
+
+
+def state() -> tuple:
+    """What the groups depend on: the registered titles and the title sources. A game key worked out under another state is stale."""
+    return (_GEN[0], _sig_now())

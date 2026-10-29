@@ -614,6 +614,19 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(sorted(x.name for x in top.incomplete), ["Good (1990)(Pub)", "Odd (1990)(Pub)"])
         self.assertEqual(tby[names[0]].codes, ("rating_not_top",))
 
+    def test_every_incomplete_copy_of_a_dropped_game_is_excluded(self) -> None:
+        names = ["Low (1990)(Pub)(Disk 1 of 3)", "Low (1990)(Pub)(Disk 2 of 3)[cr X]", "Low (1991)(Pub)(Disk 3 of 3)[m bamcopy]",
+                 "Good (1990)(Pub)(Disk 1 of 2)"]
+        table = {"Low": (3.0, 50), "Good": (9.0, 50)}
+        _items, sel, by = decide(names, replace(library.default_profile(AMIGA), min_rating=7.0), table, items_fn=amiga_items, platform=AMIGA)
+        self.assertEqual({n for n, d in by.items() if d.action == "incomplete"}, {names[3]})      # (only the game the rules would keep)
+        self.assertTrue(all(by[n].codes == ("rating_low",) for n in names[:3]))
+        self.assertEqual([x.name for x in sel.incomplete], ["Good (1990)(Pub)"])
+        from romorg import totals
+        u = totals.compute_user_items(amiga_items(names), AMIGA, replace(library.default_profile(AMIGA), min_rating=7.0),
+                                      RatingContext(table.get, None))
+        self.assertEqual(sorted(st for st, _n in u.games.values()).count(totals.INCOMPLETE_OWNED), 1)   # (what Needs a look counts)
+
     def test_dats_without_games_are_not_rated(self) -> None:
         wb = "Commodore Amiga - Operating Systems - Workbench"
         items = [Item(key=1, dat=wb, rom=Rom(name="Workbench 3.1.adf", size=1, crc="", md5="", sha1="", game="W", dat=wb),

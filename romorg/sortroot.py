@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from . import meter, winproc
 from .folders import CONVERTED_DIR, RESERVED_DIRS
 
-__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "apply_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir"]
+__all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "count_sweep", "apply_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir"]
 
 # the folders a library build sets things aside in (the converted originals are the user's safety copies: they stay)
 ASIDE_FOLDERS = tuple(d for d in RESERVED_DIRS if d != CONVERTED_DIR)
@@ -85,10 +85,11 @@ def register_virtual(base: Path, exists: Callable[[Path], bool]) -> None:
 
 def lexists(path: Path) -> bool:
     """``os.path.lexists``, or the answer of the registered stand-in a path lies below."""
-    p = os.path.normcase(str(path))
-    for base, fn in _VIRTUAL.items():
-        if p == base or p.startswith(base.rstrip(os.sep) + os.sep):
-            return fn(Path(path))
+    if _VIRTUAL:
+        p = os.path.normcase(str(path))
+        for base, fn in _VIRTUAL.items():
+            if p == base or p.startswith(base.rstrip(os.sep) + os.sep):
+                return fn(path if isinstance(path, Path) else Path(path))
     return os.path.lexists(path)
 
 
@@ -130,15 +131,31 @@ def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
             base = folder / reserved
             if not base.is_dir():
                 continue
-            for dirpath, dirnames, filenames in os.walk(base):
+            home = aside / folder.name / reserved
+            top = os.fspath(base)
+            for dirpath, dirnames, filenames in os.walk(top):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                rel = dirpath[len(top) + 1:]                   # (the walk's own text: no Path made for each file to cut the folder off)
                 for f in sorted(filenames):
                     if f.startswith(".romorg"):
                         continue
                     src = Path(dirpath) / f
-                    moves.append(SMove(src, names.free(aside / folder.name / reserved / src.relative_to(base)), reserved,
-                                       size=_size(src)))
+                    moves.append(SMove(src, names.free(home / (rel + os.sep + f if rel else f)), reserved, size=_size(src)))
     return moves
+
+
+def count_sweep(folders: Dict[str, Path]) -> int:
+    """How many files :func:`plan_sweep` would move (``len(plan_sweep(...))`` without planning the targets)."""
+    n = 0
+    for folder in folders.values():
+        for reserved in ASIDE_FOLDERS:
+            base = folder / reserved
+            if not base.is_dir():
+                continue
+            for _dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                n += sum(1 for f in filenames if not f.startswith(".romorg"))
+    return n
 
 
 # --------------------------------------------------------------------------- doing it

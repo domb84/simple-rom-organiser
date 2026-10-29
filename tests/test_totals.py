@@ -213,6 +213,24 @@ class UserTests(unittest.TestCase):
         self.assertEqual(out["missing_names"], ["Beta (1991)(Pub)"])                     # (EmuTOS is no game you lack ...)
         self.assertEqual(out["missing_system_names"], ["EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)"])   # (... but a system disk)
 
+    def test_updates_and_dlc_are_no_games_and_never_missing(self) -> None:
+        sw = platforms.get_platform("Nintendo Switch")
+        self.assertEqual(totals.addon_dats(sw), frozenset({"Nintendo - Switch (Updates)", "Nintendo - Switch (DLC)"}))
+        self.assertEqual(totals.addon_dats(AMIGA), frozenset())
+        game, dlc = ("Nintendo - Switch", ("zap",)), ("Nintendo - Switch (DLC)", ("zap pack",))
+        t = totals.Target({game: frozenset({"Zap"}), dlc: frozenset({"Zap Pack"})}, {}, 0.0, names={game: "Zap", dlc: "Zap Pack"})
+        u = totals.UserPart({game: (totals.HAVE, frozenset({"Zap"}))}, 0.0, 0.0, 1, {})
+        out = totals.combine(t, u, totals.system_dats(sw), totals.addon_dats(sw))
+        self.assertEqual((out["target_games"], out["have_games"], out["missing_games"]), (1, 1, 0))
+        self.assertEqual((out["target_addons"], out["have_addons"], out["target_system"]), (1, 0, 0))
+        self.assertEqual(out["missing_names"], [])                                          # (the DLC is not "missing")
+
+    def test_a_better_version_is_a_release_not_a_disk(self) -> None:
+        names = ["Elvira II (1992)(Accolade)(Disk 1 of 3)[cr][tr pl].adf", "Elvira II (1992)(Accolade)(Disk 2 of 3)[cr SR][tr pl].adf",
+                 "Elvira II (1992)(Accolade)(Disk 3 of 3)[tr pl].adf"]
+        self.assertEqual({totals._release_of(n) for n in names}, {"Elvira II (1992)(Accolade)"})
+        self.assertEqual(totals._release_of("Zap (USA) (Disc 2).cue"), "Zap (USA)")
+
     def test_no_intro_unit_is_the_game(self) -> None:
         def ni(names: list[str]) -> list[Item]:
             return [Item(key=i, dat=GBA_DAT, rom=Rom(name=n + ".gba", size=1, crc="", md5="", sha1="", game=n,
@@ -635,7 +653,8 @@ class BugCheckTotalsTests(unittest.TestCase):
         t = m._targets[AMIGA.name][1]
         rows = [(k, sorted(n), sorted(t.games[k])) for k, (st, n) in u.games.items() if k in t.games and not (n & t.games[k])]
         up = m.describe_upgrades(AMIGA, rows)
-        self.assertEqual((up[0]["title"], len(up[0]["better"])), ("Zool", 3))
+        self.assertEqual((up[0]["title"], len(up[0]["better"])), ("Zool", 1))                 # (one better version: the disc ...)
+        self.assertEqual(len(up[0]["better"][0]["files"]), 3)                                 # (... with its cue and two tracks)
 
     def test_a_cd_game_whose_tracks_carry_their_own_tag_is_one_game(self) -> None:
         cd = "Commodore Amiga CD32 - Games - [BIN]"

@@ -108,6 +108,15 @@ def _files_under(path: Path) -> List[Path]:
     return out
 
 
+def _file_texts(top: str) -> List[str]:
+    """:func:`_files_under` of a folder as plain text (no Path made for each of the thousands of files)."""
+    out: List[str] = []
+    for dirpath, dirnames, filenames in os.walk(top):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".romorg"))
+        out.extend(dirpath + os.sep + f for f in sorted(filenames) if not f.startswith(".romorg"))
+    return out
+
+
 def final_files(plan: Any) -> List[Tuple[Path, Optional[Path], int]]:
     """``(file, where the build leaves it, the index of its op in the plan)`` for every file of the plan (where = None: the build
     removes it - a stale playlist of the app's own). A disc game's op stands for a folder: each of its files is listed."""
@@ -133,6 +142,12 @@ def final_files(plan: Any) -> List[Tuple[Path, Optional[Path], int]]:
 
 
 def _rel(path: Path, base: Path) -> Optional[Tuple[str, ...]]:
+    """The parts of ``path`` below ``base`` (None: not below it). String work first: this runs for every file of a big folder."""
+    text, top = os.fspath(path), os.fspath(base).rstrip(os.sep)
+    if text.startswith(top + os.sep):
+        return tuple(p for p in text[len(top) + 1:].split(os.sep) if p)
+    if text == top:
+        return ()
     try:
         return Path(path).relative_to(base).parts
     except ValueError:
@@ -199,8 +214,9 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
         out.append(Entry(LIBRARY, tuple(parts), size, state, "/".join(was) if state != SAME else "", n))
     if root.is_dir():                                               # what the scan does not look at (hidden files, the app's own notes
         whd: Dict[str, bool] = {}                                   # aside, WHDLoad installs): it is in the folder all the same, and stays
-        for f in _files_under(root):
-            if os.fspath(f) not in known and os.fspath(f) not in moving:
+        for text in _file_texts(os.fspath(root)):
+            if text not in known and text not in moving:
+                f = Path(text)
                 parts = _rel(f, root)
                 if parts:
                     ours = f.suffix.lower() == ".lha" and _built_whdload(f)

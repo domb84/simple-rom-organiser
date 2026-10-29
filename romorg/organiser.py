@@ -479,9 +479,10 @@ def bios_exclude(op: RenameOp, root: Path, profile: Optional["library.LibraryPro
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
                unmatched: bool) -> RenameOp:
     # str(): on Windows Path equality ignores case, which would hide a case-only rename
-    at_target = str(src) == str(dst) or (src.name == dst.name and _fold(src.parent) == _fold(dst.parent) and _same_file(src, dst))   # (a hard link elsewhere is not it)
+    same_parent = _fold(src.parent) == _fold(dst.parent)
+    at_target = str(src) == str(dst) or (src.name == dst.name and same_parent and _same_file(src, dst))   # (a hard link elsewhere is not it)
     status = "ok" if at_target else "move"
-    kind = "rename" if _fold(src.parent) == _fold(dst.parent) else "move"
+    kind = "rename" if same_parent else "move"
     if at_target:
         dst = src
     return RenameOp(src, dst, status, ", ".join(reasons), rom_name, kind, dat, unmatched)
