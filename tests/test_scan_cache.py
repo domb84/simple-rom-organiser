@@ -178,6 +178,50 @@ class KeptOnDisk(Counting):
         put(root / "c.sfc", self.rom["Gamma (USA)"])                               # (changed after the start, before it is opened)
         self.assertFalse(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
 
+    def wait_for_scan(self) -> None:
+        deadline = time.time() + 10
+        while time.time() < deadline and SNES not in self.srv.app._scans:
+            time.sleep(0.02)
+
+    def test_resting_on_a_system_reads_its_scan_and_checks_it_before_the_click(self) -> None:
+        root = self.make()
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.restart()
+        self.assertNotIn(SNES, self.srv.app._scans)
+        self.assertTrue(self.call("POST", "/api/scan/warm", {"platform": SNES})["warming"])
+        self.wait_for_scan()
+        self.assertIn(SNES, self.srv.app._scans)
+        self.assertFalse(self.call("POST", "/api/scan/warm", {"platform": SNES})["warming"])      # (already there)
+        self.assertEqual(self.srv.app._scan, None)                                                  # (nothing was selected)
+        self.assertTrue(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
+        self.assertFalse(self.srv.app._scans[SNES].unchecked)
+
+    def test_a_click_soon_after_the_warm_up_does_not_look_at_the_folder_again(self) -> None:
+        from romorg import scancache
+        root = self.make()
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.restart()
+        self.call("POST", "/api/scan/warm", {"platform": SNES})
+        self.wait_for_scan()
+        time.sleep(0.3)
+        with mock.patch.object(scancache, "folder_stamp", side_effect=AssertionError("looked again")):
+            self.assertTrue(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
+
+    def test_a_scan_warmed_and_changed_before_the_click_is_not_used(self) -> None:
+        root = self.make()
+        self.job("/api/scan", {"path": str(root), "platform": SNES})
+        self.restart()
+        self.call("POST", "/api/scan/warm", {"platform": SNES})
+        self.wait_for_scan()
+        time.sleep(0.3)
+        put(root / "c.sfc", self.rom["Gamma (USA)"])
+        self.srv.app._scans[SNES].checked_at -= 100                                                  # (a long while ago)
+        self.assertFalse(self.call("POST", "/api/scan/select", {"platform": SNES})["selected"])
+
+    def test_warming_what_has_no_scan_or_folder_does_nothing(self) -> None:
+        self.assertFalse(self.call("POST", "/api/scan/warm", {"platform": SNES})["warming"])
+        self.assertFalse(self.call("POST", "/api/scan/warm", {"platform": "No such system"})["warming"])
+
     def test_the_scan_options_are_part_of_it(self) -> None:
         self.scan_and_restart()
         self.call("POST", "/api/switch/config", {"verify_scan": True})

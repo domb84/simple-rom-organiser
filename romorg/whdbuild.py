@@ -44,22 +44,23 @@ class Target:
     dest: Path                            # <the version's folder>/<release>.lha
     disks: list[tuple[Path, Optional[str]]] = field(default_factory=list)   # (file, member) in disk order; a whole SPS zip / 7z: (it, None)
     sps: bool = False
+    was: Optional[Path] = None            # ``targets(planned=True)``: where the archive is now, beside the disks as they are now (dest: where the build puts it)
 
     def key(self, date: str = "") -> dict[str, Any]:
         return {"source": list(self.names), "install": self.archive, "install_date": date}
 
 
-def _final(op: Any) -> Path:
-    """Where a kept file is: where the build puts it, once it is there (before a build: where it is now)."""
+def _final(op: Any, planned: bool = False) -> Path:
+    """Where a kept file is: where the build puts it, once it is there (before a build: where it is now; ``planned``: where it will be)."""
     from .organiser import _final_path
     p = _final_path(op)
-    return p if p.exists() or not Path(op.src).exists() else Path(op.src)
+    return p if planned or p.exists() or not Path(op.src).exists() else Path(op.src)
 
 
-def targets(plan: Any, platform: Any) -> list[Target]:
+def targets(plan: Any, platform: Any, planned: bool = False) -> list[Target]:
     """The WHDLoad games of a library plan (``organiser.LibraryPlan``): one a game, from the kept version its install works from best
     (an ADF set or an SPS release; of versions as good the best platform - CD32 > AGA > CDTV > ECS > OCS - then the floppies), at the
-    place the build leaves its disks."""
+    place the build leaves its disks (``planned``: the place the build WILL leave them, also before it has moved them: what the file list shows)."""
     from . import library, whdready
     sel, owners = plan.selection, getattr(plan, "owners", {}) or {}
     image_sets = set(getattr(platform, "image_set_dats", ()) or ())
@@ -69,7 +70,7 @@ def targets(plan: Any, platform: Any) -> list[Target]:
 
     def unit_item(key: int) -> Any:
         op, u = owners[key]
-        return op, u, library.Item(key=key, dat=u.dat, rom=u.rom, style=u.style, path=_final(op), member=u.member)
+        return op, u, library.Item(key=key, dat=u.dat, rom=u.rom, style=u.style, path=_final(op, planned), member=u.member)
 
     def add(keys: list[int], name: str) -> None:
         if not keys or any(k not in owners for k in keys):
@@ -80,14 +81,14 @@ def targets(plan: Any, platform: Any) -> list[Target]:
         if sps:                                               # (its images: loose, in a zip / 7z of their own, or one of several)
             entry = whdready.release_of(u0.rom) or [None, None]
             level, arc, names = entry[0], entry[1] if len(entry) > 1 else None, [u0.rom.game]
-            found = {_final(op) for op, _u, _it in parts}           # (a zip / 7z of the release is one unit: every image in it)
+            found = {_final(op, planned) for op, _u, _it in parts}           # (a zip / 7z of the release is one unit: every image in it)
             disks = sorted(((f, None) for f in found), key=lambda d: (d[0].name.casefold(), str(d[0])))
         else:
             names = whdready.names_of(u.rom for _op, u, _it in parts)      # (the names the list knows them by: by checksum if renamed)
             sha = whdready.sha_key(u.rom for _op, u, _it in parts)
             level = whdready.level(names, sha)
             arc = whdready.archive(names) or (whdready.checked(names, sha) or {}).get("archive")
-            disks = [(_final(op), u.member) for op, u, _it in parts]
+            disks = [(_final(op, planned), u.member) for op, u, _it in parts]
         if not arc or level is None or level < whdready.IMAGES:
             return
         if "arcadia" in arc.casefold() and not any("arcadia" in n.casefold() for n in names):
@@ -96,7 +97,8 @@ def targets(plan: Any, platform: Any) -> list[Target]:
             return                                            # (the full game's disks with a demo's install it does not boot from: not the game)
         title = library._tags_of(it0).title
         stem = _BAD_NAME_RE.sub("", name).strip(" .") or title
-        t = Target(title=title, names=names, archive=arc, level=int(level), dest=disks[0][0].parent / f"{stem}.lha", disks=disks, sps=sps)
+        t = Target(title=title, names=names, archive=arc, level=int(level), dest=disks[0][0].parent / f"{stem}.lha", disks=disks, sps=sps,
+                   was=Path(op0.src).parent / f"{stem}.lha" if planned else None)
         rank = library.tags.platform_rank(library._tags_of(it0))     # (of versions as good: the best platform - AGA before OCS)
         versions.append((library.game_key(it0, getattr(sel, "combine_alt", True)), rank, t))   # (one a game, as the library counts games)
 

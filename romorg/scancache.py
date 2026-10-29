@@ -12,11 +12,13 @@ anywhere else.
 from __future__ import annotations
 
 import dataclasses
+import gc
 import hashlib
 import os
 import pickle
 import re
 import tempfile
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -102,16 +104,32 @@ def load(name: str, root: Path, dats_sig: tuple, options: tuple) -> Optional[Dic
     target = _path(name)
     if not target.is_file():
         return None
+    box: Dict[str, Any] = {}
+
+    def look() -> None:                                        # (the folder is looked at while the file is read: one waits on the disk, the other on the CPU)
+        try:
+            box["stamp"] = folder_stamp(root)
+        except Exception:  # noqa: BLE001 - then it is worked out below
+            pass
+    looker = threading.Thread(target=look, name="romorg-scan-stamp", daemon=True)
+    looker.start()
     try:
         with target.open("rb") as fh:
-            payload = pickle.load(fh)
+            was = gc.isenabled()
+            gc.disable()                                       # (millions of objects are made: the collector would run over them again and again, 0.6 s of 1.5)
+            try:
+                payload = pickle.load(fh)
+            finally:
+                if was:
+                    gc.enable()
         if (payload["format"], payload["version"], payload["shape"]) != (FORMAT, __version__, _shape()):
             raise ValueError("made by another version")
         if os.path.normcase(payload["root"]) != os.path.normcase(os.fspath(root)):
             return None                                        # (another folder: this file stays for when it is chosen back)
         if payload["dats_sig"] != tuple(dats_sig) or payload["options"] != tuple(options):
             return None
-        stamp = folder_stamp(root)
+        looker.join()
+        stamp = box["stamp"] if "stamp" in box else folder_stamp(root)
         if payload["stamp"] != stamp:
             return None
         if not isinstance((payload.get("extra") or {}).get("summary"), dict) or (payload.get("extra") or {}).get("summary_version") is None:

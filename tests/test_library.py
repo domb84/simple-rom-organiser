@@ -825,7 +825,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in cat if e["kind"] == "keep_flag"], list(tags.KEEP_FLAGS))
         opts = {e["id"]: e for e in cat if e["kind"] == "option" and e.get("group") != "ratings"}
         self.assertEqual(set(opts), {"latest_only", "best_variant", "complete_only", "borrow_editions", "rescue", "languages", "keep_bios", "convert_first",
-                                     "delete_converted", "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"})
+                                     "delete_converted", "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload", "one_per_game"})
         self.assertFalse(opts["rescue"]["default"])
         self.assertEqual(opts["rescue"]["field"], "rescue_only_dump")
         self.assertEqual(opts["languages"]["default_value"], ["En"])
@@ -845,7 +845,7 @@ class CatalogTests(unittest.TestCase):
         info = library.profile_info(AMIGA)
         self.assertEqual(info["style"], "tosec")
         self.assertTrue(info["available"]["keep_flags"])
-        self.assertFalse(info["available"]["one_per_game"])
+        self.assertTrue(info["available"]["one_per_game"])             # (the Amiga: one release of a game, whatever form it comes in)
         self.assertEqual(info["profile"], info["defaults"])
         n64 = library.profile_info(platforms.get_platform("Nintendo 64"))
         self.assertTrue(n64["available"]["one_per_game"])
@@ -977,7 +977,7 @@ class ProfilePersistence(unittest.TestCase):
 
     def test_defaults_per_platform(self) -> None:
         a = library.default_profile(AMIGA)
-        self.assertEqual((a.languages, a.one_per_game, a.rescue_only_dump), (("En",), False, False))
+        self.assertEqual((a.languages, a.one_per_game, a.rescue_only_dump), (("En",), True, False))
         g = library.default_profile(GBA)
         self.assertEqual((g.languages, g.one_per_game, g.region_priority),
                          (("En",), True, ("Europe", "USA", "World", "Japan")))
@@ -1832,14 +1832,14 @@ class ReviewOfTheFixesTests(unittest.TestCase):
 class WhdloadOtherLanguageTests(unittest.TestCase):
     """No version in your languages WHDLoad is known to run: one in another language it is known to run is kept too (Amendment 56)."""
 
-    def run_with(self, names: list[str], shipped: dict) -> tuple[list[Item], library.Selection]:
+    def run_with(self, names: list[str], shipped: dict, profile: Any = None) -> tuple[list[Item], library.Selection]:
         from unittest import mock
         from romorg import whdready
         items = amiga_items(names)
         with mock.patch.object(whdready, "known", return_value=shipped):
             whdready.clear_cache()
             whdready._WITH = whdready._NAMES = None
-            sel = library.select(items, AMIGA_DP, AMIGA)
+            sel = library.select(items, profile or AMIGA_DP, AMIGA)
         whdready.clear_cache()
         whdready._WITH = whdready._NAMES = None
         return items, sel
@@ -1849,9 +1849,13 @@ class WhdloadOtherLanguageTests(unittest.TestCase):
         en, de = "Game (1990)(Pub)[cr X]", ["Game (1990)(Pub)(DE)(Disk 1 of 2)", "Game (1990)(Pub)(DE)(Disk 2 of 2)"]
         boots = {whdready.key_of([n + ".adf" for n in de]): [3, "Game.lha"], whdready.key_of([en + ".adf"]): [-1, "Game.lha"]}
         items, sel = self.run_with([en, *de], boots)
+        # one release of the game: the German set a WHDLoad install runs from; the English crack that does not is superseded
+        self.assertEqual(acts(items, sel), {en + ".adf": SUPERSEDED, de[0] + ".adf": KEEP, de[1] + ".adf": KEEP})
+        self.assertEqual([s.name for s in sel.sets], ["Game (1990)(Pub)(DE)"])
+        # (one version per game off: both are kept, as before)
+        items, sel = self.run_with([en, *de], boots, replace(AMIGA_DP, one_per_game=False))
         self.assertEqual(acts(items, sel), {en + ".adf": KEEP, de[0] + ".adf": KEEP, de[1] + ".adf": KEEP})
         self.assertEqual(sel.decisions[2].codes, (library.WHDLOAD_LANGUAGE,))
-        self.assertEqual([s.name for s in sel.sets], ["Game (1990)(Pub)(DE)"])
         # an English version known to run: the German one stays out
         items, sel = self.run_with([en, *de], {**boots, whdready.key_of([en + ".adf"]): [3, "Game.lha"]})
         self.assertEqual(acts(items, sel)[de[0] + ".adf"], EXCLUDED)

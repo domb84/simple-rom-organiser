@@ -306,6 +306,12 @@ def _borrow_scope(platform: Any) -> bool:
     return bool(_dats(platform, "best_variant_dats")) and _style_of_platform(platform) == STYLE_TOSEC
 
 
+def _has_one_per_game(platform: "Platform") -> bool:
+    """"One version per game" means something where the databases carry regions (No-Intro, Redump) and on the Amiga, whose SPS originals,
+    floppy sets and CD32 discs of a game are choices between releases (:func:`_one_release`)."""
+    return bool(_dats(platform, "region_dats")) or bool(_dats(platform, "image_set_dats"))
+
+
 def default_profile(platform: "Platform") -> LibraryProfile:
     """All rules on, minus the options that do not apply to the platform, and minus bad dumps and modified copies: allowed, they are
     ranked below every clean version (:func:`_pick_best`), so they are kept only for a game that has nothing else (34 Amiga games are
@@ -316,7 +322,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
         best_variant=bool(_dats(platform, "best_variant_dats")),
         complete_only=bool(complete_dats(platform)),
         languages=("En",) if _dats(platform, "language_dats") else (),
-        one_per_game=bool(_dats(platform, "region_dats")),
+        one_per_game=_has_one_per_game(platform),
         borrow_other_editions=_borrow_scope(platform),
         convert_first=bool(getattr(platform, "convertible", False)),               # (where a system converts nothing, or never deletes
         delete_converted="delete_converted" in applicable_fields(platform),       #  an original - SNES / N64 - the rule is off, not on)
@@ -370,7 +376,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
     for field, ok in (("latest_only", bool(_dats(platform, "latest_dats"))), ("best_variant", bool(_dats(platform, "best_variant_dats"))),
                       ("complete_only", bool(_dats(platform, "m3u_dats"))), ("languages", has_langs), ("keep_other_language", has_langs),
                       ("keep_flags", tosec), ("rescue_only_dump", bool(_dats(platform, "m3u_dats")) and style == STYLE_TOSEC),
-                      ("region_priority", has_regions), ("region_ties", has_regions), ("one_per_game", has_regions), ("borrow_other_editions", _borrow_scope(platform))):
+                      ("region_priority", has_regions), ("region_ties", has_regions), ("one_per_game", _has_one_per_game(platform)), ("borrow_other_editions", _borrow_scope(platform))):
         if ok:
             out.add(field)
     if getattr(platform, "layout", "") == "game_folder":            # (the disc systems with a folder per game: Dreamcast, PlayStation, PlayStation 2)
@@ -1793,11 +1799,13 @@ def _select_base(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
     sel.incomplete = [x for x in sel.incomplete
                       if x.kept or any(sel.decisions[k].action == INCOMPLETE for k in x.present.values())]
     if scope.disc and profile.best_variant:
-        _rank_across(items, sel, profile, platform)
+        _rank_across(items, sel, profile, platform, images=profile.one_per_game)
     if profile.prefer_unprotected and profile.best_variant and _dats(platform, "image_set_dats"):
         _prefer_unprotected(items, sel, profile, platform)
     if profile.prefer_whdload and profile.languages and _dats(platform, "best_variant_dats"):
         _whdload_language(items, sel, profile, platform)
+    if profile.one_per_game and profile.best_variant and _dats(platform, "image_set_dats"):
+        _one_release(items, sel, profile, platform)
     return sel
 
 
@@ -1966,7 +1974,7 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
                         decide(it, SUPERSEDED, superseded_by=win, reason=f"superseded by {win}")
 
 
-def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
+def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any, images: bool = False) -> None:
     """One release per game across the system's DATs: a game kept both as a disc (a CD DAT's) and on floppies (its games DAT) keeps
     the best of your languages, then the best by :data:`tags.PLATFORM_ORDER` - a CD32 disc, an AGA floppy, a CDTV disc, an ECS floppy, the rest; the others are
     superseded. Two discs of a game in two CD DATs ([ISO] and [IMG]): the one of the DAT listed first."""
@@ -1974,14 +1982,17 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
     disc_dats = set(_dats(platform, "disc_dats"))
     gdat = getattr(platform, "game_dat", "")
     order = {d: i for i, d in enumerate(_dats(platform, "dats"))}
+    image_sets = set(_dats(platform, "image_set_dats")) if images else set()      # (an original - SPS - is a release like a floppy set)
     releases: dict[tuple, dict[tuple, list[Item]]] = {}       # game -> release -> its kept files
     for it in items:
         d = sel.decisions.get(it.key)
-        if d is None or d.action != KEEP or (it.dat not in disc_dats and it.dat != gdat):
+        if d is None or d.action != KEEP or (it.dat not in disc_dats and it.dat != gdat and it.dat not in image_sets):
             continue
         if it.dat in disc_dats:                               # (the discs of the one release _select_discs kept: the name before the disc token)
             m = _DISC_RE.search(it.rom.game)
             rel = (it.dat, it.rom.game[:m.start()] if m else it.rom.game)
+        elif it.dat in image_sets:
+            rel = (it.dat, it.rom.game)
         else:
             rel = (it.dat, d.set_id if d.set_id is not None else it.rom.name)
         releases.setdefault(game_key(it, profile.combine_alt_titles), {}).setdefault(rel, []).append(it)
@@ -1996,7 +2007,7 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
                                                       tags.PLATFORM_ORDER.index(cls(*kv)), order.get(kv[0][0], 99)))
         best_rel, best_members = ranked[0]
         best_cls = cls(best_rel, best_members)
-        winner = best_rel[1] if best_rel[0] in disc_dats else _stem(best_members[0].rom.name)
+        winner = best_rel[1] if best_rel[0] in disc_dats or best_rel[0] in image_sets else _stem(best_members[0].rom.name)
         gone: set[int] = set()
         for rel, members in ranked[1:]:
             c = cls(rel, members)
@@ -2009,6 +2020,75 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
                 gone.add(it.key)
         if gone:
             sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
+
+
+def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
+    """One release per game among the originals (SPS / IPF, ``Platform.image_set_dats``) and the floppy sets kept of it (the games DAT): the
+    CD32 and CDTV discs were ranked against them by :func:`_rank_across`. In order: a version a WHDLoad install boots from (when WHDLoad is
+    preferred), your languages, how well an install runs from it (``whdready.level``), a clean dump, the best chipset (AGA > ECS > OCS), the
+    newest version (an original or a floppy set alike), the original before a floppy set, the fewest extra tags (a compilation, a budget
+    re-release, an alternate dump), then the name. The others are superseded."""
+    from . import whdready
+    image_sets = set(_dats(platform, "image_set_dats"))
+    gdat = getattr(platform, "game_dat", "")
+    disc_dats = set(_dats(platform, "disc_dats"))
+    releases: dict[tuple, dict[tuple, list[Item]]] = {}       # game -> release -> its kept files
+    discs: dict[tuple, str] = {}                              # game -> its kept CD32 / CDTV disc (a disc needs no WHDLoad: it wins outright)
+    for it in items:
+        d = sel.decisions.get(it.key)
+        if d is None or d.action != KEEP:
+            continue
+        if it.dat in disc_dats:
+            m = _DISC_RE.search(it.rom.game)
+            discs.setdefault(game_key(it, profile.combine_alt_titles), it.rom.game[:m.start()] if m else it.rom.game)
+            continue
+        if it.dat not in image_sets and it.dat != gdat:
+            continue
+        if it.dat == gdat and d.set_id is None and _disk_info(_tags_of(it)) is not None:
+            continue                                          # (a disk of a set that is not complete: kept as it is, no release of its own)
+        rel = (it.dat, it.rom.game) if it.dat in image_sets else (it.dat, d.set_id if d.set_id is not None else it.rom.name)
+        releases.setdefault(game_key(it, profile.combine_alt_titles), {}).setdefault(rel, []).append(it)
+    gone: set[int] = set()
+    for g, rels in releases.items():
+        if g in discs:
+            for members in rels.values():
+                for it in members:
+                    sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=discs[g],
+                                                     reason=f"superseded by {discs[g]} (the game's disc needs no WHDLoad: one release of the game)")
+                    gone.add(it.key)
+            continue
+        if len(rels) < 2:
+            continue
+        info: dict[tuple, tuple] = {}                          # release -> (tags of it, its name, its WHDLoad level, flawed)
+        for rel, members in rels.items():
+            anchor = members[0] if rel[0] in image_sets else min(members, key=lambda m: (m.rom.name, m.key))
+            t = _tags_of(anchor)
+            level = (whdready.release_of(anchor.rom) or [None])[0] if rel[0] in image_sets else whdready.level_of(m.rom for m in members)
+            flawed = any(tags.exclusion_rules(_tags_of(m)) & FLAWED_RULES for m in members)
+            info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed)
+        vkeys = tags.group_version_keys([v[1] + ".ipf" if r[0] in image_sets else v[1] for r, v in info.items()], STYLE_TOSEC)
+        pool = list(rels)
+        for key in (lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS,      # (a version that boots with WHDLoad: also in another language, as _whdload_language kept it)
+                    lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile),
+                    lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0,
+                    lambda r: info[r][3],
+                    lambda r: tags.PLATFORM_ORDER.index(tags.platform_class(info[r][0]))):
+            best = min(key(r) for r in pool)
+            pool = [r for r in pool if key(r) == best]
+        vk = lambda r: vkeys[info[r][1] + ".ipf" if r[0] in image_sets else info[r][1]]       # noqa: E731
+        newest = max(vk(r) for r in pool)                      # (the newest version: whatever its form - an original or a floppy set)
+        pool = [r for r in pool if vk(r) == newest]
+        win = min(pool, key=lambda r: (r[0] not in image_sets, sum(1 for f in info[r][0].dump_flags if not f.isdigit()),
+                                       info[r][1].casefold(), info[r][1], r))
+        for rel, members in rels.items():
+            if rel == win:
+                continue
+            for it in members:
+                sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=info[win][1],
+                                                 reason=f"superseded by {info[win][1]} (one release of the game)")
+                gone.add(it.key)
+    if gone:
+        sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
 
 
 # The protections OpenRetro gives a release that make it ask for the manual (or a code wheel / sheet that came in the box).
@@ -2878,8 +2958,9 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
     opt("one_per_game", "one_per_game", "One version per game", True,
         "Keep ONE version per game: preferred language, then the best region (see region priority), "
         "then the newest revision, then the fewest extra tags. Off: the latest version of every region. "
-        "Multi-disc games keep ALL discs of the chosen release.",
-        [STYLE_NOINTRO, STYLE_REDUMP])
+        "Multi-disc games keep ALL discs of the chosen release. Amiga: one release of a game whatever form it comes in - its CD32 disc, "
+        "else the version a WHDLoad install runs from, else the best original (SPS) or floppy set; the others are superseded.",
+        [STYLE_NOINTRO, STYLE_REDUMP, STYLE_TOSEC])
     opt("complete_only", "complete_only", "Complete multi-disk sets only", True,
         "Multi-disk games need every disk; incomplete ones go to _incomplete (disc systems: PlayStation ...; a raw disc of such a game is "
         "not converted to a CHD either). Off: they stay where they are, with no playlist.", [STYLE_TOSEC, STYLE_REDUMP])
@@ -3053,7 +3134,7 @@ def profile_info(platform: Any, profile: Optional[LibraryProfile] = None,
             "latest_only": bool(_dats(platform, "latest_dats")),
             "best_variant": bool(_dats(platform, "best_variant_dats")),
             "complete_only": bool(complete_dats(platform)),
-            "one_per_game": bool(_dats(platform, "region_dats")),
+            "one_per_game": _has_one_per_game(platform),
             "region_priority": bool(_dats(platform, "region_dats")),
             "languages": has_langs,
             "keep_flags": bool(_dats(platform, "best_variant_dats")) and style == STYLE_TOSEC,

@@ -1508,7 +1508,7 @@ class BugCheckPlanTests(unittest.TestCase):
         plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
         ops = {op.src.name: op for op in plan.ops}
         self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "skip"))
-        self.assertEqual([p.lines[-2:] for p in plan.playlists], [[f"../in/Game disk 2.zip#{d2}|Disk 2", "#SAVEDISK:"]])
+        self.assertEqual([p.lines[-2:] for p in plan.playlists], [[f"../../in/Game disk 2.zip#{d2}|Disk 2", "#SAVEDISK:"]])   # (the playlist is in the game's folder)
 
     def test_your_choice_for_a_game_in_an_archive_with_other_files_holds(self) -> None:
         data = _rand(600, 99)
@@ -1535,7 +1535,7 @@ class BugCheckPlanTests(unittest.TestCase):
         self.assertIn(f"{UNMATCHED_DIR}/in/spiel.zip", self.files())
         self.roms.append(_rom(name, data))                                                  # (a DAT update adds it)
         self.build(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
-        self.assertIn("in/spiel.zip", self.files())
+        self.assertIn("Commodore Amiga - Games/Spiel/spiel.zip", self.files())                                  # (in a folder of its own)
 
     def test_an_old_playlist_whose_name_differs_in_case_is_removed(self) -> None:
         d1, d2 = "Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf"
@@ -1732,7 +1732,8 @@ class SaveDiskPlaylistTests(unittest.TestCase):
             self.have(n, f"{GAMES}/{n}")
         old = self.root / GAMES / "Pair (1991)(Pub).m3u"
         old.write_text(m3u.M3U_MARKER + f"\n{self.D1}\n{self.D2}\n", encoding="utf-8")
-        pl = self.playlists(whd=(self.SOLO, self.D1))
+        legacy = dataclasses.replace(library.default_profile(self.AMIGA), one_per_game=False)     # (the games stay in their DAT's folder)
+        pl = self.playlists(legacy, whd=(self.SOLO, self.D1))
         self.assertEqual(pl, {})
         gone = [op for op in self.last.ops if op.kind == "m3u" and op.status == organiser.DELETE_STATUS]
         self.assertEqual([op.src.name for op in gone], [old.name])

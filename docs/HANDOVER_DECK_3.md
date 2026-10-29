@@ -42,6 +42,8 @@ is left (a toast when done, "What's running" in the menu).
 8. **Amendment 91, calculation times.** Version choice remembered (`library.base_selection`), the database's item list shared
    (`totals.target_items`), plain-text paths in the big loops. A top-N / rating change: ~39 s -> ~23 s of calculations on the Amiga.
    Left: totals before the preview (UX choice), remembered `rated_all`.
+9. **Amendment 92, one release per Amiga game.** `library._one_release` (CD32 disc, else the WHDLoad-boot version, else best original /
+   floppy set), `organiser._into_game_folders` (`Commodore Amiga - Games/<title>/`).
 
 ## Open, only if the user asks
 

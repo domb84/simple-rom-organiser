@@ -709,6 +709,13 @@
       const t = tile({ title: p.name, small: true, href: `#/system/${p.slug}`, key: p.slug,
         sub: ls ? `${Math.round(ls.pct || 0)}%` : p.folder ? "Not scanned" : "Not set up", extra });
       t.dataset.name = p.name.toLowerCase();
+      if (p.folder && ls) {                    // (resting on a system - pointer or controller focus - reads its saved scan, so the click finds it)
+        let wait = 0;
+        const rest = () => { clearTimeout(wait); wait = setTimeout(() => { post("/api/scan/warm", { platform: p.name }).catch(() => {}); }, 200); };
+        const leave = () => clearTimeout(wait);
+        t.addEventListener("pointerenter", rest); t.addEventListener("focus", rest);
+        t.addEventListener("pointerleave", leave); t.addEventListener("blur", leave);
+      }
       return t;
     };
     const groups = [["Your systems", setUp], ["Other systems", S.platforms.filter((p) => !p.folder)]].filter(([, list]) => list.length);

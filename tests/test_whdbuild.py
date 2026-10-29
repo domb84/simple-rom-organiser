@@ -69,6 +69,31 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn(lha, scanner.collect_files(self.root))                        # (no file of a DAT: never "unmatched")
         self.assertEqual(self.build(todo)["kept"], 1)                                  # (the same again: left as it is)
 
+    def test_the_archive_is_planned_where_the_disks_will_be_and_the_list_shows_it(self) -> None:
+        from romorg import server, treeview
+        plan = self.plan()
+        folder = self.root / "Commodore Amiga - Games" / "Zap"
+        op = plan.owners[1][0]
+        op.dst, op.status = folder / NAME, "move"                                      # (the library build moves the disk into the game's folder)
+        [t] = whdbuild.targets(plan, AMIGA, planned=True)
+        self.assertEqual((t.dest, t.was), (folder / "Zap (1993)(Acme)[cr FLT].lha", self.root / "Games" / "Zap (1993)(Acme)[cr FLT].lha"))
+        self.assertEqual(whdbuild.targets(plan, AMIGA)[0].dest, self.root / "Games" / "Zap (1993)(Acme)[cr FLT].lha")    # (before: beside the disk as it is)
+        stub = SimpleNamespace(_library_mod=lambda: library, _profile=lambda platform: library.default_profile(platform))
+        state = SimpleNamespace(root=self.root, platform=AMIGA)
+        entries = [{"side": treeview.LIBRARY, "parts": ("Commodore Amiga - Games", "Zap", NAME), "size": 1, "state": treeview.MOVED, "from": f"Games/{NAME}",
+                    "row": None, "text": ""}]
+        server.App._add_whdload_builds(stub, state, plan, entries, treeview)           # (a new file beside the disk)
+        self.assertEqual([(e["parts"][-1], e["state"]) for e in entries], [(NAME, treeview.MOVED), ("Zap (1993)(Acme)[cr FLT].lha", treeview.NEW)])
+        entries = [{"side": treeview.LIBRARY, "parts": ("Games", "Zap (1993)(Acme)[cr FLT].lha"), "size": 9, "state": treeview.WHDLOAD, "from": "",
+                    "row": None, "text": ""}]
+        server.App._add_whdload_builds(stub, state, plan, entries, treeview)           # (one built before: it moves with its disk)
+        self.assertEqual([(e["parts"], e["state"], e["from"]) for e in entries],
+                         [(("Commodore Amiga - Games", "Zap", "Zap (1993)(Acme)[cr FLT].lha"), treeview.MOVED, "Games/Zap (1993)(Acme)[cr FLT].lha")])
+        off = SimpleNamespace(_library_mod=lambda: library, _profile=lambda platform: library.LibraryProfile(build_whdload=False))
+        entries = []
+        server.App._add_whdload_builds(off, state, plan, entries, treeview)            # (the rule off: no archive is made, none is listed)
+        self.assertEqual(entries, [])
+
     def test_the_archive_follows_its_disks_and_goes_with_its_game(self) -> None:
         self.build(whdbuild.targets(self.plan(), AMIGA))
         (self.root / "Elsewhere").mkdir()

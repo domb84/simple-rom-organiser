@@ -1022,6 +1022,8 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     ops = core.ops
     sel = core.selection if core.selection is not None else library.Selection()
 
+    if _game_folders(profile, platform):
+        _into_game_folders(core.owners, sel, root, platform)
     whd, whd_games = _whdload_games(sel, core.owners, profile, platform)
     games = _amiga_game_dats(profile, platform)
     combine = getattr(sel, "combine_alt", True)
@@ -1083,6 +1085,60 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
         deleting.add(_fold(st.path))
         kept_ops.append(RenameOp(st.path, st.path, DELETE_STATUS, st.reason, "", "m3u"))
     return LibraryPlan(kept_ops, playlists, sel, profile, core.owners)
+
+
+GAMES_DIR = "Commodore Amiga - Games"          # the Amiga's kept games: <root>/Commodore Amiga - Games/<title>/ (the disks or the original, the CD32 disc, the WHDLoad install)
+
+
+def _game_folders(profile: Any, platform: Any) -> bool:
+    """The Amiga with "One version per game" and "Best variant": one folder per game under ``Commodore Amiga - Games`` (see :func:`_into_game_folders`)."""
+    return (platform is not None and bool(getattr(platform, "image_set_dats", ()) or ()) and bool(getattr(profile, "one_per_game", False))
+            and bool(getattr(profile, "best_variant", False)))
+
+
+def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> None:
+    """Send each kept file of a game - its SPS zip, its floppy set, its CD32 disc - to ``<root>/Commodore Amiga - Games/<title>/`` instead of the folder of
+    its DAT (the playlist of a set and the WHDLoad install, written beside the disks, follow them). The title is the game's, without year or
+    publisher; two games of one title (``library.KEEP_APART``) get the publisher's name, then the year, added."""
+    from . import library
+    wanted = {getattr(platform, "game_dat", "")} | set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ())
+    combine = getattr(sel, "combine_alt", True)
+    games: dict[tuple, list[int]] = {}
+    for key, (op, unit) in owners.items():
+        d = sel.decisions.get(key)
+        if d is None or d.action != library.KEEP or unit.link or op.status not in ("ok", "move") or op.unmatched:
+            continue
+        item = _item_of(key, owners)
+        if item.dat in wanted:
+            games.setdefault(library.game_key(item, combine), []).append(key)
+    by_title: dict[str, list[tuple]] = {}
+    tag: dict[tuple, Any] = {}
+    for g, keys in games.items():
+        tag[g] = library._tags_of(_item_of(min(keys), owners))
+        by_title.setdefault(safe_filename(tag[g].title).casefold(), []).append(g)
+    taken: set[str] = set()
+    folder: dict[tuple, str] = {}
+    for _title, group in sorted(by_title.items()):
+        for g in sorted(group, key=lambda g: (tag[g].publisher.casefold(), tag[g].date, g)):
+            t = tag[g]
+            name = safe_filename(t.title)
+            for extra in ((), (t.publisher,), (t.publisher, t.date[:4])):
+                name = safe_filename(t.title + "".join(f" ({x})" for x in extra if x))
+                if len(group) == 1 or name.casefold() not in taken:
+                    break
+            n = 1
+            while name.casefold() in taken:                         # (the same everything: a number)
+                n += 1
+                name = safe_filename(f"{t.title} ({n})")
+            taken.add(name.casefold())
+            folder[g] = name
+    for g, keys in games.items():
+        for key in keys:
+            op = owners[key][0]
+            new = _finish_op(op.src, Path(root) / GAMES_DIR / folder[g] / op.dst.name, [], op.rom_name, op.dat, False)
+            op.dst, op.status, op.kind = new.dst, new.status, new.kind
+            if op.status == "move":
+                op.reason = ", ".join(x for x in (op.reason, "into the game's folder") if x)
 
 
 def _amiga_game_dats(profile: Any, platform: Any) -> frozenset:

@@ -1041,7 +1041,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
 
         result = self.job("/api/library/apply", {})["result"]
         self.assertFalse(result.get("failed"), result)
-        self.assertTrue((self.root / GAMES / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())
+        self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())       # (a folder for the game)
         self.assertTrue((self.root / FIRMWARE / "Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom").is_file())
         self.assertTrue((self.root / "_unmatched" / "incoming" / "readme.txt").is_file())
         self.assertFalse((self.root / "incoming").exists())  # emptied by our moves -> removed
@@ -1051,8 +1051,8 @@ class RealModulesIntegrationTests(unittest.TestCase):
 
         m3u = self.call("POST", "/api/m3u/plan", {"labels": True, "savedisk": True})
         self.assertEqual(m3u["counts"], {"ok": 1})                                         # the library build wrote it (with a save disk)
-        self.assertEqual(m3u["items"][0]["dir"], GAMES)
-        self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
+        self.assertEqual(m3u["items"][0]["dir"], "Commodore Amiga - Games/Game")
+        self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub).m3u").is_file())
 
 
     def test_library_built_in_another_folder(self) -> None:
@@ -1414,7 +1414,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(plan["saves"]["rename"], {"files": 2, "games": 1, "conflicts": 0})
         self.job("/api/library/apply", {"plan_id": plan["plan_id"]})
         self.assertEqual(sorted(p.name for p in saves.iterdir()), ["Game (1990)(Pub).srm", "Game (1990)(Pub).state1"])
-        self.assertTrue((self.root / GAMES / "Game (1990)(Pub).m3u").is_file())
+        self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub).m3u").is_file())
 
 
 
@@ -2209,7 +2209,7 @@ class LibraryServerTests(ServerTestCase):
         self.assertFalse(info["profile"]["rescue_only_dump"])
         self.assertIn("available_languages", info)
         self.assertIn("regions", info)
-        self.assertNotIn("one_per_game", [e["id"] for e in info["catalog"]])  # consoles only
+        self.assertIn("one_per_game", [e["id"] for e in info["catalog"]])  # (the Amiga: one release of a game)
 
     def test_profile_save_new_fields_and_validation(self) -> None:
         for field in ("language_dats", "region_dats"):                  # (the rules a system only has when its DATs carry the tags)

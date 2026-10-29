@@ -375,7 +375,7 @@ class BuildLibraryTests(Scratch):
         j = self.job()
         self.assertEqual(j["status"], "done", j)
         files = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*") if p.is_file() and not p.name.startswith(".romorg"))
-        self.assertEqual(files, [f"{ISO_DAT}/{self.good}.chd"])
+        self.assertEqual(files, [f"Commodore Amiga - Games/{self.good.split(' (')[0]}/{self.good}.chd"])                  # (the game's own folder)
         self.assertEqual([p.name for p in aside.rglob("*.zip")], ["bad.zip"])            # (excluded: archived as it is, not converted)
         totals = self.call(f"/api/library/totals?platform={urllib.parse.quote(PLAT)}")
         for _ in range(200):

@@ -371,6 +371,7 @@ class ScanState:
     items: dict[Any, list[tuple[dict[str, Any], str]]] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
     unchecked: bool = False            # read from disk at the start: checked against the folder and the DATs when first opened
+    checked_at: float = 0.0            # when a warm-up last found it current (a click within CHECK_FRESH of it need not look again)
     options: tuple | None = None       # the scan options it was made with (a scan read from disk)
     # The scan objects behind the rows of each checksum kind (same index as the row's ``id``), a lazy
     # entry-path -> Match index and the multi-disk sets of the matched disks (built on first use).
@@ -1619,7 +1620,8 @@ class App:
         """The saved scan of a system when nothing changed since it was made (the folder, the DATs, the scan options)."""
         try:
             root = Path(os.path.abspath(os.path.expanduser(folder)))
-            got = _mod("scancache").load(platform.name, root, self._dats_signature(platform), self._scan_options())
+            dats_sig, options = self._dats_signature(platform), self._scan_options()
+            got = _mod("scancache").load(platform.name, root, dats_sig, options)
             if got is None:
                 return None
             extra = got["extra"]
@@ -1628,8 +1630,8 @@ class App:
             summary = extra.get("summary") if extra.get("summary_version") == SUMMARY_VERSION else None   # (an older one: made again)
             return ScanState(result=result, root=root, platform=platform, dat_names=list(extra["dat_names"]),
                              missing_dats=list(extra["missing_dats"]), layout=extra["layout"],
-                             dats_sig=self._dats_signature(platform), stamp=got["stamp"],
-                             summary=dict(summary) if isinstance(summary, dict) else None, options=tuple(self._scan_options()))
+                             dats_sig=dats_sig, stamp=got["stamp"],
+                             summary=dict(summary) if isinstance(summary, dict) else None, options=tuple(options))
         except Exception:  # noqa: BLE001 - then the scan is simply done again
             traceback.print_exc()
             return None
@@ -1671,6 +1673,7 @@ class App:
         result.checks = checks
 
     SCANS_KEPT = 6
+    CHECK_FRESH = 30.0               # seconds a warm-up's look at a scan's folder stands
 
     def _remember_scan(self, state: ScanState, on_disk: bool = True) -> None:
         """Keep the finished scan of a system, so coming back to it later needs no new scan (``scan_select``). The oldest are
@@ -1695,6 +1698,8 @@ class App:
             state = self._scans.get(platform.name)
             current = self._scan
         folder = self._folders().get(platform.name)
+        if state is not None and state.unchecked and time.monotonic() - state.checked_at < self.CHECK_FRESH:
+            state.unchecked = False                                # (looked at a moment ago, when the pointer came to its tile)
         if state is not None and state.unchecked and not self._still_current(state):
             with self._lock:                                       # (read at the start, changed since: a new scan is needed)
                 if self._scans.get(platform.name) is state:
@@ -1712,6 +1717,35 @@ class App:
                 self._scan = state
             self._config_update(last_platform=platform.name)
         return {"selected": True, "platform": platform.name}
+
+    def scan_warm(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/scan/warm {platform}``: read the system's saved scan in the background (and check it against its folder), so the
+        click that follows needs no wait - what the page asks when the pointer rests on a system's tile. Selects nothing; never raises."""
+        try:
+            platform = self._resolve_platform(body.get("platform"))
+            folder = self._folders().get(platform.name)
+        except ApiError:
+            return {"warming": False}
+        with self._lock:
+            known = platform.name in self._scans
+        if known or not folder or not Path(folder).is_dir():
+            return {"warming": False}
+
+        def run() -> None:
+            try:
+                with self._lock:
+                    if platform.name in self._scans:
+                        return
+                state = self._load_kept_scan(platform, folder)
+                if state is not None:
+                    state.unchecked = True
+                    if self._still_current(state):                   # (checked now rather than by the click: ~1 s on a big folder)
+                        state.unchecked, state.checked_at = True, time.monotonic()   # (the click looks again unless it comes soon)
+                    self._summary(state)
+            except Exception:  # noqa: BLE001 - a head start only: the click reads it then
+                traceback.print_exc()
+        threading.Thread(target=run, name="romorg-scan-warm", daemon=True).start()
+        return {"warming": True}
 
     def _load_kept_scan(self, platform: Any, folder: str) -> ScanState | None:
         """The saved scan of a system, read once (a second asker waits for the first and takes what it read) and remembered. One saved
@@ -5776,6 +5810,7 @@ class App:
         elif (getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config())) \
                 or self._compress_7z(state.platform):
             self._add_disc_conversions(state, entries, treeview)
+        self._add_whdload_builds(state, plan, entries, treeview)
         games = self._kind_rows(state, "games")
         try:
             self._annotate_ratings(state, games)
@@ -6125,6 +6160,37 @@ class App:
             entries.append({"side": treeview.LIBRARY, "parts": parts(op.dst), "size": 0, "state": treeview.CONVERTED,
                             "from": "/".join(parts(op.src)), "row": row,
                             "text": "/".join(parts(op.dst) + parts(op.src)).casefold()})
+
+    def _add_whdload_builds(self, state: ScanState, plan: Any, entries: list[dict[str, Any]], treeview: Any) -> None:
+        """The WHDLoad archive ``Build WHDLoad games`` (the step after the library build) makes of each game the library keeps, where it
+        goes: beside the game's disks in their new folder - a new file; one built before, beside the disks as they are now, moves with them."""
+        platform = state.platform
+        if "build_whdload" not in self._library_mod().applicable_fields(platform) or not self._profile(platform).build_whdload:
+            return
+        root = Path(state.root)
+        try:
+            todo = _mod("whdbuild").targets(plan, platform, planned=True)
+        except Exception:  # noqa: BLE001 - the list shows what it can
+            traceback.print_exc()
+            return
+        index = {tuple(e["parts"]): e for e in entries if e["side"] == treeview.LIBRARY}
+        for t in todo:
+            try:
+                parts = tuple(Path(t.dest).relative_to(root).parts)
+            except ValueError:
+                continue
+            if parts in index:                                   # (there already, and stays)
+                continue
+            old = index.get(tuple(Path(t.was).relative_to(root).parts)) if t.was is not None and Path(t.was).is_relative_to(root) else None
+            if old is not None:                                  # (built before beside the old disks: goes with them)
+                old.update(parts=parts, state=treeview.MOVED, text="/".join(parts).casefold())
+                old["from"] = "/".join(Path(t.was).relative_to(root).parts)
+                index[parts] = old
+                continue
+            e = {"side": treeview.LIBRARY, "parts": parts, "size": 0, "state": treeview.NEW, "from": "", "row": None,
+                 "text": "/".join(parts).casefold() + " whdload"}
+            entries.append(e)
+            index[parts] = e
 
     def _add_disc_conversions(self, state: ScanState, entries: list[dict[str, Any]], treeview: Any) -> None:
         """The CD32 / CDTV discs the build converts, as the tree shows them: the game's file where it goes is its CHD, and the
@@ -6757,6 +6823,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/retroarch/bios/scan"): App.retroarch_bios_scan,
     ("POST", "/api/retroarch/bios/apply"): App.retroarch_bios_apply,
     ("POST", "/api/scan/select"): App.scan_select,
+    ("POST", "/api/scan/warm"): App.scan_warm,
     ("GET", "/api/switch"): App.switch_get,
     ("POST", "/api/switch/config"): App.switch_config,
     ("POST", "/api/settings/archive"): App.archive_save,

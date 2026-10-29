@@ -1917,7 +1917,7 @@ class NextUiTests(UiTestCase):
         self.assertEqual(self.active(), "build-start")
         self.tap("A")
         self.page.wait("document.getElementById('main').textContent.includes('Library built')", timeout=120)
-        self.assertTrue((self.fx.root / "Commodore Amiga - Games - [ADF]").is_dir())
+        self.assertTrue((self.fx.root / "Commodore Amiga - Games").is_dir())                                  # (a folder for each game)
         self.assertIn("10 files moved or renamed", self.page.eval("document.getElementById('main').textContent"))
         self.no_js_errors()
 
@@ -2113,7 +2113,7 @@ class NextUiTests(UiTestCase):
         self.start("#/system/commodore-amiga/files?view=changes")
         self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
         self.click("#main [data-section=list] .row", "Commodore Amiga - Games")
-        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 7", timeout=30)
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 5", timeout=30)
         self.pad()
         self.page.eval("[...document.querySelectorAll('#main [data-section=list] .row')].pop().focus()")
         self.page.wait("document.getElementById('main').scrollTop > 0")                # the list scrolled to the last row

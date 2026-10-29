@@ -3943,3 +3943,35 @@ detector; each merge was made only where the copies were the same code.
   key could not tell two apart safely).
 * Verified: all 16 of the user's systems on four rule sets each give the same numbers, lists, plans, rows and Files entries as the code
   before (a snapshot comparison), then the full test suite.
+
+**AMENDMENT 92 (v0.5) — One release of an Amiga game, in a folder of its own.**
+
+* The user: "when i build the top 100 games for amiga, the file tree shows there are multiple versions" of Lemmings, Alien Breed, Cannon
+  Fodder, Another World, The Chaos Engine, Defender of the Crown, Falcon, Kick Off 2, Millennium; "we have no reason to keep the original
+  root folders ... it should [go] to a folder with the game in, including the whdloader lha and the disk archive".
+* Why there were several: the SPS database's releases were all kept on purpose (Amendments 51-52), the floppy set and the CD32 disc were
+  chosen apart, and "One version per game" was off for every system with no regions (the Amiga). On the user's data Lemmings kept six SPS
+  zips and its CD32 disc.
+* The rule "One version per game" (`one_per_game`) now exists on the Amiga, on by default, and with "Best variant" does `library._one_release`
+  after the version choice (so it is part of the remembered base selection: it was already one of its fields). One release of a game: a kept
+  CD32 / CDTV disc first (it needs no WHDLoad: it supersedes every SPS release and floppy set, also one kept in another language for a WHDLoad
+  install); else among the kept SPS releases and floppy sets: a version a WHDLoad install boots from (`whdready`, with "Prefer WHDLoad"), your
+  languages, how well an install runs from it, a clean dump, the best chipset (AGA > ECS > OCS), the newest version (an original or a floppy
+  set alike: Falcon's v1.1 floppy set, which boots, beats its v1.00 SPS release), an original before a floppy set, the fewest extra tags
+  (compilation, budget, alternate), the name. "Boots" is `whdready` level 3 (a headless PUAE test of the install); 2 installs the game's files
+  with no boot test, 1 installs disk images, 0 does not install, -1 installs but does not start. The others are `superseded` ("one release
+  of the game").
+  `_rank_across` takes SPS releases in too, so a CD32 disc ranks against them as against floppies. The disks of a set that is not complete
+  (complete sets only off) are no release. Off, or "Best variant" off: nothing changes.
+* Layout: with the rule on, `organiser._into_game_folders` (in `_plan_library`, before the WHDLoad targets and the playlists are planned, so
+  they follow) sends each kept file of a game to `<root>/Commodore Amiga - Games/<title>/`: its SPS zip or floppy disks, the playlist, the CD32 disc (its CHD is
+  made there), and the WHDLoad `.lha` (written beside the disks). The title is the game's, without year or publisher; two games of one title
+  (`KEEP_APART`) get the publisher, then the year. Archives that hold other files next to a game are still never moved (`skip`).
+* The user's nine games: one release each (Lemmings, Alien Breed - Tower Assault, Cannon Fodder and The Chaos Engine: their CD32 disc;
+  Another World, Defender of the Crown, Kick Off 2 (v1.4e: the only version that boots): one SPS release; Falcon: its v1.1 floppy set; Millennium 2.2 and "Millenium - Return to Earth" are one game
+  by LaunchBox's alternate titles: the Paragon release). Kick Off 2 and "Kick Off 2 - The Final Whistle" (a data disk) stay two games.
+* The Files list shows what the build produces, the WHDLoad archives too: `App._add_whdload_builds` adds a `new` entry for each `<release>.lha`
+  `Build WHDLoad games` (the step after the library build) will write, beside the disks in their new folder (`whdbuild.targets(planned=True)`
+  works out where the disks WILL be; `Target.was` is where one built before sits now: its entry becomes a `moved` one). Only with the rule
+  "Build WHDLoad games". On the user's data: 82 archives for the top 100.
+* Tests: `tests/test_one_release.py` (14); the tests that built an Amiga library in its DAT folder now expect `Commodore Amiga - Games/<title>/`.
