@@ -4155,3 +4155,6 @@ detector; each merge was made only where the copies were the same code.
   "Tidy the archive (N files)" when `archive_tidy` (the top folder's answer: existing archive files that would move) is above 0.
 * What an earlier build left in the ROM folder's own `_excluded/` ... is laid out the same way when a build sweeps it into the archive
   (`App._relay_sweep`).
+* (Amendment 107, addendum) An incomplete system disk (Workbench, Kickstart disks, firmware) is no game to look at either: the Needs-a-look
+  page's incomplete sets (`incomplete_sets`, `incomplete_total`) and the tile's Incomplete list (`TotalsManager.problems`) skip the DATs of
+  `totals.apart_dats`, as the counts do.

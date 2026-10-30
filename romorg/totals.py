@@ -646,8 +646,9 @@ class TotalsManager:
             want, u = self._want.get(name), self._users.get(name)
             if want is None or want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
                 return None
+            apart = apart_dats(getattr(want, "platform", None))          # (a system disk or add-on is no game to look at)
             rows = [{"title": names[0], "dat": key[0], "have": names, "why": why}
-                    for key, (st, names, why) in u[1].problems.items() if st == state]
+                    for key, (st, names, why) in u[1].problems.items() if st == state and key[0] not in apart]
         rows.sort(key=lambda r: (r["title"].lower(), r["dat"]))
         return rows
 

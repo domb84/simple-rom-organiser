@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -638,6 +639,16 @@ class BugCheckTotalsTests(unittest.TestCase):
                 self.assertTrue(m.wait_idle(30))
             names = m.missing_names(AMIGA.name)
         self.assertEqual(names, frozenset({"Other (1992)(Pub).adf"}))
+
+    def test_an_incomplete_system_disk_is_no_game_to_look_at(self) -> None:
+        wb = "Commodore Amiga - Operating Systems - Workbench"
+        m = totals.TotalsManager(lambda platform: [])
+        m._want[AMIGA.name] = totals._Want(AMIGA, EN, ("t",), None, ("u",))
+        incomplete = totals.INCOMPLETE_OWNED
+        m._users[AMIGA.name] = (("u",), types.SimpleNamespace(games={}, problems={
+            (wb, "Workbench v1.3"): (incomplete, ("Workbench v1.3 (Disk 2 of 2)(Extras).adf",), "missing disk 1"),
+            ("Commodore Amiga - Games - [ADF]", "Solo"): (incomplete, ("Solo (1992)(Pub)(Disk 2 of 2).adf",), "missing disk 1")}))
+        self.assertEqual([r["title"] for r in m.problems(AMIGA.name, incomplete)], ["Solo (1992)(Pub)(Disk 2 of 2).adf"])
 
     def test_one_rule_says_what_counts_as_a_game(self) -> None:
         apart = totals.apart_dats(AMIGA)

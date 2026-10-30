@@ -3927,7 +3927,9 @@ class App:
         actionable = sum(1 for op in ops if op.status in ACTIONABLE) + writes
         incomplete = []
         # (an incomplete set of a game that is kept complete in another version is no problem: not listed, only counted)
-        open_sets = [e for e in (getattr(plan.selection, "incomplete", ()) or ()) if not getattr(e, "covered_by", "")]
+        apart = _mod("totals").apart_dats(state.platform)           # (system disks, add-ons: no games, nothing to complete)
+        sets = [e for e in (getattr(plan.selection, "incomplete", ()) or ()) if e.dat not in apart]
+        open_sets = [e for e in sets if not getattr(e, "covered_by", "")]
         owners = getattr(plan, "owners", None) or {}
         game_of = self._incomplete_game(plan.profile, owners)
         for entry in open_sets[:200]:
@@ -3949,7 +3951,7 @@ class App:
             borrowed=self._borrow_summary(plan),
             incomplete_total=len(open_sets),
             incomplete_games=len({game_of(e) for e in open_sets}),
-            incomplete_covered=len(getattr(plan.selection, "incomplete", ()) or ()) - len(open_sets),
+            incomplete_covered=len(sets) - len(open_sets),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
             rating=dict(getattr(plan.selection, "rating", None) or {}),
             warnings=[w["text"] for w, _ in state.items[wkey]],
