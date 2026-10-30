@@ -420,7 +420,7 @@
             <details class="incomplete-box vanish-box hidden" id="lib-vanish-box">
               <summary id="lib-vanish-title">Games that vanish</summary>
               <p class="muted small">These titles have no version that survives your rules, so none of their files stay in the library
-                (they are archived in <code>_excluded/</code>, <code>_superseded/</code> or <code>_incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
+                (they are archived in <code>Excluded/</code>, <code>Superseded/</code> or <code>Incomplete/</code>, never deleted). Change the rules above, or use a quick fix.</p>
               <div class="chips" id="lib-vanish-filters"></div>
               <div class="chips vanish-hints" id="lib-vanish-hints"></div>
               <div id="lib-vanish-table"></div>
@@ -508,9 +508,9 @@
             <legend>Where to build</legend>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-here" checked> In this folder (reorganises the source: files are moved)</label>
             <label class="check"><input type="radio" name="lib-where" id="lib-where-other"> In another folder (the files are copied or moved there)</label>
-            <div class="muted small hidden" id="lib-aside-none">No archive folder is set (<a href="#/settings">Settings</a>): what the rules leave out stays in this folder, in <code>_excluded</code>, <code>_superseded</code> ...</div>
+            <div class="muted small hidden" id="lib-aside-none">No archive folder is set: choose one in <a href="#/settings">Settings</a> before you build. What the rules set aside is archived there, never deleted.</div>
             <div id="lib-aside-opts">
-              <label class="check" title="Files the rules leave out are moved to a folder of their own instead of staying in this one."><input type="checkbox" id="lib-aside-on"> Archive unmatched files (excluded, superseded, incomplete, duplicates) to another folder</label>
+              <label class="check hidden" title="Files the rules leave out are archived in a folder of their own."><input type="checkbox" id="lib-aside-on" checked disabled> Archive unmatched files (excluded, superseded, incomplete, duplicates) to another folder</label>
               <div class="row hidden" id="lib-aside-row">
                 <input type="text" id="lib-aside-dir" class="input grow mono" placeholder="Folder for the archived files" spellcheck="false" autocomplete="off" aria-label="Archive folder">
                 <button class="btn" id="lib-aside-browse">Folders...</button>

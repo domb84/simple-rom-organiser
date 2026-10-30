@@ -8,6 +8,7 @@ _os.environ.setdefault("ROMORG_DATA_DIR", _tempfile.mkdtemp(prefix="romorg-test-
 
 import hashlib
 import random
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -521,7 +522,9 @@ class BuildCompressesTests(ServerCase):
         self.assertEqual((plan["convert"]["kind"], plan["convert"]["count"]), ("7z", 2))
         to = {r["from"]: r.get("to_name") for r in plan["items"] if r.get("from")}
         self.assertEqual(to["beta.zip"], "Beta (USA).7z")
-        self.job("/api/library/apply", {"platform": SNES_PLATFORM, "plan_id": plan["plan_id"]})
+        aside = self.tmp.parent / (self.tmp.name + "-archive")
+        self.addCleanup(shutil.rmtree, aside, True)
+        self.job("/api/library/apply", {"platform": SNES_PLATFORM, "plan_id": plan["plan_id"], "aside_to": str(aside)})
         files = sorted(p.relative_to(snes).as_posix() for p in snes.rglob("*") if p.is_file() and not p.name.startswith(".romorg"))
         self.assertEqual(files, ["Alpha (USA).7z", "Beta (USA).7z"])
         self.assertEqual(b"".join(sevenzip.Archive(snes / "Alpha (USA).7z").iter_member("Alpha (USA).sfc")), self.rom["Alpha (USA)"])

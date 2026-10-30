@@ -1087,6 +1087,9 @@ class ConvertDropdownTests(UiTestCase):
 
     def test_the_library_converts_raw_discs_when_building(self) -> None:
         self.open()
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))                           # a build needs an archive folder (outside the ROM folder)
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.set_archive(str(arch))
         self.scan(self.PLATFORM, str(self.psx))
         self.page.goto(self.fx.url + "#/settings")                                       # the rule "Convert when building": your default for every system
         box = "#set-library-rules input[data-opt=\"%s\"]"
@@ -1372,7 +1375,7 @@ class SettingsTests(UiTestCase):
         self.page.goto(self.fx.url + "#/settings")
         self.page.wait("!document.getElementById('view-settings').classList.contains('hidden')")
         self.assertEqual(self.page.eval("document.getElementById('set-archive-dir').value"), "")
-        self.assertIn("nothing is archived", self.page.eval("document.getElementById('set-archive-default').textContent"))   # no default
+        self.assertIn("Not set: choose a folder", self.page.eval("document.getElementById('set-archive-default').textContent"))   # no default
         self.page.eval(f"""(() => {{ const i = document.getElementById('set-archive-dir'); i.value = {str(base / "everything")!r};
             i.dispatchEvent(new Event('change')); }})()""")
         self.page.wait("document.getElementById('set-archive-default').textContent.includes('unless it has its own')", timeout=30)
@@ -1909,7 +1912,11 @@ class NextUiTests(UiTestCase):
         self.no_js_errors()
 
     def test_build_library_by_controller_moves_the_files(self) -> None:
-        self.start("#/system/commodore-amiga/build")
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))                  # a build needs an archive folder (outside the ROM folder)
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.start("#/")
+        self.set_archive(str(arch))
+        self.go("#/system/commodore-amiga/build", "!!document.getElementById('build-start')")
         self.page.wait("!!document.getElementById('build-start')", timeout=60)
         self.assertIn("10 files will change", self.page.eval("document.getElementById('main').textContent"))
         self.tap("down")                                       # the focus is on Start build
@@ -1917,7 +1924,10 @@ class NextUiTests(UiTestCase):
         self.tap("A")
         self.page.wait("document.getElementById('main').textContent.includes('Library built')", timeout=120)
         self.assertTrue((self.fx.root / "Commodore Amiga - Games").is_dir())                                  # (a folder for each game)
-        self.assertIn("10 files moved or renamed", self.page.eval("document.getElementById('main').textContent"))
+        done = self.page.eval("document.getElementById('main').textContent")
+        self.assertIn("6 files moved or renamed", done)                                                        # (the other 4 of the 10 go to the archive)
+        self.assertIn("4 files moved to the archive", done)
+        self.assertTrue(any(d.is_dir() for d in (arch / self.fx.root.name).iterdir()))
         self.no_js_errors()
 
     def test_the_keyboard_moves_goes_back_and_names_its_keys(self) -> None:

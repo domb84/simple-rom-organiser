@@ -1065,8 +1065,8 @@ class RealModulesIntegrationTests(unittest.TestCase):
     def test_the_archive_is_tidied_to_the_library_layout_what_an_earlier_build_archived_the_old_way(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         base = self.tmp / "rom-archive" / self.root.name
-        old = base / "_excluded" / "Commodore Amiga - Games - [ADF]" / "Old Game (1990)(Pub)(Disk 1 of 2).adf"
-        stray = base / "_unmatched" / "Commodore Amiga - Games - [ADF]" / "Stray (1990)(Pub).adf"
+        old = base / "Excluded" / "Commodore Amiga - Games - [ADF]" / "Old Game (1990)(Pub)(Disk 1 of 2).adf"
+        stray = base / "Unmatched" / "Commodore Amiga - Games - [ADF]" / "Stray (1990)(Pub).adf"
         for f in (old, stray):
             f.parent.mkdir(parents=True)
             f.write_bytes(b"x")
@@ -1074,7 +1074,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(self.call("GET", url)["archive_tidy"], 1)                       # (the unmatched file keeps its path: nothing to tidy)
         res = self.job("/api/archive/tidy", {"platform": "Commodore Amiga"})["result"]
         self.assertEqual((res["moved"], res["failed"]), (1, []))
-        self.assertTrue((base / "_excluded" / "Commodore Amiga - Games" / "Old Game" / old.name).is_file())
+        self.assertTrue((base / "Excluded" / "Commodore Amiga - Games" / "Old Game" / old.name).is_file())
         self.assertFalse(old.exists())
         self.assertFalse(old.parent.exists())                                              # (the emptied folder goes)
         self.assertTrue(stray.is_file())
@@ -1141,11 +1141,13 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual(moves["incoming/deep/wb.adf"], "Commodore Amiga - System/Workbench/Workbench v1.3 (1988)(Commodore)/Workbench v1.3 (1988)(Commodore).adf")
         self.assertEqual(moves["incoming/readme.txt"], "_unmatched/incoming/readme.txt")
 
-        result = self.job("/api/library/apply", {})["result"]
+        archive = self.tmp / "rom-archive"
+        result = self.job("/api/library/apply", {"aside_to": str(archive)})["result"]
         self.assertFalse(result.get("failed"), result)
         self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())       # (a folder for the game)
         self.assertTrue((self.root / "Commodore Amiga - System" / "Firmware" / "Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom").is_file())
-        self.assertTrue((self.root / "_unmatched" / "incoming" / "readme.txt").is_file())
+        self.assertTrue((archive / self.root.name / "Unmatched" / "incoming" / "readme.txt").is_file())      # (archived, not left in the folder)
+        self.assertFalse((self.root / "_unmatched").exists())
         self.assertFalse((self.root / "incoming").exists())  # emptied by our moves -> removed
         self.assertEqual(result["summary"]["matched_files"], 4)  # re-scanned
         replan = self.call("POST", "/api/library/plan", {})
@@ -1221,7 +1223,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         _ra, saves = self._retroarch_with_saves()
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         with mock.patch("romorg.retroarch.is_running", return_value=False):
-            res = self.job("/api/library/apply", {})["result"]
+            res = self.job("/api/library/apply", {"aside_to": str(self.tmp / "rom-archive")})["result"]
             self.assertEqual(res["saves"]["followed"], 2, res.get("saves"))
             new = "Game (1990)(Pub)(Disk 1 of 2)"
             self.assertTrue((saves / "PUAE" / f"{new}.srm").is_file())
@@ -1461,7 +1463,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertFalse([p for p in self.root.glob("_*")], "no reserved folder is left in the system folder")
         self.assertTrue(any((aside / self.root.name).rglob("*.*")))                       # everything under this system's own folder
         self.assertEqual(sorted(p.name for p in aside.iterdir()), [self.root.name])
-        self.assertTrue(any((aside / self.root.name / "_unmatched").rglob("*.*")))
+        self.assertTrue(any((aside / self.root.name / "Unmatched").rglob("*.*")))
 
     # ---- Collection: one scan, then everything from its metadata
     def _gba_games(self) -> dict[str, bytes]:
@@ -1514,7 +1516,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.assertEqual((totals["sets"], totals["unmatched_sets"]), (1, 0))                     # it is the game's, not a stray
         plan = self.call("POST", "/api/library/plan", {"limit": 100})
         self.assertEqual(plan["saves"]["rename"], {"files": 2, "games": 1, "conflicts": 0})
-        self.job("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.job("/api/library/apply", {"plan_id": plan["plan_id"], "aside_to": str(self.tmp / "rom-archive")})
         self.assertEqual(sorted(p.name for p in saves.iterdir()), ["Game (1990)(Pub).srm", "Game (1990)(Pub).state1"])
         self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub).m3u").is_file())
 
@@ -2248,7 +2250,7 @@ class LibraryServerTests(ServerTestCase):
                     "playlists_ok": 0, "playlists_remove": 1, "playlists_conflict": 0}
 
         def apply_renames(ops: list, root_: Path, progress: Any = None, cancel: Any = None,
-                          playlists: Any = ()) -> dict[str, Any]:
+                          playlists: Any = (), **_kw: Any) -> dict[str, Any]:
             test.calls["library_apply"].append((list(ops), list(playlists)))
             return {"moved": 5, "failed": [], "playlists_written": len(playlists)}
 
@@ -2572,9 +2574,15 @@ class LibraryServerTests(ServerTestCase):
 
     def test_library_apply_is_a_single_job(self) -> None:
         self.scan()
-        self.post("/api/library/apply", {})
+        archive = Path(tempfile.mkdtemp(prefix="romorg-archive-test-")).resolve()      # (a build needs an archive, outside the ROM folder)
+        self.addCleanup(shutil.rmtree, archive, True)
+        # (the archive pass works on real files with the real organiser: here the stubbed one hands the plan's ops through)
+        keep = mock.patch.object(server.App, "_archive_pass", staticmethod(lambda folder, plan, aside, same=None: (list(plan.ops), [])))
+        keep.start()
+        self.addCleanup(keep.stop)
+        self.post("/api/library/apply", {"aside_to": str(archive)})
         job = self.wait_job()
-        self.assertEqual((job["kind"], job["status"]), ("library", "done"))
+        self.assertEqual((job["kind"], job["status"]), ("library", "done"), job.get("error"))
         self.assertFalse(job["cancellable"])
         self.assertEqual(job["result"]["action"], "library")
         self.assertEqual(job["result"]["playlists_written"], 1)

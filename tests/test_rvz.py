@@ -491,7 +491,7 @@ class ServerTest(unittest.TestCase):
         plan = self.call("/api/library/plan", {})
         self.assertEqual(sorted(i["to"] for i in plan["items"] if i["status"] != "ok"),
                          ["Alpha (USA).rvz", "Beta (Europe).iso"])
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.base / "archive")})      # (a build needs an archive, outside the ROM folder)
         self.job()
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.is_file() and not p.name.startswith(".")),
                          ["Alpha (USA).rvz", "Beta (Europe).iso"])

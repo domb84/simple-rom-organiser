@@ -135,13 +135,13 @@ class DiscPs2S3(psbase.PsServerCase):
         self.scan_ps2()
         res = self.run_job("/api/library/apply", {"platform": psbase.PS2, "aside_to": f"s3://{BUCKET}/arch"})
         self.assertEqual(res["aside"]["failed"], [])
-        keys = [k for k in self.fake.objects if k.startswith("arch/ps2/_duplicates/")]
+        keys = [k for k in self.fake.objects if k.startswith("arch/ps2/Duplicates/")]
         self.assertEqual(len(keys), 1, sorted(self.fake.objects))
         self.assertEqual(self.fake.objects[keys[0]][1].get("x-amz-meta-rom"), "Beta (Europe) (En,Fr,De)")
         self.assertFalse((self.roms / "spare").exists())
         alpha = self.base / "alpha.chd"
         T.build_chd(alpha, [{"type": "MODE1", "data": self.iso["Alpha (USA)"]}], gd=False)
-        self.fake.objects["arch/ps2/_excluded/Alpha (USA)/old name.chd"] = (alpha.read_bytes(), {"x-amz-meta-rom": "Alpha (USA)"})
+        self.fake.objects["arch/ps2/Excluded/Alpha (USA)/old name.chd"] = (alpha.read_bytes(), {"x-amz-meta-rom": "Alpha (USA)"})
         self.scan_ps2()
         back = self.run_job("/api/archive/restore", {"platform": psbase.PS2, "missing": True})
         self.assertEqual(back["failed"], [], back)

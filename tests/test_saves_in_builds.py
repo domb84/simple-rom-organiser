@@ -31,6 +31,7 @@ class SavesCase(ServerCase):
         self.running_mock = self.running.start()
         self.addCleanup(self.running.stop)
         self.saves = self.tmp / "assets" / "saves"
+        self.archive = self.tmp / "archive"                                        # (beside the ROM folders, never inside one)
         ra_dir = self.tmp / "RetroArch"
         (ra_dir / "info").mkdir(parents=True)
         (ra_dir / "info" / "bsnes_libretro.info").write_text(BSNES_INFO)
@@ -63,6 +64,7 @@ class SavesCase(ServerCase):
         return self.call("POST", "/api/library/plan", {"limit": 100, **extra})
 
     def lib_apply(self, plan: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        extra.setdefault("aside_to", str(self.archive))                               # a build needs an archive (archive_required without)
         return self.job("/api/library/apply", {"plan_id": plan["plan_id"], **extra})
 
     def saved_files(self) -> list[str]:
@@ -95,7 +97,8 @@ class KeepMode(SavesCase):
         self.assertEqual((plan["reasons"]["kept_saved"], plan["reasons"]["superseded"] + plan["reasons"]["excluded"]), (0, 1))
         self.lib_apply(plan)
         self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")),
-                         sorted(["Zed (Europe).sfc", "_superseded/Zed (USA).sfc"]))
+                         ["Zed (Europe).sfc"])
+        self.assertTrue((self.archive / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
 
     def test_the_save_of_another_systems_core_does_not_protect_a_game(self) -> None:
         root = self.rom_folder("Mix (USA)", "Mix (Europe)")
@@ -128,7 +131,8 @@ class LeaveMode(SavesCase):
         self.assertEqual(plan["saves"]["archive"]["files"], 0)
         res = self.lib_apply(plan)
         self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")),
-                         sorted(["Zed (Europe).sfc", "_superseded/Zed (USA).sfc"]))
+                         ["Zed (Europe).sfc"])
+        self.assertTrue((self.archive / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
         self.assertEqual(self.saved_files(), saves)
         self.assertNotIn("saves_archived", res)
 
@@ -151,18 +155,20 @@ class ArchiveMode(SavesCase):
         self.assertEqual(self.saved_files(), solo)
         self.assertEqual(sorted(x for x in tree(aside) if not x.endswith("/") and "_saves" in x),
                          sorted(f"snes/_saves/{s}" for s in saves))
-        self.assertTrue((aside / "snes" / "_superseded" / "Zed (USA).sfc").is_file())
+        self.assertTrue((aside / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
 
-    def test_without_an_archive_folder_they_go_to_a_saves_folder_next_to_the_archived_roms(self) -> None:
+    def test_without_an_archive_folder_the_build_is_refused_and_nothing_moves(self) -> None:
+        # (was: the saves went to a _saves folder next to the roms; a build now always needs an archive)
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
         saves = self.save("bsnes", "Zed (USA)")
         self.mode("archive")
         plan = self.lib_plan(root)
-        res = self.lib_apply(plan)
-        self.assertEqual(res["saves_archived"]["moved"], 4)
-        self.assertEqual(self.saved_files(), [])
-        self.assertEqual(sorted(x for x in tree(root) if x.startswith("_saves") and not x.endswith("/")),
-                         sorted(f"_saves/{s}" for s in saves))
+        before = tree(root)
+        code, r = self.http("POST", "/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.assertEqual(code, 409)
+        self.assertEqual(r["code"], "archive_required")
+        self.assertEqual(tree(root), before)
+        self.assertEqual(self.saved_files(), saves)
 
     def test_a_save_already_at_the_destination_is_never_overwritten(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
@@ -185,7 +191,7 @@ class ArchiveMode(SavesCase):
         res = self.lib_apply(plan)
         self.assertTrue(res["saves_archived"]["skipped_running"])
         self.assertEqual(self.saved_files(), saves)
-        self.assertTrue((root / "_superseded" / "Zed (USA).sfc").is_file())
+        self.assertTrue((self.archive / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
 
     def test_a_game_that_is_kept_keeps_its_saves_even_when_a_duplicate_of_it_is_archived(self) -> None:
         root = self.rom_folder("Solo (USA)")
@@ -357,7 +363,8 @@ class CarryMode(SavesCase):
         self.assertEqual(res["saves"]["carried"], 2)
         self.assertEqual(self.saved_files(), sorted(old + ["bsnes/Zed (Europe).srm", "bsnes/Zed (Europe).A1.bin"]))
         self.assertEqual((self.saves / "bsnes" / "Zed (Europe).srm").read_bytes(), (self.saves / "bsnes" / "Zed (USA).srm").read_bytes())
-        self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")), sorted(["Zed (Europe).sfc", "_superseded/Zed (USA).sfc"]))
+        self.assertEqual(sorted(x for x in tree(root) if not x.endswith("/")), ["Zed (Europe).sfc"])
+        self.assertTrue((self.archive / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
 
     def test_a_better_version_that_has_a_save_of_its_own_is_never_overwritten(self) -> None:
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")

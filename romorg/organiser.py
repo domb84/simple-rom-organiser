@@ -70,7 +70,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Container, Iterable, Mapping, Optional, Sequence
 
 if TYPE_CHECKING:
     from . import library, m3u
@@ -402,11 +402,11 @@ def bios_out_of(kept: RenameOp, root: Path) -> Optional[RenameOp]:
                                reason=kept.reason + "; back out of its reserved folder")
 
 
-def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
+def bios_duplicates(ops: Sequence[RenameOp], root: Path, taken: Container[int] = ()) -> list[tuple[RenameOp, "library.Decision"]]:
     """The same BIOS twice (any folder) is a ROM twice: one copy stays, the spares go to ``_duplicates`` as the spare copies of a ROM
     do, and the copy that stays is chosen as for a ROM (``scanner.group_duplicate_units``): the one already in place and named right, then
     one outside the reserved folders, loose before a zip, then the fewest folders, the shortest path. A symbolic link is never touched,
-    and a zip of several BIOS files is no copy of any one of them."""
+    and a zip of several BIOS files is no copy of any one of them. The verdicts, not yet applied (``taken``: ops already decided)."""
     from . import scanner
 
     def rank(o: RenameOp) -> tuple:
@@ -416,8 +416,9 @@ def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
 
     by_name: dict[tuple[str, str], list[RenameOp]] = {}
     for op in ops:
-        if op.bios and op.rom_name and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
+        if id(op) not in taken and op.bios and op.rom_name and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
             by_name.setdefault((op.rom_name.casefold(), op.bios_game), []).append(op)
+    out: list[tuple[RenameOp, "library.Decision"]] = []
     for group in by_name.values():
         if len(group) < 2:
             continue
@@ -426,21 +427,22 @@ def bios_duplicates(ops: Sequence[RenameOp], root: Path) -> None:
         text = rel.as_posix() if rel is not None else str(keeper.dst)
         for op in group:
             if op is not keeper:
-                op.bios = False
-                _send_to_reason(op, root, "duplicate", f"duplicate of {text}", keeper=text)
+                out.append((op, _verdict("duplicate", f"duplicate of {text}", keeper=text)))
+    return out
 
 
-def bios_flawed_beside_clean(ops: Sequence[RenameOp], root: Path) -> None:
+def bios_flawed_beside_clean(ops: Sequence[RenameOp], root: Path, taken: Container[int] = ()) -> list[tuple[RenameOp, "library.Decision"]]:
     """A bad dump or modified BIOS (allowed: ``library.FLAWED_RULES`` not excluded) is kept only when no clean dump of the same entry is,
     as for a ROM (``library._flawed_beside_clean``): one beside a kept clean dump of that version is superseded by it."""
     from . import library
 
     groups: dict[tuple, list[tuple[RenameOp, bool]]] = {}
     for op in ops:
-        if op.bios and op.bios_game and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
+        if id(op) not in taken and op.bios and op.bios_game and op.status in ("ok", "move", "skip") and not os.path.islink(op.src) and _one_bios(op.src):
             t = library.tags.parse_name(op.bios_game, library.STYLE_TOSEC)
             key = (op.dat, t.title.casefold(), t.regions, t.languages, t.status, tuple(t.flags), t.version, t.date)
             groups.setdefault(key, []).append((op, bool(library.tags.exclusion_rules(t) & library.FLAWED_RULES)))
+    out: list[tuple[RenameOp, "library.Decision"]] = []
     for group in groups.values():
         clean = [op for op, flawed in group if not flawed]
         if not clean:
@@ -450,8 +452,8 @@ def bios_flawed_beside_clean(ops: Sequence[RenameOp], root: Path) -> None:
         text = rel.as_posix() if rel is not None else str(keeper.dst)
         for op, flawed in group:
             if flawed:
-                op.bios = False
-                _send_to_reason(op, root, "superseded", f"superseded by {text} (a clean dump of the same version)", superseded_by=text)
+                out.append((op, _verdict("superseded", f"superseded by {text} (a clean dump of the same version)", superseded_by=text)))
+    return out
 
 
 def _one_bios(path: Path) -> bool:
@@ -465,17 +467,24 @@ def _one_bios(path: Path) -> bool:
         return True
 
 
-def bios_exclude(op: RenameOp, root: Path, profile: Optional["library.LibraryProfile"]) -> bool:
-    """:func:`bios_exclusion`, carried out on ``op`` (to ``_excluded``). True when it was (never a symbolic link, never a zip of several
-    BIOS files: it is judged by one of them, and the others may be good)."""
-    if os.path.islink(op.src) or not _one_bios(op.src):
-        return False
-    hit = bios_exclusion(op, profile)
-    if hit is None:
-        return False
-    op.bios = False
-    _send_to_reason(op, root, "excluded", hit[0], flags_text=hit[1], reasons=hit[2])
-    return True
+def bios_verdicts(ops: Sequence[RenameOp], root: Path, profile: Optional["library.LibraryProfile"]) -> list[tuple[RenameOp, "library.Decision"]]:
+    """What the checks on BIOS files decide, in their order: the rules set a flagged one aside (:func:`bios_exclusion`: never a symbolic
+    link, never a zip of several BIOS files, which is judged by none of them), then a spare copy of one goes (:func:`bios_duplicates`), then a
+    flawed one beside a clean dump of its version (:func:`bios_flawed_beside_clean`). Each file gets one verdict (the first)."""
+    out: list[tuple[RenameOp, "library.Decision"]] = []
+    taken: set[int] = set()
+    for op in ops:
+        if os.path.islink(op.src) or not _one_bios(op.src):
+            continue
+        hit = bios_exclusion(op, profile)
+        if hit is not None:
+            out.append((op, _verdict("excluded", hit[0], flags=hit[1], codes=hit[2])))
+            taken.add(id(op))
+    for check in (bios_duplicates, bios_flawed_beside_clean):
+        more = check(ops, root, taken)
+        taken.update(id(op) for op, _d in more)
+        out.extend(more)
+    return out
 
 
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
@@ -812,17 +821,24 @@ def _platform_for(result: "ScanResult", platform: Any = None) -> Any:
     return SimpleNamespace(name="", dats=dats, latest_dats=dats, best_variant_dats=(), m3u_dats=())
 
 
-def _send_to_reason(op: RenameOp, root: Path, code: str, why: str, keeper: str = "",
-                    missing: tuple[int, ...] = (), flags_text: str = "", superseded_by: str = "",
-                    reasons: tuple[str, ...] = ()) -> None:
-    """Turn ``op`` into a move to ``<reason dir>/<rel path>`` (``ok`` if it is already there)."""
-    reason_dir = CODE_DIRS[code]
+def _verdict(code: str, why: str, *, missing: tuple[int, ...] = (), flags: str = "", superseded_by: str = "",
+             codes: tuple[str, ...] = (), keeper: str = "") -> "library.Decision":
+    """A decision to set a file aside (``code``: ``excluded`` | ``superseded`` | ``incomplete`` | ``duplicate``) for ``why``: what the rules
+    decide for a file (``library.select``) and what the checks that need no rules decide (a spare copy, a BIOS) are the same thing."""
+    from . import library
+    return library.Decision(-1, code, codes=tuple(codes), detail=flags, superseded_by=superseded_by, missing=tuple(missing), reason=why, keeper=keeper)
+
+
+def _set_aside(op: RenameOp, root: Path, d: "library.Decision") -> None:
+    """THE one place a verdict that is not KEEP becomes an op: a move to ``<reason dir>/<rel path>`` (``ok`` if it is already there)."""
+    reason_dir = CODE_DIRS[d.action]
     dst = reason_destination(op.src, root, reason_dir)
     new = _finish_op(op.src, dst, [], op.rom_name, op.dat, True)
     op.dst, op.status, op.kind, op.unmatched = new.dst, new.status, new.kind, True
-    op.reason = why + (f", already in {reason_dir}" if new.status == "ok" else "")
-    op.code, op.keeper, op.missing, op.flags_text, op.superseded_by = code, keeper, tuple(missing), flags_text, superseded_by
-    op.reasons = tuple(reasons)
+    op.reason = (d.reason or d.action) + (f", already in {reason_dir}" if new.status == "ok" else "")
+    op.code, op.keeper, op.missing, op.flags_text, op.superseded_by = d.action, d.keeper, tuple(d.missing), d.detail, d.superseded_by
+    op.reasons = tuple(d.codes)
+    op.bios = False                                         # (a BIOS file set aside is no BIOS the build keeps)
 
 
 class _Core:
@@ -852,7 +868,9 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
         if op.status in MOVE_STATUSES and (id(op) in links if id(op) in known else os.path.islink(op.src)):
             op.status, op.dst, op.reason = "skip", op.src, "symbolic link - left in place"
 
-    # Duplicates first (independent of the library rules): one keeper per rom, spare copies set aside.
+    # What each check decides, in the order they run, and then one pass that makes the verdicts true (:func:`_apply_decision`):
+    # spare copies of a rom first (independent of the library rules: one keeper per rom), then the rules, then the BIOS checks.
+    verdicts: list[tuple[RenameOp, "library.Decision", bool]] = []         # (op, verdict, an archive that holds a game and other files)
     by_path = {u.path: u for u in units}
     losers: set[Path] = set()
     for keeper, group in scanner.duplicate_groups(result, layout, units=units):
@@ -863,7 +881,7 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
             if u is None:
                 continue
             losers.add(path)
-            _send_to_reason(u.op, root, "duplicate", f"duplicate of {keeper_text}", keeper=keeper_text)
+            verdicts.append((u.op, _verdict("duplicate", f"duplicate of {keeper_text}", keeper=keeper_text), False))
 
     selection = None
     owners: dict[int, tuple[RenameOp, MatchedUnit]] = {}
@@ -904,28 +922,12 @@ def _plan_core(result: "ScanResult", missing_dats: Iterable[str], latest_only: b
         selection = library.select(items, profile, _platform_for(result, platform), ratings=ratings, lang_games=lang_games,
                                    saved=saved)
         for key, (op, u) in owners.items():
-            d = selection.decisions.get(key)
-            if key in partial:
-                if not u.link:                                 # (a symbolic link fills its slot, but is never touched)
-                    _partial_decided(op, d, root)
-                continue
-            if d is not None and d.action == library.KEEP and library.BORROWED_CODE in d.codes and not u.link:
-                _add_reason(op, d.reason.split("; ")[-1])      # "borrowed as disk N of <set> (...)"
-            if d is not None and d.action == library.KEEP and library.SAVED_KEEP in d.codes:
-                _add_reason(op, d.reason)                      # "kept: you have saves or save states for it"
-            if d is None or d.action == library.KEEP:
-                continue
-            code = d.action
-            if code not in CODE_DIRS or u.link:
-                continue          # a symlink fills slots / ranks like any file but is never moved
-            _send_to_reason(op, root, code, d.reason or code, missing=d.missing, flags_text=d.detail,
-                            superseded_by=d.superseded_by, reasons=tuple(d.codes))
+            if not u.link:                                      # (a symbolic link fills its slots / ranks like any file but is never moved)
+                verdicts.append((op, selection.decisions.get(key), key in partial))
 
-    if profile is not None:
-        for op in ops:
-            bios_exclude(op, root, profile)
-    bios_duplicates(ops, root)
-    bios_flawed_beside_clean(ops, root)
+    verdicts.extend((op, d, False) for op, d in bios_verdicts(ops, root, profile))
+    for op, d, whole in verdicts:
+        _apply_decision(op, d, root, partial=whole)
     ops.sort(key=lambda o: (o.unmatched, o.dat, str(o.src).casefold()))
     _resolve_conflicts(ops, root)
     for op in ops:   # legacy layout: say why the file leaves _unmatched/<reason>/ ; record the target folder
@@ -1111,6 +1113,30 @@ def _release_folder(name: str) -> str:
     return safe_filename(re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]", "", stem)).strip()) or safe_filename(Path(name).stem)
 
 
+def _system_parts(dat: str, name: str) -> tuple[str, ...] | None:
+    sub = SYSTEM_DATS.get(dat)
+    return None if sub is None else (SYSTEM_DIR, sub) + ((_release_folder(name),) if sub == "Workbench" else ()) + (name,)
+
+
+def layout_parts(platform: Any, dat: str, name: str, title: str = "") -> tuple[str, ...] | None:
+    """THE place of a file in the Amiga's library layout, as parts below the system's folder (the archive lays what it sets aside out the
+    same way, below the reason folder): a system disk under ``Commodore Amiga - System/<Workbench | Kickstart-Disks | Firmware>/`` (the
+    Workbench disks in a folder of their release too), a game's file under ``Commodore Amiga - Games/<title>/``. None for every other file
+    (the folder of its DAT, or flat)."""
+    if dat in (getattr(platform, "dats", ()) or ()):
+        system = _system_parts(dat, name)
+        if system is not None:
+            return system
+    if title and dat in _amiga_game_dats_all(platform):
+        return (GAMES_DIR, title, name)
+    return None
+
+
+def unit_dat(op: RenameOp, unit: Any) -> str:
+    """The DAT of a file: its unit's (a zip that holds the game and other files has a row that names no DAT; its unit does)."""
+    return op.dat or getattr(unit, "dat", "") or ""
+
+
 def _into_system_folder(owners: dict, sel: Any, root: Path, platform: Any) -> None:
     """Send each kept file of the Amiga's system DATs - Workbench, the Kickstart disks, the firmware - to ``<root>/Commodore Amiga - System/``:
     each in a folder of its DAT's short name, the Workbench disks in a folder of their release too (no playlist: those are for games). The
@@ -1125,8 +1151,7 @@ def _into_system_folder(owners: dict, sel: Any, root: Path, platform: Any) -> No
         if (sub is None or op.code or op.unmatched or unit.link or op.status not in ("ok", "move")
                 or (d is not None and d.action != library.KEEP)):
             continue
-        parts = (SYSTEM_DIR, sub) + ((_release_folder(op.dst.name),) if sub == "Workbench" else ())
-        new = _finish_op(op.src, Path(root).joinpath(*parts, op.dst.name), [], op.rom_name, op.dat, False)
+        new = _finish_op(op.src, Path(root).joinpath(*layout_parts(platform, unit.dat, op.dst.name)), [], op.rom_name, op.dat, False)
         op.dst, op.status, op.kind = new.dst, new.status, new.kind
         if op.status == "move":
             op.reason = ", ".join(x for x in (op.reason, "into the system folder") if x)
@@ -1167,61 +1192,64 @@ def _game_folder_names(games: dict[tuple, list[int]], owners: dict) -> dict[tupl
 
 
 def _archive_paths(owners: dict, ops: list[RenameOp], platform: Any) -> None:
-    """The Amiga's files the rules set aside (``_excluded`` ...) lie in the archive as they would in the library: each game in a folder of
-    its own under ``Commodore Amiga - Games`` (:func:`_game_folder_names`, per reason folder), the system disks under ``Commodore Amiga - System``
-    (``op.archive_rel``, below the reason folder). Another system's files, and those no DAT knows, keep their path."""
+    """The Amiga's files the rules set aside (``_excluded`` ...) lie in the archive as they would in the library (:func:`layout_parts`): each
+    game in a folder of its own under ``Commodore Amiga - Games`` (:func:`_game_folder_names`, per reason folder), the system disks under
+    ``Commodore Amiga - System`` (``op.archive_rel``, below the reason folder). Another system's files, and those no DAT knows, keep their
+    path."""
     from . import library
     game_dats = _amiga_game_dats_all(platform)
     systems = [d for d in SYSTEM_DATS if d in (getattr(platform, "dats", ()) or ())]
     if not game_dats and not systems:
         return
     by_op = {id(op): key for key, (op, _u) in owners.items()}
-    combine = True
-    games: dict[str, dict[tuple, list[int]]] = {}
+    games: dict[str, dict[tuple, list[int]]] = {}                      # (per reason folder: a game's folder is named within it)
     for op in ops:
         key = by_op.get(id(op))
         if key is None or op.folder not in REASON_DIRS or op.status not in ("move", "ok", "rename"):
             continue
-        dat = op.dat or owners[key][1].dat                 # (a zip that holds the game and other files: its row names no DAT, its unit does)
-        if not dat:
-            continue
+        dat = unit_dat(op, owners[key][1])
         if dat in systems:
-            sub = SYSTEM_DATS[op.dat]
-            parts = (SYSTEM_DIR, sub) + ((_release_folder(op.dst.name),) if sub == "Workbench" else ()) + (op.dst.name,)
-            op.archive_rel = "/".join(parts)
+            op.archive_rel = "/".join(layout_parts(platform, dat, op.dst.name))
         elif dat in game_dats:
-            games.setdefault(op.folder, {}).setdefault(library.game_key(_item_of(key, owners), combine), []).append(key)
-    for reason, group in games.items():
+            games.setdefault(op.folder, {}).setdefault(library.game_key(_item_of(key, owners), True), []).append(key)
+    for group in games.values():
         folder = _game_folder_names(group, owners)
         for g, keys in group.items():
             for key in keys:
                 op = owners[key][0]
-                op.archive_rel = "/".join((GAMES_DIR, folder[g], op.dst.name))
+                op.archive_rel = "/".join(layout_parts(platform, owners[key][1].dat, op.dst.name, folder[g]))
 
 
 TIDY_EXTS = (".adf", ".ipf", ".zip", ".7z", ".lha", ".lzx", ".dms", ".adz", ".cue", ".iso", ".bin", ".chd", ".wav", ".m3u")     # (a game's files)
 
 
 def tidy_archive_parts(platform: Any, parts: Any) -> tuple[str, ...] | None:
-    """Where a file the Amiga's rules set aside in an EARLIER build lies in the archive as the library's layout has it now: ``parts`` is its
-    path below the system's part of the archive (``_excluded/Commodore Amiga - Games - [ADF]/<file>`` ...), the answer the same with the games
-    in a folder of their own below ``Commodore Amiga - Games`` (the system disks under ``Commodore Amiga - System``), or None when it is
-    laid out so already, is no Amiga game's, or no DAT knows it (``_unmatched`` keeps its source path)."""
+    """Where a file lies in the archive as the layout has it NOW, or None when it lies so already. ``parts`` is its path below the system's
+    part of the archive. The reason folders have no leading underscore (``_excluded/x`` -> ``Excluded/x``, any system); the Amiga's files
+    that earlier builds archived the old way (``_excluded/Commodore Amiga - Games - [ADF]/<file>``) go in a folder per game below
+    ``Commodore Amiga - Games`` (the system disks under ``Commodore Amiga - System``), as :func:`layout_parts` has it. ``Unmatched`` keeps the
+    source path, an install of WHDLoad stays as it is."""
     parts = tuple(parts)
-    if len(parts) < 3 or parts[0] not in REASON_DIRS or parts[1] in (GAMES_DIR, SYSTEM_DIR):
+    if len(parts) < 2:
         return None
-    if platform is None or not getattr(platform, "image_set_dats", None) or any(p.endswith("(WHDLoad install)") for p in parts[:-1]):
+    reason = folders.from_archive(parts[0])
+    if reason is None or reason == folders.SAVES_DIR or reason not in folders.ARCHIVE_NAMES:
         return None
-    name = parts[-1]
-    if parts[1] in SYSTEM_DATS:
-        sub = SYSTEM_DATS[parts[1]]
-        return (parts[0], SYSTEM_DIR, sub) + ((_release_folder(name),) if sub == "Workbench" else ()) + (name,)
-    if not name.lower().endswith(TIDY_EXTS):
-        return None
-    from . import tags
-    stem = name.rsplit(".", 1)[0]
-    title = safe_filename(tags.parse_name(stem, "tosec").title)
-    return (parts[0], GAMES_DIR, title or stem, name) if title else None
+    top = folders.archive_dir(reason)
+    rest = parts[1:]
+    new = None
+    if (reason in REASON_DIRS and len(parts) >= 3 and rest[0] not in (GAMES_DIR, SYSTEM_DIR)
+            and getattr(platform, "image_set_dats", None) and not any(p.endswith("(WHDLoad install)") for p in parts[:-1])):
+        name = parts[-1]
+        if rest[0] in SYSTEM_DATS:
+            new = _system_parts(rest[0], name)
+        elif name.lower().endswith(TIDY_EXTS):
+            from . import tags
+            stem = name.rsplit(".", 1)[0]
+            title = safe_filename(tags.parse_name(stem, "tosec").title)
+            new = (GAMES_DIR, title or stem, name) if title else None
+    out = (top,) + (new if new is not None else rest)
+    return out if out != parts else None
 
 
 def _amiga_game_dats_all(platform: Any) -> frozenset:
@@ -1251,7 +1279,7 @@ def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> Non
     for g, keys in games.items():
         for key in keys:
             op = owners[key][0]
-            new = _finish_op(op.src, Path(root) / GAMES_DIR / folder[g] / op.dst.name, [], op.rom_name, op.dat, False)
+            new = _finish_op(op.src, Path(root).joinpath(*layout_parts(platform, owners[key][1].dat, op.dst.name, folder[g])), [], op.rom_name, op.dat, False)
             op.dst, op.status, op.kind = new.dst, new.status, new.kind
             if op.status == "move":
                 op.reason = ", ".join(x for x in (op.reason, "into the game's folder") if x)
@@ -1334,27 +1362,32 @@ def _single_game_specs(sel: Any, owners: dict, games: frozenset, image_sets: fro
     return out
 
 
-def _partial_decided(op: RenameOp, d: Any, root: Path) -> None:
-    """What the rules decided for an archive that holds a game next to other files (an SPS release with its scans and manual): the build
-    never renames or repacks it, but it moves it as it is. One they set aside (a language, a bad dump, your "always exclude" ...) goes to
-    its reason folder - and from there to the archive - under its own name, and is not counted as yours; one they keep that lies in a
-    reserved folder (``_unmatched``, from before its DAT knew it) goes back to where it came from; a kept one stays, or goes to its game's
-    folder (:func:`_into_game_folders`)."""
+def _apply_decision(op: RenameOp, d: Any, root: Path, partial: bool = False) -> None:
+    """What the rules decided (``library.select``) for a file, made true on its op: one they set aside goes to its reason folder (and from
+    there to the archive) under its own name; one they keep gets the notes of why it is kept (a disk borrowed for a set, saves you have).
+    ``partial``: an archive that holds a game next to other files (an SPS release with its scans and manual) is never renamed or repacked,
+    only moved as it is: one they keep that lies in a reserved folder (``_unmatched``, from before its DAT knew it) goes back to where it
+    came from, a kept one stays, or goes to its game's folder (:func:`_into_game_folders`)."""
     from . import library
     if d is None:
         return
     if d.action != library.KEEP:
-        code = d.action if d.action in CODE_DIRS else "excluded"
-        _send_to_reason(op, root, code, d.reason or code, missing=d.missing, flags_text=d.detail, superseded_by=d.superseded_by,
-                        reasons=tuple(d.codes))
+        if d.action in CODE_DIRS:
+            _set_aside(op, root, d)
         return
-    parts = _parts_of(op.src, root)
-    if folders.reserved_of(parts) is None:
+    if partial:
+        parts = _parts_of(op.src, root)
+        if folders.reserved_of(parts) is None:
+            return
+        dst = root.joinpath(*folders.core_parts(parts))
+        if dst != op.src and not os.path.lexists(dst):
+            op.dst, op.status, op.kind = dst, "move", "move"
+            op.reason = (op.reason + "; " if op.reason else "") + "back out of its reserved folder (its game is kept)"
         return
-    dst = root.joinpath(*folders.core_parts(parts))
-    if dst != op.src and not os.path.lexists(dst):
-        op.dst, op.status, op.kind = dst, "move", "move"
-        op.reason = (op.reason + "; " if op.reason else "") + "back out of its reserved folder (its game is kept)"
+    if library.BORROWED_CODE in d.codes:
+        _add_reason(op, d.reason.split("; ")[-1])           # "borrowed as disk N of <set> (...)"
+    if library.SAVED_KEEP in d.codes:
+        _add_reason(op, d.reason)                           # "kept: you have saves or save states for it"
 
 
 def _library_delete_reason(op: RenameOp, by_src: dict[str, RenameOp]) -> str:

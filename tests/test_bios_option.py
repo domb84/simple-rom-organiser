@@ -211,7 +211,7 @@ class BiosOption(ServerCase):
         self.assertIn("boot.bin", after)                                                      # (the one that stays: named as its list names it)
         self.assertNotIn("bad.bin", after)
         archived = sorted(p.relative_to(aside).as_posix() for p in aside.rglob("*") if p.is_file())
-        self.assertTrue(any(a.endswith("_excluded/bad.bin") for a in archived) and any("_duplicates" in a for a in archived), archived)
+        self.assertTrue(any(a.endswith("Excluded/bad.bin") for a in archived) and any("Duplicates" in a for a in archived), archived)
 
     def test_key_files_an_earlier_build_set_aside_come_back_too(self) -> None:
         put(self.root / "_unmatched" / "prod.keys", b"k")

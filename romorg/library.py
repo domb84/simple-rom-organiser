@@ -640,6 +640,7 @@ class Decision:
     missing: tuple[int, ...] = ()
     reason: str = ""              # human text
     elsewhere: tuple[int, ...] = ()  # incomplete: missing disks the user has under another identity
+    keeper: str = ""              # duplicate: the copy that stays (its path)
     # keep: ``codes == ("borrowed",)`` marks a disk of another edition used to complete a set (``BORROWED_CODE``)
 
 

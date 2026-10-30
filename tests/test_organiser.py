@@ -1568,17 +1568,30 @@ class BugCheckPlanTests(unittest.TestCase):
     def test_a_file_archived_the_old_way_is_laid_out_like_the_library(self) -> None:
         tidy = lambda *parts: organiser.tidy_archive_parts(self.AMIGA, parts)        # noqa: E731
         adf = "Planet of Lust (1989)(Free Spirit)(Disk 1 of 2)[cr ESI].adf"
-        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games - [ADF]", adf), ("_excluded", "Commodore Amiga - Games", "Planet of Lust", adf))
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games - [ADF]", adf), ("Excluded", "Commodore Amiga - Games", "Planet of Lust", adf))
         sps = "Bloodwych (1989)(Image Works)[1927].zip"
-        self.assertEqual(tidy("_superseded", "commodore-amiga-games-sps", sps), ("_superseded", "Commodore Amiga - Games", "Bloodwych", sps))
+        self.assertEqual(tidy("_superseded", "commodore-amiga-games-sps", sps), ("Superseded", "Commodore Amiga - Games", "Bloodwych", sps))
         wb = "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)(Disk 2 of 2)(Extras).adf"
         self.assertEqual(tidy("_excluded", "Commodore Amiga - Operating Systems - Workbench", wb),
-                         ("_excluded", "Commodore Amiga - System", "Workbench", "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)", wb))
-        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games", "Planet of Lust", adf))          # (laid out so already)
-        self.assertIsNone(tidy("_unmatched", "Commodore Amiga - Games - [ADF]", adf))                    # (no DAT knows it: its own path)
-        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "Foo (WHDLoad install)", "x.adf"))
-        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "readme.txt"))
-        self.assertIsNone(organiser.tidy_archive_parts(platforms.get_platform("Nintendo 64"), ("_excluded", "x", "Game (USA).z64")))   # (other systems stay as they are)
+                         ("Excluded", "Commodore Amiga - System", "Workbench", "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)", wb))
+        self.assertEqual(tidy("Excluded", "Commodore Amiga - Games - [ADF]", adf), ("Excluded", "Commodore Amiga - Games", "Planet of Lust", adf))   # (new name, old layout)
+        self.assertIsNone(tidy("Excluded", "Commodore Amiga - Games", "Planet of Lust", adf))          # (named and laid out so already)
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games", "Planet of Lust", adf),
+                         ("Excluded", "Commodore Amiga - Games", "Planet of Lust", adf))               # (laid out so already: only the folder's name)
+        self.assertEqual(tidy("_unmatched", "Commodore Amiga - Games - [ADF]", adf), ("Unmatched", "Commodore Amiga - Games - [ADF]", adf))   # (no DAT knows it: its own path)
+        self.assertIsNone(tidy("Unmatched", "Commodore Amiga - Games - [ADF]", adf))
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "Foo (WHDLoad install)", "x.adf"),
+                         ("Excluded", "Commodore Amiga - Games - [ADF]", "Foo (WHDLoad install)", "x.adf"))
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "readme.txt"), ("Excluded", "Commodore Amiga - Games - [ADF]", "readme.txt"))
+        self.assertEqual(organiser.tidy_archive_parts(platforms.get_platform("Nintendo 64"), ("_excluded", "x", "Game (USA).z64")),
+                         ("Excluded", "x", "Game (USA).z64"))                                          # (other systems: only the folder's name)
+        self.assertIsNone(organiser.tidy_archive_parts(platforms.get_platform("Nintendo 64"), ("Excluded", "x", "Game (USA).z64")))
+
+    def test_a_folder_that_differs_in_case_only_is_renamed_without_a_number(self) -> None:
+        from romorg import server
+        n64 = platforms.get_platform("Nintendo 64")
+        self.assertEqual(server.App._tidy_pairs(n64, [("excluded/x/Game (USA).z64", 1), ("_duplicates/x/Game (USA).z64", 1)]),
+                         [("excluded/x/Game (USA).z64", "Excluded/x/Game (USA).z64"), ("_duplicates/x/Game (USA).z64", "Duplicates/x/Game (USA).z64")])
 
     def test_the_files_of_a_whdload_install_an_earlier_version_downloaded_are_unmatched_like_any_other_file(self) -> None:
         self.have("Solo Game (1993)(Pub).adf", f"{GAMES}/Solo Game (1993)(Pub).adf")

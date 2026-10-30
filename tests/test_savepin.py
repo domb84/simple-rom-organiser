@@ -111,7 +111,7 @@ class Flat(ServerCase):
         self.wait()
         got = tree(archive)
         for want in ("gba-roms/_saves/Run/Run (USA).srm", "gba-roms/_saves/Run/Run (USA).state1", "gba-roms/_saves/Bash/Bash (USA).srm",
-                     "gba-roms/_unmatched/stray.srm"):
+                     "gba-roms/Unmatched/stray.srm"):
             self.assertIn(want, got)
         self.assertEqual(sorted(p for p in tree(root) if "." in p), ["Run (USA).gba"])           # the ROM folder holds the ROM and nothing else
         again = self.call("POST", "/api/library/plan", {"platform": GBA, "limit": 50, "refresh": True})
@@ -146,8 +146,8 @@ class Trees(ServerCase):
         for name in ("Run (USA).srm", "stray.bin"):
             (root / name).write_bytes(b"x" * 10)
         archive = self.tmp / "rom-archive"
-        (archive / "gba-roms" / "_excluded").mkdir(parents=True)
-        (archive / "gba-roms" / "_excluded" / "old.gba").write_bytes(b"o" * 7)                    # (an earlier build left this)
+        (archive / "gba-roms" / "Excluded").mkdir(parents=True)
+        (archive / "gba-roms" / "Excluded" / "old.gba").write_bytes(b"o" * 7)                    # (an earlier build left this)
         self.assertFalse(self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=library")["ready"])      # no folder, no scan yet
         self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
         self.wait()
@@ -170,10 +170,10 @@ class Trees(ServerCase):
         self.assertEqual(self.call("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&state=existing")["totals"]["files"], 1)
         self.assertEqual(self.http("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&show=nonsense")[0], 400)
         arch = self.tree("archive")
-        self.assertEqual({d["name"]: (d["files"], d["changed"]) for d in arch["dirs"]}, {"_excluded": (1, 0), "_saves": (1, 1), "_unmatched": (1, 1)})
+        self.assertEqual({d["name"]: (d["files"], d["changed"]) for d in arch["dirs"]}, {"Excluded": (1, 0), "_saves": (1, 1), "Unmatched": (1, 1)})
         saves = self.tree("archive", "_saves/Run")
         self.assertEqual([(f["name"], f["state"], f["from"]) for f in saves["files"]], [("Run (USA).srm", "incoming", "Run (USA).srm")])
-        self.assertEqual(self.tree("archive", "_excluded")["files"][0]["state"], "existing")
+        self.assertEqual(self.tree("archive", "Excluded")["files"][0]["state"], "existing")
         code, _ = self.http("GET", "/api/tree?platform=Nintendo%20Game%20Boy%20Advance&side=archive&path=nowhere")
         self.assertEqual(code, 404)
         self.assertEqual((tree(root), tree(archive)), before)                                   # a preview: nothing moved
@@ -182,7 +182,7 @@ class Trees(ServerCase):
 class SeveralGames:
     """A card that holds the saves of two games is under both after a build."""
 
-    def build(self, aside: bool) -> None:
+    def build(self) -> None:
         root = self.tmp / "gba-roms"
         root.mkdir()
         (root / "Run (USA).gba").write_bytes(self.rom["Run (USA)"])
@@ -190,14 +190,14 @@ class SeveralGames:
         (root / "card.bin").write_bytes(card)
         self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
         self.wait()
-        extra = {"aside_to": str(self.tmp / "rom-archive")} if aside else {}
+        extra = {"aside_to": str(self.tmp / "rom-archive")}
         plan = self.call("POST", "/api/library/plan", {"platform": GBA, "limit": 50, **extra})
         row = [r for r in plan["items"] if r["from"] == "card.bin"][0]
         self.assertEqual((row["to"], row["category"]), ("_saves/Run/card.bin", "saves"))             # the first title: the card's first save
         self.call("POST", "/api/library/apply", {"platform": GBA, "plan_id": plan["plan_id"], **extra})
         job = self.wait()
         self.assertEqual(job["status"], "done", job)
-        base = (self.tmp / "rom-archive" / "gba-roms") if aside else root
+        base = self.tmp / "rom-archive" / "gba-roms"
         self.assertEqual((base / "_saves" / "Run" / "card.bin").read_bytes(), card)
         self.assertEqual((base / "_saves" / "Bash" / "card.bin").read_bytes(), card)                 # ... and a copy under the other
         self.assertFalse((root / "card.bin").exists())
@@ -205,14 +205,25 @@ class SeveralGames:
 
 class SeveralGamesIntoTheArchive(SeveralGames, ServerCase):
     def test_moved_under_one_copied_under_the_other(self) -> None:
-        self.build(aside=True)
+        self.build()
 
 
-class SeveralGamesInTheFolder(SeveralGames, ServerCase):
+class SeveralGamesWithoutAnArchive(ServerCase):
     ARCHIVE = False
 
-    def test_moved_under_one_copied_under_the_other(self) -> None:
-        self.build(aside=False)
+    def test_a_build_without_an_archive_is_refused_and_nothing_moves(self) -> None:
+        # (was: the card's saves went into _saves next to the roms; a build now always needs an archive)
+        root = self.tmp / "gba-roms"
+        root.mkdir()
+        (root / "Run (USA).gba").write_bytes(self.rom["Run (USA)"])
+        (root / "card.bin").write_bytes(vmu_card([("RUN.001", "", "Run"), ("BASH.001", "", "Bash")]))
+        self.call("POST", "/api/scan", {"path": str(root), "platform": GBA})
+        self.wait()
+        plan = self.call("POST", "/api/library/plan", {"platform": GBA, "limit": 50})
+        before = tree(root)
+        code, out = self.http("POST", "/api/library/apply", {"platform": GBA, "plan_id": plan["plan_id"]})
+        self.assertEqual((code, out["code"]), (409, "archive_required"))
+        self.assertEqual(tree(root), before)
 
 
 class TreesWithoutAnArchive(ServerCase):

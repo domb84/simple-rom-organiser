@@ -65,28 +65,28 @@ class S3Archive(ServerCase):
         self.assertEqual((plan["aside"]["path"], plan["aside"]["s3"]), (f"{ARCH}/", True))
         before = self.archive_tree()
         self.assertEqual((before["root"], before["archive_s3"]["url"], before["archive_s3"]["error"]), (f"{ARCH}/GBA/", f"{ARCH}/GBA/", ""))
-        self.assertEqual(sorted(d["name"] for d in before["dirs"]), ["_duplicates", "_excluded", "_unmatched"])
+        self.assertEqual(sorted(d["name"] for d in before["dirs"]), ["Duplicates", "Excluded", "Unmatched"])
         res = self.job("/api/library/apply", {"aside_to": ARCH, "plan_id": plan["plan_id"]})
         self.assertEqual((res["aside"]["moved"], res["aside"]["failed"], res["aside"]["s3"]), (3, [], True))
         self.assertEqual(tree(self.root), ["Run (USA).gba"])                                       # a clean library: nothing else, no folder
-        self.assertEqual(sorted(self.fake.objects), ["arch/GBA/_duplicates/run copy.gba", "arch/GBA/_excluded/old leftover.gba",
-                                                     "arch/GBA/_unmatched/what.gba"])
-        data, meta = self.fake.objects["arch/GBA/_unmatched/what.gba"]
+        self.assertEqual(sorted(self.fake.objects), ["arch/GBA/Duplicates/run copy.gba", "arch/GBA/Excluded/old leftover.gba",
+                                                     "arch/GBA/Unmatched/what.gba"])
+        data, meta = self.fake.objects["arch/GBA/Unmatched/what.gba"]
         self.assertEqual((data, meta["x-amz-meta-from"], meta["x-amz-meta-size"]), (b"unknown", "what.gba", "7"))
         self.assertEqual(sorted(meta), ["x-amz-meta-crc32", "x-amz-meta-from", "x-amz-meta-md5", "x-amz-meta-sha1", "x-amz-meta-size"])
         self.assertFalse((self.tmp / "data" / "s3-archive").exists())                              # the stand-in folder is never written
         after = self.archive_tree()
         self.assertEqual(after["totals"]["files"], 3)
-        ex = self.call("GET", f"/api/tree?platform={GBA.replace(' ', '%20')}&side=archive&show=&path=_unmatched")
+        ex = self.call("GET", f"/api/tree?platform={GBA.replace(' ', '%20')}&side=archive&show=&path=Unmatched")
         self.assertEqual([(f["name"], f["state"]) for f in ex["files"]], [("what.gba", "existing")])
 
     def test_a_name_another_object_has_gets_a_number(self) -> None:
-        self.fake.objects["arch/GBA/_unmatched/what.gba"] = (b"something else", {})
+        self.fake.objects["arch/GBA/Unmatched/what.gba"] = (b"something else", {})
         self.world()
         res = self.job("/api/library/apply", {"aside_to": ARCH})
         self.assertEqual(res["aside"]["failed"], [])
-        self.assertEqual(self.fake.objects["arch/GBA/_unmatched/what.gba"][0], b"something else")    # never replaced
-        self.assertEqual(self.fake.objects["arch/GBA/_unmatched/what (2).gba"][0], b"unknown")
+        self.assertEqual(self.fake.objects["arch/GBA/Unmatched/what.gba"][0], b"something else")    # never replaced
+        self.assertEqual(self.fake.objects["arch/GBA/Unmatched/what (2).gba"][0], b"unknown")
 
     def test_a_service_that_cannot_be_reached_stops_the_build_before_anything_moves(self) -> None:
         self.world()

@@ -152,7 +152,7 @@
     const e = (S.status && S.status.library_export) || {};
     const o = { labels: Prefs.get(`labels:${p.name}`, !isGameFolder(p)) };
     if (e.enabled && e.dest) Object.assign(o, { export_to: e.dest, export_mode: e.mode, export_sidecars: e.sidecars, export_sync: e.sync });
-    else if (e.aside !== false && archiveFor(p)) o.aside_to = archiveFor(p);
+    else if (archiveFor(p)) o.aside_to = archiveFor(p);
     return o;
   }
   const classic = (hash) => `/classic${hash || ""}`;
@@ -949,8 +949,10 @@
     ].filter(Boolean);
     const where = opts.export_to ? `The library is built in ${opts.export_to}; this folder is only read.`
       : opts.aside_to ? `What is set aside goes to the archive: ${archiveText(opts.aside_to)}.`
-        : excluded || superseded || other ? "What is set aside goes to folders like _excluded inside this folder." : "";
-    const startBtn = el("button", { class: "btn primary", type: "button", id: "build-start", on: { click: () => runBuild(ctx, p, opts, plan) } }, icon("play"), "Start build");
+        : "A build needs an archive: what the rules set aside is archived there, never deleted. Choose one first.";
+    const startBtn = !opts.export_to && !opts.aside_to
+      ? el("a", { class: "btn primary", id: "build-start", href: "#/settings/archive" }, icon("folder"), "Choose an archive")
+      : el("button", { class: "btn primary", type: "button", id: "build-start", on: { click: () => runBuild(ctx, p, opts, plan) } }, icon("play"), "Start build");
     const listLink = el("a", { class: "btn", href: `#/system/${slug}/files?view=library`, text: "See the file list" });
     if (nothing) {
       return { ...head, focus: "#build-back",
@@ -1108,7 +1110,7 @@
       tile({ title: "Folder", icon: "folder", sub: "A drive or folder on this computer", check: !!cur && !s3, href: "#/settings/archive/folder", id: "arch-folder" }),
       tile({ title: "S3 bucket", icon: "cloud", sub: "Cloud storage", check: s3, href: "#/settings/archive/s3", id: "arch-s3" }));
     const rows = el("div", { class: "rows" });
-    if (!cur) rows.append(message("Nothing is archived until you choose where. Builds keep set-aside files in folders like _excluded instead."));
+    if (!cur) rows.append(message("A build needs an archive: choose where what the rules set aside goes. It is archived there, never deleted."));
     else if (s3) {
       const test = row({ name: "Test connection", icon: "test", id: "arch-test", value: "", onClick: async () => {
         const v = test.querySelector(".row-value");
@@ -1905,8 +1907,6 @@
           location.hash = `#/system/${slug}/build-folder`;
           return undefined;
         } }),
-      switchRow({ name: "Archive what the build sets aside", sub: e.enabled ? "Only when building in this folder" : archiveFor(p) ? archiveText(archiveFor(p)) : "No archive set up", on: e.aside !== false, key: "aside",
-        save: async (on) => { await saveExport({ aside: on }); return on; } }),
       row({ name: "Archive folder", icon: "archive", value: own ? archiveText(own) : "Same as every system", arrow: true, href: `#/settings/archive/folder?system=${slug}` }),
       switchRow({ name: "Disk labels in playlists", on: Prefs.get(`labels:${p.name}`, !isGameFolder(p)), key: "labels", save: async (on) => { Prefs.set(`labels:${p.name}`, on); return on; } }),
       p.name === "Commodore Amiga" ? row({ name: "Save disks", static: true,

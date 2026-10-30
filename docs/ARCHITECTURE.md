@@ -4158,3 +4158,25 @@ detector; each merge was made only where the copies were the same code.
 * (Amendment 107, addendum) An incomplete system disk (Workbench, Kickstart disks, firmware) is no game to look at either: the Needs-a-look
   page's incomplete sets (`incomplete_sets`, `incomplete_total`) and the tile's Incomplete list (`TotalsManager.problems`) skip the DATs of
   `totals.apart_dats`, as the counts do.
+
+**AMENDMENT 108 (v0.5) — One layout rule, one verdict; the archive's reason folders have plain names.**
+
+* In the archive the reason folders are `Excluded/`, `Superseded/`, `Incomplete/`, `Duplicates/`, `Unmatched/` (`folders.ARCHIVE_NAMES`,
+  `archive_dir`; `folders.from_archive` reads the old `_excluded` and the new name alike). A system's own folder keeps the `_excluded` ... names
+  when no archive is set (they are the app's reserved folders there, `RESERVED_DIRS`, and stay hidden from the scan); `_saves` is unchanged.
+  `sortroot.plan_sweep` and `App._archive_pass` write the new names; `organiser.tidy_archive_parts` renames what earlier builds archived under
+  the old ones (any system) and lays the Amiga's out as below. Old archives are tidied by "Tidy the archive", nothing is lost.
+* `organiser.layout_parts(platform, dat, name, title)` is the ONE rule for where an Amiga file lies (system disk under `Commodore Amiga - System`,
+  game file under `Commodore Amiga - Games/<title>/`). The library (`_into_system_folder`, `_into_game_folders`), the archive
+  (`_archive_paths`, below the reason folder) and the tidy (`tidy_archive_parts`) all call it. `organiser.unit_dat(op, unit)` is the one read
+  of a file's DAT (its unit's, for a zip that holds a game and other files).
+* One verdict: `library.Decision` is what every check yields. `organiser._verdict(...)` makes one for the checks that need no rules (a spare
+  copy, a BIOS), `_set_aside(op, root, decision)` is the one place a not-keep verdict becomes an op, and `_apply_decision(op, decision, root,
+  partial)` is the one place the selection's verdicts (plain files and archives that hold a game with other files) are applied.
+* An archive is REQUIRED for a build in place: `POST /api/library/apply` without `aside_to` (and without `export_to`, a build elsewhere that
+  only reads the folder) answers 409 `archive_required`. A build always goes from the library straight to the archive, so a system's own
+  `_excluded/` ... folders are no longer made (what earlier builds left there is swept into the archive, as before; `_saves` is unchanged).
+  The new UI's build screen offers "Choose an archive" (Settings > Archive) instead of "Start build" until one is set.
+  `App._pinned_copies` and the no-archive branch of the build are gone.
+* Every check that sets a file aside yields a `library.Decision` (`keeper` is its new field); `organiser._plan_core` collects them (spare copies
+  of a rom, the rules, `bios_verdicts`) and applies them in one pass (`_apply_decision` -> `_set_aside`, which also clears `op.bios`).

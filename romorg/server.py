@@ -4109,20 +4109,24 @@ class App:
                         sub = op.src.relative_to(folder)
                     except ValueError:
                         sub = Path(op.src.name)
-                    new = aside / folder.name / top / sub
+                    new = aside / folder.name / folders.archive_dir(top) / sub
                 elif getattr(op, "archive_rel", ""):                    # (the Amiga: as in the library, below the reason folder)
-                    new = aside / folder.name / top / op.archive_rel
+                    new = aside / folder.name / folders.archive_dir(top) / op.archive_rel
                 else:
-                    new = aside / folder.name / rel
+                    new = aside / folder.name / folders.archive_dir(rel.parts[0]) / Path(*rel.parts[1:])
                 size = 0
                 try:
                     size = op.src.stat().st_size
                 except OSError:
                     pass
-                if same is not None and sortroot.lexists(new) and os.path.normcase(str(new)).casefold() not in names.taken \
-                        and same(op.src, new):
-                    names.taken.add(os.path.normcase(str(new)).casefold())
-                    final = new
+                held = None                                              # (an archive from an earlier build holds it under the old name)
+                if same is not None:
+                    old = aside / folder.name / top / new.relative_to(aside / folder.name / folders.archive_dir(top))
+                    held = next((c for c in (new, old) if sortroot.lexists(c) and os.path.normcase(str(c)).casefold() not in names.taken
+                                 and same(op.src, c)), None)
+                if held is not None:
+                    names.taken.add(os.path.normcase(str(held)).casefold())
+                    final = new = held
                     arch.append(sortroot.SMove(op.src, final, top, sortroot.ALREADY, size=size, rom=op.rom_name if op.dat else ""))
                 else:
                     final = names.free(new)
@@ -4150,21 +4154,6 @@ class App:
             if new:
                 m.dst = names.free(home.joinpath(*new))
         return sweep
-
-    @staticmethod
-    def _pinned_copies(plan: Any, folder: Path) -> list[Any]:
-        """For a build with no archive folder: the copies of the saves that belong to several games, made in the folder's ``_saves``
-        from where the build put the save (under the first title)."""
-        sortroot, organiser, discsys = _mod("sortroot"), _mod("organiser"), _mod("discsys")
-        names = sortroot.Names()
-        out: list[Any] = []
-        for op in discsys.file_ops(plan.ops):
-            if getattr(op, "status", "") != "move" or not getattr(op, "copies", None) or not os.path.lexists(op.dst):
-                continue
-            for title in op.copies:
-                out.append(sortroot.SMove(op.dst, names.free(folder / SAVES_DIR / organiser.safe_filename(title) / op.dst.name), SAVES_DIR,
-                                          size=_file_size(op.dst), copy=True))
-        return out
 
     def _library_aside_dir(self, state: ScanState, body: dict[str, Any]) -> Path | None:
         """The folder a build in place moves what it sets aside to (``aside_to``): checked not to lie in this folder."""
@@ -4196,7 +4185,10 @@ class App:
                            "check the list and build again", "stale_plan")
         self._library_plan(state, *key)  # errors (e.g. module missing) before starting a job
         aside = self._library_aside_dir(state, body)
-        inv = self._s3_inventory(aside) if aside is not None else None
+        if aside is None:
+            raise ApiError(HTTPStatus.CONFLICT, "Choose an archive folder first (Settings > Archive): what the rules set aside is archived "
+                           "there, never deleted and never left in the ROM folder.", "archive_required")
+        inv = self._s3_inventory(aside)
         if inv is not None and inv.client is None:
             raise ApiError(HTTPStatus.CONFLICT, inv.error, "no_s3")
 
@@ -4225,23 +4217,14 @@ class App:
             job.report(0, todo, "Building library...")
             sortroot = _mod("sortroot")
             arch_out: dict[str, Any] | None = None
-            if aside is not None:
-                # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
-                ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same)
-                if arch:
-                    arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
-                                                   progress=_staged(job, 0, 1, "uploading to the archive" if inv else "moving to the archive"))
-                res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
-                                                           playlists=list(plan.playlists),
-                                                           keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
-            else:
-                apply = _mod("discsys").apply_plan if self._is_dc(st) else _mod("organiser").apply_renames
-                res = dict(_call(apply, plan.ops, st.root, progress=job.report, cancel=job.cancel, playlists=list(plan.playlists),
-                                 keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
-                copies = self._pinned_copies(plan, st.root)
-                if copies:                                                  # (the saves of several games: a copy under each of the others)
-                    done = sortroot.apply_moves(copies, keep=[st.root])
-                    res["saves_copied"] = done["moved"]
+            # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
+            ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same)
+            if arch:
+                arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
+                                               progress=_staged(job, 0, 1, "uploading to the archive" if inv else "moving to the archive"))
+            res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
+                                                       playlists=list(plan.playlists),
+                                                       keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
             res["action"] = "library"
             if recovered:
                 res["recovered"] = recovered
@@ -4260,7 +4243,7 @@ class App:
                 follow = self._ra_follow(moved, "move", plan)
                 if follow:
                     res["saves"] = follow
-            if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
+            if not job.cancel.is_set():                             # the tidy-up: what was archived leaves this folder
                 sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside))       # what earlier builds left in _excluded/ ...
                 out = {"moved": 0, "failed": []}
                 if sweep:
@@ -5460,7 +5443,7 @@ class App:
                     saves += 1
                     continue
                 if not origin:
-                    origin = "/".join(parts[1:] if parts[0] in RESERVED_DIRS and len(parts) > 1 else parts)
+                    origin = "/".join(parts[1:] if folders.from_archive(parts[0]) in RESERVED_DIRS and len(parts) > 1 else parts)
                 dest = root.joinpath(*[x for x in origin.replace("\\", "/").split("/") if x not in ("", ".", "..") and ":" not in x])
                 if root.resolve() not in dest.resolve().parents:           # (only ever inside the ROM folder)
                     dest = root.joinpath(*parts)
@@ -5530,6 +5513,7 @@ class App:
             new = organiser.tidy_archive_parts(platform, rel.split("/"))
             if new is None:
                 continue
+            taken.discard(rel.casefold())                      # (the file leaves its own place: a change of case only is no clash)
             dst = "/".join(new)
             stem, dot, ext = dst.rpartition(".") if "." in new[-1] else (dst, "", "")
             n = 1

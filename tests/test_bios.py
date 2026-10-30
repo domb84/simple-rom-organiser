@@ -252,11 +252,14 @@ class LibraryTest(ps.PsServerCase):
         self.assertEqual(rows["ps bios dump.bin"]["to"], "scph9999.bin")
         self.assertIn("BIOS / firmware", rows["ps bios dump.bin"]["reason"])
         self.assertTrue(rows["stray.bin"]["to"].startswith("_unmatched"))
-        self.call("/api/library/apply", {})
+        archive = Path(tempfile.mkdtemp(prefix="romorg-archive-test-")).resolve()      # (a build needs an archive, outside the ROM folder)
+        self.addCleanup(shutil.rmtree, archive, True)
+        self.call("/api/library/apply", {"aside_to": str(archive)})
         self.assertEqual(self.job()["status"], "done")
         self.assertTrue((self.roms / "scph9999.bin").is_file())
         self.assertTrue((self.roms / "prod.keys").is_file())
-        self.assertTrue((self.roms / "_unmatched" / "stray.bin").is_file())
+        self.assertTrue((archive / self.roms.name / "Unmatched" / "stray.bin").is_file())      # (archived, not left in the folder)
+        self.assertFalse((self.roms / "_unmatched").exists())
 
 
     def test_the_same_bios_twice_on_a_disc_system_the_spare_goes_to_duplicates(self) -> None:

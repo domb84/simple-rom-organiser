@@ -33,6 +33,7 @@ class PsServerCase(base.DcServerCase):
                     name=PS2_DAT, version="2026-06-15 03-41-38")
         self.roms = self.base / "ps2"
         self.roms.mkdir()
+        self.arch = self.archive / self.roms.name          # (what a build sets aside lands here: <archive>/ps2/<Reason>/...)
 
     def put_iso(self, game: str, rel: str, sidecars=(), dvd: bool = False) -> None:
         p = self.roms / rel
@@ -92,10 +93,10 @@ class Ps2EndpointTests(PsServerCase):
         self.assertEqual((row["status"], row["to"], row["files"]), ("move", "Alpha (USA)/Alpha (USA).chd", 1))
         lib = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual(lib["playlists"]["write"], 0)
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual(j["status"], "done", j)
-        self.assertTrue((self.roms / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
+        self.assertTrue((self.arch / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
         self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())          # (a disc of a multi-disc game: in its game's folder)
         self.assertFalse(list(self.roms.rglob("*.m3u")))
         self.assertFalse((self.roms / "Alpha loose.chd").exists())
@@ -266,7 +267,7 @@ class DiscSavesTests(PsServerCase):
         row = [r for r in plan["items"] if r.get("game") == "Golf (Europe)"][0]
         self.assertEqual(row["saves"]["effect"], "receive")
         self.assertFalse((card / "BESLES-59990GOLF").exists())                                 # (the preview copied nothing)
-        self.call("/api/library/apply", {"platform": PS2, "plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"platform": PS2, "aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual((card / "BESLES-59990GOLF" / "BESLES-59990GOLF").read_bytes(), b"golf")
         self.assertTrue((card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").is_file())          # (the existing save stays)
@@ -360,7 +361,7 @@ class DiscSavesTests(PsServerCase):
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual((plan["reasons"]["kept_saved"], plan["saves"]["kept"]), (1, 1))
         self.assertEqual((plan["reasons"]["superseded"], plan["reasons"]["excluded"]), (0, 0))
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.archive)})
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "Gamma (USA)/Gamma (USA).chd"])
 
@@ -407,7 +408,7 @@ class ConvertPs2SavesTests(DiscSavesTests):
     def convert(self) -> dict:
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
         plan = self.call("/api/library/plan", {"platform": PS2})
-        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)
         return plan, res["result"]
@@ -419,14 +420,15 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.assertEqual(plan["saves"]["ps2"], {"saves": 1, "conflicts": 0})
         card = self.pcsx2 / "memcards" / "Mcd001.ps2"
         self.assertFalse((card / "BESLES-50012GAMMA").exists())                      # (the preview copied nothing)
-        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)
         self.assertEqual(res["result"]["ps2_saves"]["saves"], 1)
         self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"save")
         self.assertEqual((card / "BASLUS-20946GAMMA" / "data.bin").read_bytes(), b"save")        # the old save is not touched
         self.assertEqual((card / "BESLES-50012OTHER" / "data.bin").read_bytes(), b"other")
-        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd", "_superseded/Gamma (USA)/Gamma (USA).chd"])        # (the USA disc is set aside)
+        self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])
+        self.assertTrue((self.arch / "Superseded" / "Gamma (USA)" / "Gamma (USA).chd").is_file())        # (the USA disc is set aside, into the archive)
 
     def test_a_save_the_card_has_under_the_new_code_is_not_overwritten(self) -> None:
         card = self.pcsx2 / "memcards" / "Mcd001.ps2"
@@ -435,7 +437,7 @@ class ConvertPs2SavesTests(DiscSavesTests):
         self.call("/api/library/profile", {"platform": PS2, "saved_games": "convert"})
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual(plan["saves"]["ps2"], {"saves": 0, "conflicts": 1})
-        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         self.assertEqual(self.job()["status"], "done")
         self.assertEqual((card / "BESLES-50012GAMMA" / "data.bin").read_bytes(), b"mine")
 
@@ -451,7 +453,7 @@ class ConvertPs2SavesTests(DiscSavesTests):
         plan = self.call("/api/library/plan", {"platform": PS2})
         self.assertEqual(plan["saves"]["ps2"], {"saves": 1, "conflicts": 0})
         self.assertEqual(card.read_bytes(), image)                                               # (the preview wrote nothing)
-        self.call("/api/library/apply", {"plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)
         self.assertEqual(res["result"]["ps2_saves"]["replaced"], 1)
@@ -506,7 +508,7 @@ class RawDiscTests(PsServerCase):
 
     def build(self) -> dict:
         plan = self.plan()
-        self.call("/api/library/apply", {"platform": PS2, "plan_id": plan["plan_id"]})
+        self.call("/api/library/apply", {"platform": PS2, "aside_to": str(self.archive), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)
         return res["result"]
@@ -591,7 +593,7 @@ class RawDiscTests(PsServerCase):
         self.assertEqual([x["missing"] for x in plan["incomplete_sets"]], [[2]])
         res = self.build()
         self.assertNotIn("converted", res)
-        self.assertTrue((self.roms / "_incomplete" / "p1.zip").is_file())
+        self.assertTrue((self.arch / "Incomplete" / "p1.zip").is_file())
         self.assertEqual(list(self.roms.rglob("*.chd")), [])
 
     def test_with_complete_sets_only_off_a_disc_of_an_incomplete_set_is_converted_and_kept(self) -> None:
@@ -669,4 +671,4 @@ class RawDiscTests(PsServerCase):
         self.scan_ps2()
         self.assertEqual(self.plan()["convert"]["count"], 0)
         self.build()
-        self.assertTrue(list(self.roms.rglob("broken.zip")) and list(self.roms.rglob("broken.7z")))   # (set aside as unmatched, never deleted)
+        self.assertTrue(list(self.arch.rglob("broken.zip")) and list(self.arch.rglob("broken.7z")))   # (set aside as unmatched, never deleted)

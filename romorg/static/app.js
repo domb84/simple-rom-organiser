@@ -2603,7 +2603,7 @@
     try {
       await post("/api/library/export/settings", { enabled: $("lib-where-other").checked, dest: $("lib-export-dest").value.trim(),
         mode: $("lib-export-mode").value, sidecars: $("lib-export-sidecars").checked, sync: $("lib-export-sync").checked,
-        aside: $("lib-aside-on").checked });
+        aside: true });
     } catch (_) { /* a convenience only */ }
   }, 300);
   function exportSettingsChanged() {
@@ -2624,7 +2624,7 @@
     $("lib-export-dest").value = e.dest || "";
     $("lib-export-mode").value = e.mode || "copy";
     $("lib-export-sidecars").checked = !!e.sidecars;
-    $("lib-aside-on").checked = e.aside !== false;
+    $("lib-aside-on").checked = true;                  // (an archive is required: there is no switch any more)
     syncAsideDir();
     renderAsideVisibility();
     $("lib-export-sync").checked = !!e.sync && e.mode !== "move";
@@ -3423,14 +3423,14 @@
     const excl = cat.filter((e) => e.kind === "exclude" && !amigaOnly(e));
     if (excl.length) {
       groups.push(unit(["exclude"], el("div", { class: "rules-group", id: "rules-exclude" },
-        el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (moved to _excluded/)` }),
+        el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (archived in Excluded/)` }),
         el("div", { class: "rules-grid" }, exclRows(excl)),
         el("div", { class: "sub", text: scope(scopes.exclude_dats) })), "Exclusions"));
     }
     const amigaExcl = cat.filter((e) => e.kind === "exclude" && amigaOnly(e));
     if (amigaExcl.length) {
       amiga.push(unit(["exclude_amiga"], el("div", { class: "rules-group", id: "rules-exclude-amiga" },
-        el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (moved to _excluded/)` }),
+        el("div", { class: "rules-head", text: `${GROUP_TITLE.exclude} (archived in Excluded/)` }),
         el("div", { class: "rules-grid" }, exclRows(amigaExcl))), "Amiga exclusions"));
     }
     const flags = cat.filter((e) => e.kind === "keep_flag");
@@ -3761,9 +3761,9 @@
     const total = plan.incomplete_total || sets.length;
     $("lib-incomplete-title").textContent = isGameFolder(currentPlatform())
       ? (plan.profile && plan.profile.complete_only
-        ? `Multi-disc games with a disc missing (${fmt(total)}) - archived as _incomplete until the set is complete, not converted`
+        ? `Multi-disc games with a disc missing (${fmt(total)}) - archived as Incomplete until the set is complete, not converted`
         : `Multi-disc games with a disc missing (${fmt(total)}) - not archived, no playlist${plan.convert && plan.convert.count ? "; a raw disc is still converted, into its own folder" : ", kept where they are"}`)
-      : `Incomplete sets (${fmt(total)}) - disks missing, archived as _incomplete`;
+      : `Incomplete sets (${fmt(total)}) - disks missing, archived as Incomplete`;
     $("lib-incomplete").replaceChildren(...sets.map((x) => el("li", {},
       el("span", { text: x.name }), " ",
       el("span", { class: "tag tag-status", text: `missing ${isGameFolder(currentPlatform()) ? "disc" : "disk"} ${x.missing.join(", ")} of ${x.total}` }),
@@ -4710,7 +4710,7 @@
         doc.root,
         ...(this.side === "archive" && this.s3 && this.s3.error ? [el("span", { class: "error-text", text: ` - the bucket cannot be read: ${this.s3.error}` })] : [])]));
       $("files-totals").textContent = doc.none
-        ? "No archive folder is set (Settings > Archive folder): what the rules set aside stays in the ROM folder, in _excluded, _superseded ..."
+        ? "No archive folder is set (Settings > Archive folder): choose one before you build. What the rules set aside is archived there, never deleted."
         : `${fmt(t.files)} ${t.files === 1 ? "file" : "files"} · ${fmtBytes(t.bytes)}${t.missing ? ` · ${fmt(t.missing)} missing` : ""}`
           + `${t.changed ? ` · ${fmt(t.changed)} changed by the build` : ""}${this.filtered() ? " (with these filters)" : ""}`;
       box.replaceChildren(...this.rows(doc, ""));
@@ -5117,7 +5117,7 @@
       const p = currentPlatform();
       this.renderS3();
       $("set-archive-default").textContent = a.dir ? `Every system archives ${/^s3:\/\//i.test(a.dir) ? "to this S3 bucket" : "to this folder"}, unless it has its own (below).`
-        : "Not set: nothing is archived. What the rules leave out stays in each system's folder (_excluded, _superseded ...) Choose a folder to turn archiving on.";
+        : "Not set: choose a folder. A build archives what the rules set aside there, never deleting it.";
       const own = Object.entries(a.overrides || {}).sort(([x], [y]) => x.localeCompare(y));
       $("set-archive-own-box").classList.toggle("hidden", !own.length);
       $("set-archive-own").replaceChildren(...own.map(([name, dir]) => el("li", {},

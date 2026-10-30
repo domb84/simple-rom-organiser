@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from . import meter, winproc
-from .folders import CONVERTED_DIR, RESERVED_DIRS
+from .folders import CONVERTED_DIR, RESERVED_DIRS, archive_dir
 
 __all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "count_sweep", "apply_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir"]
 
@@ -131,7 +131,7 @@ def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
             base = folder / reserved
             if not base.is_dir():
                 continue
-            home = aside / folder.name / reserved
+            home = aside / folder.name / archive_dir(reserved)
             top = os.fspath(base)
             for dirpath, dirnames, filenames in os.walk(top):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]

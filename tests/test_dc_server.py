@@ -39,6 +39,8 @@ class DcServerCase(unittest.TestCase):
         os.environ.pop("ROMORG_CHDMAN", None)
         self.roms = self.base / "roms"
         self.roms.mkdir()
+        self.archive = self.base / "archive"           # a build needs an archive, outside the ROM folder: <archive>/<system folder>/<Reason>/...
+        self.arch = self.archive / self.roms.name
         self.discs = {"Alpha (USA) (En,Fr)": T.Disc("a", 1), "Alpha (Europe) (En,Fr)": T.Disc("a2", 4),
                       "Beta (Europe)": T.Disc("b", 2), "Gamma (Japan)": T.Disc("g", 3),
                       "Delta (USA) (Demo)": T.Disc("d", 5), "Epsilon (USA)": T.Disc("e", 8),
@@ -186,13 +188,13 @@ class DcEndpointTests(DcServerCase):
         row = [r for r in plan["items"] if r.get("game") == "Beta (Europe)"][0]
         self.assertEqual((row["status"], row["to"], row["level"], row["files"]), ("move", "Beta (Europe)", "identified", 1))      # (its save state is no part of the game: a row of its own)
         self.assertTrue([r for r in plan["items"] if r["from"].endswith("y.state") and r["to"].startswith("_saves/Beta/")])
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual(j["status"], "done")
         self.assertEqual(j["result"]["failed"], [])
         self.assertEqual(j["result"]["summary"]["correctly_placed"], 1)
         self.assertTrue((self.roms / "Beta (Europe)" / "Beta (Europe).chd").is_file())
-        self.assertTrue((self.roms / "_saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
+        self.assertTrue((self.arch / "_saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
         self.assertFalse((self.roms / "x").exists())                                     # (no empty folder stays)
 
     def test_stale_move_unmatched_false_is_ignored_unmatched_always_moves(self) -> None:
@@ -204,9 +206,10 @@ class DcEndpointTests(DcServerCase):
             plan = self.call(path, {"platform": PLAT, "move_unmatched": False})   # an old client: no 400, ignored
             names = [r.get("name") or r.get("from") or "" for r in plan["items"]]
             self.assertTrue(any("stray.txt" in str(r) and "_unmatched" in str(r) for r in plan["items"]), (path, names))
-        self.call("/api/library/apply", {"move_unmatched": False})
+        self.call("/api/library/apply", {"move_unmatched": False, "aside_to": str(self.archive)})
         self.assertEqual(self.job()["status"], "done")
-        self.assertTrue((self.roms / "_unmatched" / "stray.txt").is_file())
+        self.assertTrue((self.arch / "Unmatched" / "stray.txt").is_file())
+        self.assertFalse((self.roms / "_unmatched").exists())
         self.assertFalse((self.roms / "stray.txt").exists())
 
     def test_library_profile_plan_apply(self) -> None:
@@ -235,11 +238,11 @@ class DcEndpointTests(DcServerCase):
         pl = [r for r in plan["items"] if r.get("item") == "playlist"][0]
         self.assertEqual(pl["disks"], 2)
         self.assertEqual(plan["layout"], "game_folder")
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual((j["status"], j["result"]["failed"], j["result"]["playlists_written"]), ("done", [], 1))
-        self.assertTrue((self.roms / "_excluded" / "g" / "g.chd").is_file())
-        self.assertTrue((self.roms / "_superseded" / "a1" / "a.chd").is_file())
+        self.assertTrue((self.arch / "Excluded" / "g" / "g.chd").is_file())
+        self.assertTrue((self.arch / "Superseded" / "a1" / "a.chd").is_file())
         m3u = self.roms / "Big Game (USA)" / "Big Game (USA).m3u"                          # (the discs sit in one folder: the playlist is in it)
         self.assertEqual([x.split("|")[0] for x in m3u.read_text().splitlines() if x.endswith(("Disc 1", "Disc 2"))],
                          ["Big Game (USA) (Disc 1)/Big Game (USA) (Disc 1).chd", "Big Game (USA) (Disc 2)/Big Game (USA) (Disc 2).chd"])
@@ -366,7 +369,7 @@ class DcEndpointTests(DcServerCase):
         self.assertTrue(rows[PLAT]["convert_on_build"])
         plan = self.call("/api/library/plan", {"limit": 5})
         self.assertEqual(plan["convert"], {"count": 1, "kind": "chd", "archives": 0, "delete": False})
-        self.call("/api/library/apply", {})
+        self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual(j["status"], "done", j)
         self.assertEqual((j["result"]["converted"]["count"], j["result"]["converted"]["failed"]), (1, []))

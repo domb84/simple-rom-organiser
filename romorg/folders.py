@@ -8,9 +8,9 @@
       _superseded/           older versions / worse variants
       _incomplete/           multi-disk games with missing disks
       _duplicates/           extra copies of the same ROM
-      _saves/                RetroArch saves / states of the games the rules archive (Amendment 30; only when the
-                             "games you have saves for" rule is "archive" and no archive folder is set: with one, the
-                             saves go to <archive>/<this folder's name>/_saves/ with the ROMs)
+      _saves/                RetroArch saves / states of the games the rules archive (they go to
+                             <archive>/<this folder's name>/_saves/ with the ROMs; a build needs an archive, so this folder
+                             is only seen in libraries built before, or by the saves layer)
       _converted_originals/  originals kept by "Convert to No-Intro format"
 
 Each folder keeps the file's path relative to the root inside it. The names are compared
@@ -51,7 +51,23 @@ LEGACY_SUBDIRS = REASON_DIRS + (CONVERTED_DIR,)
 CODE_DIRS = {"excluded": EXCLUDED_DIR, "superseded": SUPERSEDED_DIR, "incomplete": INCOMPLETE_DIR,
              "duplicate": DUPLICATES_DIR}
 
+# The names the reason folders have IN THE ARCHIVE (the user's place, so no leading underscore): reserved name -> archive name.
+ARCHIVE_NAMES = {UNMATCHED_DIR: "Unmatched", EXCLUDED_DIR: "Excluded", SUPERSEDED_DIR: "Superseded", INCOMPLETE_DIR: "Incomplete",
+                 DUPLICATES_DIR: "Duplicates"}
+
 _CANON = {d.casefold(): d for d in RESERVED_DIRS}
+_FROM_ARCHIVE = {n.casefold(): d for d, n in ARCHIVE_NAMES.items()}
+
+
+def archive_dir(name: str) -> str:
+    """The folder a reserved folder is called in the archive (``_excluded`` -> ``Excluded``; any other name as it is)."""
+    return ARCHIVE_NAMES.get(name, name)
+
+
+def from_archive(name: str) -> Optional[str]:
+    """The reserved folder an archive folder name stands for, the old name (``_excluded``) or the new one (``Excluded``), else None."""
+    key = name.casefold()
+    return _CANON.get(key) if key in _CANON else _FROM_ARCHIVE.get(key)
 _LEGACY_FOLDED = frozenset(d.casefold() for d in LEGACY_SUBDIRS)
 
 
