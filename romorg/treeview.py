@@ -208,10 +208,20 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
                 if parts:
                     ours = f.suffix.lower() == ".lha" and _built_whdload(f)
                     out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if ours else IGNORED, "", -1))
+    at: Dict[Tuple[str, ...], int] = {}
+    for i, e in enumerate(out):
+        if e.side == LIBRARY:
+            at.setdefault(e.parts, i)
     for p in playlists:                                             # the playlists the build writes
         if getattr(p, "status", "") == "write":
             parts = _rel(Path(p.path), root)
             if parts is not None:
+                here = at.get(tuple(parts))
+                if here is not None:                                # (a playlist of ours that is rewritten: one file, listed once)
+                    if out[here].state in (IGNORED, SAME):
+                        out[here] = out[here]._replace(state=NEW)
+                    continue
+                at[tuple(parts)] = len(out)
                 out.append(Entry(LIBRARY, tuple(parts), 0, NEW, "", -1))
     if archive_base is not None:
         for m in list(leaving.values()) + extra:                    # what the plan does not list: earlier builds' leftovers, copies, saves

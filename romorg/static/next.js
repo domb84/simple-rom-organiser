@@ -935,7 +935,8 @@
     const cat = plan.categories || {};
     const excluded = cat.excluded || 0, superseded = cat.superseded || 0;
     const other = (cat.incomplete || 0) + (cat.duplicate || 0) + (cat.unmatched || 0) + (cat.saves || 0) + (cat.bios || 0);
-    const movedOrRenamed = Math.max(0, (plan.files || 0) - excluded - superseded - other);
+    const rs = plan.reasons || {};
+    const movedOrRenamed = (rs.renamed || 0) + (rs.moved || 0);
     const conv = (plan.convert && plan.convert.count) || 0;
     const lists = (plan.playlists && plan.playlists.write) || 0;
     const nothing = !plan.files && !conv && !lists;

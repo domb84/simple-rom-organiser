@@ -3711,10 +3711,12 @@ class App:
         return self._require_scan().root
 
     @staticmethod
-    def _library_flags(body: dict[str, Any]) -> tuple[bool, bool]:
+    def _library_flags(body: dict[str, Any], platform: Any = None) -> tuple[bool, bool]:
         # a stale client may still send ``move_unmatched``: unmatched files are always moved, it is ignored
+        # (``labels`` defaults to what the Files tree plans with: no labels in a game-folder layout)
+        default = platform is None or _layout(platform) != LAYOUT_GAME_FOLDER
         return (_bool_arg(body.get("savedisk")),
-                _bool_arg(body.get("labels"), True))
+                _bool_arg(body.get("labels"), default))
 
     @staticmethod
     def _exclusion_codes() -> list[str]:
@@ -3846,7 +3848,7 @@ class App:
     def library_vanished(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Paged, searchable list of the titles that have no kept version (``library.vanish_report``)."""
         state = self._require_scan()
-        plan = self._library_plan(state, *self._library_flags(body))
+        plan = self._library_plan(state, *self._library_flags(body, state.platform))
         report = getattr(self._library_mod(), "vanish_report", None)
         if report is None or not hasattr(plan, "selection"):
             raise ApiError(HTTPStatus.NOT_IMPLEMENTED, "The vanish report is not available in this version")
@@ -3867,7 +3869,7 @@ class App:
     def library_plan(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """ONE preview of Build library: file moves / renames by reason plus the playlists to write."""
         state = self._require_scan()
-        key = self._library_flags(body)
+        key = self._library_flags(body, state.platform)
         if _bool_arg(body.get("refresh")):       # "Recalculate preview": never reuse the cached plan
             self._drop_plans(state)
         plan = self._library_plan(state, *key)
@@ -3942,7 +3944,7 @@ class App:
         if not ("rating" in sort or "votes" in sort):     # (only the rows shown get their rating / checksum reference)
             self._annotate_library(state, [(it, "") for it in page["items"]])
         page.update(
-            plan_id=self._plan_id(state, key), files=len(ops),
+            plan_id=self._plan_id(state, key), files=sum(1 for op in ops if op.status in ACTIONABLE),
             root=str(state.root), layout=state.layout, profile=self._profile_json(plan.profile, state.platform.name),
             counts=_status_counts(ops), reasons=reasons, categories=categories, by_dest=by_dest,
             playlists={"write": writes, "ok": statuses.count("ok"),
@@ -3987,10 +3989,23 @@ class App:
         aside_raw = _str_arg(body.get("aside_to"))
         if aside_raw and not _str_arg(body.get("export_to")):
             aside = self._library_aside_dir(state, body)
-            existing = _mod("sortroot").count_sweep({state.platform.name: state.root}) if aside else 0
-            r = page["reasons"]
+            existing = coming = 0
+            if aside:
+                # (one list, each file once: the plan's own set-asides, the reserved folders' leftovers that are not among them, the saves)
+                aside_dirs = set(_mod("sortroot").ASIDE_FOLDERS)
+                for m in self._all_archive_moves(state, plan, aside):
+                    if getattr(m, "copy", False):
+                        continue
+                    try:
+                        top = Path(m.src).relative_to(state.root).parts[0]
+                    except (ValueError, IndexError):
+                        top = ""
+                    if top in aside_dirs:
+                        existing += 1                      # (already in a reserved folder: left by an earlier build)
+                    else:
+                        coming += 1
             page["aside"] = {"path": self._archive_where(aside), "existing": existing, "s3": self._s3_inventory(aside) is not None if aside else False,
-                             "coming": sum(r.get(k, 0) for k in ("excluded", "superseded", "incomplete", "duplicates", "unmatched"))}
+                             "coming": coming}
         export_to = _str_arg(body.get("export_to"))
         if export_to:
             page["export"] = self._export_summary(state, plan, export_to, _mod("libexport").normalize_mode(_str_arg(body.get("export_mode"))),
@@ -4143,6 +4158,32 @@ class App:
                 keep.append(op)
         return keep, arch
 
+    def _all_archive_moves(self, state: ScanState, plan: Any, aside: Path,
+                           same: Callable[[Path, Path], bool] | None = None) -> list[Any]:
+        """Every move a build in place makes to the archive, each file ONCE: what the plan sets aside, what earlier builds left in the
+        reserved folders (except a file the plan takes back into the library, or already moves to the archive) and the saves of the
+        games set aside. The Files tree and the build preview's archive card both count from this one list."""
+        sortroot = _mod("sortroot")
+        _keep, arch = self._archive_pass(state.root, plan, aside, same)
+        planned = {os.path.normcase(str(s)) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
+                   for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])}
+        seen = {os.path.normcase(str(m.src)) for m in arch if not getattr(m, "copy", False)}
+        moves = list(arch)
+        for m in self._relay_sweep(state.platform, state.root, aside, sortroot.plan_sweep({state.platform.name: state.root}, aside)):
+            k = os.path.normcase(str(m.src))
+            if k not in planned and k not in seen:
+                seen.add(k)
+                moves.append(m)
+        try:
+            for m in self._saves_moves(plan, state.root, aside)[0]:
+                k = os.path.normcase(str(m.src))
+                if k not in seen:
+                    seen.add(k)
+                    moves.append(m)
+        except Exception:  # noqa: BLE001 - the saves are a courtesy
+            traceback.print_exc()
+        return moves
+
     @staticmethod
     def _relay_sweep(platform: Any, folder: Path, aside: Path, sweep: list[Any]) -> list[Any]:
         """The Amiga's files an earlier build left in ``_excluded/`` ... go to the archive in the library's layout (a folder per game, below
@@ -4180,7 +4221,7 @@ class App:
 
     def library_apply(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         state = self._require_scan()
-        key = self._library_flags(body)
+        key = self._library_flags(body, state.platform)
         export_to = _str_arg(body.get("export_to"))
         if export_to:
             return self._library_export_apply(state, key, body, export_to)
@@ -5796,10 +5837,14 @@ class App:
             except Exception:  # noqa: BLE001 - the saves are a courtesy
                 traceback.print_exc()
         entries: list[dict[str, Any]] = []
+        own = tuple(getattr(state.platform, "containers", ())) == ("titleid",)      # (the Switch: a title-ID folder is an emulator's, left alone)
+        scanner = _mod("scanner")
         for e in treeview.collect(state.root, plan, base, moves, plan.playlists, archive_files=held):
             row = rows[e.op][0] if 0 <= e.op < len(plan.ops) else None
             entries.append({"side": e.side, "parts": e.parts, "size": e.size, "state": e.state, "from": e.origin, "row": row,
                             "text": "/".join(e.parts).casefold() + (" " + str(row.get("rom_name") or "").casefold() if row else "")})
+            if own and e.side == treeview.LIBRARY and row is None and scanner.in_emulator_folder(e.parts[:-1]):
+                entries[-1]["emulator"] = True
         if self._is_dc(state) and self._convert_on_build(state.platform, self._config()):
             self._add_conversions(state, entries, treeview)
         elif (getattr(state.platform, "disc_dats", ()) and self._convert_on_build(state.platform, self._config())) \
@@ -6251,8 +6296,8 @@ class App:
             return False
         if show == "missing" and (entry["state"] != "missing" or entry.get("saves_only")):
             return False
-        if show == "unmatched" and cat != "unmatched" and entry["state"] != "ignored":
-            return False
+        if show == "unmatched" and (cat != "unmatched" and entry["state"] != "ignored" or entry.get("emulator")):
+            return False                                    # (an emulator's files are left where they are on purpose: not unmatched)
         if show == "saves" and cat != "saves" and entry["state"] != "saves" and not (row.get("saves") or {}).get("total"):
             return False
         if show == "changed" and entry["state"] not in App.TREE_CHANGED:      # (the big-screen UI's "Changes" view: what a build does)
@@ -6329,6 +6374,8 @@ class App:
                 for k in self.TREE_SHOW:
                     if self._tree_pass(e, {"show": k}) and not (k == "have" and (bios or (target_keys is not None and not row.get("dat") and u[0] == "game" and u[1] not in target_keys))):       # (the Library tab lists firmware, never counts it)
                         show[k].add(u)
+            if e.get("up") and not totals_mod.row_is_bios(row) and self._tree_pass(e, f, "upgrade"):
+                upgrades.add(u)                            # (an add-on - a Switch update - with a better version counts here as in the tile)
             if bios and f.get("show", "") in ("", "have"):
                 continue                                   # (nor in the numbers of the other filters)
             if self._tree_pass(e, f, "state"):
@@ -6344,8 +6391,6 @@ class App:
                 machines.setdefault(e["plat"], set()).add(u)
             if e.get("whd") and self._tree_pass(e, f, "install"):
                 installs.setdefault("WHDLoad", set()).add(u)
-            if e.get("up") and self._tree_pass(e, f, "upgrade"):
-                upgrades.add(u)
             if row and self._tree_pass(e, f, "rated"):
                 rated["1" if row.get("rating") is not None else "0"].add(u)
         count = lambda d: {k: len(v) for k, v in d.items()}      # noqa: E731

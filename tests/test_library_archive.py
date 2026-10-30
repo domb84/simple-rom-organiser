@@ -31,6 +31,30 @@ class LibraryWithArchive(ServerCase):
                          ["gba/duplicates/run copy.gba", "gba/excluded/old leftover.gba", "gba/unmatched/what.gba"])
 
 
+    def test_the_archive_card_counts_each_file_once(self) -> None:
+        root = self.tmp / "GBA"
+        put(root / "run.gba", self.rom["Run (USA)"])
+        put(root / "_excluded" / "bash.gba", self.rom["Bash (USA)"])              # a game the rules keep: taken back into the library
+        put(root / "_superseded" / "run2.gba", self.rom["Run (USA)"])             # a copy: the plan archives it, the sweep of the folder would too
+        put(root / "_excluded" / "junk.gba", b"left by an earlier build")         # swept out
+        aside = self.tmp / "lib-archive"
+        self.job("/api/scan", {"path": str(root), "platform": GBA})
+        plan = self.call("POST", "/api/library/plan", {"limit": 50, "aside_to": str(aside)})
+        card = plan["aside"]
+        self.assertEqual(card["coming"] + card["existing"], 2)
+        self.assertEqual(self.job("/api/library/apply", {"aside_to": str(aside)})["aside"]["moved"], 2)         # (and the build moves that many)
+
+    def test_files_to_change_counts_only_what_a_build_changes(self) -> None:
+        root = self.tmp / "GBA"
+        put(root / "Run (USA).gba", self.rom["Run (USA)"])                         # already right: no change
+        put(root / "bash.gba", self.rom["Bash (USA)"])                             # renamed
+        put(root / "_excluded" / "junk.gba", b"left by an earlier build")         # an op that only stays (status ok)
+        self.job("/api/scan", {"path": str(root), "platform": GBA})
+        plan = self.call("POST", "/api/library/plan", {"limit": 50, "aside_to": str(self.tmp / "lib-archive")})
+        changing = [r for r in plan["items"] if r["status"] in ("move", "rename", "delete")]
+        self.assertGreater(len(plan["items"]), len(changing))
+        self.assertEqual(plan["files"], len(changing))
+
     def test_a_build_cleans_up_after_a_run_that_was_killed(self) -> None:
         root = self.tmp / "GBA"
         put(root / "_converted_originals" / "sub" / "run.gba", self.rom["Run (USA)"])   # moved away by a conversion that never finished

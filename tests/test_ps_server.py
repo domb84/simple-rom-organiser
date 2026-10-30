@@ -385,6 +385,7 @@ class DiscSavesTests(PsServerCase):
         aside = self.base / "archive"
         plan = self.call("/api/library/plan", {"platform": PS2, "aside_to": str(aside)})
         self.assertEqual(plan["saves"]["archive"]["files"], 2)
+        self.assertEqual(plan["aside"]["coming"] + plan["aside"]["existing"], plan["reasons"]["superseded"] + plan["reasons"]["excluded"] + 2)   # (the archive card counts the saves too)
         self.call("/api/library/apply", {"aside_to": str(aside), "plan_id": plan["plan_id"]})
         res = self.job()
         self.assertEqual(res["status"], "done", res)

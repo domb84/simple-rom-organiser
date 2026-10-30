@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -96,3 +97,38 @@ class SwitchChecksumOptionTests(SwitchPlatformCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwitchCountTests(SwitchPlatformCase):
+    TREE = "/api/tree?platform=Nintendo%20Switch&show={show}&path="
+
+    def wait_totals(self) -> dict:
+        end = time.time() + 30
+        while time.time() < end:
+            t = self.call("/api/library/totals?platform=Nintendo%20Switch")
+            if not t.get("calculating") and t.get("target_games") is not None:
+                return t
+            time.sleep(0.1)
+        self.fail("the totals did not come")
+
+    def test_the_better_version_facet_counts_what_the_tile_counts(self) -> None:
+        (self.games / "update 2.nsp").unlink()                       # (the catalogue has update 2: a better version of the update you own)
+        self.scan()
+        tile = self.wait_totals()["not_preferred"]
+        self.assertGreater(tile, 0)
+        top = self.call(self.TREE.format(show=""))
+        self.assertEqual(top["facets"]["upgrade"], {"Upgrade available": tile})
+        self.assertEqual(len([f for f in top["files"] if f.get("upgrade")]), tile)
+
+    def test_an_emulators_files_are_not_unmatched(self) -> None:
+        own = self.games / "0100000000010000"
+        own.mkdir()
+        (own / "cache.bin").write_bytes(b"shader cache")
+        (self.games / "readme.txt").write_text("notes")
+        self.scan()
+        top = self.call(self.TREE.format(show="unmatched"))             # (the folder: what is unmatched is archived by the build)
+        self.assertEqual((top["files"], top["dirs"], top["facets"]["show"]["unmatched"]), ([], [], 0))
+        before = self.call(self.TREE.format(show=""))["totals"]["files"]
+        self.assertEqual(before, 3)                                      # (the game, update 1 and the emulator's file are still listed)
+        arch = self.call(self.TREE.format(show="unmatched") + "&side=archive")
+        self.assertEqual(arch["totals"]["files"], 2)                    # (mystery.nsp and readme.txt)
