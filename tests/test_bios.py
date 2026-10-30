@@ -278,9 +278,10 @@ class LibraryTest(ps.PsServerCase):
         self.scan_ps2()
         rows = {Path(r["from"]).name: r for r in self.call("/api/library/plan", {"platform": ps.PS2})["items"]}
         name = "Sony PlayStation SCPH-5500 BIOS v3.0 (1996-09-09)(Sony)(JP).bin"
-        self.assertEqual((rows["PSX - SCPH5500.BIN"]["to"], rows["PSX - SCPH5500.BIN"]["category"]), (name, "bios"))
-        self.assertEqual((rows["scph5500.bin"]["to"], rows["scph5500.bin"]["category"]), ("_duplicates/scph5500.bin", "duplicate"))
-        self.assertEqual(rows["scph5500.bin"]["keeper"], name)
+        # (which copy stays is the cartridge systems' rule: the one an emulator looks for by name; the other is the spare)
+        self.assertEqual((rows["scph5500.bin"]["to"], rows["scph5500.bin"]["category"]), ("scph5500.bin", "bios"))
+        self.assertEqual((rows["PSX - SCPH5500.BIN"]["to"], rows["PSX - SCPH5500.BIN"]["category"]), ("_duplicates/PSX - SCPH5500.BIN", "duplicate"))
+        self.assertEqual(rows["PSX - SCPH5500.BIN"]["keeper"], "scph5500.bin")
 
     def test_a_bad_firmware_dump_is_set_aside_as_a_bad_dump_like_a_game_with_that_flag(self) -> None:
         import zlib

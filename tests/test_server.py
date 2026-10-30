@@ -2588,7 +2588,7 @@ class LibraryServerTests(ServerTestCase):
         archive = Path(tempfile.mkdtemp(prefix="romorg-archive-test-")).resolve()      # (a build needs an archive, outside the ROM folder)
         self.addCleanup(shutil.rmtree, archive, True)
         # (the archive pass works on real files with the real organiser: here the stubbed one hands the plan's ops through)
-        keep = mock.patch.object(server.App, "_archive_pass", staticmethod(lambda folder, plan, aside, same=None: (list(plan.ops), [])))
+        keep = mock.patch.object(server.App, "_archive_pass", staticmethod(lambda folder, plan, aside, *a, **k: (list(plan.ops), [])))
         keep.start()
         self.addCleanup(keep.stop)
         self.post("/api/library/apply", {"aside_to": str(archive)})
