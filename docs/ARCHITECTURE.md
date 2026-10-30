@@ -4261,3 +4261,21 @@ The folder a game's saves go to (in the archive, `<archive>/<system>/Saves/<Titl
 * **`KEEP_APART_PLATFORMS`** `{platform: {title: [tag sets]}}` (the Amiga's is `KEEP_APART`: publishers). On a No-Intro / Redump system the tags are the
   release's regions and `(..)` flags, casefold; a release with none is the main game (`library._release_apart`, `game_key_of`; the key's product tuple
   gets `@n`). First entry: Game Boy `Space Invaders` (Japan, Taito 1990, 32 KB) apart from Activision's 1999 USA / Europe game. `platform_of_dat` maps a DAT to its system.
+
+**AMENDMENT 112 (v0.5) — the sweep of false merges of "Combine alternate titles" (2026-10-30).**
+
+* **Numbered titles** (`alttitles._numbered`, `_two_games`): two titles that are the same words with other numbers (a sequel number, a roman numeral, a
+  year: `bomberman gb` / `bomberman gb 2`, `kings field 2` / `kings field 3`, `mario golf` / `mario golf 64`) are no longer "a title with a subtitle" (which
+  always joined). They are two games when any region has both, and one game when their regions are disjoint (a rename: Japan's `Gauntlet` = the
+  Mega Drive's `Gauntlet IV`). A hand pair of `SAME_GAME` still wins. Over the data copy of the DATs 5 of 4,776 combined groups split by this alone
+  (Game Boy Bomberman GB / 2, Game Boy Color Game Boy Gallery 3 / 4, PS1 Final Fantasy Origins, King's Field II / III, Motor Toon Grand Prix / 2); the others are
+  hand entries below.
+* **Hand entries from the sweep.** `SAME_GAME`: PS1 King's Field II = III (the USA's II is Japan's III), Motor Toon Grand Prix = 2 = USA Edition (the USA game is
+  Japan's 2), Final Fantasy Origins (a two-disc game, Europe names each disc), Game Boy Bomberman GB = GB 2 (the USA / Europe game is Japan's 2).
+  `KEEP_APART_PLATFORMS`: Game Boy Centipede (Majesco 1999, 128 KB, apart from Accolade 1992, 32 KB), Game Boy Bomberman GB (Japan: the US Wario Blast), PS1 King's
+  Field and II (Japan), Motor Toon Grand Prix (Japan). `NOT_SAME_GAME`: GBC Game Boy Gallery 3 / 4 (Australia has both) and Space Invasion / & Painter,
+  GBA The Sims 2 / The Sims (Japan, 16 MB like Bustin' Out), Dreamcast Memories Off 2nd / Making Disc and / Promotion Disc, Sentimental Graffiti 2 / Third Window,
+  GameCube Pokemon Colosseum / Nintendo Tokusei Disc, PS1 Real Bout Garou Densetsu / SNK Fan Collection and Ren'ai Kouza Real Age / The Art of Eguchi Hisashi
+  (the last six are Redump "Bonus Discs").
+* **Checked and left merged:** PS1 International Track & Field 2 / 2000, Mega Drive Gauntlet / Gauntlet IV, NES Ghostbusters II / III (Asia, a pirate), Game Boy
+  and Game Boy Color Monopoly (one title; Europe's 256 KB is Japan's size, so size follows language, not region).

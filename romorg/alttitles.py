@@ -259,6 +259,14 @@ SAME_GAME: dict[str, list[tuple[str, ...]]] = {
     "Sega Master System": [("Minesweeper", "Mine Sweeper")],
     "Sony PlayStation 2": [("Adiboo and the Energy Thieves", "Energy Thieves, The")],
     "Nintendo Game Boy Color": [("O'Leary Manager 2000", "Barca Total 2000")],
+    # (titles that differ only by a number are two games in a region that has both - ``_numbered`` - unless checked here; each pair of the
+    #  first two is also in ``library.KEEP_APART_PLATFORMS``, which takes the Japanese release of the shared title out of the game)
+    "Nintendo Game Boy": [("Bomberman GB", "Bomberman GB 2")],
+    "Sony PlayStation": [
+        ("King's Field II", "King's Field III"),
+        ("Motor Toon Grand Prix", "Motor Toon Grand Prix 2", "Motor Toon Grand Prix - USA Edition"),     # (the USA edition: 571.6 MB, the USA game 569.0)
+        # (a two-disc game: the USA names it once, Europe names each disc after its game)
+        ("Final Fantasy Origins", "Final Fantasy Origins - Final Fantasy", "Final Fantasy Origins - Final Fantasy II")],
 }
 SAME_GAME["Super Nintendo Entertainment System"].append(("Cannondale Cup", "Exertainment Mountain Bike Rally"))
 
@@ -514,6 +522,14 @@ def not_same(platform_name: str) -> frozenset:
     return frozenset(frozenset((node(a), node(b))) for a, b in library.NOT_SAME_GAME.get(platform_name, ()))
 
 
+def _numbered(na: str, nb: str) -> bool:
+    """Whether the normal titles ``na`` and ``nb`` are the same words with different numbers (``bomberman gb`` / ``bomberman gb 2``,
+    ``kings field 2`` / ``kings field 3``, ``winter sports 2009 next challenge`` / ``winter sports 2 next challenge``)."""
+    wa, wb = na.split(), nb.split()
+    ra, rb = [w for w in wa if not w.isdigit()], [w for w in wb if not w.isdigit()]
+    return bool(ra) and ra == rb and [w for w in wa if w.isdigit()] != [w for w in wb if w.isdigit()]
+
+
 def _two_games(a: tuple, b: tuple, hand: Optional[dict] = None, apart: frozenset = frozenset()) -> bool:
     """Whether titles ``a`` and ``b`` (``(title, {release kind: places}, releases)``) are two games: a release of the same kind for the
     same region under both titles. Titles spelt alike, or one the other with a subtitle, are one game, and so are two titles of one
@@ -528,6 +544,10 @@ def _two_games(a: tuple, b: tuple, hand: Optional[dict] = None, apart: frozenset
     na, nb = node(sa), node(sb)
     if not (na.startswith("~") and nb.startswith("~")):         # (two titles of another script are the same game by their own letters only)
         na, nb = link(sa), link(sb)
+    if _numbered(na, nb):
+        # (titles that differ by a sequel number, a roman numeral or a year are not "a title with a subtitle": a region that has both -
+        #  "King's Field II (Japan, USA)" and "King's Field III (Japan)" - has two games. A region of only one of them is a rename.)
+        return any(p - {"-"} & q - {"-"} for p in a[1].values() for q in b[1].values())
     if na == nb or na.startswith(nb + " ") or nb.startswith(na + " "):
         return False
     if (sa != a[0] and na.endswith(" " + nb)) or (sb != b[0] and nb.endswith(" " + na)):

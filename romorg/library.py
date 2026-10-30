@@ -851,13 +851,35 @@ KEEP_APART_PLATFORMS: dict[str, dict[str, list[frozenset]]] = {
     "Commodore Amiga": KEEP_APART,
     "Nintendo Game Boy": {
         "space invaders": [frozenset({"japan"})],        # Taito's 1990 game (Japan, 32 KB) / Activision's 1999 one (USA, Europe, 512 KB)
+        "centipede": [frozenset({"majesco"})],           # Accolade's 1992 port (USA, Europe, 32 KB) / Majesco's 1999 one (USA, 128 KB)
+        "bomberman gb": [frozenset({"japan"})],          # Japan's "Bomberman GB" (1994) is the US "Wario Blast"; the USA / Europe "Bomberman GB" is Japan's
+    },                                                   #  "Bomberman GB 2" (hand pair in ``alttitles.SAME_GAME``)
+    "Sony PlayStation": {
+        # Japan's King's Field (1994, 30 MB), II (125 MB) and III (517 MB) are three games; the USA's King's Field II (572 MB) is Japan's III
+        # (hand pair in ``alttitles.SAME_GAME``: II = III), and the USA / Europe King's Field is Japan's II
+        "king's field": [frozenset({"japan"})],
+        "king's field ii": [frozenset({"japan"})],
+        # Japan's Motor Toon Grand Prix (1994, 361 MB) / the USA's one, which is Japan's and Europe's "Motor Toon Grand Prix 2" (569-572 MB)
+        "motor toon grand prix": [frozenset({"japan"})],
     },
 }
 
 # Titles of one platform that are two games although the ratings data (or a title spelt alike) joins them: ``{platform: [(title, title)]}``.
 # Hand-checked; ``alttitles`` never puts the two in one game.
 NOT_SAME_GAME: dict[str, list[tuple[str, str]]] = {
-    "Sony PlayStation": [("Digimon World 2003", "Digimon World 3"), ("Knockout Kings 99", "Knockout Kings")],
+    # Game Boy Color: Australia has a "Game Boy Gallery 3" AND a "Game Boy Gallery 4" - two carts of one region cannot be one game (the
+    # ratings data lists the 4 as a name of Game & Watch Gallery 3). "Space Invasion" (128 KB) and its Europe-only 2-in-1 with Painter (512 KB).
+    "Nintendo Game Boy Color": [("Game Boy Gallery 3", "Game Boy Gallery 4"), ("Space Invasion", "Space Invasion & Painter")],
+    # (Japan's "The Sims" is 16 MB like Bustin' Out; The Sims 2 is 32 MB. The ratings data lists "Sims" as a name of The Sims 2.)
+    "Nintendo Game Boy Advance": [("Sims 2, The", "Sims, The")],
+    # Redump files these under "Bonus Discs": a promotion / making-of / fan disc is no copy of the game
+    "Sega Dreamcast": [("Memories Off 2nd", "Memories Off 2nd - Making Disc"), ("Memories Off 2nd", "Memories Off 2nd - Promotion Disc"),
+                       ("Sentimental Graffiti 2", "Sentimental Graffiti 2 - Third Window")],
+    "Nintendo GameCube": [("Pokemon Colosseum", "Pokemon Colosseum - Nintendo Tokusei Disc")],
+    # (Digimon World 2003 / 3, Knockout Kings 99 / Knockout Kings: sequels; the two Bonus Discs are fan discs of the games)
+    "Sony PlayStation": [("Digimon World 2003", "Digimon World 3"), ("Knockout Kings 99", "Knockout Kings"),
+                         ("Real Bout Garou Densetsu", "SNK Fan Collection - Garou Densetsu"),
+                         ("Ren'ai Kouza - Real Age", "Ren'ai Kouza - Real Age - The Art of Eguchi Hisashi")],
 }
 
 _DAT_PLATFORM: Optional[dict[str, str]] = None

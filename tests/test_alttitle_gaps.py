@@ -245,5 +245,121 @@ class KeepApartOnEveryPlatform(unittest.TestCase):
         self.assertIn(("Digimon World 2003", "Digimon World 3"), library.NOT_SAME_GAME["Sony PlayStation"])
 
 
+def _two(a: tuple, b: tuple, plat: str = "") -> bool:
+    return alttitles._two_games(a, b, alttitles.hand_games(plat), alttitles.not_same(plat))
+
+
+def _t(title: str, *regions: str) -> tuple:
+    return (title, {(): frozenset(regions)}, 1)
+
+
+class NumberedTitles(unittest.TestCase):
+    """A sequel number, a roman numeral or a year is no "subtitle": a region that has both titles has two games (the false merges of the
+    sweep of 2026-10-30: Bomberman GB / GB 2, King's Field II / III, Motor Toon Grand Prix / 2); a rename in other regions stays one."""
+
+    def test_the_same_words_with_other_numbers(self) -> None:
+        for a, b in [("bomberman gb", "bomberman gb 2"), ("kings field 2", "kings field 3"), ("mario golf", "mario golf 64"),
+                     ("winter sports 2009 next challenge", "winter sports 2 next challenge")]:
+            self.assertTrue(alttitles._numbered(a, b), (a, b))
+            self.assertTrue(alttitles._numbered(b, a), (a, b))
+        for a, b in [("super mario world", "super mario world super mario bros 4"), ("neo atlas", "neo atlas"), ("2 2", "3 3"),
+                     ("adventure island part 2", "adventure island 2"), ("tetris", "tetris plus")]:
+            self.assertFalse(alttitles._numbered(a, b), (a, b))
+
+    def test_a_region_with_both_numbers_has_two_games(self) -> None:
+        self.assertTrue(_two(_t("bomberman gb", "Europe", "Japan", "USA"), _t("bomberman gb 2", "Japan")))
+        self.assertTrue(_two(_t("kings field 2", "Japan", "USA"), _t("kings field 3", "Japan")))
+        self.assertTrue(_two(_t("master fighter 2", "Asia", "Taiwan"), _t("master fighter 3", "Asia")))
+
+    def test_a_rename_for_other_regions_is_one_game(self) -> None:
+        # (the checked cases: Japan's "Gauntlet" is the Mega Drive's Gauntlet IV, "Ghostbusters III (Asia)" a copy of Ghostbusters II,
+        #  the PS1 "International Track & Field 2" is the USA's "... 2000": one size, complementary regions, no third title)
+        self.assertFalse(_two(_t("gauntlet", "Japan"), _t("gauntlet 4", "Europe", "USA")))
+        self.assertFalse(_two(_t("ghostbusters 2", "Europe", "USA"), _t("ghostbusters 3", "Asia")))
+        self.assertFalse(_two(_t("international track field 2", "Europe"), _t("international track field 2000", "USA")))
+        self.assertFalse(_two(_t("final fantasy 2", "Europe", "USA"), _t("final fantasy 4", "Japan")))
+        self.assertFalse(_two(_t("mario golf", "Europe", "USA"), _t("mario golf 64", "Japan")))
+
+    def test_the_hand_beats_it_and_the_cases_are_listed(self) -> None:
+        plat = "Sony PlayStation"
+        self.assertTrue(_two(_t("kings field 2", "Japan", "USA"), _t("kings field 3", "Japan")))
+        self.assertFalse(_two(_t("king's field ii", "Japan", "USA"), _t("king's field iii", "Japan"), plat))
+        self.assertFalse(_two(_t("motor toon grand prix 2", "Europe", "Japan"), _t("motor toon grand prix", "Japan", "USA"), plat))
+        self.assertFalse(_two(_t("final fantasy origins - final fantasy", "Europe"), _t("final fantasy origins - final fantasy ii", "Europe"), plat))
+        self.assertFalse(_two(_t("bomberman gb", "Europe", "Japan", "USA"), _t("bomberman gb 2", "Japan"), "Nintendo Game Boy"))
+
+
+def _game(plat: str, name: str, ext: str = ".gb", style: str = "nointro") -> tuple:
+    p = platforms.get_platform(plat)
+    dat = p.dats[0]
+    r = Rom(name=name + ext, size=1, crc="", md5="", sha1="", game=name, dat=dat, set_name=name)
+    return library.game_key(Item(key=1, dat=dat, rom=r, style=style, path=Path(name), member=None), False)
+
+
+class TheSweepOfFalseMerges(unittest.TestCase):
+    def test_game_boy_centipede_by_majesco_is_not_accolade_s(self) -> None:
+        gb = "Nintendo Game Boy"
+        self.assertNotEqual(_game(gb, "Centipede (USA) (Majesco)"), _game(gb, "Centipede (USA, Europe) (Accolade)"))
+        self.assertEqual(_game(gb, "Centipede (USA, Europe) (Accolade)"), _game(gb, "Centipede (Europe) (Accolade)"))
+
+    def test_game_boy_monopoly_stays_one_game_in_every_region(self) -> None:
+        gb = "Nintendo Game Boy"       # (one title, the ratings data knows one game: nothing proves a second program)
+        self.assertEqual(_game(gb, "Monopoly (USA)"), _game(gb, "Monopoly (Japan)"))
+        self.assertEqual(_game(gb, "Monopoly (Europe) (En,Fr,De)"), _game(gb, "Monopoly (Japan)"))
+
+    def test_bomberman_gb_of_japan_is_the_us_wario_blast_not_the_us_bomberman_gb(self) -> None:
+        gb = "Nintendo Game Boy"
+        self.assertNotEqual(_game(gb, "Bomberman GB (Japan) (SGB Enhanced)"), _game(gb, "Bomberman GB (USA, Europe) (SGB Enhanced)"))
+        self.assertEqual(_game(gb, "Bomberman GB (USA, Europe) (SGB Enhanced)"), _game(gb, "Bomberman GB (USA, Europe) (SGB Enhanced)"))
+
+    def test_the_kings_fields_of_the_playstation(self) -> None:
+        ps = "Sony PlayStation"
+        k = lambda n: _game(ps, n, ".cue", "redump")  # noqa: E731
+        self.assertNotEqual(k("King's Field (Japan)"), k("King's Field (USA)"))
+        self.assertEqual(k("King's Field (USA)"), k("King's Field (Europe) (En,Fr,De)"))
+        self.assertNotEqual(k("King's Field II (Japan)"), k("King's Field II (USA)"))
+        self.assertEqual(k("King's Field II (Japan) (PlayStation the Best)"), k("King's Field II (Japan)"))
+        self.assertEqual(k("Motor Toon Grand Prix (USA)"), k("Motor Toon Grand Prix (USA)"))
+        self.assertNotEqual(k("Motor Toon Grand Prix (Japan)"), k("Motor Toon Grand Prix (USA)"))
+        self.assertEqual(k("Motor Toon Grand Prix (Japan)"), k("Motor Toon Grand Prix (Japan) (Rev 1)"))
+
+    def test_the_hand_checked_pairs_of_the_sweep_are_split(self) -> None:
+        for plat, pair in [("Nintendo Game Boy Color", ("Game Boy Gallery 3", "Game Boy Gallery 4")),
+                           ("Nintendo Game Boy Color", ("Space Invasion", "Space Invasion & Painter")),
+                           ("Nintendo Game Boy Advance", ("Sims 2, The", "Sims, The")),
+                           ("Sega Dreamcast", ("Memories Off 2nd", "Memories Off 2nd - Promotion Disc")),
+                           ("Sega Dreamcast", ("Sentimental Graffiti 2", "Sentimental Graffiti 2 - Third Window")),
+                           ("Nintendo GameCube", ("Pokemon Colosseum", "Pokemon Colosseum - Nintendo Tokusei Disc")),
+                           ("Sony PlayStation", ("Real Bout Garou Densetsu", "SNK Fan Collection - Garou Densetsu"))]:
+            self.assertIn(pair, library.NOT_SAME_GAME[plat])
+            self.assertTrue(_two(_t(alttitles.node(pair[0]), "Japan"), _t(alttitles.node(pair[1]), "Japan"), plat))
+
+    def test_the_hand_pairs_are_where_the_checks_looked_for_them(self) -> None:
+        pairs = {(s, tuple(p)) for s, ps in alttitles.SAME_GAME.items() for p in ps}
+        self.assertIn(("Sony PlayStation", ("King's Field II", "King's Field III")), pairs)
+        self.assertIn(("Nintendo Game Boy", ("Bomberman GB", "Bomberman GB 2")), pairs)
+        self.assertEqual(library.KEEP_APART_PLATFORMS["Nintendo Game Boy"]["centipede"], [frozenset({"majesco"})])
+        self.assertEqual(library.KEEP_APART_PLATFORMS["Sony PlayStation"]["motor toon grand prix"], [frozenset({"japan"})])
+
+
+class NotTheSameGameOfTheSweep(AltTitlesCase):
+    NAMES = AltTitlesCase.NAMES + [("sims 2", 30, 0), ("sims", 30, 1), ("foo bar", 31, 0), ("foo bar 2", 31, 1)]
+
+    def test_a_pair_of_the_table_is_not_joined_by_the_ratings_data(self) -> None:
+        self.learn(["Sims 2, The (USA, Europe)", "Sims, The (Japan)"])
+        self.assertEqual(merged(), [])
+        with mock.patch.dict(library.NOT_SAME_GAME, {"Nintendo Game Boy Advance": []}):
+            alttitles.clear_cache()
+            self.learn(["Sims 2, The (USA, Europe)", "Sims, The (Japan)"])
+            self.assertEqual(merged(), [["sims 2, the", "sims, the"]])
+
+    def test_numbered_titles_join_only_across_regions(self) -> None:
+        self.learn(["Foo Bar (Japan, USA)", "Foo Bar 2 (Japan)"])
+        self.assertEqual(merged(), [])
+        alttitles.clear_cache()
+        self.learn(["Foo Bar (USA)", "Foo Bar 2 (Japan)"])
+        self.assertEqual(merged(), [["foo bar", "foo bar 2"]])
+
+
 if __name__ == "__main__":
     unittest.main()
