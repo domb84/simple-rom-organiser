@@ -2094,7 +2094,7 @@ class NextUiTests(UiTestCase):
         text = self.page.eval("document.getElementById('main').textContent")
         self.assertNotIn("Eta Escape", text)                  # (excluded by the language rule: a choice, not a problem)
         self.assertIn("Nothing to look at here", text)
-        self.assertEqual(self.page.eval("[...document.querySelectorAll('.views .chip')].map(c => c.textContent)"), ["Incomplete 0", "Better versions 0"])
+        self.assertEqual(self.page.eval("document.querySelectorAll('.views .chip').length"), 0)        # (one list: no incomplete sets, the build archives them)
         self.go("#/system/commodore-amiga", "!!document.querySelector('[data-key=needs_look]') && !document.querySelector('#sys-tiles .loading')")
         self.assertIn("0games", self.page.eval("document.querySelector('[data-key=needs_look]')?.textContent.replace(/\\s/g, '')"))
         self.no_js_errors()

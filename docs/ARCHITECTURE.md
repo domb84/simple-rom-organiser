@@ -4194,3 +4194,9 @@ detector; each merge was made only where the copies were the same code.
   file `upgrade_why` (`App._upgrade_names` is `{name: tag}`; a plain set of names still works, with no tag).
 * The new UI shows it as the tag "↑ Version" on the file's row (the tooltip names it), a tag in the detail panel's "Better version" row and a tag on the
   Needs-a-look "Better versions" list. A folder keeps the bare "↑".
+
+**AMENDMENT 110 (v0.5) — Needs a look is the better versions.**
+
+* A build archives an incomplete set (the rule "Complete multi-disk sets only"), so none lies in a built library: the new UI's Needs-a-look tile counts
+  `not_preferred` only, has no description line, and its screen is the one list of better versions (no Incomplete view, no `/api/library/plan` call).
+  The API (`incomplete_sets`, `owned_incomplete`) and the classic UI are unchanged. With the rule off the sets stay and are no longer listed in the new UI.

@@ -759,10 +759,10 @@
     needs_look: (d) => {
       const t = d.totals;
       if (!t || t.calculating || t.target_games === null) return statTile({ key: "needs_look", label: "Needs a look", loading: true, sub: "Waiting for your rules" });
-      // (what your rules exclude is your choice, not a problem: only incomplete sets and versions you could improve count)
-      const n = (t.not_preferred || 0) + (t.owned_incomplete || 0);
+      // (what your rules exclude is your choice, not a problem; an incomplete set is archived by the build: only versions you could improve count)
+      const n = t.not_preferred || 0;
       return statTile({ key: "needs_look", label: "Needs a look", number: fmt(n), unit: n === 1 ? "game" : "games", warn: n > 0,
-        sub: n ? "Incomplete sets, better versions" : "Nothing to check", href: `#/system/${d.p.slug}/look` });
+        sub: n ? "" : "Nothing to check", href: `#/system/${d.p.slug}/look` });
     },
     files_to_change: (d) => (d.plan ? statTile({ key: "files_to_change", label: "Files to change", number: fmt(d.plan.files), sub: "On the next build" })
       : statTile({ key: "files_to_change", label: "Files to change", loading: true, sub: "Working out what changes" })),
@@ -1741,62 +1741,31 @@
       ctx.show({ ...head, body: el("div", { class: "screen" }, skeletonRows(5)), hints: [["B", "Back"]] });
       Activity.set("screen", "Looking for problems");
     }, 150);
-    const opts = buildOptions(p);
-    const [plan, upgrades] = await Promise.all([
-      post("/api/library/plan", { ...opts, limit: 1, summary: true }).catch(() => ({})),
-      get(`/api/library/upgrades?${qs({ platform: p.name })}`).catch(() => ({ items: [] }))]);
+    const upgrades = await get(`/api/library/upgrades?${qs({ platform: p.name })}`).catch(() => ({ items: [] }));
     clearTimeout(waiting);
     Activity.clear("screen");
     if (!ctx.alive()) return null;
-    // (only genuine issues: what your rules exclude on purpose is in Files › Excluded, where a game can still be kept)
-    // (one row a game: the incomplete copies of one game - three cracks each missing disk 2 - are one game to look at)
-    const byGame = new Map();
-    for (const set of Array.isArray(plan.incomplete_sets) ? plan.incomplete_sets : []) {
-      const k = set.game || set.name;
-      if (!byGame.has(k)) byGame.set(k, { name: set.name, copies: [] });
-      byGame.get(k).copies.push(set);
-    }
-    const views = [
-      { key: "incomplete", label: "Incomplete", items: [...byGame.values()] },
-      { key: "better", label: "Better versions", items: upgrades.items || [] },
-    ];
-    let view = views.find((v) => v.items.length) || views[0];
-    const nav = el("nav", { class: "views", "data-section": "views" });
+    // (only versions you could improve: what your rules exclude on purpose is in Files › Excluded, where a game can still be kept, and an
+    // incomplete set is archived by the build)
+    const items = upgrades.items || [];
     const list = el("div", { class: "rows", "data-section": "list" });
     const panel = el("aside", { class: "panel", "data-section": "panel" });
-    const describe = (it) => {
-      if (view.key === "incomplete") {
-        put(panel, el("span", { class: "panel-title", text: it.name }),
-          el("p", { class: "note", text: it.copies.length === 1 ? "You have this copy only in part:" : `You have ${it.copies.length} copies, each only in part:` }),
-          ...it.copies.map((c) => el("p", { class: "note", text: `${c.name}: missing disk ${c.missing.join(", ")} of ${c.total}; you have ${c.present.length ? c.present.join(", ") : "none"}.` })));
-      } else {
-        put(panel, el("span", { class: "panel-title", text: it.title || it.name }),
-          el("p", { class: "note", text: (it.better || []).length === 1 ? "Your rules prefer a version you do not have:" : "Your rules prefer versions you do not have:" }),
-          ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })),
-          it.why ? el("p", { class: "note" }, "Why: ", el("span", { class: "tag t-upgrade", text: it.why })) : null);
-      }
-    };
-    const draw = () => {
-      put(nav, el("span", { class: "glyph" }, "LB"), ...views.map((v) => el("button", { class: `chip${v === view ? " on" : ""}`, type: "button", tabindex: "-1",
-        on: { click: () => { view = v; draw(); } } }, `${v.label} ${fmt(v.items.length)}`)), el("span", { class: "glyph" }, "RB"));
-      const rows = view.items.map((it) => {
-        const missingOf = (c) => `missing disk ${c.missing.join(", ")} of ${c.total}`;
-        const sub = view.key === "incomplete"
-          ? (it.copies.length === 1 ? missingOf(it.copies[0]).replace(/^m/, "M") : `${it.copies.length} copies, each incomplete`)
-          : `${(it.better || []).length} better version${(it.better || []).length === 1 ? "" : "s"}`;
-        const r = row({ name: it.title || it.name, sub, tag: view.key === "incomplete" ? ["Incomplete", "warn"] : null, onClick: () => describe(it) });
-        r.addEventListener("focus", () => describe(it));
-        return r;
-      });
-      put(list, ...(rows.length ? rows : [row({ name: "Nothing to look at here", static: true })]));
-      put(panel, el("p", { class: "note", text: rows.length ? "Each game's details appear here." : "What your rules exclude is in Files › Excluded." }));
-      if (mode !== "mouse" && rows[0]) focusEl(rows[0]);
-    };
-    const step = (d) => { view = views[(views.indexOf(view) + d + views.length) % views.length]; draw(); };
-    draw();
-    return { ...head, keys: { LB: () => step(-1), RB: () => step(1) },
-      body: el("div", { class: "screen tight" }, nav, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
-      hints: [["A", "Select"], ["B", "Back"], ["LB RB", "Views"]] };
+    const describe = (it) => put(panel, el("span", { class: "panel-title", text: it.title || it.name }),
+      el("p", { class: "note", text: (it.better || []).length === 1 ? "Your rules prefer a version you do not have:" : "Your rules prefer versions you do not have:" }),
+      ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })),
+      it.why ? el("p", { class: "note" }, "Why: ", el("span", { class: "tag t-upgrade", text: it.why })) : null);
+    const rows = items.map((it) => {
+      const n = (it.better || []).length;
+      const r = row({ name: it.title || it.name, sub: `${n} better version${n === 1 ? "" : "s"}`, onClick: () => describe(it) });
+      r.addEventListener("focus", () => describe(it));
+      return r;
+    });
+    put(list, ...(rows.length ? rows : [row({ name: "Nothing to look at here", static: true })]));
+    put(panel, el("p", { class: "note", text: rows.length ? "Each game's details appear here." : "What your rules exclude is in Files › Excluded." }));
+    if (mode !== "mouse" && rows[0]) focusEl(rows[0]);
+    return { ...head,
+      body: el("div", { class: "screen tight" }, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
+      hints: [["A", "Select"], ["B", "Back"]] };
   });
 
   // ------------------------------------------------------------------ a system: what "with your rules" is made of
