@@ -1157,6 +1157,26 @@ def layout_parts(platform: Any, dat: str, name: str, title: str = "") -> tuple[s
     return None
 
 
+def library_place(platform: Any, root: Path, op: Any) -> Any:
+    """``op`` (a recognised file's rename of the plan without rules) moved to its place in the Amiga's library layout
+    (:func:`layout_parts`: a game in a folder of its title, a system disk below ``Commodore Amiga - System``): the op as it is for
+    every other system, or a file no DAT knows. Restoring from the archive lays out a game as a build does."""
+    dat = getattr(op, "dat", "") or ""
+    if not dat or getattr(op, "unmatched", False) or op.status not in ("ok", "move") or not hasattr(op, "rom_name"):
+        return op
+    name = op.dst.name
+    title = ""
+    if dat in _amiga_game_dats_all(platform):
+        from . import tags
+        title = safe_filename(tags.parse_name(name.rsplit(".", 1)[0], "tosec").title)
+    parts = layout_parts(platform, dat, name, title)
+    if parts is None:
+        return op
+    new = _finish_op(op.src, Path(root).joinpath(*parts), [], op.rom_name, dat, False)
+    new.reason = op.reason
+    return new
+
+
 def unit_dat(op: RenameOp, unit: Any) -> str:
     """The DAT of a file: its unit's (a zip that holds the game and other files has a row that names no DAT; its unit does)."""
     return op.dat or getattr(unit, "dat", "") or ""

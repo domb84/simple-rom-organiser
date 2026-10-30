@@ -142,6 +142,10 @@ def _file_size(path: Any) -> int:
         return 0
 
 
+# ROM folder names that do not say which system they hold: the archive folder of such a system is named after the platform
+GENERIC_FOLDER_NAMES = frozenset({"games", "game", "roms", "rom", "media", "files", "data", "common", "emulation"})
+
+
 class ApiError(Exception):
     """An error reported to the client as ``{"error": message}``."""
 
@@ -4083,13 +4087,19 @@ class App:
                 "removals": [{"rel": r.rel, "reason": r.reason, "skip": r.skip} for r in ep.removals[:200]]}
 
     @staticmethod
-    def _archive_pass(folder: Path, plan: Any, aside: Path, same: Callable[[Path, Path], bool] | None = None) -> tuple[list[Any], list[Any]]:
+    def _archive_pass(folder: Path, plan: Any, aside: Path, same: Callable[[Path, Path], bool] | None = None,
+                      name: str | None = None, listing: Callable[[Path], list[tuple[Path, int]]] | None = None) -> tuple[list[Any], list[Any]]:
         """What a build in place does, in one move per file: the ``RenameOp`` list for ``organiser.apply_renames`` (inside the system's
         folder) and the moves of what the rules set aside (``_excluded``, ``_superseded`` ... ``_unmatched``) from where it lies straight
         to ``<archive>/<system folder name>/...`` (outside the folder: ``sortroot`` moves them). ``same(src, target)``: True when the
         archive holds this very file at the target already (a game restored and set aside again): the move then only removes the
-        local file (``note`` ``sortroot.ALREADY``) instead of making a numbered second copy."""
+        local file (``note`` ``sortroot.ALREADY``) instead of making a numbered second copy. ``name``: the system's folder in the archive
+        (``_archive_name``; the ROM folder's name when None). ``listing(dir)``: ``[(path, size)]`` of the files below an archive folder:
+        a file of the same size and content anywhere in the same reason folder counts as archived (a restored game has its database
+        name, the archive the name of the source)."""
         organiser, discsys, sortroot = _mod("organiser"), _mod("discsys"), _mod("sortroot")
+        sysdir = aside / (name or folder.name)
+        listed: dict[Path, list[tuple[Path, int]]] = {}
         # (compared as text: on Windows two Path objects that differ only in case are equal, and a rename that only changes
         # the case of a name - "ALPHA.SFC" to "Alpha.sfc" - is a move that has to be made)
         ops = [op for op in discsys.file_ops(plan.ops) if op.status != "move" or str(op.src) != str(op.dst)]
@@ -4108,17 +4118,19 @@ class App:
                     pass
                 if lost and top != sortroot.UNMATCHED:
                     top = ""
+            elif op.status == "delete" and op.kind == "m3u" and os.path.isfile(op.src) and sortroot.inside(op.src, folder):
+                top = sortroot.UNMATCHED        # (a playlist this app made that is stale now: archived like any file no database knows, never deleted)
             if top in sortroot.ASIDE_FOLDERS:
                 if top == sortroot.UNMATCHED:                           # everything lies under the system's own folder name
                     try:
                         sub = op.src.relative_to(folder)
                     except ValueError:
                         sub = Path(op.src.name)
-                    new = aside / folder.name / folders.archive_dir(top) / sub
+                    new = sysdir / folders.archive_dir(top) / sub
                 elif getattr(op, "archive_rel", ""):                    # (the Amiga: as in the library, below the reason folder)
-                    new = aside / folder.name / folders.archive_dir(top) / op.archive_rel
+                    new = sysdir / folders.archive_dir(top) / op.archive_rel
                 else:
-                    new = aside / folder.name / folders.archive_dir(rel.parts[0]) / Path(*rel.parts[1:])
+                    new = sysdir / folders.archive_dir(rel.parts[0]) / Path(*rel.parts[1:])
                 size = 0
                 try:
                     size = op.src.stat().st_size
@@ -4126,9 +4138,18 @@ class App:
                     pass
                 held = None                                              # (an archive from an earlier build holds it under the old name)
                 if same is not None:
-                    old = aside / folder.name / top / new.relative_to(aside / folder.name / folders.archive_dir(top))
+                    old = sysdir / top / new.relative_to(sysdir / folders.archive_dir(top))
                     held = next((c for c in (new, old) if sortroot.lexists(c) and os.path.normcase(str(c)).casefold() not in names.taken
                                  and same(op.src, c)), None)
+                    if held is None and listing is not None and top != sortroot.UNMATCHED and size:
+                        # (the same file under another name, in this reason folder - its old or new name)
+                        for rd in dict.fromkeys((sysdir / folders.archive_dir(top), sysdir / top)):
+                            if rd not in listed:
+                                listed[rd] = listing(rd)
+                            held = next((c for c, sz in listed[rd] if sz == size and os.path.normcase(str(c)).casefold() not in names.taken
+                                         and same(op.src, c)), None)
+                            if held is not None:
+                                break
                 if held is not None:
                     names.taken.add(os.path.normcase(str(held)).casefold())
                     final = new = held
@@ -4137,18 +4158,18 @@ class App:
                     final = names.free(new)
                     arch.append(sortroot.SMove(op.src, final, top, size=size, rom=op.rom_name if op.dat else ""))
                 for title in getattr(op, "copies", ()) or ():        # a save of several games: a copy of it under each of the others
-                    extra = names.free(aside / folder.name / SAVES_DIR / _mod("organiser").safe_filename(title) / op.src.name)
+                    extra = names.free(sysdir / SAVES_DIR / _mod("organiser").safe_filename(title) / op.src.name)
                     arch.append(sortroot.SMove(final, extra, top, size=size, copy=True))
             else:
                 keep.append(op)
         return keep, arch
 
     @staticmethod
-    def _relay_sweep(platform: Any, folder: Path, aside: Path, sweep: list[Any]) -> list[Any]:
+    def _relay_sweep(platform: Any, folder: Path, aside: Path, sweep: list[Any], name: str | None = None) -> list[Any]:
         """The Amiga's files an earlier build left in ``_excluded/`` ... go to the archive in the library's layout (a folder per game, below
         ``Commodore Amiga - Games``), like those the build sets aside now (``organiser.tidy_archive_parts``)."""
         organiser, sortroot = _mod("organiser"), _mod("sortroot")
-        home = aside / folder.name
+        home = aside / (name or folder.name)
         names = sortroot.Names()
         for m in sweep:
             try:
@@ -4233,7 +4254,8 @@ class App:
             sortroot = _mod("sortroot")
             arch_out: dict[str, Any] | None = None
             # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
-            ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same)
+            aname = self._archive_name(st.platform, st.root, aside)
+            ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same, aname, self._archive_listing)
             if arch:
                 arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
                                                progress=_staged(job, 0, 1, "uploading to the archive" if inv else "moving to the archive"))
@@ -4248,7 +4270,7 @@ class App:
             if conv_res is not None:
                 res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
                                     "failed": list(conv_res.get("failed") or [])[:20]}
-            saves_moves, _saves_info = self._saves_moves(plan, st.root, aside)
+            saves_moves, _saves_info = self._saves_moves(plan, st.root, aside, aname)
             if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
                 res["saves_archived"] = self._apply_saves_moves(saves_moves)
             ps2_done = self._ps2_follow(plan)
@@ -4261,7 +4283,7 @@ class App:
                 if follow:
                     res["saves"] = follow
             if not job.cancel.is_set():                             # the tidy-up: what was archived leaves this folder
-                sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside))       # what earlier builds left in _excluded/ ...
+                sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside, {st.platform.name: aname}), aname)       # what earlier builds left in _excluded/ ...
                 out = {"moved": 0, "failed": []}
                 if sweep:
                     out = self._archive_moves(sweep, [state.root, aside], st.root,
@@ -4815,7 +4837,7 @@ class App:
                 return pl.path.stem
         return ""
 
-    def _saves_moves(self, plan: Any, folder: Path, aside: Path | None) -> tuple[list[Any], dict[str, Any]]:
+    def _saves_moves(self, plan: Any, folder: Path, aside: Path | None, name: str | None = None) -> tuple[list[Any], dict[str, Any]]:
         """The moves that take the saves and states of the games the plan sets aside (and whose choice is "archive") to
         ``<archive>/<system folder name>/_saves/<path below the save folder>`` (inside the ROM folder, ``<folder>/_saves``,
         while no archive folder is used). Never over an existing file (the name gets `` (2)``). ``([], {})`` otherwise."""
@@ -4823,7 +4845,7 @@ class App:
         if sp is None or not sp["archive"]:
             return [], {}
         sortroot = _mod("sortroot")
-        base = (aside / folder.name if aside is not None else folder) / SAVES_DIR
+        base = (aside / (name or folder.name) if aside is not None else folder) / SAVES_DIR
         names = sortroot.Names()
         moves: list[Any] = []
         for st in sp["archive"]:
@@ -5272,6 +5294,50 @@ class App:
         inv.save_meta()
         return res
 
+    def _archive_name(self, platform: Any, root: Path, aside: Path) -> str:
+        """The system's folder in the archive: the ROM folder's name (``GBA``), unless that is ambiguous - another system's ROM folder
+        has the same name, or it is a name that says nothing (Switch's ``games``) - then the platform's name. A folder an earlier
+        version made under the ROM folder's name stays in use while it exists, is nobody else's and the platform's own does not. A
+        name two systems share is nobody's: both then use their platform's name (the guard against one folder for two systems)."""
+        safe = _mod("organiser").safe_filename(platform.name)
+        old = root.name
+        shared = False
+        for pname, other in self._folders().items():
+            if pname != platform.name and os.path.basename(os.path.abspath(os.path.expanduser(other))).casefold() == old.casefold():
+                shared = True
+        if shared:
+            return safe
+        if old.casefold() in GENERIC_FOLDER_NAMES:
+            return old if self._archive_folder_exists(aside, old) and not self._archive_folder_exists(aside, safe) else safe
+        return old
+
+    def _archive_folder_exists(self, aside: Path, name: str) -> bool:
+        inv = self._s3_inventory(aside)
+        if inv is not None:
+            return inv.client is not None and bool(inv.objects(name))
+        return (aside / name).is_dir()
+
+    def _archive_listing(self, folder: Path) -> list[tuple[Path, int]]:
+        """``[(path, size)]`` of the files below a folder of the archive (a bucket: its listing)."""
+        inv = self._s3_inventory(folder)
+        out: list[tuple[Path, int]] = []
+        if inv is None:
+            for dirpath, dirnames, filenames in os.walk(folder):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for f in filenames:
+                    if not f.startswith("."):
+                        p = Path(dirpath) / f
+                        out.append((p, _file_size(p)))
+            return out
+        key = inv.key(folder)
+        if not key or inv.client is None:
+            return out
+        top = key[len(inv.target.prefix):].split("/", 1)[0]
+        for k, o in inv.objects(top).items():
+            if k.startswith(key.rstrip("/") + "/") and not k.endswith("/"):
+                out.append((inv.base.joinpath(*k[len(inv.target.prefix):].split("/")), o.size))
+        return out
+
     def _archived_same(self, src: Path, target: Path) -> bool:
         """The archive holds ``src``'s very content at ``target`` already (in a folder: the same bytes; in a bucket: the same size
         and MD5)."""
@@ -5306,12 +5372,13 @@ class App:
         aside = self._archive_of(state.platform, state.root)
         if aside is None:
             raise ApiError(HTTPStatus.CONFLICT, "No archive is set for this system.", "no_archive")
-        base = aside / state.root.name
+        name = self._archive_name(state.platform, state.root, aside)
+        base = aside / name
         inv = self._s3_inventory(aside)
         if inv is not None:
             if inv.client is None:
                 raise ApiError(HTTPStatus.CONFLICT, inv.error, "no_s3")
-            return base, inv, [("/".join(parts), size) for parts, size in inv.files(state.root.name)]
+            return base, inv, [("/".join(parts), size) for parts, size in inv.files(name)]
         out: list[tuple[str, int]] = []
         if base.is_dir():
             for dirpath, dirnames, filenames in os.walk(base):
@@ -5501,7 +5568,8 @@ class App:
                     except ValueError:
                         return True
                     return bool(top) and top[0] in RESERVED_DIRS
-                known = [op for op in _mod("discsys").file_ops(self._rename_plan(st))     # (recognised: a place of its own in the library)
+                known = [organiser.library_place(st.platform, root, op)                    # (recognised: its place in the library's layout)
+                         for op in _mod("discsys").file_ops(self._rename_plan(st))
                          if os.path.normcase(str(op.src)) in mine and op.status in ("move", "ok") and not reserved(op.dst)]
                 moves = [op for op in known if op.status == "move"]
                 bad: set[str] = set()
@@ -5772,7 +5840,8 @@ class App:
         aside = self._archive_of(state.platform, state.root)
         wanted = self._target_names(state.platform)
         inv = self._s3_inventory(aside) if aside is not None else None
-        held = inv.files(state.root.name) if inv is not None else None          # (an S3 archive: its listing, read once)
+        aname = self._archive_name(state.platform, state.root, aside) if aside is not None else state.root.name
+        held = inv.files(aname) if inv is not None else None          # (an S3 archive: its listing, read once)
         ident = f"{self._plan_id(state, key)}|{aside}|{wanted is not None}|{inv.version if inv is not None else ''}"
         cached = state.items.get(("library", "tree"))
         if cached is not None and cached[0] == ident:
@@ -5784,15 +5853,15 @@ class App:
         moves: list[Any] = []
         base = None
         if aside is not None:
-            base = aside / state.root.name
-            _keep, arch = self._archive_pass(state.root, plan, aside, self._archived_same)
+            base = aside / aname
+            _keep, arch = self._archive_pass(state.root, plan, aside, self._archived_same, aname, self._archive_listing)
             planned = {os.path.normcase(str(s)) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
                        for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])}
             # (what earlier builds set aside goes to the archive, except a file the plan takes back into the library: a game the rules keep now)
-            moves = list(arch) + [m for m in self._relay_sweep(state.platform, state.root, aside, sortroot.plan_sweep({state.platform.name: state.root}, aside))
+            moves = list(arch) + [m for m in self._relay_sweep(state.platform, state.root, aside, sortroot.plan_sweep({state.platform.name: state.root}, aside, {state.platform.name: aname}), aname)
                                   if os.path.normcase(str(m.src)) not in planned]
             try:
-                moves += self._saves_moves(plan, state.root, aside)[0]
+                moves += self._saves_moves(plan, state.root, aside, aname)[0]
             except Exception:  # noqa: BLE001 - the saves are a courtesy
                 traceback.print_exc()
         entries: list[dict[str, Any]] = []
@@ -6400,7 +6469,7 @@ class App:
                 continue
             root = Path(os.path.abspath(os.path.expanduser(folder)))
             aside = self._archive_of(p, root)
-            out.append({"platform": p.name, "folder": str(root), "archive": self._archive_where(aside / root.name) if aside is not None else "",
+            out.append({"platform": p.name, "folder": str(root), "archive": self._archive_where(aside / self._archive_name(p, root, aside)) if aside is not None else "",
                         "scanned": p.name in held or p.name in records})
         return {"systems": out, "archive_dir": self._archive_settings(cfg)["dir"]}
 

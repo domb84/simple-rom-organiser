@@ -14,7 +14,9 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from servercase import GBA, ServerCase, put, tree  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from servercase import GB, GBA, SNES, ServerCase, put, tree  # noqa: E402
 from test_s3 import AK, BUCKET, SK, FakeS3, _handler  # noqa: E402
 
 Q = GBA.replace(" ", "%20")
@@ -61,8 +63,55 @@ class LocalArchive(ServerCase):
         self.assertTrue((self.arch / "_unmatched" / "old" / "readme.txt").is_file())      # (it stays where it was)
         self.assertFalse((self.arch / "Unmatched" / "old").exists())                      # ... and is not archived a second time
 
+    def test_a_restored_excluded_game_is_not_archived_a_second_time_under_its_database_name(self) -> None:
+        self.job("/api/archive/restore", {"platform": GBA, "paths": ["Excluded/bash old.gba"]})
+        self.assertTrue((self.root / "Bash (USA).gba").is_file())                          # (restored under the database's name)
+        self.job("/api/scan", {"path": str(self.root), "platform": GBA})
+        self.call("POST", "/api/library/override", {"action": "exclude", "games": [{"dat": "Nintendo - Game Boy Advance", "game": "Bash (USA)"}]})
+        res = self.job("/api/library/apply", {"aside_to": str(self.tmp / "rom-archive")})
+        self.assertFalse((self.root / "Bash (USA).gba").exists())
+        self.assertEqual(sorted(p.name for p in (self.arch / "Excluded").iterdir()), ["bash old.gba"])     # (no second copy)
+        self.assertEqual(res["aside"]["failed"], [])
+
     def test_nothing_chosen_is_refused(self) -> None:
         self.assertEqual(self.http("POST", "/api/archive/restore", {"platform": GBA, "paths": []})[0], 400)
+
+
+class ArchiveFolderNames(ServerCase):
+    """The archive folder of a system: unambiguous, and an archive an older version made under the ROM folder's name is still used."""
+
+    def _names(self, folders: dict[str, str]) -> dict[str, str]:
+        app = self.srv.app
+        for plat, folder in folders.items():
+            app._config_update(folder_for=(plat, folder))
+        aside = self.tmp / "rom-archive"
+        return {plat: app._archive_name(app._resolve_platform(plat), Path(folder), aside) for plat, folder in folders.items()}
+
+    def test_a_folder_name_that_says_nothing_or_that_two_systems_share_is_named_after_the_platform(self) -> None:
+        got = self._names({GBA: str(self.tmp / "GBA"), SNES: str(self.tmp / "a" / "games"), GB: str(self.tmp / "b" / "games")})
+        self.assertEqual(got[GBA], "GBA")                                                     # (unique and clear: as before)
+        self.assertEqual(got[SNES], SNES)                                                     # (two systems, one name: never one folder)
+        self.assertEqual(got[GB], GB)
+        self.assertEqual(self._names({SNES: str(self.tmp / "a" / "games"), GB: str(self.tmp / "b" / "x")})[SNES], SNES)   # (a name that says nothing)
+
+    def test_an_archive_an_older_version_made_under_the_folder_name_is_still_used(self) -> None:
+        (self.tmp / "rom-archive" / "games").mkdir(parents=True)
+        self.assertEqual(self._names({SNES: str(self.tmp / "games")})[SNES], "games")
+        (self.tmp / "rom-archive" / SNES).mkdir(parents=True)                               # (a folder of its own is there too: that one)
+        self.assertEqual(self._names({SNES: str(self.tmp / "games")})[SNES], SNES)
+
+    def test_two_systems_with_one_folder_name_archive_to_two_folders(self) -> None:
+        a, b = self.tmp / "a" / "games", self.tmp / "b" / "games"
+        put(a / "run.gba", self.rom["Run (USA)"])
+        put(a / "what.gba", b"unknown a")
+        put(b / "alpha.sfc", self.rom["Alpha (USA)"])
+        put(b / "what.sfc", b"unknown b")
+        aside = self.tmp / "rom-archive"
+        self._names({GBA: str(a), SNES: str(b)})
+        for plat, folder in ((GBA, a), (SNES, b)):
+            self.job("/api/scan", {"path": str(folder), "platform": plat})
+            self.job("/api/library/apply", {"aside_to": str(aside)})
+        self.assertEqual([x for x in tree(aside) if not x.endswith("/")], [f"{GBA}/Unmatched/what.gba", f"{SNES}/Unmatched/what.sfc"])
 
 
 class S3Restore(ServerCase):
@@ -119,6 +168,16 @@ class S3Restore(ServerCase):
         self.assertEqual(res["aside"]["failed"], [])
         self.assertFalse((self.root / "readme.txt").exists())
         self.assertEqual(len(self.fake.objects), before)                                           # (the same object: no "readme (2).txt")
+
+    def test_a_restored_excluded_game_is_not_uploaded_a_second_time_under_its_database_name(self) -> None:
+        self.job("/api/archive/restore", {"platform": GBA, "paths": ["Excluded/bash old.gba"]})
+        self.job("/api/scan", {"path": str(self.root), "platform": GBA})
+        self.call("POST", "/api/library/override", {"action": "exclude", "games": [{"dat": "Nintendo - Game Boy Advance", "game": "Bash (USA)"}]})
+        before = sorted(self.fake.objects)
+        res = self.job("/api/library/apply", {"aside_to": f"s3://{BUCKET}/arch"})
+        self.assertEqual(res["aside"]["failed"], [])
+        self.assertFalse((self.root / "Bash (USA).gba").exists())
+        self.assertEqual(sorted(self.fake.objects), before)                                        # (the object under the source's name is the one held)
 
     def test_a_file_an_earlier_build_archived_under_the_old_name_is_not_uploaded_twice(self) -> None:
         del self.fake.objects["arch/GBA/Unmatched/readme.txt"]

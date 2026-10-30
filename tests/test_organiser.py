@@ -1587,6 +1587,20 @@ class BugCheckPlanTests(unittest.TestCase):
                          ("Excluded", "x", "Game (USA).z64"))                                          # (other systems: only the folder's name)
         self.assertIsNone(organiser.tidy_archive_parts(platforms.get_platform("Nintendo 64"), ("Excluded", "x", "Game (USA).z64")))
 
+    def test_a_recognised_amiga_game_restored_from_the_archive_goes_where_the_library_puts_it(self) -> None:
+        dat = self.AMIGA.game_dat
+        adf = "Planet of Lust (1989)(Free Spirit)(Disk 1 of 2)[cr ESI].adf"
+        old = organiser.RenameOp(self.root / "back.adf", self.root / dat / adf, "move", "", adf, "move", dat, False)   # (the old DAT folder)
+        new = organiser.library_place(self.AMIGA, self.root, old)
+        self.assertEqual((new.status, new.dst), ("move", self.root / "Commodore Amiga - Games" / "Planet of Lust" / adf))
+        wb = "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)(Disk 2 of 2)(Extras).adf"
+        sysop = organiser.RenameOp(self.root / "wb.adf", self.root / "x" / wb, "move", "", wb, "move",
+                                   "Commodore Amiga - Operating Systems - Workbench", False)
+        self.assertEqual(organiser.library_place(self.AMIGA, self.root, sysop).dst.parts[len(self.root.parts):][:2], ("Commodore Amiga - System", "Workbench"))
+        n64 = platforms.get_platform("Nintendo 64")
+        other = organiser.RenameOp(self.root / "g.z64", self.root / "Game (USA).z64", "move", "", "Game (USA).z64", "move", n64.dats[0], False)
+        self.assertIs(organiser.library_place(n64, self.root, other), other)                 # (every other system: as planned)
+
     def test_a_folder_that_differs_in_case_only_is_renamed_without_a_number(self) -> None:
         from romorg import server
         n64 = platforms.get_platform("Nintendo 64")

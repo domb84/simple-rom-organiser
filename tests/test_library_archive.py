@@ -68,6 +68,25 @@ class LibraryWithArchive(ServerCase):
         self.assertIn("gba/unmatched/notes/what.gba", got)                                      # (the archive is not that folder: it gets both)
         self.assertEqual(len([x for x in got if x.startswith("gba/unmatched/notes/")]), 2)
 
+    def test_a_stale_playlist_this_app_made_is_archived_not_deleted(self) -> None:
+        from romorg.m3u import M3U_MARKER
+
+        root = self.tmp / "GBA"
+        put(root / "run.gba", self.rom["Run (USA)"])
+        old = put(root / "old" / "Gone.m3u", (M3U_MARKER + "\ngone1.gba\ngone2.gba\n").encode())     # (its disks are gone: stale)
+        mine = put(root / "old" / "Mine.m3u", b"gone1.gba\n")                                          # (yours: never touched)
+        aside = self.tmp.parent / (self.tmp.name + "-archive")
+        self.addCleanup(shutil.rmtree, aside, True)
+        text = old.read_bytes()
+        self.job("/api/scan", {"path": str(root), "platform": GBA})
+        res = self.job("/api/library/apply", {"aside_to": str(aside)})
+        self.assertEqual(res["failed"], [])
+        self.assertFalse(old.exists())
+        self.assertTrue(mine.exists())
+        got = [x for x in tree(aside) if not x.endswith("/")]
+        self.assertEqual(lower(got), ["gba/unmatched/old/gone.m3u"])
+        self.assertEqual((aside / "GBA" / "Unmatched" / "old" / "Gone.m3u").read_bytes(), text)
+
     def test_a_damaged_zip_matches_nothing_and_is_archived(self) -> None:
         root = self.tmp / "GBA"
         put(root / "run.gba", self.rom["Run (USA)"])

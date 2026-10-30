@@ -37,7 +37,7 @@ class DcServerCase(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         os.environ.pop("ROMORG_CHDMAN", None)
-        self.roms = self.base / "roms"
+        self.roms = self.base / "dreamcast"
         self.roms.mkdir()
         self.archive = self.base / "archive"           # a build needs an archive, outside the ROM folder: <archive>/<system folder>/<Reason>/...
         self.arch = self.archive / self.roms.name

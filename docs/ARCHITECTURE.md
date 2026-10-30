@@ -4204,6 +4204,12 @@ detector; each merge was made only where the copies were the same code.
   disc image to its reason folder: the files that sat with it (checksum sheets in a zip, notes) are files no database knows and go to `_unmatched`, a
   save to `_saves/<Title>`, as for a kept game (`discsys.plan_library`: `without_extras`). The option "Keep other files that sit with a game" still
   lets them travel with the game.
+* (Amendment 110, addendum 3 - archive/restore audit) A file already in the same reason folder of the archive with the same size and content (any old or
+  new reason-folder name) counts as archived, so a game restored under its database name and set aside again is not archived a second time
+  (`App._archive_pass`, `listing`). The archive folder of a system is `App._archive_name`: the ROM folder's name, but the platform's name when two
+  systems' ROM folders share a name (neither then uses it) or it says nothing (`games`); an older archive under the ROM folder's name stays in use
+  while it exists and is nobody else's. Restore puts a recognised Amiga file where the library does (`organiser.library_place`). A stale playlist
+  this app made is archived to `Unmatched/<path>`, never deleted (`_archive_pass`).
 * (Amendment 110, addendum 2 - the audit of "anything no database matches goes to Unmatched") Raw disc sets follow the rule too: a raw unit's
   disc is `discsys.disc_files` (its sheet, the tracks the sheet names, other disc-image files); `without_extras` now trims raw units
   (kept, converted, set aside), `plan_convert` moves only the disc to `_converted_originals` (and deletes only it when the originals are deleted),

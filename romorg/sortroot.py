@@ -121,7 +121,7 @@ def _size(path: Path) -> int:
         return 0
 
 
-def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
+def plan_sweep(folders: Dict[str, Path], aside: Path, names_in_archive: Optional[Dict[str, str]] = None) -> List[SMove]:
     """Everything a build set aside inside the system folders, to ``<aside>/<system folder name>/<reserved folder>/...``."""
     aside = Path(aside)
     names = Names()
@@ -131,7 +131,7 @@ def plan_sweep(folders: Dict[str, Path], aside: Path) -> List[SMove]:
             base = folder / reserved
             if not base.is_dir():
                 continue
-            home = aside / folder.name / archive_dir(reserved)
+            home = aside / ((names_in_archive or {}).get(plat) or folder.name) / archive_dir(reserved)
             top = os.fspath(base)
             for dirpath, dirnames, filenames in os.walk(top):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
