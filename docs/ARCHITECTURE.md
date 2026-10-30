@@ -4204,3 +4204,15 @@ detector; each merge was made only where the copies were the same code.
   disc image to its reason folder: the files that sat with it (checksum sheets in a zip, notes) are files no database knows and go to `_unmatched`, a
   save to `_saves/<Title>`, as for a kept game (`discsys.plan_library`: `without_extras`). The option "Keep other files that sit with a game" still
   lets them travel with the game.
+* (Amendment 110, addendum 2 - the audit of "anything no database matches goes to Unmatched") Raw disc sets follow the rule too: a raw unit's
+  disc is `discsys.disc_files` (its sheet, the tracks the sheet names, other disc-image files); `without_extras` now trims raw units
+  (kept, converted, set aside), `plan_convert` moves only the disc to `_converted_originals` (and deletes only it when the originals are deleted),
+  the other files stay and the library build sets them aside as unmatched / saves. `App._archive_pass` archives a file no database knows even when
+  its local `_unmatched/` place is taken (status conflict / duplicate); a damaged zip (BadZipFile / EOFError) is unmatched; the Switch scan no longer
+  drops files that are no game (only emulator folders named by a title ID are left alone). A `.zip` that holds one game next to files no
+  database knows (a readme, scans, a manual) is cleaned by the build before anything else (`convert.plan_splits` / `apply_splits`, `App.library_apply`):
+  the members the DAT knows stay in a zip of the same name, the others are unpacked to `_unmatched/<the zip's folder>/<zip name>/<member>`
+  (so the build archives them as Unmatched), each checked by CRC; the old zip is replaced only after both parts are checked, and nothing is
+  changed when a check fails. Left as documented exceptions: BIOS / firmware and key files (they match a list), `.7z` / `.rar` archives
+  that cannot be opened (no 7-Zip here: what is in them is not known) and read errors that may pass (an unreadable file may be a game), hidden
+  files, user playlists.

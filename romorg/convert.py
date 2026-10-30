@@ -565,3 +565,143 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
     return {"converted": len(converted), "failed": failed, "removed_dirs": removed, "cancelled": cancelled, "error": None,
             "repacked": sum(1 for op in converted if op.repack), "deleted": sum(1 for op in converted if op.deleted),
             "not_deleted": [op.left for op in converted if op.left]}
+
+
+# --------------------------------------------------------------------------- zips that hold a game next to other files
+
+@dataclass
+class SplitOp:
+    """A zip that holds one game's ROM(s) next to other files (a readme, scans, a manual): the game stays in the zip, the rest goes to
+    ``_unmatched`` as files of their own (they match nothing in any database)."""
+    src: Path
+    keep: list[str]            # the members the DAT knows (they stay in the zip, as they are)
+    extras: list[str]          # the members it does not know
+    extras_dir: Path           # <root>/_unmatched/<the zip's folder>/<zip name without .zip>/
+    status: str = "split"      # split | skip
+    reason: str = ""
+
+
+def _safe_member(name: str) -> Optional[Path]:
+    """A member name as a relative path that stays inside its folder, or None (absolute, ``..``, a drive)."""
+    text = name.replace("\\", "/")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or text.startswith("/") or any(p == ".." or ":" in p for p in parts):
+        return None
+    return Path(*parts)
+
+
+def plan_splits(result: "ScanResult") -> list[SplitOp]:
+    """One op per ``.zip`` of the scan that holds one game next to files no database knows (:func:`organiser.partial_archives`)."""
+    root = Path(result.root)
+    _lm, _lu, archives = organiser._collect(result, root)
+    out: list[SplitOp] = []
+    for path, members in sorted(archives.items(), key=lambda kv: str(kv[0]).casefold()):
+        if path.suffix.lower() != ".zip" or os.path.islink(path) or scanner.is_converted_original(path, root):
+            continue
+        if folders.reserved_of(scanner._rel_parts(path, root)) is not None:
+            continue                                            # (already set aside: the archive step takes it as it is)
+        matches = [m for _e, m in members if m is not None]
+        if not matches or len(matches) == len(members):
+            continue
+        dat = matches[0].dat
+        games: Optional[set[str]] = None
+        for m in matches:
+            g = {organiser._archive_stem(r) for r in m.primary} if m.dat == dat else set()
+            games = g if games is None else games & g
+        if not games:
+            continue                                            # (members of different games: no one game's zip)
+        keep = [e.member for e, m in members if m is not None and e.member]
+        extras = [e.member for e, m in members if m is None and e.member]
+        rel = organiser._rel_to(path, root)
+        base = (rel.parent if rel is not None else Path()) / path.stem
+        op = SplitOp(path, keep, extras, root / folders.UNMATCHED_DIR / base)
+        bad = [x for x in extras if _safe_member(x) is None]
+        if bad:
+            op.status, op.reason = "skip", f"a member has a name that cannot be unpacked safely: {bad[0]}"
+        out.append(op)
+    return out
+
+
+def _crc_of(stream: BinaryIO) -> tuple[int, int]:
+    crc = size = 0
+    while chunk := stream.read(1 << 20):
+        crc = zlib.crc32(chunk, crc)
+        size += len(chunk)
+    return crc & 0xFFFFFFFF, size
+
+
+def _split_one(op: SplitOp, root: Path, created: list[str]) -> list[Path]:
+    """Unpack the extras, write a zip of the known members, check both, then put the new zip in place of the old one. Nothing of the old
+    zip is lost: every member is in the new zip or in a file of its own. Returns the files made."""
+    made: list[Path] = []
+    tmp = _temp_name(op.src)
+    try:
+        with zipfile.ZipFile(op.src) as zf:
+            infos = {i.filename: i for i in zf.infolist() if not i.is_dir()}
+            for name in op.extras:                                   # 1. the extras, each to a file of its own (never over another)
+                info = infos[name]
+                target = op.extras_dir / _safe_member(name)          # type: ignore[operator]
+                n = 1
+                while organiser._exists(target):
+                    n += 1
+                    target = target.with_name(f"{target.stem} ({n}){target.suffix}")
+                os.makedirs(target.parent, exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as dst:
+                    while chunk := src.read(1 << 20):
+                        dst.write(chunk)
+                made.append(target)
+                with open(target, "rb") as check:
+                    if _crc_of(check) != (info.CRC, info.file_size):
+                        raise ConvertError(f"{name}: the unpacked file does not match the one in the zip")
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:   # 2. the known members, as they are
+                for name in op.keep:
+                    info = infos[name]
+                    with zf.open(info) as src, out.open(zipfile.ZipInfo(name, info.date_time), "w") as dst:
+                        while chunk := src.read(1 << 20):
+                            dst.write(chunk)
+            with zipfile.ZipFile(tmp) as new:                        # 3. check them against the old ones
+                got = {i.filename: (i.CRC, i.file_size) for i in new.infolist()}
+                want = {n: (infos[n].CRC, infos[n].file_size) for n in op.keep}
+                if got != want:
+                    raise ConvertError("the new zip does not hold the same members")
+                if new.testzip() is not None:
+                    raise ConvertError("the new zip is damaged")
+        os.replace(tmp, op.src)                                      # 4. only now is the old zip replaced
+        return made
+    except BaseException:
+        for f in made:                                               # (nothing changed: what was unpacked goes again)
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def apply_splits(ops: Iterable[SplitOp], root: Path, progress: Optional[ProgressFn] = None, cancel: Any = None) -> dict[str, Any]:
+    """Perform the ``split`` ops: ``{"split", "extras", "failed": [{src, error}], "cancelled"}``."""
+    root = Path(root)
+    todo = [op for op in ops if op.status == "split"]
+    failed: list[dict[str, str]] = []
+    created: list[str] = []
+    split = extras = 0
+    cancelled = False
+    errors = (OSError, ValueError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error, ConvertError, KeyError)
+    for i, op in enumerate(todo):
+        if organiser._is_cancelled(cancel):
+            cancelled = True
+            break
+        if progress is not None:
+            progress(i, len(todo), op.src.name)
+        try:
+            made = _split_one(op, root, created)
+            split += 1
+            extras += len(made)
+        except errors as exc:
+            failed.append({"src": str(op.src), "error": winproc.long_path_hint(exc, op.src, op.src)})
+    return {"split": split, "extras": extras, "failed": failed, "cancelled": cancelled}

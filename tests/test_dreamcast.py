@@ -577,15 +577,32 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual((res["converted"], res["failed"], res["error"]), (1, [], None))
         got = tree(self.w.root)
         self.assertEqual(got["Epsilon (USA)/Epsilon (USA).chd"], hashlib.sha1(self.fixture.read_bytes()).hexdigest())
-        for name in ("Epsilon.gdi", "Epsilon.md5", "track01.bin", "track02.raw", "track03.bin"):
+        for name in ("Epsilon.gdi", "track01.bin", "track02.raw", "track03.bin"):
             self.assertIn(f"_converted_originals/raw dump/{name}", got)
-        self.assertNotIn("raw dump", got)
+        self.assertNotIn("_converted_originals/raw dump/Epsilon.md5", got)      # (only the disc is an original: the checksum file is no part of it)
+        self.assertIn("raw dump/Epsilon.md5", got)                              # (it stays: the next library build sets it aside as unmatched)
         self.assertFalse([p for p in os.listdir(self.w.root) if p.startswith(".romorg-chd-")])   # temp is gone
         # the new CHD is a verified match on the next scan; the raw set is not an unmatched file
         r = self.w.scan()
         self.assertEqual([m.unit.game.name for m in r.matched], ["Epsilon (USA)"])
         self.assertEqual(r.matched[0].kind, "chd")
-        self.assertEqual([e.rel for e in r.unmatched if not e.rel.startswith("_converted_originals")], [])
+        self.assertEqual([e.rel for e in r.unmatched if not e.rel.startswith("_converted_originals")], ["raw dump/Epsilon.md5"])
+
+    def test_a_raw_set_takes_its_disc_files_only_to_the_originals(self) -> None:
+        (self.w.root / "raw dump" / "readme.txt").write_text("notes")
+        (self.w.root / "raw dump" / "Epsilon.state").write_bytes(b"save")
+        r, ops = self.plan()
+        (op,) = [o for o in ops if o.status == "convert"]
+        self.assertEqual(sorted(Path(s).name for s, _d in op.moves), ["Epsilon.gdi", "track01.bin", "track02.raw", "track03.bin"])
+        res = self.run_convert()
+        self.assertEqual((res["converted"], res["failed"]), (1, []))
+        got = tree(self.w.root)
+        for name in ("readme.txt", "Epsilon.md5", "Epsilon.state"):
+            self.assertIn(f"raw dump/{name}", got)                              # (not originals: nothing of them is deleted with the disc)
+            self.assertNotIn(f"_converted_originals/raw dump/{name}", got)
+        plan = dreamcast.plan_library(self.w.scan(), library.default_profile(self.w.platform()))
+        where = {Path(o.src).name: o.folder for o in plan.ops if Path(o.src).name in ("readme.txt", "Epsilon.md5", "Epsilon.state")}
+        self.assertEqual(where, {"readme.txt": "_unmatched", "Epsilon.md5": "_unmatched", "Epsilon.state": "_saves"})
 
     def test_chdman_failure_leaves_nothing_behind(self) -> None:
         before = tree(self.w.root)

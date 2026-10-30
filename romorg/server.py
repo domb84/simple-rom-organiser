@@ -4098,12 +4098,16 @@ class App:
         keep: list[Any] = []
         for op in ops:
             top = ""
-            if op.status == "move":
+            # (a file no database knows whose place in _unmatched/ is taken - a conflict - is archived all the same: the archive is not that folder)
+            lost = op.status in ("conflict", "duplicate") and op.unmatched and not getattr(op, "code", "")
+            if op.status == "move" or lost:
                 try:
                     rel = op.dst.relative_to(folder)
                     top = rel.parts[0] if rel.parts else ""
                 except ValueError:
                     pass
+                if lost and top != sortroot.UNMATCHED:
+                    top = ""
             if top in sortroot.ASIDE_FOLDERS:
                 if top == sortroot.UNMATCHED:                           # everything lies under the system's own folder name
                     try:
@@ -4202,6 +4206,16 @@ class App:
                 except _mod("s3").S3Error as exc:
                     raise ApiError(HTTPStatus.BAD_GATEWAY, f"The S3 archive cannot be reached: {exc}", "s3_error") from None
             st, recovered = self._recover_leftovers(job, state)       # what a run that was killed left behind
+            split_res: dict[str, Any] | None = None
+            if not self._is_dc(st):                                   # a zip that holds a game next to other files: the game stays, the rest is unmatched
+                convert = _mod("convert")
+                splits = [op for op in convert.plan_splits(st.result) if op.status == "split"]
+                if splits:
+                    job.report(0, len(splits), "Separating the files in zips that are no game...")
+                    split_res = convert.apply_splits(splits, st.root, progress=job.report, cancel=job.cancel)
+                    if split_res["split"]:
+                        self._rescan_into(job, st, split_res)
+                        st = self._require_scan()
             conv_res: dict[str, Any] | None = None
             if self._convert_on_build(st.platform, self._config()):      # raw discs / odd dumps are converted first
                 latest = self._latest_arg(st, {})
@@ -4229,6 +4243,8 @@ class App:
             res["action"] = "library"
             if recovered:
                 res["recovered"] = recovered
+            if split_res is not None:
+                res["split"] = {"zips": split_res["split"], "files": split_res["extras"], "failed": split_res["failed"][:20]}
             if conv_res is not None:
                 res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
                                     "failed": list(conv_res.get("failed") or [])[:20]}

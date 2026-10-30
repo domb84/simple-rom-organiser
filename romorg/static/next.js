@@ -1008,6 +1008,7 @@
     else lines.push(`${fmt(n(r.moved))} file${n(r.moved) === 1 ? "" : "s"} moved or renamed`);
     if (n(r.playlists_written)) lines.push(`${fmt(n(r.playlists_written))} playlist${n(r.playlists_written) === 1 ? "" : "s"} written`);
     if (r.converted && r.converted.count) lines.push(`${fmt(r.converted.count)} converted first`);
+    if (r.split && r.split.zips) lines.push(`${fmt(r.split.zips)} zip${r.split.zips === 1 ? "" : "s"} cleaned: ${fmt(r.split.files)} file${r.split.files === 1 ? "" : "s"} that are no game went to Unmatched`);
     if (r.aside && r.aside.moved) lines.push(`${fmt(r.aside.moved)} file${r.aside.moved === 1 ? "" : "s"} ${r.aside.s3 ? "uploaded" : "moved"} to the archive`);
     const title = job.status === "error" ? "The build stopped" : ok ? "Library built" : "Built, with problems";
     const back = el("a", { class: "btn primary", id: "result-back", href: `#/system/${p.slug}`, text: `Back to ${p.name}` });

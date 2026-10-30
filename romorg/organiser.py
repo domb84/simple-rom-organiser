@@ -713,7 +713,10 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
                 others.append(op)
         for p, msg in result.errors:
             ap = _abs(Path(p), root)
-            others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))
+            if re.search(r"\b(BadZipFile|EOFError)\b", msg) and os.path.isfile(ap) and not os.path.islink(ap):
+                others.append(planner.unmatched(ap, f"could not be read (a damaged archive): {msg}"))      # (it matches nothing: not a game)
+            else:                                    # (a read error that may pass: the file is left where it is)
+                others.append(RenameOp(ap, ap, "skip", f"could not be read: {msg}"))
     return units, others
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -61,6 +62,18 @@ class SwitchLibraryTests(SwitchPlatformCase):
         self.assertIn("superseded", text)
         self.assertIn("Some Game", text)
         self.assertEqual(plan["reasons"].get("superseded"), 1)
+
+
+    def test_a_file_that_is_no_game_is_unmatched_and_an_emulator_folder_is_left_alone(self) -> None:
+        (self.games / "readme.txt").write_text("notes")
+        own = self.games / "0100000000010000"                       # (a folder named by a title ID belongs to an emulator)
+        own.mkdir()
+        (own / "cache.bin").write_bytes(b"shader cache")
+        self.scan()
+        plan = self.call("/api/library/plan", {"platform": SW})
+        where = {Path(r.get("from") or r.get("file", "")).name: r.get("dest") for r in plan["items"]}
+        self.assertEqual(where.get("readme.txt"), "_unmatched")
+        self.assertNotIn("cache.bin", where)                          # (not planned: the emulator's own files)
 
 
 class SwitchChecksumOptionTests(SwitchPlatformCase):

@@ -58,6 +58,18 @@ CHD_EXT = ".chd"
 ISO_EXT = ".iso"
 SHEET_EXTS = (".gdi", ".cue")
 RENAMABLE_RAW = (".iso", ".zip", ".7z")      # a raw disc that is one file is renamed with its game; a sheet with tracks is converted, not renamed
+
+# what a raw disc is made of besides the files its sheet names (a sub-channel file, a second image format of the same disc): the files of the disc
+DISC_PARTS = frozenset((".gdi", ".cue", ".iso", ".bin", ".raw", ".img", ".ccd", ".sub", ".mds", ".mdf", ".cdi", ".nrg", ".toc", ".sbi", ".wav"))
+
+
+def disc_files(unit: "DcUnit") -> list[Path]:
+    """The files of ``unit`` that ARE the disc: for a raw set its sheet, the tracks the sheet names and the other disc-image files beside them
+    (never a readme, a cover, a checksum zip, a save: those are files no database knows). A CHD, an archive, a single file: its files."""
+    if unit.kind != "raw" or unit.archive or not unit.files:
+        return list(unit.files)
+    named = {os.fspath(p) for p in (sheet_track_files(unit.path) or [])}
+    return [f for f in unit.files if f == unit.path or os.fspath(f) in named or f.suffix.lower() in DISC_PARTS]
 KIND_GD, KIND_CD, KIND_DVD = "gdrom", "cd", "dvd"
 LEVEL_VERIFIED, LEVEL_IDENTIFIED, LEVEL_RAW = "verified", "identified", "raw"
 PART_SUFFIX = ".romorg.part"        # the new CHD of a conversion while chdman writes it (next to its destination)
@@ -1596,9 +1608,10 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
         """The files next to a disc image are no part of the game: they are set aside like any file that matches nothing (to ``_unmatched``,
         a save under its game in ``_saves``), whether the game is kept or set aside itself - a game that goes to ``_excluded`` takes its disc
         image there, not the checksum sheets that sat with it. The option "Keep other files that sit with a game" keeps them with it."""
-        if profile is None or getattr(profile, "keep_extras", False) or u.kind != "chd":
+        if profile is None or getattr(profile, "keep_extras", False) or u.kind not in ("chd", "raw"):
             return u
-        extras = [f for f in u.files if f != u.path and not _stays_with_game(f)]
+        game = {u.path} if u.kind == "chd" else {f for f in disc_files(u)}
+        extras = [f for f in u.files if f not in game and not _stays_with_game(f)]
         if not extras:
             return u
         from . import savepin
@@ -1621,14 +1634,13 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
                           superseded_by=d.superseded_by, reason=d.reason,
                           flags_text=d.detail)
         else:
-            core = u
+            core = without_extras(u)
             if u.kind == "raw":
-                op = _raw_op(u, root, plan, converting)
+                op = _raw_op(core, root, plan, converting)
                 op.key = i
                 ops.append(op)
                 owners[i] = op
                 continue
-            core = without_extras(u)
             mapping = unit_target(core, root)
             op = _unit_op(core, root, mapping, reason=(d.reason if d is not None and d.action == library.KEEP else ""))
         op.key = i
@@ -1652,7 +1664,7 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     other_units = [u for u in result.units if id(u) not in ranked and (u.game is None or u.kind == "raw")]
     for u in sorted(other_units, key=lambda x: os.fspath(x.top).casefold()):
         if u.kind == "raw" and u.game is not None:
-            op = _raw_op(u, root, plan, converting)
+            op = _raw_op(without_extras(u), root, plan, converting)
             ops.append(op)
             continue
         parts = _parts(u.top, root)
@@ -1925,18 +1937,19 @@ def plan_convert(result: DcScanResult, chdman_found: bool = False,
         g = u.game
         name = canonical_name(g)
         dst = game_folder(root, g) / (name + CHD_EXT)
+        disc = disc_files(u)                  # (only the disc goes to _converted_originals: what else sat with it is no part of it)
         if u.folder is not None:
             top = organiser.reason_destination(u.folder, root, CONVERTED_DIR)
-            moves = [(f, top / f.relative_to(u.folder)) for f in u.files]
+            moves = [(f, top / f.relative_to(u.folder)) for f in disc]
             orig = top
         else:
-            moves = [(f, organiser.reason_destination(f, root, CONVERTED_DIR)) for f in u.files]
+            moves = [(f, organiser.reason_destination(f, root, CONVERTED_DIR)) for f in disc]
             orig = moves[0][1] if moves else root / CONVERTED_DIR
         in_archive = u.archive
         is_iso = (Path(u.sheet).suffix.lower() if in_archive else u.path.suffix.lower()) == ISO_EXT
         op = DcConvertOp(u.path, None, dst, orig, "convert", rom_name=g.name, unit=u, moves=moves,
                          raw_bytes=(sum(m.size for m in u.track_members) if in_archive
-                                    else sum(f.stat().st_size for f in u.files if f.exists())),
+                                    else sum(f.stat().st_size for f in disc if f.exists())),
                          mode=(iso_convert_mode(system, config) or "createcd") if is_iso else "createcd",
                          delete_originals=delete_originals, archive=in_archive)
         gd_cue = system.gd and (Path(u.sheet).suffix.lower() if in_archive else u.path.suffix.lower()) == ".cue"

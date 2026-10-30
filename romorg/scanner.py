@@ -1345,8 +1345,7 @@ def scan(
             except ValueError:
                 return False
             return any(len(p) == 16 and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
-        from . import switchfmt
-        files = [f for f in files if f.suffix.lower() in switchfmt.CONTAINER_EXTS and not _own(f)]       # (the emulators keep caches in here too)
+        files = [f for f in files if not _own(f)]       # (the emulators keep caches in here: nothing else is left out - a file that is no game is unmatched)
     errors.extend(problems)
     total = len(files)
     cache = HashCache((cache_path or default_cache_path()) if use_cache else None, refresh=refresh_cache)
