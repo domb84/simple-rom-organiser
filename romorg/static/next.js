@@ -1403,6 +1403,7 @@
     const ticked = new Set();
     let upgradeWaits = 0;
     const views = el("nav", { class: "views", "data-section": "views", "aria-label": "Views" });
+    const bar = el("nav", { class: "filter-bar hidden", "data-section": "filters", "aria-label": "Filters" });      // (the choices of the filters, on the page itself)
     const list = el("div", { class: "rows", "data-section": "list" });
     const panel = el("aside", { class: "panel", "data-section": "panel" });
     const where = el("div", { class: "crumb-path" });
@@ -1415,6 +1416,27 @@
       return el("button", { class: `chip${v === view ? " on" : ""}`, type: "button", tabindex: "-1", "data-view": v.key, on: { click: () => setView(v) } },
         n === null || n === undefined ? v.label : `${v.label} ${fmt(n)}`);
     }), el("span", { class: "glyph" }, "RB"), Object.keys(f).some((k) => f[k]) ? el("span", { class: "tag warn", text: "Filtered" }) : null);
+    async function pickChip(key, title, entries, any) {
+      const v = await picker(title, [{ label: any, value: "" }, ...entries.map(([k, n, label]) => ({ label: label || k, sub: `${fmt(n)}`, value: k }))]
+        .map((o) => ({ ...o, current: (f[key] || "") === o.value })));
+      if (v === null) return;
+      f[key] = v;
+      facets = null;
+      load();
+    }
+    const drawFilters = () => {
+      const fc = facets || {};
+      const ent = (obj, label) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n, label || k]);
+      const defs = [["machine", "Platform", "Any platform", ent(fc.machine)], ["language", "Language", "Any language", ent(fc.language)],
+        ["upgrade", "Upgrade available", "Any", ent(fc.upgrade, "Only games with a better version")], ["install", "WHDLoad", "Any", ent(fc.install, "Only WHDLoad games")],
+        ["region", "Region", "Any region", ent(fc.region)]];
+      const chips = defs.filter(([key, , , entries]) => entries.length || f[key]).map(([key, title, any, entries]) =>
+        el("button", { class: `chip filter${f[key] ? " on" : ""}`, type: "button", "data-filter": key, on: { click: () => pickChip(key, title, entries, any) } },
+          f[key] ? (key === "upgrade" || key === "install" ? title : `${title}: ${f[key]}`) : `${title} ▾`));
+      if (Object.keys(f).some((k) => f[k])) chips.push(el("button", { class: "chip filter", type: "button", "data-filter": "clear", on: { click: () => { for (const k of Object.keys(f)) delete f[k]; facets = null; load(); } } }, "Clear filters"));
+      bar.classList.toggle("hidden", !chips.length);
+      put(bar, ...chips);
+    };
     const setView = (v) => { view = v; path = ""; ticked.clear(); load(); };
     const step = (d) => setView(FILE_VIEWS[(FILE_VIEWS.indexOf(view) + d + FILE_VIEWS.length) % FILE_VIEWS.length]);
 
@@ -1512,6 +1534,7 @@
         catch (_) { /* no count */ }
       }
       drawViews();
+      drawFilters();
       put(where, el("b", { text: path || (view.side === "archive" ? archiveText(page.archive_root || archiveFor(p)) : baseName(page.root || p.folder)) }));
       Screen.current.title = path ? baseName(path) : "Files";
       $("head-title").textContent = Screen.current.title;
@@ -1676,11 +1699,11 @@
       describeTicked();
     };
 
-    ctx.show({ ...head,
+    ctx.show({ ...head, focus: "#main [data-section=list] .row",         // (the list first: the filter chips above it are one step up)
       back: () => { if (searching) { load(); return; } if (path) { const up = path.split("/").slice(0, -1).join("/"); const from = `dir:${baseName(path)}`; path = up; load(from); } else location.hash = `#/system/${slug}`; },
       keys: { LB: () => step(-1), RB: () => step(1), Y: () => (view.side === "archive" ? tick() : openSearch()), X: filters,
         Start: () => { if (view.side === "archive" && ticked.size) restore([...ticked]); } },
-      body: el("div", { class: "screen tight" }, views, where, searchBox, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
+      body: el("div", { class: "screen tight" }, views, bar, where, searchBox, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
       hints: [] });
     await load();
     return null;

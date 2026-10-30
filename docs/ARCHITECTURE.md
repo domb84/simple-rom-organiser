@@ -4133,3 +4133,10 @@ detector; each merge was made only where the copies were the same code.
   (`upgrade=1`, a row of the Filter sheet; its facet counts games), and re-asks while the numbers are still being worked out
   (`upgrades_pending`). The tree cache key carries the size of the upgrade set, so a filtered answer is never reused across states.
 * The Filter sheet already offered Platform (OCS, AGA, CD32 ... on the Amiga only), Language, Region, WHDLoad and Rating.
+
+**AMENDMENT 106 (v0.5) — The filters sit on the Files page.**
+
+* A bar of chips under the views (`.filter-bar`: Platform, Language, Upgrade available, WHDLoad, Region; "Clear filters" when any is on)
+  opens each filter's choices (with counts) from the page itself; the X sheet remains for the rest (what the build does, rating, saves).
+  A chip shows only when the system has something to choose or the filter is on. The screen's first focus is the list, not the bar.
+  Test: `tests/test_browser.py` (`test_the_filters_are_on_the_files_page_itself`).

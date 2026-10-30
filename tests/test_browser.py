@@ -2124,6 +2124,16 @@ class NextUiTests(UiTestCase):
         self.page.wait("[...document.querySelectorAll('#main [data-section=list] .row')].some(r => r.textContent.includes('.m3u') && r.textContent.includes('Playlist'))", timeout=30)
         self.no_js_errors()
 
+    def test_the_filters_are_on_the_files_page_itself(self) -> None:
+        self.start("#/system/commodore-amiga/files")
+        self.page.wait("document.querySelectorAll('.filter-bar .chip').length >= 2", timeout=60)
+        names = self.page.eval("[...document.querySelectorAll('.filter-bar .chip')].map(c => c.dataset.filter)")
+        self.assertIn("machine", names)
+        self.assertIn("language", names)
+        self.click(".filter-bar .chip", "Platform")                                                  # (the choices open from the chip, no sheet first)
+        self.page.wait("!!document.querySelector('.overlay, [role=dialog]')", timeout=30)
+        self.no_js_errors()
+
     def test_the_side_panel_stays_in_view_down_a_long_folder(self) -> None:
         self.start("#/system/commodore-amiga/files?view=library")
         self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
