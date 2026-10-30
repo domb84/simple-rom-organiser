@@ -1062,6 +1062,22 @@ class RealModulesIntegrationTests(unittest.TestCase):
         inside = self.call("GET", f"{base}&machine=OCS&path=Commodore%20Amiga%20-%20Games/Game")
         self.assertEqual(sorted(f["name"] for f in inside["files"]), ["Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf", "Game (1990)(Pub).m3u"])
 
+    def test_games_with_a_better_version_are_tagged_and_filtered(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"
+        inside = "path=Commodore%20Amiga%20-%20Games/Game"
+        with mock.patch.object(server.App, "_upgrade_names", return_value={"Game (1990)(Pub)(Disk 1 of 2).adf"}):
+            top = self.call("GET", base)
+            self.assertEqual(top["facets"]["upgrade"], {"Upgrade available": 1})
+            self.assertEqual([d.get("upgrades") for d in top["dirs"] if d["name"] == "Commodore Amiga - Games"], [1])
+            files = self.call("GET", f"{base}&{inside}")["files"]
+            self.assertEqual([f["name"] for f in files if f.get("upgrade")], ["Game (1990)(Pub)(Disk 1 of 2).adf"])
+            only = self.call("GET", f"{base}&upgrade=1&{inside}")
+            self.assertEqual([f["name"] for f in only["files"]], ["Game (1990)(Pub)(Disk 1 of 2).adf"])
+        with mock.patch.object(server.App, "_upgrade_names", return_value=set()):
+            self.assertEqual(self.call("GET", base)["facets"]["upgrade"], {})
+            self.assertEqual(self.call("GET", f"{base}&upgrade=1")["dirs"], [])               # (the cached list of the other answer is not reused)
+
     def test_the_library_view_lists_the_firmware_without_counting_it(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"

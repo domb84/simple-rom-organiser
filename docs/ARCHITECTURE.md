@@ -4121,3 +4121,15 @@ detector; each merge was made only where the copies were the same code.
   missing) count games only.
 * Benign and kept: Missing *names* outnumber Missing *games* on discs and Switch (one name per disc / regional release; the Files view
   groups them to one game).
+
+**AMENDMENT 105 (v0.5) — Archive path of every matched Amiga file; "Upgrade available" tag and filter in the Files view.**
+
+* `organiser._archive_paths` took a file's DAT from its row (`op.dat`); a zip that holds the game and other files has a row without one
+  (its unit has), so 36 matched SPS zips (set aside by the rating rule / one-release rule) kept their source folder in the archive. It reads
+  `op.dat or unit.dat` now: every matched Amiga file lies under `<reason>/Commodore Amiga - Games/<title>/` (system disks under
+  `Commodore Amiga - System/`); only files no DAT knows keep their source path. Other systems are unchanged (flat, as before).
+* `App._mark_upgrades` sets `entry["up"]` (a kept file whose game has a version the rules prefer that you lack, from the totals'
+  `upgrades`) on the library side of every system. The Files view tags such files and their folders "↑ Upgrade", filters on it
+  (`upgrade=1`, a row of the Filter sheet; its facet counts games), and re-asks while the numbers are still being worked out
+  (`upgrades_pending`). The tree cache key carries the size of the upgrade set, so a filtered answer is never reused across states.
+* The Filter sheet already offered Platform (OCS, AGA, CD32 ... on the Amiga only), Language, Region, WHDLoad and Rating.

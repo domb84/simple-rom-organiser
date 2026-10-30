@@ -1390,7 +1390,7 @@
     copy: "#4f9cff", saves: "#a98bff", existing: "#6b7686", ignored: "#6b7686", missing: "#f5c84a" };
   const CAT_TEXT = { kept: "Kept", excluded: "Excluded by your rules", superseded: "Older version replaced", incomplete: "Incomplete set",
     duplicate: "Duplicate", bios: "BIOS or firmware", saves: "Save files", unmatched: "Not in the database", playlist: "Playlist", missing: "Missing" };
-  const fileFilters = {};          // per system: {state, region, language, machine, install, rated, hide_saved}
+  const fileFilters = {};          // per system: {state, region, language, machine, install, upgrade, rated, hide_saved}
 
   route(/^\/system\/([^/]+)\/files$/, async (ctx, slug) => {
     await Promise.all([loadPlatforms(), loadStatus()]);
@@ -1401,6 +1401,7 @@
     let view = FILE_VIEWS.find((v) => v.key === ctx.params.view) || FILE_VIEWS[0];
     let path = "", facets = null, sides = null, page = null, query = "", searching = false;
     const ticked = new Set();
+    let upgradeWaits = 0;
     const views = el("nav", { class: "views", "data-section": "views", "aria-label": "Views" });
     const list = el("div", { class: "rows", "data-section": "list" });
     const panel = el("aside", { class: "panel", "data-section": "panel" });
@@ -1434,6 +1435,7 @@
       }
       add("Why", r.reason ? r.reason.replace(/^excluded: /, "Excluded: ") : CAT_TEXT[r.category] || "");
       if (r.year) add("Year", String(r.year));
+      if (file.upgrade) add("Better version", "The rules prefer another version of this game, which you do not have");
       const btns = [];
       if (r.game_ref) btns.push(el("button", { class: "btn", type: "button", id: "panel-choose", on: { click: () => gameMenu(file) } }, "Keep or exclude…"));
       if (r.cs_kind !== undefined && r.cs_kind !== null) btns.push(el("button", { class: "btn", type: "button", on: { click: () => details(file) } }, "More details"));
@@ -1470,15 +1472,16 @@
         on: { click: () => (view.side === "archive" ? describe(file) : r.game_ref ? gameMenu(file) : describe(file)), focus: () => describe(file) } },
         tick || el("span", { class: "dot", style: `background:${STATE_DOT[file.state] || "#6b7686"}` }),
         el("span", { class: "row-name" }, nameOf(file), sub ? el("small", { text: sub }) : null),
-        companion(file) ? el("span", { class: "row-tags" }, el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) })) : null,
+        companion(file) || file.upgrade ? el("span", { class: "row-tags" }, companion(file) ? el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) }) : null, file.upgrade ? upgradeTag() : null) : null,
         el("span", { class: "row-value", text: STATE_TEXT[file.state] || "" }));
       b._file = file;
       return b;
     }
+    const upgradeTag = () => el("span", { class: "tag t-upgrade", title: "The rules prefer another version of this game, which you do not have", text: "↑ Upgrade" });
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
         icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
-        d.facts ? el("span", { class: "row-tags" }, factTags(d.facts).map((t) => el("span", { class: `tag t-${String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, text: t }))) : null,
+        d.facts || d.upgrades ? el("span", { class: "row-tags" }, ...(d.facts ? factTags(d.facts) : []).map((t) => el("span", { class: `tag t-${String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, text: t })), d.upgrades ? upgradeTag() : null) : null,
         el("span", { class: "row-value", text: `${fmt(d.files)} ›` }));
     }
 
@@ -1496,6 +1499,7 @@
       // (the counts of the library views come from the library side: the archive side's facets count the archive's files)
       if (page.facets && view.side === "library") facets = page.facets;
       if (page.sides) sides = { ...(sides || {}), [view.side]: page.sides[view.side] };
+      if (page.upgrades_pending && upgradeWaits++ < 12) setTimeout(() => { if (ctx.alive() && !topOverlay()) { facets = null; load(); } }, 5000);      // (the better versions are still being worked out)
       if (!facets) {
         try {
           const top = await get(`/api/tree?${qs({ platform: p.name, side: "library", show: "have", ...f })}`);
@@ -1643,6 +1647,7 @@
         row({ name: "What the build does", value: f.state ? STATE_TEXT[f.state] || f.state : "Anything", arrow: true, onClick: pickFrom("state", "What the build does", ent(facet.state).map(([k, n]) => [k, n, STATE_TEXT[k] || k]), "Anything") }),
         (facet.machine && Object.keys(facet.machine).length) || f.machine ? row({ name: "Platform", value: f.machine || "Any", arrow: true, onClick: pickFrom("machine", "Platform", ent(facet.machine), "Any") }) : null,
         (facet.install && Object.keys(facet.install).length) || f.install ? row({ name: "WHDLoad", value: f.install ? "Only WHDLoad games" : "Any", arrow: true, onClick: pickFrom("install", "WHDLoad", ent(facet.install).map(([k, n]) => [k, n, "Only WHDLoad games"]), "Any") }) : null,
+        (facet.upgrade && Object.keys(facet.upgrade).length) || f.upgrade ? row({ name: "Upgrade available", value: f.upgrade ? "Only games with a better version" : "Any", arrow: true, onClick: pickFrom("upgrade", "Upgrade available", ent(facet.upgrade).map(([k, n]) => [k, n, "Only games with a better version"]), "Any") }) : null,
         row({ name: "Region", value: f.region || "Any", arrow: true, onClick: pickFrom("region", "Region", ent(facet.region), "Any") }),
         row({ name: "Language", value: f.language || "Any", arrow: true, onClick: pickFrom("language", "Language", ent(facet.language), "Any") }),
         row({ name: "Rating", value: f.rated === "1" ? "Rated" : f.rated === "0" ? "Unrated" : "Rated or not", arrow: true,

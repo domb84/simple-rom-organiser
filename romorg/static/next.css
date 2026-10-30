@@ -280,6 +280,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .tag.t-aga { background: #15301f; color: #7fe0b0; }
 .tag.t-ecs, .tag.t-ocs { background: #1c2b3f; color: #8cc4ff; }
 .tag.t-whdload { background: #3a2a10; color: var(--warn); }
+.tag.t-upgrade { background: #12301f; color: #6fd39a; }               /* a better version of this game is wanted */
 .tag.t-playlist { background: #222b38; color: var(--text-2); }
 .tag.t-disks-only { background: #222b38; color: var(--text-2); }
 .views { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }

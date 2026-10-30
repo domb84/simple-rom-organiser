@@ -1180,13 +1180,16 @@ def _archive_paths(owners: dict, ops: list[RenameOp], platform: Any) -> None:
     games: dict[str, dict[tuple, list[int]]] = {}
     for op in ops:
         key = by_op.get(id(op))
-        if key is None or op.folder not in REASON_DIRS or not op.dat or op.status not in ("move", "ok", "rename"):
+        if key is None or op.folder not in REASON_DIRS or op.status not in ("move", "ok", "rename"):
             continue
-        if op.dat in systems:
+        dat = op.dat or owners[key][1].dat                 # (a zip that holds the game and other files: its row names no DAT, its unit does)
+        if not dat:
+            continue
+        if dat in systems:
             sub = SYSTEM_DATS[op.dat]
             parts = (SYSTEM_DIR, sub) + ((_release_folder(op.dst.name),) if sub == "Workbench" else ()) + (op.dst.name,)
             op.archive_rel = "/".join(parts)
-        elif op.dat in game_dats:
+        elif dat in game_dats:
             games.setdefault(op.folder, {}).setdefault(library.game_key(_item_of(key, owners), combine), []).append(key)
     for reason, group in games.items():
         folder = _game_folder_names(group, owners)

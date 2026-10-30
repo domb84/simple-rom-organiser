@@ -1048,6 +1048,7 @@ class LibraryPlanTests(unittest.TestCase):
         op = ops["spiel.zip"]
         self.assertEqual((op.status, op.dst, op.code), ("move", self.root / "_excluded" / "spiel.zip", "excluded"))   # (set aside as it is, whole)
         self.assertIn("not in the selected languages", op.reason)
+        self.assertEqual(op.archive_rel, "Commodore Amiga - Games/Spiel/spiel.zip")      # (matched, though its row names no DAT: the library's path, not its source's)
         ops = {op.src.name: op for op in self.plan(profile=dataclasses.replace(prof, languages=("De",)),
                                                    platform=platforms.get_platform("Commodore Amiga")).ops}
         self.assertEqual((ops["spiel.zip"].status, ops["spiel.zip"].code), ("move", ""))     # (kept: into its game's folder, whole)

@@ -6178,6 +6178,8 @@ class App:
             return False
         if skip != "install" and f.get("install") and not entry.get("whd"):
             return False
+        if skip != "upgrade" and f.get("upgrade") and not entry.get("up"):
+            return False
         if skip != "rated" and f.get("rated"):
             if not row or (row.get("rating") is not None) != (f["rated"] == "1"):
                 return False
@@ -6185,12 +6187,12 @@ class App:
             return False
         return True
 
-    def _tree_index(self, state: ScanState, side: str, f: dict[str, str]) -> tuple[Any, list[dict[str, Any]], Path | None]:
+    def _tree_index(self, state: ScanState, side: str, f: dict[str, str], upsig: int | None = None) -> tuple[Any, list[dict[str, Any]], Path | None]:
         """The :class:`treeview.Index` of one side for these filters (the last few are kept), all the entries and the archive base."""
         entries, base, ident = self._tree_entries(state)
         treeview = _mod("treeview")
         cache = state.items.setdefault(("library", "treeidx"), {})          # type: ignore[arg-type]
-        ckey = (ident, side, tuple(sorted(f.items())))
+        ckey = (ident, side, tuple(sorted(f.items())), upsig)          # (upsig: the games with a better version, as of the numbers now)
         if ckey not in cache:
             if len(cache) > 12:
                 cache.clear()
@@ -6216,6 +6218,7 @@ class App:
         rated: dict[str, set] = {"1": set(), "0": set()}
         machines: dict[str, set] = {}
         installs: dict[str, set] = {}
+        upgrades: set = set()
         totals_mod = _mod("totals")
         apart = totals_mod.apart_dats(platform) if platform is not None else frozenset()
         target_keys = set(keys.values()) if keys else None          # (a kept game outside the target - below the rating cut - is the tiles' "owned outside", no game they count)
@@ -6248,11 +6251,14 @@ class App:
                 machines.setdefault(e["plat"], set()).add(u)
             if e.get("whd") and self._tree_pass(e, f, "install"):
                 installs.setdefault("WHDLoad", set()).add(u)
+            if e.get("up") and self._tree_pass(e, f, "upgrade"):
+                upgrades.add(u)
             if row and self._tree_pass(e, f, "rated"):
                 rated["1" if row.get("rating") is not None else "0"].add(u)
         count = lambda d: {k: len(v) for k, v in d.items()}      # noqa: E731
         return {"show": count(show), "state": count(states), "region": count(regions), "language": count(languages), "rated": count(rated),
-                "machine": count(machines), "install": count(installs), "unit": "games"}
+                "machine": count(machines), "install": count(installs), "upgrade": {"Upgrade available": len(upgrades)} if upgrades else {},
+                "unit": "games"}
 
     @staticmethod
     def _game_unit(entry: dict[str, Any], platform: Any, keys: dict[str, Any] | None = None, combine: bool = False) -> Any:
@@ -6317,13 +6323,15 @@ class App:
         if state is None:
             return {"platform": platform.name, "side": side, "ready": False,
                     "reason": "Scan this system first: the tree is made from its scan."}
-        f = {k: v for k in ("show", "state", "region", "language", "rated", "machine", "install", "hide_saved") if (v := _str_arg(query.get(k)))}
+        f = {k: v for k in ("show", "state", "region", "language", "rated", "machine", "install", "upgrade", "hide_saved") if (v := _str_arg(query.get(k)))}
         if f.get("show") and f["show"] not in self.TREE_SHOW:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown choice: {f['show']}")
         q = _str_arg(query.get("q")).strip().casefold()
         if q:
             f["q"] = q
-        index, entries, base = self._tree_index(state, side, f)
+        owned = self._upgrade_names(platform) if side == "library" else None
+        self._mark_upgrades(self._tree_entries(state)[0], owned)
+        index, entries, base = self._tree_index(state, side, f, None if owned is None else len(owned))
         try:
             offset = max(0, int(query.get("offset") or 0))
         except ValueError:
@@ -6334,28 +6342,27 @@ class App:
             if path:
                 raise ApiError(HTTPStatus.NOT_FOUND, "No such folder in the tree")
             page = {"path": "", "dirs": [], "files": [], "total_files": 0, "offset": 0, "files_below": 0, "bytes": 0, "changed": 0}
-        owned = self._upgrade_names(platform) if side == "library" and (page["files"] or page["dirs"]) else None
         for item in page["files"]:                                        # the row each file belongs to (its game, its reason, its saves)
             ref = item.pop("ref", None)
             item["row"] = entries[ref]["row"] if isinstance(ref, int) else None
             if isinstance(ref, int) and entries[ref].get("saved_keep"):
                 item["saved_keep"], item["saved_why"] = True, entries[ref].get("saved_why", "")
-            if owned and item["row"] and item["row"].get("category") == "kept" and self._has_upgrade(item["row"], owned):
+            if isinstance(ref, int) and entries[ref].get("up"):
                 item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
         if page["dirs"]:
             self._folder_tags(page["dirs"], entries, side, path)
             self._folder_facts(page["dirs"], entries, side, path, platform)
         out = {"platform": platform.name, "side": side, "ready": True, "root": index.root, "none": side == "archive" and base is None,
                "totals": index.totals(), **page}
-        if side == "library" and (page["files"] or page["dirs"]) and owned is None:
+        if side == "library" and (page["files"] or page["dirs"]) and owned is None and self._totals_want(platform):
             out["upgrades_pending"] = True
         elif owned and page["dirs"]:                                      # the games with a better version below each folder
             where = tuple(p for p in path.replace("\\", "/").split("/") if p)
             below: dict[str, int] = {}
             for e in entries:
                 parts = e["parts"]
-                if (e["side"] == "library" and len(parts) > len(where) + 1 and tuple(parts[:len(where)]) == where and e["row"]
-                        and e["row"].get("category") == "kept" and self._tree_pass(e, f) and self._has_upgrade(e["row"], owned)):
+                if (e["side"] == "library" and len(parts) > len(where) + 1 and tuple(parts[:len(where)]) == where and e.get("up")
+                        and self._tree_pass(e, f)):
                     below[parts[len(where)]] = below.get(parts[len(where)], 0) + 1
             for d in page["dirs"]:
                 if below.get(d["name"]):
@@ -6502,6 +6509,13 @@ class App:
             return None
         rows = self._totals().upgrades(platform.name)
         return None if rows is None else {n for _, have, _ in rows for n in have}
+
+    def _mark_upgrades(self, entries: list[dict[str, Any]], owned: set[str] | None) -> None:
+        """``entry["up"]``: a kept file of the library whose game has a version the rules prefer that you lack (what the "upgrade" filter,
+        its facet and the tag of the Files list read); False for all while the numbers are not ready."""
+        for e in entries:
+            row = e["row"]
+            e["up"] = bool(owned and e["side"] == "library" and row and row.get("category") == "kept" and self._has_upgrade(row, owned))
 
     @staticmethod
     def _has_upgrade(row: dict[str, Any], owned: set[str]) -> bool:
