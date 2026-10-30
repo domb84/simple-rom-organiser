@@ -1464,7 +1464,7 @@
       }
       add("Why", r.reason ? r.reason.replace(/^excluded: /, "Excluded: ") : CAT_TEXT[r.category] || "");
       if (r.year) add("Year", String(r.year));
-      if (file.upgrade) add("Better version", file.upgrade_why || "The rules prefer another version of this game, which you do not have");
+      if (file.upgrade) facts.push(el("dt", { text: "Better version" }), el("dd", {}, file.upgrade_why ? el("span", { class: "tag t-upgrade", text: file.upgrade_why }) : "The rules prefer another version of this game, which you do not have"));
       const btns = [];
       if (r.game_ref) btns.push(el("button", { class: "btn", type: "button", id: "panel-choose", on: { click: () => gameMenu(file) } }, "Keep or exclude…"));
       if (r.cs_kind !== undefined && r.cs_kind !== null) btns.push(el("button", { class: "btn", type: "button", on: { click: () => details(file) } }, "More details"));
@@ -1515,7 +1515,7 @@
       b._file = file;
       return b;
     }
-    const upgradeTag = (why) => el("span", { class: "tag t-upgrade", title: why ? `A better version of this game is available: ${why}` : "A better version of this game is available", "aria-label": "Upgrade available", text: "↑" });
+    const upgradeTag = (why) => el("span", { class: "tag t-upgrade", title: why ? `A better version of this game is available (${why})` : "A better version of this game is available", "aria-label": why ? `Upgrade available: ${why}` : "Upgrade available", text: why ? `↑ ${why}` : "↑" });
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
         icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
@@ -1773,7 +1773,7 @@
         put(panel, el("span", { class: "panel-title", text: it.title || it.name }),
           el("p", { class: "note", text: (it.better || []).length === 1 ? "Your rules prefer a version you do not have:" : "Your rules prefer versions you do not have:" }),
           ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })),
-          it.why ? el("p", { class: "note", text: `Why: ${it.why}` }) : null);
+          it.why ? el("p", { class: "note" }, "Why: ", el("span", { class: "tag t-upgrade", text: it.why })) : null);
       }
     };
     const draw = () => {

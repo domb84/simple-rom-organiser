@@ -669,13 +669,13 @@ class BugCheckTotalsTests(unittest.TestCase):
         t = totals.compute_target(AMIGA, [dat_of([old, new])], profile)
         (key,) = t.games
         self.assertEqual(t.games[key], frozenset({new + ".adf"}))
-        self.assertIn("a newer version", t.why[(key, old + ".adf")])
+        self.assertEqual(t.why[(key, old + ".adf")], "Version")
         self.assertNotIn((key, new + ".adf"), t.why)                                        # (the kept one lost to nothing)
         # ... and the list of better versions carries it (the file you own, then the row)
         m = self.manager([dat_of([old, new])])
         u = totals.compute_user_items([Item(key=0, dat=GAMES, rom=dat_of([old]).roms[0], style="tosec", path=Path("g.adf"), member=None)], AMIGA, profile)
         rows = [(k, sorted(n), sorted(t.games[k])) for k, (st, n) in u.games.items() if k in t.games and not (n & t.games[k])]
-        self.assertEqual(m.describe_upgrades(AMIGA, rows, {old + ".adf": "because"})[0]["why"], "because")
+        self.assertEqual(m.describe_upgrades(AMIGA, rows, {old + ".adf": "Version"})[0]["why"], "Version")
 
     def test_a_borrowed_disk_is_part_of_its_set_s_space_and_no_game_of_its_own(self) -> None:
         m = self.manager([dat_of([FOO1, FOO3, FOO2_DE])])

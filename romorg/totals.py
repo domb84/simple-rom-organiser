@@ -166,7 +166,7 @@ class Target:
     borrowed: dict[tuple, frozenset] = field(default_factory=dict)   # game key -> the disks of other editions its kept set borrows
     names: dict[tuple, str] = field(default_factory=dict)            # game key -> a name to show for it (the DAT's game name)
     explain: Optional[dict] = None              # why a "top N" keeps the number of games it keeps (:func:`_explain_top`)
-    why: dict[tuple, str] = field(default_factory=dict)              # (game key, rom name) -> why the rules put that version out (a better one is kept)
+    why: dict[tuple, str] = field(default_factory=dict)              # (game key, rom name) -> what put that version out, in a word (a better one is kept)
 
     @property
     def count(self) -> int:
@@ -242,8 +242,8 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
     names = _names(items, kept, profile)
-    why = {(library.game_key(it, profile.combine_alt_titles), library._rom_name(it)): d.reason for it in items
-           if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED and d.reason}
+    why = {(library.game_key(it, profile.combine_alt_titles), library._rom_name(it)): d.tag or "Rules" for it in items
+           if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED}
     explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
                   len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why)
@@ -515,8 +515,8 @@ class TotalsManager:
             return rows
 
     def upgrade_whys(self, name: str) -> dict[str, str]:
-        """``{the name of a file you own: why the rules put that version out}`` for the owned games :meth:`upgrades` lists (what decided it:
-        the rule that tells the preferred version from yours). Empty while the numbers are not ready."""
+        """``{the name of a file you own: what put that version out}`` for the owned games :meth:`upgrades` lists, in a word ("Version",
+        "WHDLoad", "Chipset", "CDTV" ...: what tells the preferred version from yours). Empty while the numbers are not ready."""
         with self._cv:
             want, t, u = self._want.get(name), self._targets.get(name), self._users.get(name)
             if want is None or want.ukey is None or t is None or u is None or t[0] != want.tkey or u[0] != want.ukey \

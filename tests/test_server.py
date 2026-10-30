@@ -1101,7 +1101,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have&path=Commodore%20Amiga%20-%20Games/Game"
         name = "Game (1990)(Pub)(Disk 1 of 2).adf"
-        why = "superseded by Game v2 (one release of the game: a better chipset (AGA > ECS > OCS))"
+        why = "Chipset"
         with mock.patch.object(server.App, "_upgrade_names", return_value={name: why}):
             files = {f["name"]: f for f in self.call("GET", base)["files"]}
             self.assertEqual(files[name]["upgrade_why"], why)

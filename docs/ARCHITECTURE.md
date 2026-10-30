@@ -4187,8 +4187,10 @@ detector; each merge was made only where the copies were the same code.
   floppy sets) apply labelled steps in order (language, WHDLoad result, clean dump, chipset, newer version, IPF release before an ADF set, fewer
   extra flags, SPS before Unofficial IPF, name) and the reason names the first one that tells the winner from the loser: "superseded by X
   (one release of the game: a better chipset (AGA > ECS > OCS))". `_rank_across` / `_prefer_unprotected` already said so.
-* `totals.Target.why` keeps those reasons per `(game key, rom name)` (in memory); `TotalsManager.upgrade_whys` gives `{owned file name: reason}`
-  for the games `upgrades()` lists. `/api/library/upgrades` rows have `why`; the Files tree gives each tagged file `upgrade_why` (`App._upgrade_names`
-  is now `{name: reason}`; a plain set of names still works, with no reason).
-* The new UI shows it as the "↑" tag's tooltip, as "Better version: <reason>" in the file's detail panel and as "Why: ..." on the Needs-a-look
-  "Better versions" list.
+* The wordy reason stays on the decision (the build list's "Why"), but the better-version screens show a WORD: `Decision.tag` ("Version", "WHDLoad",
+  "Chipset", "Clean dump", "Language", "Complete", "IPF", "SPS", "Flags", "Uncracked", "CDTV" / "CD32" / "AGA" (the platform ranking), "Disc",
+  "Manual", "Saves", "Rules" when nothing more is known). `totals.Target.why` keeps the tag per `(game key, rom name)` (in memory);
+  `TotalsManager.upgrade_whys` gives `{owned file name: tag}`. `/api/library/upgrades` rows have `why` (the tag); the Files tree gives each tagged
+  file `upgrade_why` (`App._upgrade_names` is `{name: tag}`; a plain set of names still works, with no tag).
+* The new UI shows it as the tag "↑ Version" on the file's row (the tooltip names it), a tag in the detail panel's "Better version" row and a tag on the
+  Needs-a-look "Better versions" list. A folder keeps the bare "↑".

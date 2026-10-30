@@ -641,6 +641,7 @@ class Decision:
     reason: str = ""              # human text
     elsewhere: tuple[int, ...] = ()  # incomplete: missing disks the user has under another identity
     keeper: str = ""              # duplicate: the copy that stays (its path)
+    tag: str = ""                 # superseded: what decided it, in a word ("Version", "WHDLoad", "Chipset", "CDTV" ...)
     # keep: ``codes == ("borrowed",)`` marks a disk of another edition used to complete a set (``BORROWED_CODE``)
 
 
@@ -1262,8 +1263,8 @@ def _newer(s: _Set) -> tuple:
     return (s.vkey, s.date)
 
 
-def _set_steps(prefer_whdload: bool) -> tuple[tuple[str, Callable[[_Set], Any]], ...]:
-    """The ordered tests :func:`_pick_best` applies (lowest value wins) with what each means in words."""
+def _set_steps(prefer_whdload: bool) -> tuple[tuple[str, str, Callable[[_Set], Any]], ...]:
+    """The ordered tests :func:`_pick_best` applies (lowest value wins): a word for each, what it means in words, the test."""
     from . import whdready
 
     def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
@@ -1272,11 +1273,11 @@ def _set_steps(prefer_whdload: bool) -> tuple[tuple[str, Callable[[_Set], Any]],
     def flawed(s: _Set) -> bool:
         return any(tags.exclusion_rules(_tags_of(it)) & FLAWED_RULES for it in s.slots.values())
 
-    return (("a language you prefer", lambda s: s.lang_rank),
-            ("a better WHDLoad result", whd),
-            ("a clean dump (the other has a bad or modified disk)", flawed),
-            ("not cracked", lambda s: not s.cracked),
-            ("a better chipset (AGA > ECS > OCS)", lambda s: s.platform_rank))
+    return (("Language", "a language you prefer", lambda s: s.lang_rank),
+            ("WHDLoad", "a better WHDLoad result", whd),
+            ("Clean dump", "a clean dump (the other has a bad or modified disk)", flawed),
+            ("Uncracked", "not cracked", lambda s: not s.cracked),
+            ("Chipset", "a better chipset (AGA > ECS > OCS)", lambda s: s.platform_rank))
 
 
 def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
@@ -1285,7 +1286,7 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     chipset - discs are ranked across DATs, :func:`_rank_across`), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]),
     then name."""
     pool = sets
-    for _label, key in _set_steps(prefer_whdload):
+    for _tag, _label, key in _set_steps(prefer_whdload):
         best = min(key(s) for s in pool)
         pool = [s for s in pool if key(s) == best]
     newest = max(_newer(s) for s in pool)
@@ -1293,16 +1294,16 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     return min(pool, key=lambda s: (s.mods, s.anchor.rom.name.casefold(), s.anchor.rom.name, s.refs))
 
 
-def _why_set(win: _Set, lose: _Set, prefer_whdload: bool) -> str:
-    """In words: the first test of :func:`_pick_best` that tells ``win`` from ``lose`` (the one that put ``lose`` out)."""
-    for label, key in _set_steps(prefer_whdload):
+def _why_set(win: _Set, lose: _Set, prefer_whdload: bool) -> tuple[str, str]:
+    """``(a word, in words)``: the first test of :func:`_pick_best` that tells ``win`` from ``lose`` (the one that put ``lose`` out)."""
+    for tag, label, key in _set_steps(prefer_whdload):
         if key(win) != key(lose):
-            return label
+            return tag, label
     if _newer(win) != _newer(lose):
-        return "a newer version"
+        return "Version", "a newer version"
     if win.mods != lose.mods:
-        return "fewer modifications ([t] [h] [tr] [f] [a])"
-    return "the first of the same by name"
+        return "Flags", "fewer modifications ([t] [h] [tr] [f] [a])"
+    return "Rules", "the first of the same by name"
 
 
 # --------------------------------------------------------------------------- select
@@ -1492,7 +1493,7 @@ def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
                 if m.key in used or sel.decisions[m.key].codes == (BORROWED_CODE,):
                     continue                                   # (a disk borrowed from another edition stays with its own set)
                 sel.decisions[m.key] = Decision(key=m.key, action=SUPERSEDED, superseded_by=winner,
-                                                reason=f"superseded by {winner} (a clean dump of the same version)")
+                                                reason=f"superseded by {winner} (a clean dump of the same version)", tag="Clean dump")
             if cs is not None:
                 gone.add(cs.id)
     if gone:
@@ -1595,7 +1596,7 @@ def apply_prefer_saved(sel: Selection, items: Sequence[Item], saved: frozenset) 
                                            reason=f"kept instead of {win_name}: you have saves for this one")
         for w in winners:
             sel.decisions[w.key] = Decision(key=w.key, action=SUPERSEDED, superseded_by=pname,
-                                            reason=f"superseded by {pname}, which you have saves for")
+                                            reason=f"superseded by {pname}, which you have saves for", tag="Saves")
         for other in cands:
             if other is not pick:
                 d = sel.decisions[other.key]
@@ -2053,7 +2054,7 @@ def _select_discs(dat: str, dat_items: list[Item], profile: LibraryProfile, deci
                     if rkey == win or not profile.best_variant:
                         decide(it, KEEP)
                     else:
-                        decide(it, SUPERSEDED, superseded_by=win, reason=f"superseded by {win}")
+                        decide(it, SUPERSEDED, superseded_by=win, reason=f"superseded by {win}", tag="Version")
 
 
 def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any, images: bool = False) -> None:
@@ -2098,7 +2099,7 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             for it in members:
                 sel.decisions[it.key] = Decision(
                     key=it.key, action=SUPERSEDED, superseded_by=winner,
-                    reason=f"superseded by {winner} (the {best_cls} release: CD32 > AGA > CDTV > ECS > OCS)")
+                    reason=f"superseded by {winner} (the {best_cls} release: CD32 > AGA > CDTV > ECS > OCS)", tag=best_cls)
                 gone.add(it.key)
         if gone:
             sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
@@ -2149,7 +2150,7 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             for members in rels.values():
                 for it in members:
                     sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=discs[g],
-                                                     reason=f"superseded by {discs[g]} (the game's disc needs no WHDLoad: one release of the game)")
+                                                     reason=f"superseded by {discs[g]} (the game's disc needs no WHDLoad: one release of the game)", tag="Disc")
                     gone.add(it.key)
             continue
         if len(rels) < 2:
@@ -2163,40 +2164,41 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed, _whole(members))
         vkeys = tags.group_version_keys([v[1] + ".ipf" if r[0] in image_sets else v[1] for r, v in info.items()], STYLE_TOSEC)
         pool = list(rels)
-        steps = (("it has every disk of the release (the other is missing some)", lambda r: not info[r][4]),   # (a release with a disk missing - the others are in another language - never beats a whole one)
-                 ("a version a WHDLoad install boots from", lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS),   # (also in another language, as _whdload_language kept it)
-                 ("a language you prefer", lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile)),
-                 ("a better WHDLoad result", lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0),
-                 ("a clean dump (the other is a bad or modified dump)", lambda r: info[r][3]),
-                 ("a better chipset (AGA > ECS > OCS)", lambda r: tags.PLATFORM_ORDER.index(tags.platform_class(info[r][0]))))
-        for _label, key in steps:
+        steps = (("Complete", "it has every disk of the release (the other is missing some)", lambda r: not info[r][4]),   # (a release with a disk missing - the others are in another language - never beats a whole one)
+                 ("WHDLoad", "a version a WHDLoad install boots from", lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS),   # (also in another language, as _whdload_language kept it)
+                 ("Language", "a language you prefer", lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile)),
+                 ("WHDLoad", "a better WHDLoad result", lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0),
+                 ("Clean dump", "a clean dump (the other is a bad or modified dump)", lambda r: info[r][3]),
+                 ("Chipset", "a better chipset (AGA > ECS > OCS)", lambda r: tags.PLATFORM_ORDER.index(tags.platform_class(info[r][0]))))
+        for _tag, _label, key in steps:
             best = min(key(r) for r in pool)
             pool = [r for r in pool if key(r) == best]
         vk = lambda r: vkeys[info[r][1] + ".ipf" if r[0] in image_sets else info[r][1]]       # noqa: E731
         newest = max(vk(r) for r in pool)                      # (the newest version: whatever its form - an original or a floppy set)
         pool = [r for r in pool if vk(r) == newest]
-        ties = (("an IPF release (the original disk as it was, copy protection and all) before an ADF set (a plain sector copy)", lambda r: r[0] not in image_sets),
-                ("fewer extra dump flags ([cr] [t] [h] ...)", lambda r: sum(1 for f in info[r][0].dump_flags if not f.isdigit())),
-                ("an SPS IPF release before an Unofficial IPF one", lambda r: image_order.get(r[0], 99)))
-        win = min(pool, key=lambda r: (*(key(r) for _l, key in ties), info[r][1].casefold(), info[r][1], r))     # (then the name)
+        ties = (("IPF", "an IPF release (the original disk as it was, copy protection and all) before an ADF set (a plain sector copy)", lambda r: r[0] not in image_sets),
+                ("Flags", "fewer extra dump flags ([cr] [t] [h] ...)", lambda r: sum(1 for f in info[r][0].dump_flags if not f.isdigit())),
+                ("SPS", "an SPS IPF release before an Unofficial IPF one", lambda r: image_order.get(r[0], 99)))
+        win = min(pool, key=lambda r: (*(key(r) for _t, _l, key in ties), info[r][1].casefold(), info[r][1], r))     # (then the name)
 
-        def why(r: tuple) -> str:
-            """The first test that tells ``win`` from ``r``: what put ``r`` out."""
-            for label, key in steps:
+        def why(r: tuple) -> tuple[str, str]:
+            """``(a word, in words)``: the first test that tells ``win`` from ``r``: what put ``r`` out."""
+            for tag, label, key in steps:
                 if key(r) != key(win):
-                    return label
+                    return tag, label
             if vk(r) != vk(win):
-                return "a newer version"
-            for label, key in ties:
+                return "Version", "a newer version"
+            for tag, label, key in ties:
                 if key(r) != key(win):
-                    return label
-            return "the first of the same by name"
+                    return tag, label
+            return "Rules", "the first of the same by name"
         for rel, members in rels.items():
             if rel == win:
                 continue
-            reason = f"superseded by {info[win][1]} (one release of the game: {why(rel)})"
+            tag, text = why(rel)
+            reason = f"superseded by {info[win][1]} (one release of the game: {text})"
             for it in members:
-                sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=info[win][1], reason=reason)
+                sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=info[win][1], reason=reason, tag=tag)
                 gone.add(it.key)
     if gone:
         sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
@@ -2264,7 +2266,7 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
             for it in members:
                 sel.decisions[it.key] = Decision(
                     key=it.key, action=SUPERSEDED, superseded_by=winner,
-                    reason=f"superseded by {winner}: this original asks for the manual ({check.lower()}) and {how}")
+                    reason=f"superseded by {winner}: this original asks for the manual ({check.lower()}) and {how}", tag="Manual")
                 gone.add(it.key)
     if gone:
         sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
@@ -2530,7 +2532,7 @@ def _select_nointro(dat: str, dat_items: list[Item], profile: LibraryProfile, on
             newer = older.get(_rom_name(it))
             if newer:
                 decide(it, SUPERSEDED, superseded_by=newer,
-                       reason=f"superseded by {newer} (newer version of the same region)")
+                       reason=f"superseded by {newer} (newer version of the same region)", tag="Version")
             else:
                 decide(it, KEEP)
 
@@ -2604,7 +2606,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                         decide(it, KEEP)
                     else:
                         decide(it, SUPERSEDED, superseded_by=_rom_name(win),
-                               reason=f"older revision: kept {_rom_name(win)}")
+                               reason=f"older revision: kept {_rom_name(win)}", tag="Version")
             winner_name = winner_name or _rom_name(next(iter(chosen.values())))
             discs = sorted(d for d in chosen if d > 0)
             if discs:
@@ -2639,7 +2641,7 @@ def _select_redump(dat: str, dat_items: list[Item], profile: LibraryProfile, one
                     continue
                 for it in members:
                     decide(it, SUPERSEDED, superseded_by=winner_name,
-                           reason=f"one version per game: kept {winner_name}")
+                           reason=f"one version per game: kept {winner_name}", tag="Rules")
 
 
 def _discs_missing(members: Iterable[Item], least: int = 0) -> int:
@@ -2723,7 +2725,7 @@ def _one_per_game(members: list[Item], profile: LibraryProfile, order: list[str]
                 decide(it, KEEP)
             else:
                 decide(it, SUPERSEDED, superseded_by=wname,
-                       reason=f"one version per game: kept {wname}")
+                       reason=f"one version per game: kept {wname}", tag="Rules")
 
 
 def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best: bool, latest: bool,
@@ -2812,18 +2814,19 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             elif it.key in in_complete:
                 if collapse:
                     winner = _winner_name(kept_sets)
-                    why = ""
+                    why, tag = "", "Rules"
                     if best and kept_sets:
                         lost = set_of.get(it.key)
                         if lost is not None:
-                            why = f" ({_why_set(kept_sets[0], lost, profile.prefer_whdload)})"
+                            tag, text = _why_set(kept_sets[0], lost, profile.prefer_whdload)
+                            why = f" ({text})"
                     decide(it, SUPERSEDED, superseded_by=winner,
-                           reason=f"superseded by {winner}{why}")
+                           reason=f"superseded by {winner}{why}", tag=tag)
                 else:
                     decide(it, KEEP)
             elif collapse:       # a disk of no complete set, in a game that has one: not part of the best set
                 winner = _winner_name(kept_sets)
-                decide(it, SUPERSEDED, superseded_by=winner, reason=f"superseded by {winner}")
+                decide(it, SUPERSEDED, superseded_by=winner, reason=f"superseded by {winner}", tag="Rules")
             elif complete_only and _disk_info(tags.parse_name(it.rom.name, STYLE_TOSEC)) is not None:
                 missing = _missing_for(it, partial, group)
                 if keep_all and complete:   # every version stays: a spare disk of a game with a complete set
