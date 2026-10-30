@@ -4200,3 +4200,7 @@ detector; each merge was made only where the copies were the same code.
 * A build archives an incomplete set (the rule "Complete multi-disk sets only"), so none lies in a built library: the new UI's Needs-a-look tile counts
   `not_preferred` only, has no description line, and its screen is the one list of better versions (no Incomplete view, no `/api/library/plan` call).
   The API (`incomplete_sets`, `owned_incomplete`) and the classic UI are unchanged. With the rule off the sets stay and are no longer listed in the new UI.
+* (Amendment 110, addendum) A Dreamcast / disc-system game that the rules set aside (excluded, superseded, incomplete, a duplicate) takes only its
+  disc image to its reason folder: the files that sat with it (checksum sheets in a zip, notes) are files no database knows and go to `_unmatched`, a
+  save to `_saves/<Title>`, as for a kept game (`discsys.plan_library`: `without_extras`). The option "Keep other files that sit with a game" still
+  lets them travel with the game.

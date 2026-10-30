@@ -1590,6 +1590,24 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     decisions = sel.decisions
     unit_key = {id(u): i for i, u in key_of.items()}
     extra_ops: list[DcOp] = []
+    label = result.system.label if result.system else "Dreamcast"
+
+    def without_extras(u: DcUnit) -> DcUnit:
+        """The files next to a disc image are no part of the game: they are set aside like any file that matches nothing (to ``_unmatched``,
+        a save under its game in ``_saves``), whether the game is kept or set aside itself - a game that goes to ``_excluded`` takes its disc
+        image there, not the checksum sheets that sat with it. The option "Keep other files that sit with a game" keeps them with it."""
+        if profile is None or getattr(profile, "keep_extras", False) or u.kind != "chd":
+            return u
+        extras = [f for f in u.files if f != u.path and not _stays_with_game(f)]
+        if not extras:
+            return u
+        from . import savepin
+        own = [plan.pinner.title_of(u.game.rep, u.game.rep.dat)]
+        for f in extras:
+            extra_ops.append(_junk_op(f, root, plan, label, why=f"not a disc image: it sat with {u.game.name}", with_game=True,
+                                      titles=own if savepin.is_save(f.name) else None))
+        return dataclasses.replace(u, files=[f for f in u.files if f not in extras])
+
     for u in sorted(keepers, key=lambda x: os.fspath(x.top).casefold()):
         i = unit_key.get(id(u), -1)
         d = decisions.get(i)
@@ -1597,8 +1615,9 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
             code = {library.EXCLUDED: "excluded", library.SUPERSEDED: "superseded",
                     library.INCOMPLETE: "incomplete"}[d.action]
             rdir = folders.CODE_DIRS[code]
-            mapping = _reason_mapping(u, root, rdir, plan)
-            op = _unit_op(u, root, mapping, code=code, folder=rdir, reasons=tuple(d.codes),
+            core = without_extras(u)
+            mapping = _reason_mapping(core, root, rdir, plan)
+            op = _unit_op(core, root, mapping, code=code, folder=rdir, reasons=tuple(d.codes),
                           superseded_by=d.superseded_by, reason=d.reason,
                           flags_text=d.detail)
         else:
@@ -1609,17 +1628,7 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
                 ops.append(op)
                 owners[i] = op
                 continue
-            if profile is not None and not getattr(profile, "keep_extras", False) and u.kind == "chd":
-                # the files next to the disc image are no part of the game: they are set aside like any file that matches nothing
-                extras = [f for f in u.files if f != u.path and not _stays_with_game(f)]
-                if extras:
-                    core = dataclasses.replace(u, files=[f for f in u.files if f not in extras])
-                    from . import savepin
-                    own = [plan.pinner.title_of(u.game.rep, u.game.rep.dat)]
-                    for f in extras:
-                        extra_ops.append(_junk_op(f, root, plan, result.system.label if result.system else "Dreamcast",
-                                                  why=f"not a disc image: it sat with {u.game.name}", with_game=True,
-                                                  titles=own if savepin.is_save(f.name) else None))
+            core = without_extras(u)
             mapping = unit_target(core, root)
             op = _unit_op(core, root, mapping, reason=(d.reason if d is not None and d.action == library.KEEP else ""))
         op.key = i
@@ -1627,9 +1636,10 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
         owners[i] = op
         _claim(plan, op)
     for u, keeper in spares:
-        mapping = _reason_mapping(u, root, DUPLICATES_DIR, plan)
+        core = without_extras(u)
+        mapping = _reason_mapping(core, root, DUPLICATES_DIR, plan)
         already = folders.reserved_of(_parts(u.top, root) + ("x",)) == DUPLICATES_DIR
-        op = _unit_op(u, root, mapping, code="duplicate", folder=DUPLICATES_DIR,
+        op = _unit_op(core, root, mapping, code="duplicate", folder=DUPLICATES_DIR,
                       reason=f"another copy of {u.game.name}: kept {_rel(keeper.top, root)}")
         op.keeper = _rel(keeper.top, root)
         if already:

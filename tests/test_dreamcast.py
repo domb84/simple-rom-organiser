@@ -409,6 +409,27 @@ class LibraryTest(unittest.TestCase):
         self.assertFalse((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").exists())
         self.assertTrue((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).chd").is_file())
 
+    def test_a_game_that_is_set_aside_takes_its_disc_image_there_and_no_other_file(self) -> None:
+        sheets = self.w.root / "gamma" / "g.zip"                                      # (the checksum sheets that sat with an excluded game)
+        sheets.write_bytes(b"sheets")
+        plan = self.plan()
+        gamma = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Gamma (Japan)"][0]
+        self.assertEqual((gamma.code, gamma.folder), ("excluded", "_excluded"))
+        self.assertEqual([Path(d).name for _s, d in gamma.moves], ["g.chd"])           # only the disc image goes to _excluded
+        zip_op = [o for o in plan.ops if Path(o.src) == sheets][0]
+        self.assertEqual((zip_op.status, zip_op.folder), ("move", "_unmatched"))       # what no database knows goes to _unmatched
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        self.assertTrue((self.w.root / "_excluded" / "gamma" / "g.chd").is_file())
+        self.assertEqual((self.w.root / "_unmatched" / "gamma" / "g.zip").read_bytes(), b"sheets")
+        self.assertFalse(sheets.exists())
+
+    def test_a_set_aside_game_keeps_its_files_when_asked_to(self) -> None:
+        sheets = self.w.root / "gamma" / "g.zip"
+        sheets.write_bytes(b"sheets")
+        plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
+        gamma = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Gamma (Japan)"][0]
+        self.assertEqual(sorted(Path(d).name for _s, d in gamma.moves), ["g.chd", "g.zip"])       # ("keep other files": they travel with it)
+
     def test_the_files_travel_with_the_game_when_asked_to(self) -> None:
         plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
@@ -436,7 +457,7 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(res["failed"], [])
         got = tree(self.w.root)
         self.assertIn("Alpha (Europe) (En,Fr)/Alpha (Europe) (En,Fr).chd", got)
-        self.assertIn("_superseded/Alpha (USA) (En,Fr)/Alpha (USA) (En,Fr).state", got)   # saves travel with the CHD
+        self.assertIn("_saves/Alpha/Alpha (USA) (En,Fr).state", got)                     # a save goes under its game, not with the CHD
         self.assertIn("_excluded/gamma/g.chd", got)
         self.assertIn("_excluded/delta/d.chd", got)
         # second run: nothing left to do, no playlist write / stale
