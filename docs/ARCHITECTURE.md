@@ -4140,3 +4140,5 @@ detector; each merge was made only where the copies were the same code.
   opens each filter's choices (with counts) from the page itself; the X sheet remains for the rest (what the build does, rating, saves).
   A chip shows only when the system has something to choose or the filter is on. The screen's first focus is the list, not the bar.
   Test: `tests/test_browser.py` (`test_the_filters_are_on_the_files_page_itself`).
+* Upgrade available and WHDLoad are switches (chip with `aria-pressed`; a switch row in the X sheet), not choices: `upgrade=1` / `install=1`.
+  Test: `test_upgrade_and_whdload_are_switches_not_choices`.

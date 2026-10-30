@@ -2134,6 +2134,20 @@ class NextUiTests(UiTestCase):
         self.page.wait("!!document.querySelector('.overlay, [role=dialog]')", timeout=30)
         self.no_js_errors()
 
+    def test_upgrade_and_whdload_are_switches_not_choices(self) -> None:
+        from romorg import server
+        with mock.patch.object(server.App, "_upgrade_names", return_value={"x"}), mock.patch.object(server.App, "_has_upgrade", return_value=True):
+            self.start("#/system/commodore-amiga/files")
+            self.page.wait("!!document.querySelector('.filter-bar [data-filter=upgrade]')", timeout=60)
+            pressed = "document.querySelector('.filter-bar [data-filter=upgrade]')?.getAttribute('aria-pressed')"
+            self.assertEqual(self.page.eval(pressed), "false")
+            self.click(".filter-bar .chip", "Upgrade available")
+            self.page.wait(f"{pressed} === 'true'", timeout=30)                                    # (one press: on, no picker)
+            self.assertFalse(self.page.eval("!!document.querySelector('.overlay, [role=dialog]')"))
+            self.click(".filter-bar .chip", "Upgrade available")
+            self.page.wait(f"{pressed} === 'false'", timeout=30)
+        self.no_js_errors()
+
     def test_the_side_panel_stays_in_view_down_a_long_folder(self) -> None:
         self.start("#/system/commodore-amiga/files?view=library")
         self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)

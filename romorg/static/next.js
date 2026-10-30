@@ -1428,11 +1428,16 @@
       const fc = facets || {};
       const ent = (obj, label) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n, label || k]);
       const defs = [["machine", "Platform", "Any platform", ent(fc.machine)], ["language", "Language", "Any language", ent(fc.language)],
-        ["upgrade", "Upgrade available", "Any", ent(fc.upgrade, "Only games with a better version")], ["install", "WHDLoad", "Any", ent(fc.install, "Only WHDLoad games")],
         ["region", "Region", "Any region", ent(fc.region)]];
+      const toggles = [["upgrade", "Upgrade available", fc.upgrade], ["install", "WHDLoad", fc.install]];      // (on or off: nothing to choose)
       const chips = defs.filter(([key, , , entries]) => entries.length || f[key]).map(([key, title, any, entries]) =>
         el("button", { class: `chip filter${f[key] ? " on" : ""}`, type: "button", "data-filter": key, on: { click: () => pickChip(key, title, entries, any) } },
-          f[key] ? (key === "upgrade" || key === "install" ? title : `${title}: ${f[key]}`) : `${title} ▾`));
+          f[key] ? `${title}: ${f[key]}` : `${title} ▾`));
+      for (const [key, title, facet] of toggles) {
+        if (!(facet && Object.keys(facet).length) && !f[key]) continue;
+        chips.push(el("button", { class: `chip filter${f[key] ? " on" : ""}`, type: "button", "data-filter": key, "aria-pressed": f[key] ? "true" : "false",
+          on: { click: () => { f[key] = f[key] ? "" : "1"; facets = null; load(); } } }, title));
+      }
       if (Object.keys(f).some((k) => f[k])) chips.push(el("button", { class: "chip filter", type: "button", "data-filter": "clear", on: { click: () => { for (const k of Object.keys(f)) delete f[k]; facets = null; load(); } } }, "Clear filters"));
       bar.classList.toggle("hidden", !chips.length);
       put(bar, ...chips);
@@ -1669,8 +1674,8 @@
       const rows = [
         row({ name: "What the build does", value: f.state ? STATE_TEXT[f.state] || f.state : "Anything", arrow: true, onClick: pickFrom("state", "What the build does", ent(facet.state).map(([k, n]) => [k, n, STATE_TEXT[k] || k]), "Anything") }),
         (facet.machine && Object.keys(facet.machine).length) || f.machine ? row({ name: "Platform", value: f.machine || "Any", arrow: true, onClick: pickFrom("machine", "Platform", ent(facet.machine), "Any") }) : null,
-        (facet.install && Object.keys(facet.install).length) || f.install ? row({ name: "WHDLoad", value: f.install ? "Only WHDLoad games" : "Any", arrow: true, onClick: pickFrom("install", "WHDLoad", ent(facet.install).map(([k, n]) => [k, n, "Only WHDLoad games"]), "Any") }) : null,
-        (facet.upgrade && Object.keys(facet.upgrade).length) || f.upgrade ? row({ name: "Upgrade available", value: f.upgrade ? "Only games with a better version" : "Any", arrow: true, onClick: pickFrom("upgrade", "Upgrade available", ent(facet.upgrade).map(([k, n]) => [k, n, "Only games with a better version"]), "Any") }) : null,
+        (facet.install && Object.keys(facet.install).length) || f.install ? switchRow({ name: "WHDLoad games only", on: !!f.install, save: async (on) => { f.install = on ? "1" : ""; facets = null; return on; } }) : null,
+        (facet.upgrade && Object.keys(facet.upgrade).length) || f.upgrade ? switchRow({ name: "Upgrade available only", on: !!f.upgrade, save: async (on) => { f.upgrade = on ? "1" : ""; facets = null; return on; } }) : null,
         row({ name: "Region", value: f.region || "Any", arrow: true, onClick: pickFrom("region", "Region", ent(facet.region), "Any") }),
         row({ name: "Language", value: f.language || "Any", arrow: true, onClick: pickFrom("language", "Language", ent(facet.language), "Any") }),
         row({ name: "Rating", value: f.rated === "1" ? "Rated" : f.rated === "0" ? "Unrated" : "Rated or not", arrow: true,
