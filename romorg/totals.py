@@ -324,8 +324,8 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
         why = ""
         if d is not None:
             why = d.reason or ", ".join(library._RULE_SHORT.get(c, c) for c in d.codes)
-        if state == INCOMPLETE_OWNED and library.title_key(it) in complete:
-            state, why = EXCLUDED_OWNED, f"a complete version is kept: {complete[library.title_key(it)]}"
+        if state == INCOMPLETE_OWNED and library.title_key(it, profile.combine_alt_titles) in complete:
+            state, why = EXCLUDED_OWNED, f"a complete version is kept: {complete[library.title_key(it, profile.combine_alt_titles)]}"
         old = problems.get(key)
         if old is None or (state == INCOMPLETE_OWNED and old[0] != INCOMPLETE_OWNED):
             problems[key] = (state, [library._rom_name(it)], why)

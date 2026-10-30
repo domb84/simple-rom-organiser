@@ -4008,7 +4008,7 @@
       renderLibraryCards(data);
       renderSavesCard();
       const box = $("lib-warnings");
-      const notes = [...(data.warnings || [])];
+      const notes = [...(data.warnings || []), ...(data.notices || [])];
       if (data.missing_dats && data.missing_dats.length) notes.push(`Not checked (DAT not installed): ${data.missing_dats.map(shortDat).join(", ")}.`);
       box.classList.toggle("hidden", !notes.length);
       box.replaceChildren(...notes.map((n) => el("div", { text: n })));

@@ -2010,6 +2010,18 @@ class App:
                        + ", ".join(sorted(systems)) + ". Choose the platform's own folder instead.")
         return out
 
+    def _plan_notices(self, platform: Any) -> list[str]:
+        """What the user should know about a plan that is no reason to stop (``warnings`` make Build ask again): "Combine alternate titles"
+        has less to go on without the ratings data - a game under two titles would count twice."""
+        try:
+            if self._profile(platform).combine_alt_titles:
+                note = _mod("alttitles").notice(platform)
+                if note:
+                    return [note]
+        except Exception:  # noqa: BLE001 - a notice, never an error
+            traceback.print_exc()
+        return []
+
     def _m3u_plan(self, state: ScanState, savedisk: bool, labels: bool) -> list[Any]:
         key = (savedisk, labels)
         if key not in state.m3u_plans:
@@ -3961,7 +3973,7 @@ class App:
             incomplete_covered=len(sets) - len(open_sets),
             exclusions=self._exclusion_counts(plan), vanish=self._vanish_summary(plan),
             rating=dict(getattr(plan.selection, "rating", None) or {}),
-            warnings=[w["text"] for w, _ in state.items[wkey]],
+            warnings=[w["text"] for w, _ in state.items[wkey]], notices=self._plan_notices(state.platform),
             actionable=actionable, empty=actionable == 0,
             missing_dats=list(state.missing_dats), unmatched_dir=UNMATCHED_DIR,
             reserved_dirs=list(RESERVED_DIRS))
@@ -6496,7 +6508,7 @@ class App:
             t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
             dat = _mod("library").game_dat(raw_dat)                                                   # (a disc: its games DAT's)
-            return ("game", (dat, _mod("library").combined_key(dat, tags_mod.game_key(t), combine)))     # (the tiles' key: no region, no disc number)
+            return ("game", (dat, _mod("library").game_key_of(dat, t, combine)))     # (the tiles' key: no region, no disc number)
         except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
             return ("name", name)
 

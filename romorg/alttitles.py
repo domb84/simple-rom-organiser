@@ -29,20 +29,47 @@ from typing import Any, Optional
 
 from . import ratings, tags
 
-__all__ = ["SAME_GAME", "node", "table", "groups", "learn", "forget", "dat_map", "group", "merged", "signature", "clear_cache", "STYLES"]
+__all__ = ["SAME_GAME", "node", "link", "series_title", "hand_games", "notice", "table", "groups", "learn", "forget", "dat_map", "group", "merged", "signature", "clear_cache", "STYLES"]
 
 _LOCK = threading.Lock()
 _CACHE: dict[str, tuple[Any, dict[str, str]]] = {}
 
 
 def node(title: str) -> str:
-    """The form a title is compared in; ``""`` for a title in another script (Japanese, Korean, Chinese, Cyrillic ...): its normal
-    form keeps only the Latin letters and digits (``"大逆転裁判1＆2"`` would be ``"1 2"``), which would join unrelated games."""
+    """The form a title is compared in. A title of another script (Japanese, Korean, Chinese, Cyrillic ...) is compared by its own letters
+    (``ratings.native_key``, ``~`` + them): its Latin letters alone (``"大逆転裁判1＆2"`` would be ``"1 2"``) would join unrelated games."""
     title = _OTHER_SCRIPT_PART_RE.sub(" ", title or "").strip()     # ("ABZÛ (アブズ)": the Japanese name in brackets is a gloss)
-    s = unicodedata.normalize("NFKD", title)
-    if any(_other_script(c) for c in s):
-        return ""
+    if ratings.has_other_script(title):
+        return ratings.native_key(title)
     return ratings.roman_key(ratings.norm_title(title))
+
+
+def link(title: str) -> str:
+    """:func:`node` but for a title of another script that has Latin words with it (``"Astroneer -アストロニーア-"``, ``"Fit Boxing 体験版"``):
+    those words, as the title an English release would have. Such a title joins an English release of that title (and no other title in
+    Japanese script: ``"G-MODE ... Vol.3"`` is a Latin remainder of many games)."""
+    n = node(title)
+    if not n.startswith("~"):
+        return n
+    s = unicodedata.normalize("NFKD", title or "")
+    runs = re.split(r"\0+", "".join("\0" if _other_script(c) else c for c in s))
+    at = [i for i, r in enumerate(runs) if re.search(r"[A-Za-z]{2}", r)]
+    if len(at) != 1 or (at[0] > 0 and at[0] < len(runs) - 1):     # (Japanese on both sides of the words - "クラシック レーシング パック：Moto
+        return n                                                   #  Roader MC + バイク..." - is another game: a pack)
+    other = "".join(c for c in title if _other_script(c))
+    # (a long Japanese text after the words is a subtitle or another game: "Fit Boxing 北斗の拳 ～お前はもう痩せている～"; an art book, a
+    #  soundtrack, a bonus app of a game is no release of it)
+    if len(other) > (20 if at[0] > 0 else 10) or _EXTRAS_RE.search(other):
+        return n
+    words = [runs[at[0]]]
+    rest = ratings.roman_key(ratings.norm_title(words[0]))
+    if len(rest) < 4 or not any(w not in _FILLER for w in re.findall(r"[a-z]{4,}", rest)):
+        return n                        # ("Vol.2", "Part 2", "Demo" tell nothing)
+    return rest
+
+
+_FILLER = frozenset("vol volume part disc demo trial edition version pack special deluxe digital collection nintendo switch".split())
+_EXTRAS_RE = re.compile("デジタル|サウンドトラック|アートブック|アートワーク|特典|追加|コンテンツ|セット|パック|コレクション|壁紙|ボーナス")
 
 
 def _other_script(c: str) -> bool:
@@ -64,8 +91,63 @@ def _signature(paths: list[Any]) -> tuple:
     return tuple(out)
 
 
-def _lb_names(lb: str, path: Any) -> list[tuple[str, int]]:
-    """``(name, dbid)`` of every name of the system in the ratings index (main and alternate names)."""
+_NAMES_FILE = "alttitles.json"
+_NAMES_MEM: dict[str, tuple[Any, dict[str, Any]]] = {}
+
+
+def _names_file(index: Any) -> Any:
+    return index.parent / _NAMES_FILE
+
+
+def _remembered(index: Any) -> dict[str, Any]:
+    """The names of the titles of the last ratings index that was there (``{LaunchBox platform: {"names": [[key, dbid]]}}``): what the
+    alternate titles are made of when the index is gone (deleted, not downloaded again yet, a data folder copied without it). Without
+    it every game of one title in other regions would be a game of its own again, quietly."""
+    f = _names_file(index)
+    try:
+        st = f.stat()
+    except OSError:
+        return {}
+    sig = (st.st_mtime_ns, st.st_size)
+    with _LOCK:
+        hit = _NAMES_MEM.get(str(f))
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+    try:
+        import json
+        data = json.loads(f.read_text(encoding="utf-8"))
+        data = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    with _LOCK:
+        _NAMES_MEM[str(f)] = (sig, data)
+    return data
+
+
+def _remember(index: Any, lb: str, names: list[tuple[str, int]]) -> None:
+    """Keep ``names`` (this index's) for when the index is not there; written only when they changed (never an error)."""
+    try:
+        import json
+        import os
+        data = dict(_remembered(index))
+        try:
+            st = index.stat()
+            stamp = [st.st_mtime_ns, st.st_size]
+        except OSError:
+            return
+        if data.get(lb, {}).get("stamp") == stamp:
+            return
+        data[lb] = {"stamp": stamp, "names": [[k, d] for k, d in names]}
+        f = _names_file(index)
+        tmp = f.with_name(f.name + ".part")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, f)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def _read_names(lb: str, path: Any) -> Optional[list[tuple[str, int]]]:
+    """``(name, dbid)`` of every name of the system in the ratings index (main and alternate names); None: no index to read."""
     try:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
@@ -73,7 +155,38 @@ def _lb_names(lb: str, path: Any) -> list[tuple[str, int]]:
         finally:
             con.close()
     except (sqlite3.Error, ValueError, TypeError):
-        return []
+        return None
+
+
+def _lb_names(lb: str, path: Any) -> list[tuple[str, int]]:
+    """``(name, dbid)`` of every name of the system in the ratings index (main and alternate names); the remembered ones of the last
+    index when there is none (:func:`notice` says so)."""
+    names = _read_names(lb, path) if path is not None and path.is_file() else None
+    if names is None:
+        known = _remembered(path).get(lb, {}).get("names", ()) if path is not None else ()
+        return [(str(k), int(d)) for k, d in known]
+    if names:
+        _remember(path, lb, names)
+    return names
+
+
+def notice(platform: Any) -> str:
+    """Text for the user when "Combine alternate titles" has less to go on than it should for this system, else "": the ratings data
+    (LaunchBox's alternate names) is not installed. The remembered names of the last index are used if there are any; otherwise only
+    GameTDB, OpenRetro and the hand-checked pairs are, and a game released under another title in other regions counts twice."""
+    name = getattr(platform, "name", platform)
+    lb = ratings.lb_platform(name)
+    if not lb:
+        return ""
+    path = ratings.index_path(ratings.default_store().directory)
+    if path.is_file() and _read_names(lb, path):
+        return ""
+    last = _remembered(path).get(lb, {}).get("names")
+    if last:
+        return (f"The ratings data is not installed: the alternate titles of {name} are those of the index that was there before. "
+                "Download the ratings data (Ratings rules) to bring them up to date.")
+    return (f"The ratings data is not installed: games released under other titles in other regions (Biohazard / Resident Evil) "
+            f"are not combined for {name} until it is (Ratings rules: Download ratings).")
 
 
 def _gametdb_names(kinds: tuple[str, ...], path: Any) -> list[tuple[str, str]]:
@@ -142,7 +255,34 @@ SAME_GAME: dict[str, list[tuple[str, ...]]] = {
         ("Strawberry Shortcake - Summertime Adventure", "Strawberry Shortcake - Summertime Adventure - Special Edition")],
     "Nintendo 64": [("NFL Blitz", "NFL Blitz - Special Edition"), ("77a", "77a Special Edition")],
     "Sega Mega Drive - Genesis": [("Sonic 3D Blast", "Sonic 3D Blast - Director's Cut")],
+    # (two titles of one game released in ONE region - the same-region veto of ``dat_map`` would keep them apart; the hand wins over it)
+    "Sega Master System": [("Minesweeper", "Mine Sweeper")],
+    "Sony PlayStation 2": [("Adiboo and the Energy Thieves", "Energy Thieves, The")],
+    "Nintendo Game Boy Color": [("O'Leary Manager 2000", "Barca Total 2000")],
 }
+SAME_GAME["Super Nintendo Entertainment System"].append(("Cannondale Cup", "Exertainment Mountain Bike Rally"))
+
+
+def hand_games(platform_name: str) -> dict[str, frozenset]:
+    """``{normal title: the hand-checked games (SAME_GAME) it is a title of}``: two titles of one game here are one game whatever else
+    says otherwise (:func:`_two_games` never splits them)."""
+    out: dict[str, set] = {}
+    for n, titles in enumerate(SAME_GAME.get(platform_name, ())):
+        for title in titles:
+            out.setdefault(node(title), set()).add(n)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+# The Japanese budget series: a game re-released as "SuperLite 1500 Series - Ring of Sias", "Simple 1500 Series Vol. 93 - The Puzzle
+# Bobble - Puzzle Bobble 4" is the game of the bare title ("Ring of Sias", "Puzzle Bobble 4"), not a game of its own.
+_SERIES_RE = re.compile(
+    r"^(?:super ?lite (?:\d{3,4}|gold|3in1)(?: series)?|simple \d{4}(?: [a-z]+)?(?: series)?|value \d{4}|world greatest hits series|"
+    r"arcade hits)(?:\s+vol\.?\s*\d+)?\s+-\s+", re.IGNORECASE)
+
+
+def series_title(title: str) -> str:
+    """``title`` without the name of a budget series in front of it ("" prefix: the title itself)."""
+    return _SERIES_RE.sub("", title or "", count=1)
 
 
 def _build(lb: str, platform_name: str, rpath: Any, gpath: Any, opath: Any = None) -> dict[str, list[str]]:
@@ -152,7 +292,7 @@ def _build(lb: str, platform_name: str, rpath: Any, gpath: Any, opath: Any = Non
         for title in titles:
             owners.setdefault(node(title), set()).add(("hand", n))
     for name, dbid in _lb_names(lb, rpath) if lb else ():
-        owners.setdefault(node(name), set()).add(("lb", dbid))
+        owners.setdefault(name if name.startswith("~") else node(name), set()).add(("lb", dbid))
     for name, gid in _openretro_names(platform_name, opath):
         owners.setdefault(node(name), set()).add(("or", gid))
     kinds = _GAMETDB_KINDS.get(platform_name)
@@ -317,12 +457,40 @@ def dat_map(dat: str) -> dict[str, str]:
         return hit[1]
     system, titles = entry
     tbl = table(system)
+    hand = hand_games(system)
+    apart = not_same(system)
+    latin = {n for t in titles for n in (node(t), node(series_title(t))) if n and not n.startswith("~")}
+    latin_titles = {node(t) for t in titles}
+    natives: dict[str, set] = {}            # (the words of the titles of another script: more than one game of them is a series, not a title)
+    for t in titles:
+        if node(series_title(t)).startswith("~"):
+            natives.setdefault(link(series_title(t)), set()).add(node(series_title(t)))
+
+    def key_of(cf: str) -> str:
+        """The group a title is in: its ratings / GameTDB group, else the title itself without a budget series in front of it, and a title
+        of another script with Latin words (``"Astroneer -アストロニーア-"``) is the title of an English release of those words."""
+        bare = series_title(cf)
+        nd, nb = node(cf), node(bare)
+        hit = tbl.get(nb) or tbl.get(nd)
+        if hit or not nb:
+            return hit or ""
+        if bare != cf and nb not in latin_titles:     # ("Simple 1500 Series Vol. 93 - The Puzzle Bobble - Puzzle Bobble 4": its last part is a title)
+            parts = bare.split(" - ")
+            for i in range(1, len(parts)):
+                tail = node(" - ".join(parts[i:]))
+                if tail in latin_titles:
+                    return tbl.get(tail) or "\x01" + tail
+        if nb.startswith("~"):
+            rest = link(bare)
+            if rest != nb and (rest in latin or rest in tbl) and len(natives.get(rest, ())) < 2:
+                return tbl.get(rest) or "\x01" + rest
+        return "\x01" + nb
+
     by_group: dict[str, list[tuple[str, dict, int]]] = {}
     for cf, (places, n) in titles.items():
-        nd = node(cf)
-        if not nd:
-            continue
-        by_group.setdefault(tbl.get(nd) or "\x01" + nd, []).append((cf, places, n))
+        key = key_of(cf)
+        if key:
+            by_group.setdefault(key, []).append((cf, places, n))
     out: dict[str, str] = {}
     for members in by_group.values():
         if len(members) < 2:
@@ -330,7 +498,7 @@ def dat_map(dat: str) -> dict[str, str]:
         members.sort(key=lambda m: (-m[2], m[0]))
         joined = [members[0]]
         for cand in members[1:]:
-            if all(not _two_games(cand, other) for other in joined):
+            if all(not _two_games(cand, other, hand, apart) for other in joined):
                 joined.append(cand)
         if len(joined) > 1:
             for cf, _p, _n in joined:
@@ -340,11 +508,29 @@ def dat_map(dat: str) -> dict[str, str]:
     return out
 
 
-def _two_games(a: tuple, b: tuple) -> bool:
+def not_same(platform_name: str) -> frozenset:
+    """``{frozenset({normal title, normal title})}`` of ``library.NOT_SAME_GAME``: two titles the data joins that are two games."""
+    from . import library
+    return frozenset(frozenset((node(a), node(b))) for a, b in library.NOT_SAME_GAME.get(platform_name, ()))
+
+
+def _two_games(a: tuple, b: tuple, hand: Optional[dict] = None, apart: frozenset = frozenset()) -> bool:
     """Whether titles ``a`` and ``b`` (``(title, {release kind: places}, releases)``) are two games: a release of the same kind for the
-    same region under both titles. Titles spelt alike, or one the other with a subtitle, are one game."""
-    na, nb = node(a[0]), node(b[0])
+    same region under both titles. Titles spelt alike, or one the other with a subtitle, are one game, and so are two titles of one
+    hand-checked game (``SAME_GAME``): the hand wins over the veto. A title with the name of a budget series in front of it
+    (``SuperLite 1500 Series - Ring of Sias``) is compared without it (and may be a longer form of the other title: ``Simple 1500 Series
+    Vol. 93 - The Puzzle Bobble - Puzzle Bobble 4``)."""
+    if hand and hand.get(node(a[0]), frozenset()) & hand.get(node(b[0]), frozenset()):
+        return False
+    if apart and frozenset((node(a[0]), node(b[0]))) in apart:
+        return True
+    sa, sb = series_title(a[0]), series_title(b[0])
+    na, nb = node(sa), node(sb)
+    if not (na.startswith("~") and nb.startswith("~")):         # (two titles of another script are the same game by their own letters only)
+        na, nb = link(sa), link(sb)
     if na == nb or na.startswith(nb + " ") or nb.startswith(na + " "):
+        return False
+    if (sa != a[0] and na.endswith(" " + nb)) or (sb != b[0] and nb.endswith(" " + na)):
         return False
     # (the same regions under both titles: "Daimakaimura (Japan)" and "Ghouls'n Ghosts (Japan, USA)" are one game, "Life is Strange
     # Remastered (USA, Europe)" and "... Before the Storm Remastered (USA, Europe)" two; "-": untagged, no known region)

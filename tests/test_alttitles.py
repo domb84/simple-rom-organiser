@@ -71,8 +71,8 @@ class TheTitlesOfAGame(AltTitlesCase):
         self.assertEqual(tbl["eternal arcadia"], tbl["skies of arcadia"])
         self.assertNotEqual(tbl["biohazard"], tbl["skies of arcadia"])
 
-    def test_a_title_in_another_script_joins_nothing(self) -> None:
-        self.assertEqual(alttitles.node("大逆転裁判1＆2"), "")
+    def test_a_title_in_another_script_is_compared_by_its_own_letters(self) -> None:
+        self.assertEqual(alttitles.node("大逆転裁判1＆2"), "~大逆転裁判12")      # (not "1 2": its Latin letters would join unrelated games)
         self.assertNotIn("1 2", alttitles.table(GBA))
 
     def test_the_regions_of_a_title_tell_two_games_apart(self) -> None:

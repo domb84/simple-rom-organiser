@@ -140,6 +140,20 @@ def norm_title(title: str) -> str:
     return _NONALNUM_RE.sub(" ", s).strip()
 
 
+def has_other_script(title: str) -> bool:
+    """Whether the title holds a letter of another script than Latin (Japanese, Korean, Chinese, Cyrillic ...)."""
+    s = unicodedata.normalize("NFKD", title or "")
+    return any(c.isalpha() and ord(c) > 0x24F and not unicodedata.combining(c) for c in s)
+
+
+def native_key(title: str) -> str:
+    """The form a title of another script is compared in: ``"~"`` and its letters and digits (full-width forms as plain ones, case and
+    punctuation do not count). :func:`norm_title` keeps only the Latin letters of such a title (``"大逆転裁判1＆2"`` would be ``"1 2"``)
+    and so cannot tell them apart; the ``~`` can never start a normal title."""
+    s = unicodedata.normalize("NFKC", title or "").casefold()
+    return "~" + "".join(c for c in s if c.isalnum())
+
+
 _ROMAN_VALUE = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10, "xi": 11,
                 "xii": 12, "xiii": 13, "xiv": 14, "xv": 15}
 
@@ -240,19 +254,29 @@ def build_rows(games: dict[int, dict[str, Any]], alts: dict[int, list[str]]) -> 
     best: dict[tuple[str, str], tuple] = {}
 
     def offer(g: dict[str, Any], dbid: int, key: str, alt: int) -> None:
-        if not key:
+        if not key or key == "~":
             return
         cand = (alt, -g["votes"], dbid)
         cur = best.get((g["plat"], key))
         if cur is None or cand < cur[0]:
             best[(g["plat"], key)] = (cand, (g["plat"], key, g["rating"], g["votes"], dbid, g["name"], g["year"], alt))
 
+    def keys(name: str) -> list[str]:
+        key = norm_title(name)
+        if not has_other_script(name):
+            return [key]
+        # (a name of another script: its Latin letters are no title - "大逆転裁判1＆2" is "1 2" - unless there are words of them; the name
+        #  itself is kept under its own key, which the alternate titles of a game in Japanese script are compared by)
+        return ([key] if re.search(r"[a-z]{3}", key) else []) + [native_key(name)]
+
     for dbid, g in games.items():
-        offer(g, dbid, norm_title(g["name"]), 0)
+        for k in keys(g["name"]):
+            offer(g, dbid, k, 0)
     for dbid, names in alts.items():
         g = games[dbid]
         for nm in names:
-            offer(g, dbid, norm_title(nm), 1)
+            for k in keys(nm):
+                offer(g, dbid, k, 1)
     return [v[1] for _k, v in sorted(best.items())]
 
 
@@ -511,6 +535,11 @@ class Store:
     def _match(self, lb: str, title: str) -> Optional[dict[str, Any]]:
         pd = self._plat(lb)
         key = norm_title(title)
+        if pd is not None and has_other_script(title):
+            row = pd.by_key.get(native_key(title))        # (a title of another script: by its own letters)
+            if row is not None:
+                return {"rating": round(row[2] * 2, 1), "votes": row[3], "dbid": row[4], "name": row[5], "year": row[6],
+                        "kind": "alt" if row[7] else "exact", "score": 1.0}
         if pd is None or len(key) < 2:
             return None
         row = pd.by_key.get(key)
