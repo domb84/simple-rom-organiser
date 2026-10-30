@@ -1645,8 +1645,7 @@
     rows() {
       const q = this.q.trim().toLowerCase();
       return (this.data ? this.data.games : []).filter((g) =>
-        (this.show === "all" || (this.show === "with" && g.install && !g.downloaded) || (this.show === "done" && g.downloaded)
-          || (this.show === "none" && !g.install))
+        (this.show === "all" || (this.show === "with" && g.install) || (this.show === "none" && !g.install))
         && (!q || g.title.toLowerCase().includes(q) || (g.install && g.install.title.toLowerCase().includes(q))));
     },
 
@@ -1665,11 +1664,7 @@
         return;
       }
       const c = d.counts;
-      const todo = d.games.filter((g) => g.install && !g.downloaded).length;
-      $("ov-whdload-title").textContent = `WHDLoad installs: ${fmt(c.with_install)} of your ${nPlural(c.games, "game", "games")} have one (${fmt(c.downloaded)} downloaded)`;
-      const all = el("button", { class: "btn btn-primary", text: todo ? `Download all (${fmt(todo)})` : "All downloaded", "data-needs-idle": "",
-        on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, all: true }) } });
-      if (!todo) all.dataset.blocked = "1";
+      $("ov-whdload-title").textContent = `WHDLoad installs: ${fmt(c.with_install)} of your ${nPlural(c.games, "game", "games")} have one`;
       const check = el("button", { class: "btn", text: "Check which versions WHDLoad can install", "data-needs-idle": "",
         title: "For every game with an install and more than one version: fetch the install and try it on each version's disks (for the rule \u201cPrefer versions WHDLoad can install\u201d)",
         on: { click: () => Jobs.start("/api/whdload/check", { platform: this.platform }) } });
@@ -1678,8 +1673,8 @@
         on: { click: () => Jobs.start("/api/whdload/build", { platform: this.platform }) } });
       body.replaceChildren(
         el("p", { class: "muted small", text: `An install is a game's WHDLoad slave, installer and icons - no game data (from the list of ${fmt(d.installs)} installs on whdload.de, ${d.fetched}). `
-          + "It is unpacked next to the game's disks, in a folder named \u201c<game> (WHDLoad install)\u201d: run its installer with the disks to put the game on a hard drive." }),
-        el("div", { class: "row" }, all, check, build),
+          + "The build downloads each one it needs and keeps it with the databases, never in your ROM folder: it makes the game's WHDLoad archive from your disks." }),
+        el("div", { class: "row" }, check, build),
         el("p", { class: "muted small", text: "The check tries each game's install on the disks of each of its versions, so that the rule \u201cPrefer versions WHDLoad can install\u201d keeps a version WHDLoad can be installed from. It fetches one install per game (kept for later) and can take a while." }),
         this.list());
       Jobs.setRunning(Jobs.running);
@@ -1688,7 +1683,7 @@
     list() {
       const shown = this.rows();
       const sel = el("select", { class: "input", "aria-label": "Which games", on: { change: (e) => { this.show = e.target.value; this.limit = 200; this.render(); } } },
-        ...[["with", "With an install to download"], ["done", "Downloaded"], ["none", "Without an install"], ["all", "All games"]]
+        ...[["with", "With an install"], ["none", "Without an install"], ["all", "All games"]]
           .map(([v, t]) => el("option", { value: v, text: t, selected: this.show === v ? "" : null })));
       const search = el("input", { class: "input grow", type: "search", id: "whd-search", placeholder: "Search games", value: this.q, "aria-label": "Search games",
         on: { input: (e) => { this.q = e.target.value; clearTimeout(this.qt); this.qt = setTimeout(() => { this.render(); const s = document.getElementById("whd-search"); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }, 250); } } });
@@ -1696,11 +1691,7 @@
       const body = el("tbody", {}, ...shown.slice(0, this.limit).map((g) => {
         const i = g.install;
         const info = i ? el("a", { href: `https://www.whdload.de/games/${i.archive.replace(/\.lha$/i, ".html")}`, target: "_blank", rel: "noopener", text: i.title }) : el("span", { class: "muted", text: "none" });
-        let act;
-        if (g.downloaded) act = el("span", { class: "badge", text: "Downloaded", title: g.folder });
-        else if (i) act = el("button", { class: "btn btn-small", text: "Download", "data-needs-idle": "",
-          on: { click: () => Jobs.start("/api/whdload/download", { platform: this.platform, titles: [g.title] }) } });
-        else act = el("span", {});
+        const act = el("span", {});
         const about = g.info ? [g.info.year, g.info.publisher].filter(Boolean).join(", ") : "";
         const prot = g.protection && g.protection !== "None" ? `needs its ${g.protection.toLowerCase()} (protection)` : "";
         const n = g.needs || {};

@@ -275,6 +275,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .tag.warn { background: #2e2716; color: var(--warn); }
 .tag.bad { background: #331c20; color: #ff9b9b; }
 .tag.own { background: #3a2a10; color: var(--warn); }
+.row-tags { flex: none; display: flex; gap: 0.5rem; align-items: center; }       /* what kind of game a folder holds: machine, how it plays, language, version */
+.tag.t-cd32, .tag.t-cdtv { background: #2a2147; color: #c4b2ff; }
+.tag.t-aga { background: #15301f; color: #7fe0b0; }
+.tag.t-ecs, .tag.t-ocs { background: #1c2b3f; color: #8cc4ff; }
+.tag.t-whdload { background: #3a2a10; color: var(--warn); }
+.tag.t-playlist { background: #222b38; color: var(--text-2); }
+.tag.t-disks-only { background: #222b38; color: var(--text-2); }
 .views { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .chip { height: 2.875rem; padding: 0 1.375rem; border: 0; border-radius: 1.4375rem; background: var(--surface); color: var(--text-2);
   font-size: 1.3rem; display: inline-flex; align-items: center; }

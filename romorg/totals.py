@@ -361,9 +361,26 @@ def addon_dats(platform: Any) -> frozenset:
     return frozenset(d for d in (getattr(platform, "dats", ()) or ()) if d.endswith((" (Updates)", " (DLC)")))
 
 
+def apart_dats(platform: Any) -> frozenset:
+    """The DATs whose entries are no games of the system: its system disks (:func:`system_dats`) and add-ons (:func:`addon_dats`)."""
+    return system_dats(platform) | addon_dats(platform)
+
+
+def row_is_bios(row: Any) -> bool:
+    """Whether a row of the build list is a BIOS, firmware or key file (kept with the games, never one of them)."""
+    row = row or {}
+    return row.get("category") == "bios" or bool(row.get("bios")) or bool((row.get("tags") or {}).get("bios"))
+
+
+def counts_as_game(dat: str, apart: frozenset, bios: bool = False) -> bool:
+    """THE rule of what the numbers count as a game - the tiles (``combine``, ``missing_names``), the Files view's counts and its Missing
+    list all use it: not a BIOS or firmware file, and not an entry of a DAT in ``apart`` (:func:`apart_dats`)."""
+    return not bios and dat not in apart
+
+
 def combine(target: Target, user: Optional[UserPart], system: frozenset = frozenset(), addons: frozenset = frozenset()) -> dict[str, Any]:
     """The numbers of the Overview block from the whole-DAT target and (when scanned) the user's part. The games of the ``system`` DATs
-    (:func:`system_dats`) are counted apart: ``target_system`` / ``have_system`` / ``missing_system_names``, never as games; so are
+    (:func:`system_dats`) are counted apart: ``target_system`` / ``have_system``, never as games or as missing; so are
     those of the ``addons`` DATs (:func:`addon_dats`): ``target_addons`` / ``have_addons``, never missing."""
     add_keys = {k for k in target.games if k[0] in addons}
     sys_keys = {k for k in target.games if k[0] in system} | add_keys      # (neither is a game)
@@ -390,6 +407,8 @@ def combine(target: Target, user: Optional[UserPart], system: frozenset = frozen
                 have_system += 1
             else:
                 have += 1
+        elif key[0] in system or key[0] in addons:
+            continue                                   # (a system disk or add-on that is incomplete / set aside is no game to look at)
         elif state == INCOMPLETE_OWNED:
             incomplete += 1
         else:
@@ -401,7 +420,6 @@ def combine(target: Target, user: Optional[UserPart], system: frozenset = frozen
     lacking = sorted(target.names.get(k, k[0]) for k in target.games if k not in owned and k not in sys_keys)
     out["missing_names"] = lacking[:50]                 # (which games of the rules you do not have: shown when there are few)
     out["have_system"], out["have_addons"] = have_system, have_addons
-    out["missing_system_names"] = sorted(target.names.get(k, k[0]) for k in sys_keys - add_keys if k not in owned)[:50]
     out.update(have_games=have, missing_games=total - have, percent=round(100.0 * have / total, 1) if total else 0.0,
                not_preferred=not_preferred, owned_but_excluded=excluded, owned_incomplete=incomplete,
                owned_outside_target=outside, owned_games=len(user.games))
@@ -520,9 +538,11 @@ class TotalsManager:
         roms: dict[tuple[str, str], Any] = {}
         for it in target_items(platform, self._load_dats(platform)):    # (a CD32 disc, an SPS release: under its games DAT, as game_key)
             roms.setdefault((library.game_dat(it.dat), library._rom_name(it)), it.rom)
+        apart = apart_dats(platform)                       # (the numbers are of games: no system disk, no update or DLC)
+        games = {k: n for k, n in target.games.items() if counts_as_game(k[0], apart)}
         owned: dict[tuple, frozenset] = {}
         if user is not None:
-            owned = {k: names for k, (st, names) in user.games.items() if st == HAVE and k in target.games}
+            owned = {k: names for k, (st, names) in user.games.items() if st == HAVE and k in games}
 
         def rom_of(key: tuple, names: Any) -> Any:
             for n in sorted(names):
@@ -545,14 +565,14 @@ class TotalsManager:
         out: dict[str, Any] = {}
         if "space" in wants:
             lent = target.borrowed                        # (a kept set's disk of another edition is kept too: an owned game has it)
-            out["space"] = {"target": sum(size(k, n | lent.get(k, frozenset())) for k, n in target.games.items()),
+            out["space"] = {"target": sum(size(k, n | lent.get(k, frozenset())) for k, n in games.items()),
                             "have": sum(size(k, n | lent.get(k, frozenset())) for k, n in owned.items()) if user is not None else None}
         if "best_missing" in wants:
             # the best EVIDENCED rating: a 10 from five voters does not beat a 9.2 from four hundred (the rating is pulled towards the
             # library's average by a weight of 25 votes, the way film sites rank their lists)
             best = None
             if lookup is not None:
-                hits = [(k, h) for k, n in target.games.items() if (h := rating(k, n))]
+                hits = [(k, h) for k, n in games.items() if (h := rating(k, n))]
                 mean = sum(h[0] for _, h in hits) / len(hits) if hits else 0.0
                 for k, h in hits:
                     if k in owned:
@@ -563,7 +583,7 @@ class TotalsManager:
             out["best_missing"] = {"title": best[1][2], "rating": best[1][0], "votes": best[1][1]} if best else None
         if "avg_rating" in wants:
             mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None      # noqa: E731
-            every = [h[0] for k, n in target.games.items() if (h := rating(k, n))] if lookup is not None else []
+            every = [h[0] for k, n in games.items() if (h := rating(k, n))] if lookup is not None else []
             mine = [h[0] for k, n in owned.items() if (h := rating(k, n))] if lookup is not None and user is not None else []
             out["avg_rating"] = {"target": mean(every), "owned": mean(mine), "rated_owned": len(mine)}
         if "regions" in wants:
@@ -585,7 +605,9 @@ class TotalsManager:
             want, t = self._want.get(name), self._targets.get(name)
             if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
                 return None
-            return frozenset(n for names in t[1].games.values() for n in names)
+            plat = getattr(want, "platform", None)
+            apart = apart_dats(plat) if plat is not None else frozenset()
+            return frozenset(n for key, names in t[1].games.items() if counts_as_game(key[0], apart) for n in names)       # (games only)
 
     def name_keys(self, name: str) -> dict:
         """``{rom name: game key}`` of every rom the rules keep (the key the tiles count games by); empty while the target is not ready."""
@@ -605,8 +627,9 @@ class TotalsManager:
             if want.ukey is None or u is None or u[0] != want.ukey or isinstance(u[1], Exception):
                 return None
             owned = u[1].games
-            addons = addon_dats(want.platform) if getattr(want, "platform", None) is not None else frozenset()
-            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE and key[0] not in addons
+            plat = getattr(want, "platform", None)
+            apart = apart_dats(plat) if plat is not None else frozenset()
+            return frozenset(n for key, names in t[1].games.items() if (owned.get(key) or (None,))[0] != HAVE and counts_as_game(key[0], apart)
                              for n in (*names, *t[1].borrowed.get(key, ())))
 
     def borrowed_names(self, name: str) -> frozenset:

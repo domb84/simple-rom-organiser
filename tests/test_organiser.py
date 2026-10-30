@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import tempfile
 import unicodedata
 import unittest
@@ -1045,11 +1046,12 @@ class LibraryPlanTests(unittest.TestCase):
         prof = dataclasses.replace(library.default_profile(platforms.get_platform("Commodore Amiga")), languages=("En",))
         ops = {op.src.name: op for op in self.plan(profile=prof, platform=platforms.get_platform("Commodore Amiga")).ops}
         op = ops["spiel.zip"]
-        self.assertEqual((op.status, op.dst, op.code), ("skip", op.src, "excluded"))      # (left where it is, not yours by the rules)
+        self.assertEqual((op.status, op.dst, op.code), ("move", self.root / "_excluded" / "spiel.zip", "excluded"))   # (set aside as it is, whole)
         self.assertIn("not in the selected languages", op.reason)
         ops = {op.src.name: op for op in self.plan(profile=dataclasses.replace(prof, languages=("De",)),
                                                    platform=platforms.get_platform("Commodore Amiga")).ops}
-        self.assertEqual((ops["spiel.zip"].status, ops["spiel.zip"].code), ("skip", ""))
+        self.assertEqual((ops["spiel.zip"].status, ops["spiel.zip"].code), ("move", ""))     # (kept: into its game's folder, whole)
+        self.assertEqual(ops["spiel.zip"].dst, self.root / "Commodore Amiga - Games" / "Spiel" / "spiel.zip")
 
     def test_abc_playlist_per_slot_and_reason_folders(self) -> None:
         self.abc()
@@ -1507,8 +1509,8 @@ class BugCheckPlanTests(unittest.TestCase):
             zf.writestr("readme.txt", "hello")
         plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
         ops = {op.src.name: op for op in plan.ops}
-        self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "skip"))
-        self.assertEqual([p.lines[-2:] for p in plan.playlists], [[f"../../in/Game disk 2.zip#{d2}|Disk 2", "#SAVEDISK:"]])   # (the playlist is in the game's folder)
+        self.assertEqual((ops[d1].code, ops["Game disk 2.zip"].status), ("", "move"))      # (the zip with the disk and a readme: whole, to the game's folder)
+        self.assertEqual([p.lines[-2:] for p in plan.playlists], [[f"Game disk 2.zip#{d2}|Disk 2", "#SAVEDISK:"]])   # (the zip, whole, and the playlist are in the game's folder)
 
     def test_your_choice_for_a_game_in_an_archive_with_other_files_holds(self) -> None:
         data = _rand(600, 99)
@@ -1522,7 +1524,63 @@ class BugCheckPlanTests(unittest.TestCase):
         for choice, code in (("keep", ""), ("exclude", "excluded")):
             prof = dataclasses.replace(base, overrides=((GAMES, name, choice),))
             op = next(o for o in self.plan(profile=prof, platform=self.AMIGA).ops if o.src.name == "spiel.zip")
-            self.assertEqual((op.status, op.code), ("skip", code), choice)
+            self.assertEqual((op.status, op.code), ("move", code), choice)        # (moved whole, never renamed)
+
+    def test_the_system_disks_go_to_one_system_folder_a_folder_for_each_workbench_release_and_no_playlist(self) -> None:
+        kick = "Kickstart-Disk v1.2 r33.180 (1986)(Commodore)(A1000).adf"
+        files = {WB: ["Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)(Disk 1 of 2)(Workbench).adf",
+                      "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)(Disk 2 of 2)(Extras).adf",
+                      "Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 1 of 2)(Workbench)[a].adf",
+                      "Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 2 of 2)(Extras)[a].adf"],
+                 "Commodore Amiga - Kickstart-Disks": [kick], FW: ["Kickstart v1.3 r34.005 (1987)(Commodore)(A500).rom"]}
+        n = 0
+        for dat, names in files.items():
+            for name in names:
+                n += 1
+                data = _rand(600, 900 + n)
+                self.roms.append(_rom(name, data, dat=dat))
+                (self.root / dat).mkdir(exist_ok=True)
+                (self.root / dat / name).write_bytes(data)
+        def scan():                                                                  # (one DAT each, as the real ones)
+            with mock.patch.object(scanner, "find_7z", return_value=None):
+                return scanner.scan(self.root, [DatFile(d, "", "", [r for r in self.roms if r.dat == d]) for d in files], use_cache=False)
+        self.scan = scan
+        plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        where = {op.src.name: op.dst.relative_to(self.root).as_posix() for op in plan.ops if op.src.parent.name in files}
+        top = "Commodore Amiga - System"
+        self.assertEqual(where[kick], f"{top}/Kickstart-Disks/{kick}")
+        self.assertEqual(where[files[FW][0]], f"{top}/Firmware/{files[FW][0]}")
+        self.assertEqual(where[files[WB][0]], f"{top}/Workbench/Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)/{files[WB][0]}")
+        self.assertEqual(where[files[WB][3]], f"{top}/Workbench/Workbench v2.04 rev 37.67 (1991)(Commodore)/{files[WB][3]}")     # (each disk keeps its DAT entry's name)
+        self.assertEqual([p for p in plan.playlists if p.status == "write"], [])
+
+    def test_an_amiga_game_the_rules_set_aside_lies_in_the_archive_where_the_library_would_put_it(self) -> None:
+        self.have("Solo Game (1992)(Pub)[b corrupt file].adf")
+        self.have("Solo Game (1993)(Pub).adf")
+        plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        bad = next(op for op in plan.ops if op.src.name.startswith("Solo Game (1992)"))
+        self.assertEqual(bad.folder, "_superseded")
+        self.assertEqual(bad.archive_rel, "Commodore Amiga - Games/Solo Game/Solo Game (1992)(Pub)[b corrupt file].adf")
+        good = next(op for op in plan.ops if op.src.name.startswith("Solo Game (1993)"))
+        self.assertEqual(good.archive_rel, "")                                     # (a kept game is no archive's)
+
+    def test_the_files_of_a_whdload_install_an_earlier_version_downloaded_are_unmatched_like_any_other_file(self) -> None:
+        self.have("Solo Game (1993)(Pub).adf", f"{GAMES}/Solo Game (1993)(Pub).adf")
+        old = self.root / GAMES / "Solo (WHDLoad install)"
+        (old / "SoloHD" / "src").mkdir(parents=True)
+        (old / ".romorg-whdload.json").write_text('{"archive": "Solo.lha", "title": "Solo"}')
+        (old / "SoloHD" / "src" / "imager.lha").write_bytes(b"x")
+        (old / "ReadMe").write_text("read me")
+        (old / "SoloHD" / ".src").mkdir()
+        (old / "SoloHD" / ".src" / "solo.asm").write_text("hidden folder")
+        (old / "SoloHD" / "desktop.ini").write_text("[.ShellClassInfo]")                   # (a "frontend file" anywhere else: left in place)
+        plan = self.plan(profile=library.default_profile(self.AMIGA), platform=self.AMIGA)
+        mine = sorted((op for op in plan.ops if old in op.src.parents), key=lambda op: str(op.src))
+        self.assertEqual([(op.src.relative_to(old).as_posix(), op.status, op.unmatched, op.code) for op in mine],
+                         [(".romorg-whdload.json", "move", True, ""), ("ReadMe", "move", True, ""), ("SoloHD/.src/solo.asm", "move", True, ""),
+                          ("SoloHD/desktop.ini", "move", True, ""), ("SoloHD/src/imager.lha", "move", True, "")])      # (all of it: nothing stays behind)
+        self.assertEqual({op.dst.relative_to(self.root).parts[0] for op in mine}, {"_unmatched"})      # (not excluded: no rule is involved)
+        self.assertEqual(organiser.reason_counts(plan)["unmatched"], 5)
 
     def test_a_game_in_an_archive_with_other_files_comes_back_out_of_unmatched_once_its_dat_knows_it(self) -> None:
         data, name = _rand(600, 77), "Spiel (1990)(Pub).adf"

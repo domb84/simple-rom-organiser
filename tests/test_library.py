@@ -1829,6 +1829,24 @@ class ReviewOfTheFixesTests(unittest.TestCase):
             self.assertTrue(info["scopes"]["complete_dats"], name)
 
 
+class SetsKeepOnlyKeptDisks(unittest.TestCase):
+    """A chosen set whose disk the rules set aside is no set (its playlist would point into ``_superseded``)."""
+
+    def test_two_sets_of_a_version_that_share_disks_and_differ_in_the_first_and_last(self) -> None:
+        a = ["WB v3 (1992)(Commodore)(Disk 1 of 3)[m]", "WB v3 (1992)(Commodore)(Disk 2 of 3)", "WB v3 (1992)(Commodore)(Disk 3 of 3)[m]"]
+        b = ["WB v3 (1992)(Commodore)(Disk 1 of 3)[a]", "WB v3 (1992)(Commodore)(Disk 2 of 3)", "WB v3 (1992)(Commodore)(Disk 3 of 3)[a]"]
+        items = amiga_items([a[0], a[1], a[2], b[0], b[2]])
+        profile = replace(AMIGA_DP, exclude=frozenset(library.RULES) - library.FLAWED_RULES)        # (modified copies allowed: kept beside a clean one)
+        sel = library.select(items, profile, AMIGA)
+        for cs in sel.sets:
+            self.assertTrue(all(sel.decisions[k].action == KEEP for k in cs.slots.values()), cs.name)
+        # the invariant itself, whatever put the disk aside
+        for cs in sel.sets:
+            sel.decisions[next(iter(cs.slots.values()))] = library.Decision(key=next(iter(cs.slots.values())), action=SUPERSEDED)
+        library._flawed_beside_clean(items, sel)
+        self.assertEqual(sel.sets, [])
+
+
 class WhdloadOtherLanguageTests(unittest.TestCase):
     """No version in your languages WHDLoad is known to run: one in another language it is known to run is kept too (Amendment 56)."""
 

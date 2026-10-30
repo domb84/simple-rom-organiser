@@ -3975,3 +3975,149 @@ detector; each merge was made only where the copies were the same code.
   works out where the disks WILL be; `Target.was` is where one built before sits now: its entry becomes a `moved` one). Only with the rule
   "Build WHDLoad games". On the user's data: 82 archives for the top 100.
 * Tests: `tests/test_one_release.py` (14); the tests that built an Amiga library in its DAT folder now expect `Commodore Amiga - Games/<title>/`.
+
+**AMENDMENT 93 (v0.5) — Nothing that does not belong stays in the library: archives with extra files move whole; the old WHDLoad install folders go.**
+
+* The user, on `commodore-amiga-games-sps` staying behind after a build: "anything that is not supposed to be in the library should not be in
+  the library; it should get archived", and of the `(WHDLoad install)` folders: "i didn't make those, you did ... if we can still do that
+  without these, then they should be deleted".
+* An archive that holds a game next to other files (an SPS zip with its box scans, manual and `gameinfo.xml`: 38 on the user's data, 36
+  of them set aside by the rules) was "left where it is". It is now moved as it is, never renamed or repacked: set aside - to its reason
+  folder and from there to the archive; kept - to its game's folder (`organiser._partial_decided`, `_into_game_folders`). Its playlist
+  names the zip beside it.
+* The `(WHDLoad install)` folders (2,335 folders, 30,807 files on the user's data) were made by the app: the database updater's
+  `_sync_whd_installs` downloaded the install of every game you have next to its disks at each start (and the WHDLoad page's button did).
+  Build WHDLoad games never read them: it fetches the package itself (`whdinstalls.package`, kept in `whdinstalls/packages/` with the
+  databases). Both downloads are gone (`/api/whdload/download`, the button, `after_update`) and the WHDLoad page counts a game "ready" when
+  its install exists. The library build SETS ASIDE what an earlier version put in the library - never deletes it (the user: "anything that
+  shouldn't be in the library should get archived. that's always been the request"; a first version deleted, wrongly):
+  `whdinstalls.installs_under` finds a folder whose `.romorg-whdload.json` names an archive (not inside the reserved folders), and
+  `organiser._old_install_moves` plans each of its files, the marker too, to `_excluded/<same path>` (kind `WHD_INSTALL_KIND`), which the
+  archive pass moves straight to the archive like any set-aside file (S3: one object a file - 30,807 for this user). Counted apart in the
+  preview ("Old WHDLoad installs archived", `installs_remove` folders, `installs_files` files); category `install`. A folder with that name
+  and no marker is left to the usual rules.
+* Tests: `tests/test_organiser.py` (installs set aside, archives moved whole), `tests/test_server.py` (installs archived end to end), `tests/test_whdinstalls.py`.
+
+**AMENDMENT 94 (v0.5) — Files › Games you have shows each game's playlist and WHDLoad archive, and says what kind of game each is.**
+
+* The user: "in the files view none of them show either playlists or lha's. why is this? ... make it clear in the file view for the library,
+  which type each game is: platform (CD32/OCS/AGA), install type (CD32, whdloader, disks only), language, version."
+* Why they were missing: the default view ("Games you have", `show=have`) lets through only entries whose row is a kept game's. A playlist
+  and a planned WHDLoad archive have no such row (and a playlist is no game: `_game_unit` returns None), so the filter dropped them; they
+  showed in Changes and All. `App._companion` (a `.m3u` / `.lha` in a game's folder, planned or there already) now passes the filter, and
+  `_game_unit` gives an archive no game of its own either - the counts do not move. In the folder the file rows keep their extension and
+  carry a "Playlist" / "WHDLoad" tag (the name was cut at the dot).
+* `App._folder_facts`: the folder of ONE Amiga game in the library (its rows are one `_game_unit`) carries `facts` in `/api/tree`:
+  `platform` (the disc's machine, CD32 / CDTV, from `platforms.disc_class`; else `tags.platform_class` of the kept release: AGA / ECS / OCS -
+  TOSEC names with no chipset tag are OCS), `install` ("CD32 disc" / "CDTV disc", "WHDLoad" when the folder has a `.lha`, else "Disks only"),
+  `source` (an SPS original, floppy disks, a disc), `languages` (`variant_languages` of the release: a translation counts as its own language) and
+  `version`. Rows carry their DAT now (`dat`). The folder rows show them as tags (machine, how it plays, language, version); the side panel says
+  them in words ("Played from: The disks, through a playlist, from floppy disks" / "Machine: OCS · English · v1.1").
+* Tests: `tests/test_server.py` (the tree: facts, playlist beside the disks, counts unchanged; the archive passes the filter and is no game),
+  `tests/test_browser.py` (the chips and the panel in the real page).
+
+**AMENDMENT 95 (v0.5) — No playlist for a set with a disk that is set aside.**
+
+* The user: "why do we have a _superseded folder in the library now with Workbench v3.0 rev 39.29 ... .m3u in it? it's listed as new, so it is
+  trying to create a playlist for something we don't want?" Found in the code of before this session too (not a regression).
+* The Workbench DAT keeps every complete set of a version. Two sets of one version share most disks and differ in a few (disks 1 and 6 flawed
+  in one, the clean `[a]` dumps in the other); `library._flawed_beside_clean` compared them in different groups, put the flawed disks
+  aside ("a clean dump of the same version") and left the set in `Selection.sets`, so a playlist was planned from the disks' final places -
+  next to disk 1, in `_superseded`, listing disks of two folders. Five more Workbench playlists (v2.05, v2.1 38.35, v3.1 ESCOM ...) were
+  written for sets with a superseded disk the same way.
+* Fix: a chosen set whose disk is not kept is no set (`_flawed_beside_clean` ends by dropping such sets); and `organiser._plan_library`'s
+  `disk_of` gives no disk of a file set aside after the selection (a flawed BIOS beside a clean one), so no playlist is planned for it.
+  On the user's data the Workbench folder's playlists go from 5 + 1 in `_superseded` to the sets whose disks all stay.
+* Test: `tests/test_library.py` `SetsKeepOnlyKeptDisks`.
+
+**AMENDMENT 96 (v0.5) — The old `(WHDLoad install)` folders are unmatched files, not "excluded".**
+
+* `_excluded/` is for files that MATCH a database entry and that a library rule sets aside (bad dumps, betas, demos, language, rating, flags,
+  BIOS rules). The files of the installs an earlier version downloaded match nothing, so they are ordinary unmatched files (the user: "they
+  don't match anything in the database ... they should go to unmatched. we don't need to have awareness of them"). Amendment 94's special
+  handling is gone: `whdinstalls.installs_under`, `organiser._old_install_moves`, `WHD_INSTALL_KIND`, the `installs_*` counts, the `install`
+  category, the preview tile, the scanner's marker skip (`folders.WHDLOAD_MARKER` is only written by the unused `download_install`) and the
+  tree's WHDLOAD state for such files. The scanner reads their files; those go to `_unmatched/<same path>` like any other - ALL of them: inside a folder named `<title> (WHDLoad install)` the
+  scanner also reads hidden files and folders (the marker `.romorg-whdload.json`, `.src/`) and the organiser does not keep a `desktop.ini`
+  there in place, so no empty-looking folder stays behind (it showed as "Murders in Venice (WHDLoad install) 1" in the preview).
+* Checked on the user's data (every system, default rules): every file the plan sends to `_excluded` has a database entry (a DAT, or an SPS
+  release for the Amiga's `.zip` files) and a rule as its reason; none is unmatched.
+* Tests: `tests/test_organiser.py`, `tests/test_server.py` (the install's files are unmatched).
+
+**AMENDMENT 97 (v0.5) — The Amiga's system disks: one System folder, Workbench by release, never "missing", no playlists.**
+
+* The user does not care which firmware, Kickstart or Workbench versions are missing: they only want the ones they have organised.
+  `TotalsManager.missing_names` (the Files › Missing list) leaves out the `system_dats` (Workbench, Kickstart-Disks, Firmware) as it does the
+  add-ons; the Overview's "System disks" section no longer lists the ones you lack (`missing_system_names` is gone).
+* Layout (`organiser._into_system_folder`, after `_into_game_folders`): every kept file of those three DATs goes to
+  `Commodore Amiga - System/<Workbench | Kickstart-Disks | Firmware>/`; Workbench disks one folder deeper, per release - the DAT entry
+  without `(Disk n of m)(label)` and without the `[dump flags]` (`_release_folder`: "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)",
+  26 releases on the user's data). Kickstart-Disks and Firmware stay flat. Every file keeps the name of the DAT entry it matches. Files
+  the rules set aside (`_superseded` ...) are not touched; the empty old DAT-named folders go with the usual empty-folder clean-up.
+* No playlist for a Workbench or Kickstart set (`_plan_library` skips sets of `SYSTEM_DATS`); the existing ones go stale as their disks
+  move. `m3u_dats` is unchanged: "complete sets only" and the set rules still judge those DATs.
+* Tests: `tests/test_organiser.py` (layout, no playlist), `tests/test_totals.py` (never missing).
+
+**AMENDMENT 98 (v0.5) — Files › filter by platform, language and WHDLoad; no "Disks only" / "CD32 disc" tags.**
+
+* A game folder's tags are now the machine (CD32 / CDTV / AGA / ECS / OCS), the language and the version, plus "WHDLoad" when the folder holds
+  the game's `.lha`; "Disks only" and "<disc> disc" are gone (`install` is `"WHDLoad"` or empty; the side panel still says in words how a
+  game is played).
+* New filters of `/api/tree`: `machine` (the tag above - `platform` is the query's system, so it cannot be the name) and `install=WHDLoad`;
+  `language` (already there) now also matches a folder's playlist and `.lha`. `server._annotate_game_folders` marks every file of a folder
+  that holds one game with `plat` / `langs` / `whd` when the tree is made (`_row_facts` is shared with `_folder_facts`), `_tree_pass` and
+  `_tree_facets` (counts of games, `facets.machine` / `facets.install`) read them. The Filter sheet shows "Platform" and "WHDLoad" rows
+  only when the system has such games.
+* Tests: `tests/test_server.py` (filters and facets), the facts / chips tests.
+
+**AMENDMENT 99 (v0.5) — The Amiga's set-aside files lie in the archive as the library would put them.**
+
+* The archive used to mirror the folder a file lay in (`amiga/_excluded/commodore-amiga-games-sps/...`, the TOSEC sub-folders and all).
+  For the Amiga it is now `<archive>/<system folder>/<reason folder>/<the library's path>`: each game in a folder of its own under
+  `Commodore Amiga - Games/<plain title>/` (the floppy sets, SPS zips and CD32 discs of one game together; `_game_folder_names`, shared with
+  the library, adds the publisher then the year to two games of one title, per reason folder), the system disks under
+  `Commodore Amiga - System/<Workbench/<release> | Kickstart-Disks | Firmware>/`. `organiser._archive_paths` sets `RenameOp.archive_rel`
+  at the end of `_plan_library`; `server._archive_pass` uses it. Files no DAT knows (`_unmatched`) and the other systems keep their path;
+  what the archive holds already stays where it is. Restore reads the file's recorded origin, so it is unaffected.
+* On the user's data: 4,815 excluded, 7,635 superseded and 82 system files take the new paths.
+* Test: `tests/test_organiser.py`.
+
+**AMENDMENT 100 (v0.5) — The big-screen UI has no WHDLoad tile or page.**
+
+* The Amiga's "WHDLoad - Installs from your disks" tile and its page (`#/system/<slug>/whdload`: check which games an install works for, build
+  by hand) are gone from `next.js`: the library build already makes the `.lha` files (the rule "Build WHDLoad games", `whdload_next`) and the
+  Files view shows them. The `/api/whdload/*` routes stay (the build uses them); the classic UI (`app.js`) keeps its WHDLoad panel.
+
+**AMENDMENT 101 (v0.5) — Files: the Library view lists the firmware; no Changes view.**
+
+* The Library view (`show=have`) lists BIOS and firmware (`server._tree_pass`), which it hid as "no games"; they are still never counted:
+  `_tree_facets` leaves the BIOS, firmware and the system DATs' disks (Workbench, Kickstart disks: `totals.system_dats`) out of the Library
+  number and the other filters' numbers, so the tab agrees with the tiles (before, the Workbench disks were counted in it).
+* The "Changes" view is gone from the Files view tabs (it listed what the build moves, which the other views and the preview say better);
+  "See the file list" in the build preview opens the Library view. `/api/tree?show=changed` stays.
+* Tests: `tests/test_server.py` (firmware listed, not counted), `tests/test_browser.py` (views).
+
+**AMENDMENT 102 (v0.5) — The Missing tile counts games only.**
+
+* The system page's Missing tile added "N system disks" (`target_system - have_system`) to its games, but Files › Missing never lists system
+  disks (Amendment 97), so the tile led to an empty list. It now counts games only, and hides when none are missing.
+
+**AMENDMENT 103 (v0.5) — One rule for what counts as a game.**
+
+* The tiles (`totals`) and the Files view (`server`) each decided on their own which entries are no games (firmware, system disks,
+  add-ons); they drifted apart (Amendments 97, 101, 102). Now `totals.counts_as_game(dat, apart, bios)` with `totals.apart_dats(platform)`
+  and `totals.row_is_bios(row)` is the one place: `TotalsManager.missing_names`, the Files view's `_tree_pass` / `_tree_facets` and the
+  game counts of the scan summary (`_game_counts`) all call it. `combine` still tallies the system disks and add-ons apart, from the same two
+  functions. Test: `tests/test_totals.py` (`test_one_rule_says_what_counts_as_a_game`) beside the existing agreement tests.
+
+**AMENDMENT 104 (v0.5) — Tiles and Files view checked across platforms; the gaps closed.**
+
+* A check over 16 systems (tile Have / Missing / Target against the Files view's Library and Missing counts) agreed on all but the Amiga,
+  where a kept SPS zip that matched no DAT row (`dat=''`) and sat below the rating cut counted as Have in the Files view and as "owned
+  outside the target" in the tile. The Files view now counts a Have-game with no DAT row only when the tiles' target holds it.
+* `TotalsManager.target_names` (the fallback of the Missing list) is games only; `_target_names` returned the whole target whenever the
+  missing list was an empty set (`or`) - now only when it is `None`. `_game_unit` uses `totals.row_is_bios`.
+* `combine` leaves incomplete / set-aside system disks and add-ons out of "Needs a look"; the insights (space, ratings, regions, best
+  missing) count games only.
+* Benign and kept: Missing *names* outnumber Missing *games* on discs and Switch (one name per disc / regional release; the Files view
+  groups them to one game).

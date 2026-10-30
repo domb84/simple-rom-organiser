@@ -856,8 +856,6 @@ class App:
         self._lock = threading.Lock()
         self._fallback_dat_lock = threading.Lock()
         self.updates = self._make_updates(auto_update)
-        if hasattr(self.updates, "after_update"):
-            self.updates.after_update = self._sync_whd_installs
         self._scan: ScanState | None = None
         self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
         self._disk_load = threading.Lock()                         # (one saved scan read at a time: a click waits for the start's)
@@ -1810,7 +1808,7 @@ class App:
             dats, _missing = self._platform_dats(platform)
         except Exception:  # noqa: BLE001 - then the scan's own count stands
             return {}
-        system = totals.system_dats(platform) | totals.addon_dats(platform)     # (system disks, updates and DLC: no games)
+        system = totals.apart_dats(platform)                                    # (system disks, updates and DLC: no games)
         dats = [d for d in dats if getattr(d, "name", "") not in system]
         try:
             target = totals.target_items(platform, dats)
@@ -2458,6 +2456,7 @@ class App:
             "kind": getattr(op, "kind", "") or "",
             "reason": getattr(op, "reason", "") or "",
             "rom_name": getattr(op, "rom_name", "") or "",
+            "dat": getattr(op, "dat", "") or "",
             "superseded_by": getattr(op, "superseded_by", "") or "",
             "code": getattr(op, "code", "") or "",
             "keeper": getattr(op, "keeper", "") or "",
@@ -2789,17 +2788,13 @@ class App:
         games: dict[str, dict[str, Any]] = {}
         for title, rels in releases.items():                # (one row a game: its floppies when there are some, else its SPS release)
             games[title] = min(rels.values(), key=lambda r: (r["sps"], -len(r["disks"])))
-        installed: dict[str, dict[str, Any]] = {}
         rows = []
         orr, hw = _optional_mod("openretro"), _optional_mod("amigahw")
         odb = orr.database() if orr is not None else None
         for row in sorted(games.values(), key=lambda r: r["title"].casefold()):
             hit = matcher.match(row["title"]) if matcher is not None else None
             folder = row["dir"]
-            if folder not in installed:
-                installed[folder] = whd.installed_in(Path(folder))
             inst = hit[0] if hit else None
-            done = installed[folder].get(inst["archive"]) if inst else None
             try:
                 rel = os.path.relpath(folder, state.root)
             except ValueError:
@@ -2810,8 +2805,7 @@ class App:
             rows.append({"title": row["title"], "disks": len(row["disks"]), "dir": rel,
                          "install": ({**{k: inst.get(k, "") for k in ("archive", "title", "size", "date", "hol", "lemon")},
                                       "whdload": _mod("whdready").needs_whdload(inst.get("archive"))} if inst else None),
-                         "how": hit[1] if hit else "", "downloaded": bool(done), "downloaded_date": (done or {}).get("date", ""),
-                         "folder": os.path.relpath(done["folder"], state.root) if done else "",
+                         "how": hit[1] if hit else "",
                          # (what the game needs - TOSEC's tags, OpenRetro's release - and what OpenRetro knows of it)
                          "machine": needs["machine"] if needs else "",
                          "needs": {k: needs[k] for k in ("chipset", "kickstart", "video", "sources")} if needs else None,
@@ -2819,108 +2813,13 @@ class App:
                          "protection": (release or {}).get("protection", "")})
         return cat, rows
 
-    def _sync_whd_installs(self, cancel: Any, progress: Callable[[int, int, str], None]) -> dict[str, Any] | None:
-        """Run by the database updater after a full update (at start, "Check for updates"): every Amiga game you have that has a WHDLoad
-        install gets it next to its disks, and an install whose date changed on whdload.de is downloaded again - the same as the
-        databases, so nobody has to know the installs exist. Needs the system's scan (None without one) and the list of installs;
-        skipped while a job runs (it would write into the folder a scan or build is working on). One download at a time; the first
-        failure that is a network error ends the round (offline: the next start tries again)."""
-        try:
-            platform = self._resolve_platform(DEFAULT_PLATFORM)
-            cat, rows = self._whd_games(platform)
-        except ApiError:
-            return None
-        if cat is None:
-            return None
-        job = self.jobs.current
-        if job is not None and job.status == "running":
-            return {"skipped": "busy", "at": time.time()}
-        state = self._state_of(platform)
-        if state is None:
-            return None
-        todo = [(r, "downloaded") for r in rows if r["install"] and not r["downloaded"]]
-        todo += [(r, "updated") for r in rows if r["install"] and r["downloaded"] and (r["install"].get("date") or "")
-                 and r.get("downloaded_date") != r["install"]["date"]]
-        res: dict[str, Any] = {"downloaded": 0, "updated": 0, "failed": [], "games": sum(1 for r in rows if r["install"]), "at": time.time()}
-        done, failed = self._fetch_whd_installs([(r, why) for r, why in todo], Path(state.root), cancel, progress)
-        for _r, why, _folder in done:
-            res[why] += 1
-        res["failed"] = failed[:20]
-        return res
-
-    WHD_PARALLEL = 4             # installs downloaded at once: whdload.de is a small site - a few at a time, never dozens
-
-    @staticmethod
-    def _fetch_whd_installs(todo: list[tuple[dict[str, Any], str]], root: Path, cancel: Any,
-                            report: Callable[[int, int, str], None]) -> tuple[list[tuple[dict[str, Any], str, Path]], list[dict[str, str]]]:
-        """Download the installs of ``todo`` (rows of :meth:`_whd_games`, each with a tag) next to their disks, :attr:`WHD_PARALLEL` at a
-        time: ``(done [(row, tag, folder)], failed [{title, error}])``. A network error stops the downloads not started yet (offline:
-        the rest would only fail one by one); ``cancel`` does the same."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        whd = _mod("whdinstalls")
-        stop = threading.Event()
-        done: list[tuple[dict[str, Any], str, Path]] = []
-        failed: list[dict[str, str]] = []
-        lock = threading.Lock()
-        finished = [0]
-
-        def one(r: dict[str, Any], tag: str) -> None:
-            if stop.is_set() or cancel.is_set():
-                return
-            try:
-                folder = whd.download_install(r["install"], root / r["dir"], game=r["title"], cancel=cancel)
-                with lock:
-                    done.append((r, tag, folder))
-            except InterruptedError:
-                stop.set()
-            except Exception as exc:  # noqa: BLE001 - one install that fails does not stop the others
-                with lock:
-                    failed.append({"title": r["title"], "error": str(exc) or type(exc).__name__})
-                if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
-                    stop.set()
-            finally:
-                with lock:
-                    finished[0] += 1
-                    n = finished[0]
-                report(n, len(todo), f"WHDLoad installs: {n} of {len(todo)} ({r['title']})")
-
-        if todo:
-            report(0, len(todo), f"WHDLoad installs: 0 of {len(todo)}")
-            with ThreadPoolExecutor(max_workers=min(App.WHD_PARALLEL, len(todo)), thread_name_prefix="romorg-whd") as ex:
-                for fut in as_completed([ex.submit(one, r, tag) for r, tag in todo]):
-                    fut.result()
-        return done, failed
-
     def whdload_installs(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """The Amiga games you have and their WHDLoad installs (``available``: the list of installs has been fetched)."""
         platform = self._resolve_platform(query.get("platform") or DEFAULT_PLATFORM)
         cat, rows = self._whd_games(platform)
         return {"available": cat is not None, "fetched": (cat or {}).get("fetched", ""), "installs": len((cat or {}).get("installs", ())),
                 "games": rows, "counts": {"games": len(rows), "with_install": sum(1 for r in rows if r["install"]),
-                                          "downloaded": sum(1 for r in rows if r["downloaded"]),
                                           "newer_whdload": sum(1 for r in rows if r["install"] and r["install"].get("whdload"))}}
-
-    def whdload_download(self, query: dict[str, str], body: Any) -> dict[str, Any]:
-        """Download the installs of some games (``titles``) or of every game that has one and lacks it (``all``), next to their disks."""
-        body = body if isinstance(body, dict) else {}
-        platform = self._resolve_platform(body.get("platform") or DEFAULT_PLATFORM)
-        cat, rows = self._whd_games(platform)
-        if cat is None:
-            raise ApiError(HTTPStatus.CONFLICT, "The list of WHDLoad installs has not been fetched yet (it is fetched with the other "
-                                                "databases; check for updates).", "whdinstalls_missing")
-        state = self._state_of(platform)
-        wanted = {str(t).casefold() for t in body.get("titles") or ()}
-        todo = [r for r in rows if r["install"] and ((r["title"].casefold() in wanted) or (body.get("all") and not r["downloaded"]))]
-        if not todo:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "No game with a WHDLoad install to download.")
-
-        def work(job: Job) -> Any:
-            got, failed = self._fetch_whd_installs([(r, "") for r in todo], Path(state.root), job.cancel, job.report)
-            job.report(len(todo), len(todo), "WHDLoad installs downloaded")
-            done = [{"title": r["title"], "folder": os.path.relpath(folder, state.root)} for r, _tag, folder in got]
-            return {"action": "whdload", "downloaded": sorted(done, key=lambda d: d["title"].casefold()), "failed": failed}
-
-        return {"job": self.jobs.start("whdload", work, platform=platform.name).to_dict()}
 
     def whdload_check(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """Find which versions of your Amiga games a WHDLoad install can be made from (for the rule "Prefer versions WHDLoad can
@@ -4208,6 +4107,8 @@ class App:
                     except ValueError:
                         sub = Path(op.src.name)
                     new = aside / folder.name / top / sub
+                elif getattr(op, "archive_rel", ""):                    # (the Amiga: as in the library, below the reason folder)
+                    new = aside / folder.name / top / op.archive_rel
                 else:
                     new = aside / folder.name / rel
                 size = 0
@@ -5689,7 +5590,8 @@ class App:
             if names is not None:
                 return names
             manager.wait_idle(10.0)
-        return manager.missing_names(platform.name) or manager.target_names(platform.name)
+        names = manager.missing_names(platform.name)
+        return names if names is not None else manager.target_names(platform.name)
 
     def _totals_want(self, platform: Any) -> bool:
         """Tell the totals worker what this system's rules, databases and scan are NOW, so that what is read from it next (the lists
@@ -5848,6 +5750,7 @@ class App:
             for e in entries:         # (one the rules do not want, listed for its saves: under Saves, no game the rules miss)
                 if e["state"] == treeview.MISSING and e["row"] and e["row"].get("name") not in wanted:
                     e["saves_only"] = True
+        self._annotate_game_folders(entries, state.platform)
         state.items[("library", "tree")] = (ident, entries, base)
         state.items.pop(("library", "treeidx"), None)
         return entries, base, ident
@@ -6225,14 +6128,25 @@ class App:
     TREE_CHANGED = frozenset(("moved", "renamed", "new", "converted", "deleted", "incoming", "copy", "saves"))
 
     @staticmethod
+    def _companion(entry: dict[str, Any]) -> bool:
+        """A playlist or a WHDLoad archive in a game's folder (planned, or there already): no game of its own, but part of what the game is
+        in the library - the list of the games you have shows it beside the game's disks."""
+        row = entry["row"] or {}
+        name = str(entry["parts"][-1]).lower()
+        if entry["state"] in ("deleted", "ignored", "missing", "saveonly") or row.get("category") not in (None, "", "playlist"):
+            return False
+        return name.endswith((".m3u", ".lha")) and len(entry["parts"]) > 2 and (not row or row.get("category") == "playlist")
+
+    @staticmethod
     def _tree_pass(entry: dict[str, Any], f: dict[str, str], skip: str = "") -> bool:
         """True when ``entry`` passes the filters ``f`` (``show``, ``state``, ``region``, ``language``, ``rated``, ``q``); ``skip`` names one
         that is not applied (how the counts next to a filter's choices are made)."""
         row = entry["row"] or {}
         cat = row.get("category", "")
         show = "" if skip == "show" else f.get("show", "")
-        is_bios = cat == "bios" or bool(row.get("bios")) or bool((row.get("tags") or {}).get("bios"))      # (BIOS and firmware are no games)
-        if show == "have" and (cat != "kept" or is_bios or entry.get("saved_keep")) and entry["side"] == "library":   # (the archive is not looked at by this one)
+        is_bios = _mod("totals").row_is_bios(row)                                                         # (BIOS and firmware are no games)
+        if show == "have" and (not (cat == "kept" or (is_bios and cat in ("kept", "bios"))) or entry.get("saved_keep")) and entry["side"] == "library" \
+                and not App._companion(entry):                  # (the archive is not looked at by this one; BIOS and firmware are listed, never counted)
             return False
         if show == "kept_saves" and not entry.get("saved_keep"):
             return False
@@ -6257,7 +6171,12 @@ class App:
         tags = row.get("tags") or {}
         if skip != "region" and f.get("region") and f["region"] not in (tags.get("regions") or ()):
             return False
-        if skip != "language" and f.get("language") and f["language"] not in (tags.get("variant_languages", tags.get("languages")) or ()):
+        if skip != "language" and f.get("language") and f["language"] not in (tags.get("variant_languages", tags.get("languages"))
+                                                                              or (entry.get("langs") if not row else None) or ()):
+            return False
+        if skip != "machine" and f.get("machine") and entry.get("plat") != f["machine"]:
+            return False
+        if skip != "install" and f.get("install") and not entry.get("whd"):
             return False
         if skip != "rated" and f.get("rated"):
             if not row or (row.get("rating") is not None) != (f["rated"] == "1"):
@@ -6295,6 +6214,11 @@ class App:
         regions: dict[str, set] = {}
         languages: dict[str, set] = {}
         rated: dict[str, set] = {"1": set(), "0": set()}
+        machines: dict[str, set] = {}
+        installs: dict[str, set] = {}
+        totals_mod = _mod("totals")
+        apart = totals_mod.apart_dats(platform) if platform is not None else frozenset()
+        target_keys = set(keys.values()) if keys else None          # (a kept game outside the target - below the rating cut - is the tiles' "owned outside", no game they count)
         for e in mine:
             row = e["row"] or {}
             u = units[id(e)]
@@ -6304,10 +6228,13 @@ class App:
                 if self._tree_pass(e, {k: v for k, v in f.items() if k != "hide_saved"}, "show"):
                     show["kept_saves"].add(u)
                 continue
+            bios = not totals_mod.counts_as_game(row.get("dat"), apart, totals_mod.row_is_bios(row))      # (firmware, system disks: listed, no games)
             if self._tree_pass(e, f, "show"):
                 for k in self.TREE_SHOW:
-                    if self._tree_pass(e, {"show": k}):
+                    if self._tree_pass(e, {"show": k}) and not (k == "have" and (bios or (target_keys is not None and not row.get("dat") and u[0] == "game" and u[1] not in target_keys))):       # (the Library tab lists firmware, never counts it)
                         show[k].add(u)
+            if bios and f.get("show", "") in ("", "have"):
+                continue                                   # (nor in the numbers of the other filters)
             if self._tree_pass(e, f, "state"):
                 states.setdefault(e["state"], set()).add(u)
             tags = row.get("tags") or {}
@@ -6317,11 +6244,15 @@ class App:
             if self._tree_pass(e, f, "language"):
                 for lang in tags.get("variant_languages", tags.get("languages")) or ():   # (as the rules read them: an untagged TOSEC game is English)
                     languages.setdefault(lang, set()).add(u)
+            if e.get("plat") and self._tree_pass(e, f, "machine"):
+                machines.setdefault(e["plat"], set()).add(u)
+            if e.get("whd") and self._tree_pass(e, f, "install"):
+                installs.setdefault("WHDLoad", set()).add(u)
             if row and self._tree_pass(e, f, "rated"):
                 rated["1" if row.get("rating") is not None else "0"].add(u)
         count = lambda d: {k: len(v) for k, v in d.items()}      # noqa: E731
         return {"show": count(show), "state": count(states), "region": count(regions), "language": count(languages), "rated": count(rated),
-                "unit": "games"}
+                "machine": count(machines), "install": count(installs), "unit": "games"}
 
     @staticmethod
     def _game_unit(entry: dict[str, Any], platform: Any, keys: dict[str, Any] | None = None, combine: bool = False) -> Any:
@@ -6329,12 +6260,12 @@ class App:
         itself for one that is no game's, nothing for a playlist."""
         parts = entry["parts"]
         row = entry["row"] or {}
-        if str(parts[-1]).lower().endswith(".m3u") or entry["state"] == "whdload":
-            return None                                     # (a playlist, a file of a WHDLoad install: no game)
+        if str(parts[-1]).lower().endswith((".m3u", ".lha")) and not row or str(parts[-1]).lower().endswith(".m3u") or entry["state"] == "whdload":
+            return None                                     # (a playlist, a WHDLoad archive, a file of a WHDLoad install: no game of its own)
         name = row.get("rom_name") or (row.get("game_ref") or {}).get("game") or row.get("name")
         if "borrowed as disk " in str(row.get("reason") or ""):
             return None                                     # (a disk of another edition that completes a set: part of that game, counted there)
-        if not name or row.get("bios") or (row.get("tags") or {}).get("bios"):
+        if not name or _mod("totals").row_is_bios(row):
             return ("file", entry["side"], tuple(parts))
         if keys and name in keys:
             return ("game", keys[name])
@@ -6386,7 +6317,7 @@ class App:
         if state is None:
             return {"platform": platform.name, "side": side, "ready": False,
                     "reason": "Scan this system first: the tree is made from its scan."}
-        f = {k: v for k in ("show", "state", "region", "language", "rated", "hide_saved") if (v := _str_arg(query.get(k)))}
+        f = {k: v for k in ("show", "state", "region", "language", "rated", "machine", "install", "hide_saved") if (v := _str_arg(query.get(k)))}
         if f.get("show") and f["show"] not in self.TREE_SHOW:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown choice: {f['show']}")
         q = _str_arg(query.get("q")).strip().casefold()
@@ -6413,6 +6344,7 @@ class App:
                 item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
         if page["dirs"]:
             self._folder_tags(page["dirs"], entries, side, path)
+            self._folder_facts(page["dirs"], entries, side, path, platform)
         out = {"platform": platform.name, "side": side, "ready": True, "root": index.root, "none": side == "archive" and base is None,
                "totals": index.totals(), **page}
         if side == "library" and (page["files"] or page["dirs"]) and owned is None:
@@ -6473,6 +6405,96 @@ class App:
                 d["tags"] = seen[d["name"]][0]
             if moves.get(d["name"]):
                 d["save_move"] = moves[d["name"]]
+
+    def _folder_facts(self, dirs: list[dict[str, Any]], entries: list[dict[str, Any]], side: str, path: str, platform: Any) -> None:
+        """``facts`` of the folder of ONE Amiga game in the library - what kind of game it is: ``platform`` (CD32 / CDTV / AGA / ECS / OCS),
+        ``install`` (what plays it: a CD32 / CDTV disc, a WHDLoad archive, the disks only), ``source`` (an SPS original, floppy disks, a
+        disc), ``languages`` and ``version`` of the release it keeps. None for another system and for a folder of several games."""
+        if side != "library" or not getattr(platform, "image_set_dats", None):
+            return
+        where = tuple(p for p in path.replace("\\", "/").split("/") if p)
+        names = {d["name"] for d in dirs if not (not where and d["name"] in RESERVED_DIRS)}
+        game_dats = set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ()) | {getattr(platform, "game_dat", "") or ""}
+        keys = self._totals().name_keys(platform.name)
+        combine = self._profile(platform).combine_alt_titles
+        seen: dict[str, dict[str, Any]] = {}
+        for e in entries:
+            parts = e["parts"]
+            if e["side"] != side or len(parts) <= len(where) + 1 or tuple(parts[:len(where)]) != where or e["state"] in ("deleted", "missing"):
+                continue
+            name = parts[len(where)]
+            if name not in names:
+                continue
+            rec = seen.setdefault(name, {"rows": [], "lha": False, "games": set()})
+            low = str(parts[-1]).lower()
+            row = e["row"]
+            if low.endswith(".lha") and not row:
+                rec["lha"] = True
+            elif row and row.get("category") == "kept" and not row.get("bios") and row.get("dat") in game_dats:      # (the system disks are no games)
+                rec["rows"].append(row)
+                rec["games"].add(self._game_unit(e, platform, keys, combine))
+        for d in dirs:
+            rec = seen.get(d["name"])
+            if not rec or not rec["rows"] or len(rec["games"]) != 1:
+                continue
+            row = min(rec["rows"], key=lambda r: (r.get("to_name") or "", r.get("rom_name") or ""))
+            facts = self._row_facts(row, platform)
+            if facts is not None:
+                d["facts"] = {**facts, "install": "WHDLoad" if rec["lha"] else ""}
+
+    @staticmethod
+    def _row_facts(row: dict[str, Any], platform: Any) -> dict[str, Any] | None:
+        """What kind of game a kept row of the Amiga's library is: ``platform`` (CD32 / CDTV / AGA / ECS / OCS), ``source`` (an SPS original,
+        floppy disks, a disc), ``languages`` and ``version``; None for a name that cannot be read."""
+        from .platforms import disc_class
+        tags_mod = _mod("tags")
+        dat = row.get("dat") or ""
+        release = (row.get("game_ref") or {}).get("release") or ""
+        name = row.get("rom_name") or row.get("to_name") or ""
+        disc_dats = set(getattr(platform, "disc_dats", ()) or ())
+        if dat in set(platform.image_set_dats):
+            name, source = (release or name.rsplit(" - ", 1)[0]) + ".ipf", "SPS original"
+        elif dat in disc_dats:
+            name, source = (release or name) + ".cue", "disc"
+        else:
+            source = "Floppy disks"
+        try:
+            t = tags_mod.parse_name(name, tags_mod.STYLE_TOSEC)
+        except Exception:  # noqa: BLE001 - a name that cannot be read has no facts
+            return None
+        disc = disc_class(dat) if dat in disc_dats else ""
+        return {"platform": disc or tags_mod.platform_class(t), "source": source, "languages": sorted(tags_mod.variant_languages(t)),
+                "version": t.version or ""}
+
+    def _annotate_game_folders(self, entries: list[dict[str, Any]], platform: Any) -> None:
+        """Mark every file of a library folder that holds ONE Amiga game with that game's ``plat`` (machine), ``langs`` and ``whd`` (the folder
+        holds its WHDLoad archive), so the Files view can filter on them - the playlist and the archive too, which carry no row of their own."""
+        if not getattr(platform, "image_set_dats", None):
+            return
+        keys = self._totals().name_keys(platform.name)
+        combine = self._profile(platform).combine_alt_titles
+        game_dats = set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ()) | {getattr(platform, "game_dat", "") or ""}
+        folders: dict[tuple, dict[str, Any]] = {}
+        for e in entries:
+            if e["side"] != "library" or len(e["parts"]) < 2 or e["state"] in ("deleted", "missing"):
+                continue
+            rec = folders.setdefault(tuple(e["parts"][:-1]), {"rows": [], "lha": False, "games": set()})
+            row = e["row"]
+            if str(e["parts"][-1]).lower().endswith(".lha") and not row:
+                rec["lha"] = True
+            elif row and row.get("category") == "kept" and not row.get("bios") and row.get("dat") in game_dats:
+                rec["rows"].append(row)
+                rec["games"].add(self._game_unit(e, platform, keys, combine))
+        facts: dict[tuple, dict[str, Any]] = {}
+        for folder, rec in folders.items():
+            if rec["rows"] and len(rec["games"]) == 1:
+                row = min(rec["rows"], key=lambda r: (r.get("to_name") or "", r.get("rom_name") or ""))
+                got = self._row_facts(row, platform)
+                if got is not None:
+                    facts[folder] = {"plat": got["platform"], "langs": got["languages"], "whd": rec["lha"]}
+        for e in entries:
+            if e["side"] == "library" and (got := facts.get(tuple(e["parts"][:-1]))) is not None:
+                e.update(got)
 
     def _upgrade_names(self, platform: Any) -> set[str] | None:
         """The names of the files you own whose game has a version the rules prefer that you lack (None while the numbers are not ready)."""
@@ -6790,7 +6812,6 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("GET", "/api/ratings"): App.ratings_get,
     ("POST", "/api/ratings/download"): App.ratings_download,
     ("GET", "/api/whdload/installs"): App.whdload_installs,
-    ("POST", "/api/whdload/download"): App.whdload_download,
     ("POST", "/api/whdload/check"): App.whdload_check,
     ("POST", "/api/whdload/build"): App.whdload_build,
     ("POST", "/api/ratings/igdb"): App.ratings_igdb_save,

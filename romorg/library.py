@@ -1428,6 +1428,10 @@ def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
                 gone.add(cs.id)
     if gone:
         sel.sets = [cs for cs in sel.sets if cs.id not in gone]
+    # a set with a disk that is not kept is no set: two sets of a version share their disks and differ in a few (a flawed disk 1 and 6 beside
+    # clean ones), so the comparison above may have put a disk of one aside without ever calling the set flawed - its playlist would point at it
+    sel.sets = [cs for cs in sel.sets
+                if all((d := sel.decisions.get(k)) is None or d.action == KEEP for k in cs.slots.values())]
 
 
 def title_key(it: Item) -> str:

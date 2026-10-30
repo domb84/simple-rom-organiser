@@ -44,6 +44,13 @@ is left (a toast when done, "What's running" in the menu).
    Left: totals before the preview (UX choice), remembered `rated_all`.
 9. **Amendment 92, one release per Amiga game.** `library._one_release` (CD32 disc, else the WHDLoad-boot version, else best original /
    floppy set), `organiser._into_game_folders` (`Commodore Amiga - Games/<title>/`).
+10. **Amendment 93, nothing stays that does not belong.** Archives with extra files (SPS zips with scans) move whole; the old
+   `(WHDLoad install)` folders (made by the app's removed auto-download) are set aside and archived by the build (never deleted); nothing downloads installs into the
+   library any more (the build keeps its packages with the databases).
+11. **Amendment 94, Files shows the kind of game.** Playlists and WHDLoad archives are listed in "Games you have" (`App._companion`); a
+   game's folder row carries machine / install type / language / version (`_folder_facts`).
+12. **Amendment 95, no playlist for a set with a disk set aside** (Workbench v3.0 playlist in `_superseded`): sets with a non-kept disk are
+   dropped (`library._flawed_beside_clean`), `organiser` plans no playlist from a disk with a reason code.
 
 ## Open, only if the user asks
 

@@ -50,7 +50,7 @@ TEMP_MARKER = ".romorg-tmp-"   # temporary names used by organiser/kickstart whi
 CONVERT_TEMP_MARKER = ".romorg-convert-"  # clean files being written by convert.py
 from . import folders  # noqa: E402  (reserved folder names: folders.py is their only home)
 from .folders import (CONVERTED_DIR, DUPLICATES_DIR, REASON_DIRS, RESERVED_DIRS,  # noqa: E402,F401
-                      UNMATCHED_DIR, WHDLOAD_MARKER)
+                      UNMATCHED_DIR)
 
 CACHE_FILENAME = "hashes.sqlite"
 LAYOUT_PER_DAT = "per_dat"
@@ -1119,6 +1119,9 @@ def is_built_whdload(path: Any) -> bool:
     return head[22:22 + n] == WHDLOAD_BUILD_MARKER.encode()
 
 
+OLD_INSTALL_SUFFIX = " (WHDLoad install)"      # (the folder an earlier version downloaded a game's WHDLoad install into: all of it is unmatched files)
+
+
 def _skip_name(name: str) -> bool:
     return (is_hidden(name) or Path(name).suffix.lower() in SKIP_SUFFIXES
             or name.startswith(UNDO_LOG_PREFIX) or TEMP_MARKER in name or CONVERT_TEMP_MARKER in name)
@@ -1135,13 +1138,15 @@ def collect_files(root: Path, recursive: bool = True,
     """
     files: list[Path] = []
     protected_folded = {n.casefold() for n in protected}
-    stack = [root]
+    stack = [(root, False)]
     while stack:
-        d = stack.pop()
+        d, old_install = stack.pop()
         try:
             with os.scandir(d) as it:
                 for de in it:
-                    if _skip_name(de.name):
+                    if old_install and not (de.name.startswith(UNDO_LOG_PREFIX) or TEMP_MARKER in de.name or CONVERT_TEMP_MARKER in de.name):
+                        pass                # (inside an old install every file counts, hidden ones too)
+                    elif _skip_name(de.name):
                         if (problems is not None and CONVERT_TEMP_MARKER in de.name
                                 and not is_hidden(de.name)):
                             problems.append((Path(de.path), "partial output of an interrupted convert - the "
@@ -1160,10 +1165,8 @@ def collect_files(root: Path, recursive: bool = True,
                         if de.is_dir(follow_symlinks=False):
                             if protected and d == root and de.name.casefold() in protected_folded:
                                 continue    # a protected top-level folder (e.g. Kickstarts/): never scanned
-                            if os.path.isfile(os.path.join(de.path, WHDLOAD_MARKER)):
-                                continue    # a WHDLoad install downloaded next to a game's disks: none of its files is a game file
                             if recursive:
-                                stack.append(Path(de.path))
+                                stack.append((Path(de.path), old_install or de.name.endswith(OLD_INSTALL_SUFFIX)))
                         elif de.is_file():
                             if de.name.lower().endswith(".lha") and is_built_whdload(de.path):
                                 continue    # a WHDLoad game built from the disks next to it: not a game file of a DAT

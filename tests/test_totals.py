@@ -211,7 +211,7 @@ class UserTests(unittest.TestCase):
         self.assertEqual((out["target_games"], out["have_games"], out["missing_games"], out["percent"]), (2, 1, 1, 50.0))
         self.assertEqual((out["target_system"], out["have_system"]), (2, 1))
         self.assertEqual(out["missing_names"], ["Beta (1991)(Pub)"])                     # (EmuTOS is no game you lack ...)
-        self.assertEqual(out["missing_system_names"], ["EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)"])   # (... but a system disk)
+        self.assertNotIn("missing_system_names", out)                                  # (... nor is it listed as missing: nobody counts the system disks you lack)
 
     def test_updates_and_dlc_are_no_games_and_never_missing(self) -> None:
         sw = platforms.get_platform("Nintendo Switch")
@@ -625,6 +625,31 @@ class BugCheckTotalsTests(unittest.TestCase):
             m.request(AMIGA, EN, "d", state)
             self.assertTrue(m.wait_idle(30))
             self.assertIn(FOO2_DE + ".adf", m.missing_names(AMIGA.name))
+
+    def test_the_system_disks_you_lack_are_never_missing(self) -> None:
+        ks = "Commodore Amiga - Kickstart-Disks"
+        emutos = "EmuTOS v0.9.0 (2013-02-28)(EmuTOS Development Team)(A1000)(PD)"
+        dats = [dat_of(["Solo (1992)(Pub)", "Other (1992)(Pub)"]), dat_of([emutos], ks)]
+        state = ManagerTests.state(None, ["Solo (1992)(Pub)"])
+        m = totals.TotalsManager(lambda platform: dats)
+        with mock.patch.object(totals, "compute_user", lambda result, platform, profile, *rest: totals.compute_user_items(state.items, platform, profile)):
+            for _ in range(2):
+                m.request(AMIGA, EN, "d", state)
+                self.assertTrue(m.wait_idle(30))
+            names = m.missing_names(AMIGA.name)
+        self.assertEqual(names, frozenset({"Other (1992)(Pub).adf"}))
+
+    def test_one_rule_says_what_counts_as_a_game(self) -> None:
+        apart = totals.apart_dats(AMIGA)
+        self.assertEqual(apart, totals.system_dats(AMIGA))
+        self.assertTrue(totals.counts_as_game("Commodore Amiga - Games - [ADF]", apart))
+        for dat in ("Commodore Amiga - Firmware", "Commodore Amiga - Kickstart-Disks", "Commodore Amiga - Operating Systems - Workbench"):
+            self.assertFalse(totals.counts_as_game(dat, apart), dat)
+        self.assertFalse(totals.counts_as_game("Commodore Amiga - Games - [ADF]", apart, bios=True))             # (a BIOS file of a game DAT)
+        sw = platforms.get_platform("Nintendo Switch")
+        self.assertFalse(totals.counts_as_game("Nintendo - Switch (DLC)", totals.apart_dats(sw)))
+        self.assertTrue(totals.row_is_bios({"category": "bios"}) and totals.row_is_bios({"tags": {"bios": True}}))
+        self.assertFalse(totals.row_is_bios({"category": "kept"}) or totals.row_is_bios(None))
 
     def test_a_borrowed_disk_is_part_of_its_set_s_space_and_no_game_of_its_own(self) -> None:
         m = self.manager([dat_of([FOO1, FOO3, FOO2_DE])])

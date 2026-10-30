@@ -62,6 +62,7 @@ import difflib
 import errno
 import functools
 import filecmp
+import json
 import os
 import re
 import stat
@@ -136,6 +137,7 @@ class RenameOp:
     bios: bool = False       # a BIOS / firmware file or an emulator's key file, kept with the ROMs (the library rule)
     bios_game: str = ""      # a BIOS told by a TOSEC firmware list: its entry's name there, flags and all (the library rules read it like a ROM's)
     copies: tuple[str, ...] = ()   # a save pinned to several titles: the others (the file goes under the first, a copy under each of these)
+    archive_rel: str = ""    # set aside by the rules: where it lies in the archive below its reason folder (the Amiga: the library's own path)
 
 
 # --------------------------------------------------------------------------- names
@@ -544,7 +546,7 @@ class _Planner:
                             "", "move", "", True)
         if self.layout == LAYOUT_FLAT and len(rel.parts) > 1 and rel.parts[0].casefold() in KEEP_DIRS:
             return RenameOp(src, src, "skip", "frontend media folder - left in place", "", "move", "", True)
-        if _is_keep_file(src):
+        if _is_keep_file(src) and not any(x.endswith(" (WHDLoad install)") for x in src.parts):      # (no frontend file lies in an old install)
             return RenameOp(src, src, "skip", "frontend / emulator file - left in place", "", "move", "", True)
         kept = bios_op(src, self.bios_found) if self.keep_bios else None
         if kept is not None:
@@ -1024,6 +1026,7 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
 
     if _game_folders(profile, platform):
         _into_game_folders(core.owners, sel, root, platform)
+    _into_system_folder(core.owners, sel, root, platform)
     whd, whd_games = _whdload_games(sel, core.owners, profile, platform)
     games = _amiga_game_dats(profile, platform)
     combine = getattr(sel, "combine_alt", True)
@@ -1041,6 +1044,8 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
         if owner is None:
             return None
         op, unit = owner
+        if op.code:                                           # (set aside after the selection - a flawed BIOS beside a clean one: no disk of a playlist)
+            return None
         final = _final_path(op)
         if unit.archive and unit.members > 1:
             counts[str(final)] = unit.members
@@ -1050,6 +1055,8 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
         in_sets.update(cs.slots.values())
         disks = [d for slot, key in sorted(cs.slots.items()) if (d := disk_of(key, slot, cs.labels.get(slot, ""))) is not None]
         if len(disks) == len(cs.slots) and disks:
+            if cs.dat in SYSTEM_DATS:
+                continue                                      # (a Workbench or Kickstart set: no playlist, those are for games)
             if any(_fold(d.path) in whd for d in disks) or (cs.dat in games and whdload_game(cs.slots.values())):
                 continue                                      # (the game is played from its WHDLoad build: no playlist)
             specs.append(m3u.PlaylistSpec(cs.name, cs.dat, cs.total, disks,
@@ -1084,10 +1091,45 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
             continue
         deleting.add(_fold(st.path))
         kept_ops.append(RenameOp(st.path, st.path, DELETE_STATUS, st.reason, "", "m3u"))
+    _archive_paths(core.owners, kept_ops, platform)
     return LibraryPlan(kept_ops, playlists, sel, profile, core.owners)
 
 
 GAMES_DIR = "Commodore Amiga - Games"          # the Amiga's kept games: <root>/Commodore Amiga - Games/<title>/ (the disks or the original, the CD32 disc, the WHDLoad install)
+
+
+SYSTEM_DIR = "Commodore Amiga - System"        # the Amiga's system disks: <root>/Commodore Amiga - System/<Workbench | Kickstart-Disks | Firmware>/
+SYSTEM_DATS = {"Commodore Amiga - Operating Systems - Workbench": "Workbench", "Commodore Amiga - Kickstart-Disks": "Kickstart-Disks",
+               "Commodore Amiga - Firmware": "Firmware"}
+_DISK_OF_SET = re.compile(r"\(Disk \d+ of \d+\)(\([^)]*\))?")     # (the disk's place in its set and the label after it)
+
+
+def _release_folder(name: str) -> str:
+    """The release a Workbench disk is of: its DAT entry without the disk's place in the set and without the dump flags ("Workbench v1.1 rev
+    31.334 (1986)(Commodore)" for each disk of each dump of it)."""
+    stem = _DISK_OF_SET.sub("", Path(name).stem)
+    return safe_filename(re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]", "", stem)).strip()) or safe_filename(Path(name).stem)
+
+
+def _into_system_folder(owners: dict, sel: Any, root: Path, platform: Any) -> None:
+    """Send each kept file of the Amiga's system DATs - Workbench, the Kickstart disks, the firmware - to ``<root>/Commodore Amiga - System/``:
+    each in a folder of its DAT's short name, the Workbench disks in a folder of their release too (no playlist: those are for games). The
+    files keep the name of the DAT entry they match."""
+    from . import library
+    here = {d: sub for d, sub in SYSTEM_DATS.items() if d in (getattr(platform, "dats", ()) or ())}
+    if not here:
+        return
+    for key, (op, unit) in owners.items():
+        d = sel.decisions.get(key)
+        sub = here.get(unit.dat)
+        if (sub is None or op.code or op.unmatched or unit.link or op.status not in ("ok", "move")
+                or (d is not None and d.action != library.KEEP)):
+            continue
+        parts = (SYSTEM_DIR, sub) + ((_release_folder(op.dst.name),) if sub == "Workbench" else ())
+        new = _finish_op(op.src, Path(root).joinpath(*parts, op.dst.name), [], op.rom_name, op.dat, False)
+        op.dst, op.status, op.kind = new.dst, new.status, new.kind
+        if op.status == "move":
+            op.reason = ", ".join(x for x in (op.reason, "into the system folder") if x)
 
 
 def _game_folders(profile: Any, platform: Any) -> bool:
@@ -1096,21 +1138,10 @@ def _game_folders(profile: Any, platform: Any) -> bool:
             and bool(getattr(profile, "best_variant", False)))
 
 
-def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> None:
-    """Send each kept file of a game - its SPS zip, its floppy set, its CD32 disc - to ``<root>/Commodore Amiga - Games/<title>/`` instead of the folder of
-    its DAT (the playlist of a set and the WHDLoad install, written beside the disks, follow them). The title is the game's, without year or
-    publisher; two games of one title (``library.KEEP_APART``) get the publisher's name, then the year, added."""
+def _game_folder_names(games: dict[tuple, list[int]], owners: dict) -> dict[tuple, str]:
+    """The folder name of each game (``library.game_key`` -> the keys of its files): its plain title; two games of one title get the publisher's
+    name, then the year, added."""
     from . import library
-    wanted = {getattr(platform, "game_dat", "")} | set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ())
-    combine = getattr(sel, "combine_alt", True)
-    games: dict[tuple, list[int]] = {}
-    for key, (op, unit) in owners.items():
-        d = sel.decisions.get(key)
-        if d is None or d.action != library.KEEP or unit.link or op.status not in ("ok", "move") or op.unmatched:
-            continue
-        item = _item_of(key, owners)
-        if item.dat in wanted:
-            games.setdefault(library.game_key(item, combine), []).append(key)
     by_title: dict[str, list[tuple]] = {}
     tag: dict[tuple, Any] = {}
     for g, keys in games.items():
@@ -1132,6 +1163,63 @@ def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> Non
                 name = safe_filename(f"{t.title} ({n})")
             taken.add(name.casefold())
             folder[g] = name
+    return folder
+
+
+def _archive_paths(owners: dict, ops: list[RenameOp], platform: Any) -> None:
+    """The Amiga's files the rules set aside (``_excluded`` ...) lie in the archive as they would in the library: each game in a folder of
+    its own under ``Commodore Amiga - Games`` (:func:`_game_folder_names`, per reason folder), the system disks under ``Commodore Amiga - System``
+    (``op.archive_rel``, below the reason folder). Another system's files, and those no DAT knows, keep their path."""
+    from . import library
+    game_dats = _amiga_game_dats_all(platform)
+    systems = [d for d in SYSTEM_DATS if d in (getattr(platform, "dats", ()) or ())]
+    if not game_dats and not systems:
+        return
+    by_op = {id(op): key for key, (op, _u) in owners.items()}
+    combine = True
+    games: dict[str, dict[tuple, list[int]]] = {}
+    for op in ops:
+        key = by_op.get(id(op))
+        if key is None or op.folder not in REASON_DIRS or not op.dat or op.status not in ("move", "ok", "rename"):
+            continue
+        if op.dat in systems:
+            sub = SYSTEM_DATS[op.dat]
+            parts = (SYSTEM_DIR, sub) + ((_release_folder(op.dst.name),) if sub == "Workbench" else ()) + (op.dst.name,)
+            op.archive_rel = "/".join(parts)
+        elif op.dat in game_dats:
+            games.setdefault(op.folder, {}).setdefault(library.game_key(_item_of(key, owners), combine), []).append(key)
+    for reason, group in games.items():
+        folder = _game_folder_names(group, owners)
+        for g, keys in group.items():
+            for key in keys:
+                op = owners[key][0]
+                op.archive_rel = "/".join((GAMES_DIR, folder[g], op.dst.name))
+
+
+def _amiga_game_dats_all(platform: Any) -> frozenset:
+    """The DATs of the Amiga's games: its Games DAT, the SPS releases and the discs (the library's games folder)."""
+    if platform is None or not getattr(platform, "image_set_dats", None):
+        return frozenset()
+    return frozenset(d for d in ((getattr(platform, "game_dat", "") or ""), *platform.image_set_dats, *(getattr(platform, "disc_dats", ()) or ())) if d)
+
+
+def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> None:
+    """Send each kept file of a game - its SPS zip, its floppy set, its CD32 disc - to ``<root>/Commodore Amiga - Games/<title>/`` instead of the folder of
+    its DAT (the playlist of a set and the WHDLoad install, written beside the disks, follow them). The title is the game's, without year or
+    publisher; two games of one title (``library.KEEP_APART``) get the publisher's name, then the year, added."""
+    from . import library
+    wanted = {getattr(platform, "game_dat", "")} | set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ())
+    combine = getattr(sel, "combine_alt", True)
+    games: dict[tuple, list[int]] = {}
+    for key, (op, unit) in owners.items():
+        d = sel.decisions.get(key)
+        whole = op.status == "skip" and unit.archive and Path(op.src) == Path(op.dst)       # (an archive that holds the game and other files: moved as it is)
+        if d is None or d.action != library.KEEP or unit.link or (op.status not in ("ok", "move") and not whole) or op.unmatched:
+            continue
+        item = _item_of(key, owners)
+        if item.dat in wanted:
+            games.setdefault(library.game_key(item, combine), []).append(key)
+    folder = _game_folder_names(games, owners)
     for g, keys in games.items():
         for key in keys:
             op = owners[key][0]
@@ -1219,17 +1307,18 @@ def _single_game_specs(sel: Any, owners: dict, games: frozenset, image_sets: fro
 
 
 def _partial_decided(op: RenameOp, d: Any, root: Path) -> None:
-    """What the rules decided for an archive that holds a game next to other files: it stays where it is (the build cannot rename it).
-    One they set aside (a language, a bad dump, your "always exclude" ...) gets their code - Fatal Heritage's German SPS release, with
-    its scans - and is not counted as yours; one they keep that lies in a reserved folder (``_unmatched``, from before its DAT knew it)
-    goes back to where it came from, under its own name."""
+    """What the rules decided for an archive that holds a game next to other files (an SPS release with its scans and manual): the build
+    never renames or repacks it, but it moves it as it is. One they set aside (a language, a bad dump, your "always exclude" ...) goes to
+    its reason folder - and from there to the archive - under its own name, and is not counted as yours; one they keep that lies in a
+    reserved folder (``_unmatched``, from before its DAT knew it) goes back to where it came from; a kept one stays, or goes to its game's
+    folder (:func:`_into_game_folders`)."""
     from . import library
     if d is None:
         return
     if d.action != library.KEEP:
-        op.code = d.action if d.action in CODE_DIRS else "excluded"
-        op.reasons = tuple(d.codes)
-        op.reason = f"{d.reason or d.action} - left where it is (the archive holds other files too)"
+        code = d.action if d.action in CODE_DIRS else "excluded"
+        _send_to_reason(op, root, code, d.reason or code, missing=d.missing, flags_text=d.detail, superseded_by=d.superseded_by,
+                        reasons=tuple(d.codes))
         return
     parts = _parts_of(op.src, root)
     if folders.reserved_of(parts) is None:

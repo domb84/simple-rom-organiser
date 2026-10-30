@@ -207,18 +207,6 @@ class Download(unittest.TestCase):
         found = whdinstalls.installed_in(self.games)
         self.assertEqual(list(found), ["Turrican.lha"])
         self.assertEqual(found["Turrican.lha"]["game"], "Turrican")
-        # the scanner leaves the install alone: only the disk is a candidate
-        files = scanner.collect_files(self.games.parent)
-        self.assertEqual([f.name for f in files], ["Turrican (1990)(Rainbow Arts)(Disk 1 of 2).adf"])
-
-    def test_the_files_tree_shows_the_install_as_such(self) -> None:
-        from types import SimpleNamespace
-        from romorg import treeview
-        whdinstalls.download_install(self.install, self.games, opener=lambda req: _Resp(self.archive))
-        entries = treeview.collect(self.tmp, SimpleNamespace(ops=[]))
-        states = {e.parts[-1]: e.state for e in entries}
-        self.assertEqual(states["ReadMe"], treeview.WHDLOAD)
-        self.assertEqual(states["Turrican (1990)(Rainbow Arts)(Disk 1 of 2).adf"], treeview.IGNORED)    # (not in the plan: not looked at)
 
     def test_a_page_instead_of_the_archive_is_not_unpacked(self) -> None:
         with self.assertRaises(whdinstalls.WhdInstallError):
@@ -250,105 +238,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AutomaticInstalls(unittest.TestCase):
-    """The round the database updater runs (``App._sync_whd_installs``): every Amiga game you have that has an install gets it, an
-    install whose date changed on whdload.de is downloaded again, the first network failure ends the round, a running job skips it."""
+class NoDownloadsIntoTheLibrary(unittest.TestCase):
+    """The installs the app needs are fetched by the build and kept with the databases (``whdinstalls/packages``): nothing downloads them
+    next to your disks any more."""
 
-    def setUp(self) -> None:
-        import sys
-        import threading
-        import time
-        import urllib.request
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from uifixture import Fixture
-        self.fx = Fixture()
-        self.addCleanup(self.fx.close)
-        folder = self.fx.data / "whdinstalls"
-        folder.mkdir(parents=True, exist_ok=True)
-        self.installs = [{"archive": a, "title": t, "size": 30000, "date": "2020-01-01", "hol": "", "lemon": ""}
-                         for a, t in (("AlphaQuest.lha", "Alpha Quest"), ("BetaBlaster.lha", "Beta Blaster"))]
-        self.write_list()
-        req = urllib.request.Request(self.fx.url + "api/scan", method="POST", headers={"Content-Type": "application/json", "X-Romorg-Token": "t"},
-                                     data=json.dumps({"path": str(self.fx.root), "platform": "Commodore Amiga"}).encode())
-        urllib.request.urlopen(req).read()
-        app = self.fx.server.app
-        for _ in range(300):
-            if app.jobs.current is None or app.jobs.current.status != "running":
-                break
-            time.sleep(0.05)
-        self.app = app
-        self.cancel = threading.Event()
-        self.got: list[str] = []
-        patch = mock.patch("time.sleep")              # (the pause between downloads)
-        patch.start()
-        self.addCleanup(patch.stop)
+    def test_the_app_has_no_download_into_the_rom_folder(self) -> None:
+        from romorg import server
+        self.assertFalse(hasattr(server.App, "_sync_whd_installs"))
+        self.assertFalse(hasattr(server.App, "whdload_download"))
+        self.assertNotIn(("POST", "/api/whdload/download"), server.ROUTES)
 
-    def write_list(self) -> None:
-        import time
-        (self.fx.data / "whdinstalls" / "installs.json").write_text(json.dumps({"fetched": "2026-10-25", "fetched_at": time.time(), "installs": self.installs}))
-
-    def fake_download(self, install, dest_dir, game="", cancel=None, opener=None):
-        self.got.append(install["archive"])
-        final = Path(dest_dir) / whdinstalls.folder_name(install)
-        final.mkdir(parents=True, exist_ok=True)
-        (final / whdinstalls.MARKER).write_text(json.dumps({"archive": install["archive"], "title": install["title"], "date": install["date"]}))
-        return final
-
-    def run_round(self) -> dict:
-        with mock.patch.object(whdinstalls, "download_install", side_effect=self.fake_download):
-            return self.app._sync_whd_installs(self.cancel, lambda d, t, m: None)
-
-    def test_missing_installs_are_downloaded_then_left_alone(self) -> None:
-        res = self.run_round()
-        self.assertEqual((res["downloaded"], res["updated"], res["failed"]), (2, 0, []))
-        self.assertEqual(sorted(self.got), ["AlphaQuest.lha", "BetaBlaster.lha"])
-        self.assertTrue((self.fx.root / "Alpha Quest (WHDLoad install)" / whdinstalls.MARKER).is_file())
-        self.got.clear()
-        res = self.run_round()
-        self.assertEqual((res["downloaded"], res["updated"], self.got), (0, 0, []))       # nothing to do: no download at all
-
-    def test_an_install_whose_date_changed_is_downloaded_again(self) -> None:
-        self.run_round()
-        self.got.clear()
-        self.installs[1]["date"] = "2026-10-01"
-        self.write_list()
-        res = self.run_round()
-        self.assertEqual((res["downloaded"], res["updated"], self.got), (0, 1, ["BetaBlaster.lha"]))
-
-    def test_a_network_failure_ends_the_round(self) -> None:
-        import urllib.error
-
-        def offline(*a, **k):
-            self.got.append("try")
-            raise urllib.error.URLError("no network")
-        with mock.patch.object(whdinstalls, "download_install", side_effect=offline):
-            res = self.app._sync_whd_installs(self.cancel, lambda d, t, m: None)
-        self.assertEqual((self.got, len(res["failed"])), (["try"], 1))
-
-    def test_installs_are_downloaded_several_at_a_time(self) -> None:
-        import threading
-        self.installs += [{"archive": f"G{n}.lha", "title": t, "size": 1, "date": "2020-01-01", "hol": "", "lemon": ""}
-                          for n, t in enumerate(("Delta Force", "Epsilon", "Gamma Run", "Zeta Zone"))]
-        self.write_list()
-        live, most = [0], [0]
-        lock = threading.Lock()
-
-        def slow(install, dest_dir, game="", cancel=None, opener=None):
-            with lock:
-                live[0] += 1
-                most[0] = max(most[0], live[0])
-            threading.Event().wait(0.05)                                 # (long enough for the others to start)
-            with lock:
-                live[0] -= 1
-            return self.fake_download(install, dest_dir, game)
-        with mock.patch.object(whdinstalls, "download_install", side_effect=slow):
-            res = self.app._sync_whd_installs(self.cancel, lambda d, t, m: None)
-        self.assertGreaterEqual(res["downloaded"], 4)
-        self.assertGreater(most[0], 1)                                   # several at once
-        self.assertLessEqual(most[0], self.app.WHD_PARALLEL)             # never more than the limit
-
-    def test_a_running_job_skips_it(self) -> None:
-        busy = mock.Mock(status="running")
-        with mock.patch.object(type(self.app.jobs), "current", new_callable=mock.PropertyMock, return_value=busy):
-            self.assertEqual(self.run_round()["skipped"], "busy")
-        self.assertEqual(self.got, [])

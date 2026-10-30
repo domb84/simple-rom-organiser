@@ -1886,9 +1886,8 @@ class NextUiTests(UiTestCase):
         self.assertIn("7of 9", self.page.eval("document.querySelector('[data-key=have_all]')?.textContent"))   # (games: 10 of 12 disks)
         # Missing: what the rules keep that is not here (as Files › Missing), not every game of the database
         t = LibraryDefaultsTests.api(self, "GET", "/api/library/totals?platform=Commodore%20Amiga")
-        games, disks = t["missing_games"], t["target_system"] - t["have_system"]
-        want = ", ".join(x for x in (f"{games} game{'s' if games != 1 else ''}" if games else "",
-                                     f"{disks} system disk{'s' if disks != 1 else ''}" if disks else "") if x)
+        games = t["missing_games"]                                                       # (system disks are never missing)
+        want = f"{games} game{'s' if games != 1 else ''}" if games else ""
         missing = "[...document.querySelectorAll('#main a.tile')].find(a => a.textContent.startsWith('Missing'))"
         if want:
             self.page.wait(f"{missing}?.querySelector('.tile-sub')?.textContent === {want!r} && !{missing}.classList.contains('hidden')", timeout=60)
@@ -1969,9 +1968,9 @@ class NextUiTests(UiTestCase):
         return self.page.eval("[...document.querySelectorAll('#main [data-section=list] .row .row-name')].map(e => e.firstChild ? e.firstChild.textContent : '')")
 
     def test_files_opens_folders_and_a_game_can_be_always_kept(self) -> None:
-        self.start("#/system/commodore-amiga/files?view=changes")
-        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
-        self.assertEqual(self.page.eval("document.querySelector('.chip.on')?.textContent"), "Changes 7")
+        self.start("#/system/commodore-amiga/files?view=excluded")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
+        self.assertTrue(self.page.eval("document.querySelector('.chip.on')?.textContent").startswith("Excluded"))
         self.click("#main [data-section=list] .row", "_excluded")
         self.page.wait("document.querySelector('.crumb-path')?.textContent === '_excluded'", timeout=30)
         self.assertTrue(any("Delta Force" in r for r in self.rows()), self.rows())
@@ -2000,8 +1999,8 @@ class NextUiTests(UiTestCase):
         self.no_js_errors()
 
     def test_files_filters_narrow_the_view(self) -> None:
-        self.start("#/system/commodore-amiga/files?view=changes")
-        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
+        self.start("#/system/commodore-amiga/files?view=excluded")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
         self.tap("down")
         self.tap("X")
         self.page.wait("!!document.querySelector('.sheet')")
@@ -2009,7 +2008,7 @@ class NextUiTests(UiTestCase):
         self.page.wait("document.querySelectorAll('.sheet').length === 2")
         self.click(".sheet:last-of-type .row", "De")
         self.page.wait("document.querySelectorAll('.sheet').length === 0 && !!document.querySelector('.views .tag')", timeout=30)
-        self.page.wait("document.querySelector('.chip.on')?.textContent === 'Changes 1'", timeout=30)
+        self.page.wait("document.querySelector('.chip.on')?.textContent === 'Excluded 1'", timeout=30)
         self.no_js_errors()
 
     def test_archived_files_are_ticked_and_restored(self) -> None:
@@ -2109,9 +2108,25 @@ class NextUiTests(UiTestCase):
         self.assertEqual(self.page.eval("[...document.querySelectorAll('.views .chip')][0].textContent"), "Library 5")
         self.no_js_errors()
 
+    def test_a_games_folder_says_what_kind_of_game_it_is_and_shows_its_playlist(self) -> None:
+        self.start("#/system/commodore-amiga/files")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
+        self.click("#main [data-section=list] .row", "Commodore Amiga - Games")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row .row-tags .tag').length >= 4", timeout=30)
+        chips = self.page.eval("[...document.querySelector('#main [data-section=list] .row .row-tags').children].map(t => t.textContent)")
+        self.assertEqual(chips[:2], ["OCS", "En"])                                   # (machine, language [, version]; "WHDLoad" when it is played from one)
+        self.page.eval("[...document.querySelectorAll('#main [data-section=list] .row')].find(e => e.textContent.startsWith('Epsilon')).focus()")
+        self.page.wait("document.querySelector('#main .panel').textContent.includes('Machine')", timeout=30)         # (the panel says it in words)
+        panel = self.page.eval("document.querySelector('#main .panel').textContent")
+        for word in ("OCS", "The disks, through a playlist", "floppy disks", "English"):
+            self.assertIn(word, panel)
+        self.click("#main [data-section=list] .row", "Epsilon")
+        self.page.wait("[...document.querySelectorAll('#main [data-section=list] .row')].some(r => r.textContent.includes('.m3u') && r.textContent.includes('Playlist'))", timeout=30)
+        self.no_js_errors()
+
     def test_the_side_panel_stays_in_view_down_a_long_folder(self) -> None:
-        self.start("#/system/commodore-amiga/files?view=changes")
-        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 3", timeout=60)
+        self.start("#/system/commodore-amiga/files?view=library")
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 1", timeout=60)
         self.click("#main [data-section=list] .row", "Commodore Amiga - Games")
         self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length >= 5", timeout=30)
         self.pad()

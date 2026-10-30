@@ -782,22 +782,20 @@ class LibraryIntegrationTest(unittest.TestCase):
         self.assertEqual((code["hero/h1.adf"], code["hero/h2.adf"], code["hero/h3.adf"]),
                          ("superseded", "superseded", "excluded"))
         self.assertEqual(code["hero/copy of h1.adf"], "duplicate")
-        # Workbench: every version kept (no latest/best rule), the [m] variant superseded by the clean disk of the version, two playlists
+        # Workbench: every version kept (no latest/best rule), the [m] variant superseded by the clean disk of the version, no playlist
         self.assertEqual([code[f"wb/w{i}.adf"] for i in range(5)], ["", "", "", "", "superseded"])
-        self.assertEqual(sorted(p.path.name for p in plan.playlists),
-                         sorted([self.ABC_M3U, "Workbench v1.2 (1986)(Commodore).m3u",
-                                 "Workbench v1.3 (1988)(Commodore).m3u"]))
+        self.assertEqual(sorted(p.path.name for p in plan.playlists), [self.ABC_M3U])           # (the system disks have none)
         # Kickstart disks + firmware: nothing is superseded, both Kickstarts kept
         self.assertEqual([code["ks/k0.adf"], code["ks/k1.adf"], code["bios/kick.rom"]], ["", "", ""])
         self.assertEqual(dst["notes.txt"], "_unmatched/notes.txt")
         self.assertEqual(res.summary()["duplicates"], organiser.plan_counts(plan.ops)["to_duplicates"])
         rc = organiser.reason_counts(plan)
         self.assertEqual((rc["excluded"], rc["superseded"], rc["duplicates"], rc["incomplete"], rc["playlists_write"]),
-                         (2, 3, 1, 0, 3))
+                         (2, 3, 1, 0, 1))
 
         out = organiser.apply_renames(plan.ops, self.root, dat_names=self.platform.dats, playlists=plan.playlists)
         self.assertEqual(out["failed"], [], out)
-        self.assertEqual(out["playlists_written"], 3)
+        self.assertEqual(out["playlists_written"], 1)
         self.assertTrue((self.root / GAMES / self.ABC_M3U).is_file())
         self.assertEqual((self.root / "mine.m3u").read_bytes(), b"my own playlist\n")
         built = snapshot(self.root)

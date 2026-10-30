@@ -843,19 +843,16 @@
     missingTile.classList.add("hidden");
     const drawMissing = (failed = false) => {
       const t = data.totals;
-      let games = 0, disks = 0;
+      let games = 0;
       if (t && !t.calculating && t.have_games !== null && t.have_games !== undefined) {
         games = t.missing_games || 0;
-        disks = Math.max(0, (t.target_system || 0) - (t.have_system || 0));
       } else if (failed && data.summary) {
         games = data.summary.games_missing ?? data.summary.missing ?? 0;          // (no totals: against the whole database)
       } else return;
       const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
-      missingTile.querySelector(".tile-sub").textContent = [games ? plural(games, "game", "games") : "", disks ? plural(disks, "system disk", "system disks") : ""]
-        .filter(Boolean).join(", ");
-      missingTile.classList.toggle("hidden", !(games + disks));
+      missingTile.querySelector(".tile-sub").textContent = games ? plural(games, "game", "games") : "";      // (system disks are never missing)
+      missingTile.classList.toggle("hidden", !games);
     };
-    const isAmiga = p.source === "tosec" && /amiga/i.test(p.name);
     const actions = el("div", { class: "grid", style: "--cols:4" },
       tile({ title: "Files", icon: "list", short: true, sub: "Every file and game", href: `#/system/${slug}/files` }),
       tile({ title: "Needs a look", icon: "search", short: true, sub: "Fixes the rules suggest", href: `#/system/${slug}/look` }),
@@ -863,7 +860,6 @@
       tile({ title: "Settings", icon: "gear", short: true, sub: "Building, archive", href: `#/system/${slug}/settings` }),
       folderTile,
       missingTile,
-      isAmiga ? tile({ title: "WHDLoad", icon: "play", short: true, sub: "Installs from your disks", href: `#/system/${slug}/whdload` }) : null,
       data.saves && data.saves.files ? tile({ title: "Saves", icon: "save", short: true, sub: `${fmt(data.saves.files)} files`, href: `#/system/${slug}/saves` }) : null);
     const warn = (scan.missing_dats || []).length && !(p.dats || []).some((d) => d.present)
       ? message("This system's database is not installed: nothing can be recognised. Install it in Databases.", "warn") : null;
@@ -955,7 +951,7 @@
       : opts.aside_to ? `What is set aside goes to the archive: ${archiveText(opts.aside_to)}.`
         : excluded || superseded || other ? "What is set aside goes to folders like _excluded inside this folder." : "";
     const startBtn = el("button", { class: "btn primary", type: "button", id: "build-start", on: { click: () => runBuild(ctx, p, opts, plan) } }, icon("play"), "Start build");
-    const listLink = el("a", { class: "btn", href: `#/system/${slug}/files?view=changes`, text: "See the file list" });
+    const listLink = el("a", { class: "btn", href: `#/system/${slug}/files?view=library`, text: "See the file list" });
     if (nothing) {
       return { ...head, focus: "#build-back",
         body: el("div", { class: "screen" }, el("h2", { class: "big-title", text: "Nothing to change" }),
@@ -1384,7 +1380,6 @@
   // ------------------------------------------------------------------ Files
   const FILE_VIEWS = [
     { key: "library", label: "Library", side: "library", show: "have", count: (f) => f.show && f.show.have },
-    { key: "changes", label: "Changes", side: "library", show: "changed", count: (f) => f.show && f.show.changed },
     { key: "excluded", label: "Excluded", side: "library", show: "excluded", count: (f) => f.show && f.show.excluded },
     { key: "missing", label: "Missing", side: "library", show: "missing", count: (f) => f.show && f.show.missing },
     { key: "archive", label: "Archive", side: "archive", show: "", count: (_f, sides) => sides && sides.archive },
@@ -1395,7 +1390,7 @@
     copy: "#4f9cff", saves: "#a98bff", existing: "#6b7686", ignored: "#6b7686", missing: "#f5c84a" };
   const CAT_TEXT = { kept: "Kept", excluded: "Excluded by your rules", superseded: "Older version replaced", incomplete: "Incomplete set",
     duplicate: "Duplicate", bios: "BIOS or firmware", saves: "Save files", unmatched: "Not in the database", playlist: "Playlist", missing: "Missing" };
-  const fileFilters = {};          // per system: {state, region, language, rated, hide_saved}
+  const fileFilters = {};          // per system: {state, region, language, machine, install, rated, hide_saved}
 
   route(/^\/system\/([^/]+)\/files$/, async (ctx, slug) => {
     await Promise.all([loadPlatforms(), loadStatus()]);
@@ -1422,7 +1417,8 @@
     const setView = (v) => { view = v; path = ""; ticked.clear(); load(); };
     const step = (d) => setView(FILE_VIEWS[(FILE_VIEWS.indexOf(view) + d + FILE_VIEWS.length) % FILE_VIEWS.length]);
 
-    const nameOf = (file) => (file.row && (file.row.release || file.row.title)) || file.name.replace(/\.[^.]+$/, "");
+    const companion = (file) => /\.lha$/i.test(file.name) ? "WHDLoad" : /\.m3u$/i.test(file.name) ? "Playlist" : "";        // (what plays a game: beside its disks)
+    const nameOf = (file) => companion(file) ? file.name : (file.row && (file.row.release || file.row.title)) || file.name.replace(/\.[^.]+$/, "");
     const fullPath = (name) => (path ? `${path}/${name}` : name);
     function describe(file) {
       const r = file.row || {};
@@ -1446,10 +1442,20 @@
         el("span", { class: "tag", text: STATE_TEXT[file.state] || CAT_TEXT[r.category] || file.state }),
         el("dl", { class: "facts" }, facts), ...btns);
     }
+    // what kind of game a folder holds (Amiga): its machine, what plays it, the language and version of the release kept
+    const LANG_NAMES = { En: "English", De: "German", Fr: "French", It: "Italian", Es: "Spanish", Nl: "Dutch", Sv: "Swedish", Da: "Danish", No: "Norwegian",
+      Fi: "Finnish", Pt: "Portuguese", Pl: "Polish", Ru: "Russian", Ja: "Japanese" };
+    const factTags = (x) => !x ? [] : [x.platform, x.install, (x.languages || []).join(" "), x.version].filter(Boolean);   // (install: only "WHDLoad")
     function describeDir(d) {
       const states = Object.entries(d.states || {}).map(([k, n]) => `${fmt(n)} ${(STATE_TEXT[k] || k).toLowerCase()}`).join(", ");
+      const x = d.facts, facts = [];
+      if (x) {
+        const add = (k, v) => { if (v) facts.push(el("dt", { text: k }), el("dd", { text: v })); };
+        add("Played from", `${x.install === "WHDLoad" ? "A WHDLoad archive (.lha)" : x.source === "disc" ? "The disc" : "The disks, through a playlist"}, from ${x.source.toLowerCase()}`);
+        add("Machine", [x.platform, (x.languages || []).map((c) => LANG_NAMES[c] || c).join(", "), x.version].filter(Boolean).join(" · "));
+      }
       put(panel, el("span", { class: "panel-title", text: d.name }), el("p", { class: "lead", text: `${fmt(d.files)} file${d.files === 1 ? "" : "s"}` }),
-        states ? el("p", { class: "note", text: states }) : null);
+        states ? el("p", { class: "note", text: states }) : null, facts.length ? el("dl", { class: "facts" }, facts) : null);
     }
     function describeTicked() {
       put(panel, el("span", { class: "panel-title", text: ticked.size ? `${fmt(ticked.size)} ticked` : "Nothing ticked" }),
@@ -1464,13 +1470,16 @@
         on: { click: () => (view.side === "archive" ? describe(file) : r.game_ref ? gameMenu(file) : describe(file)), focus: () => describe(file) } },
         tick || el("span", { class: "dot", style: `background:${STATE_DOT[file.state] || "#6b7686"}` }),
         el("span", { class: "row-name" }, nameOf(file), sub ? el("small", { text: sub }) : null),
+        companion(file) ? el("span", { class: "row-tags" }, el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) })) : null,
         el("span", { class: "row-value", text: STATE_TEXT[file.state] || "" }));
       b._file = file;
       return b;
     }
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
-        icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }), el("span", { class: "row-value", text: `${fmt(d.files)} ›` }));
+        icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
+        d.facts ? el("span", { class: "row-tags" }, factTags(d.facts).map((t) => el("span", { class: `tag t-${String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, text: t }))) : null,
+        el("span", { class: "row-value", text: `${fmt(d.files)} ›` }));
     }
 
     async function load(focusKey = "") {
@@ -1632,6 +1641,8 @@
       const ent = (obj) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]);
       const rows = [
         row({ name: "What the build does", value: f.state ? STATE_TEXT[f.state] || f.state : "Anything", arrow: true, onClick: pickFrom("state", "What the build does", ent(facet.state).map(([k, n]) => [k, n, STATE_TEXT[k] || k]), "Anything") }),
+        (facet.machine && Object.keys(facet.machine).length) || f.machine ? row({ name: "Platform", value: f.machine || "Any", arrow: true, onClick: pickFrom("machine", "Platform", ent(facet.machine), "Any") }) : null,
+        (facet.install && Object.keys(facet.install).length) || f.install ? row({ name: "WHDLoad", value: f.install ? "Only WHDLoad games" : "Any", arrow: true, onClick: pickFrom("install", "WHDLoad", ent(facet.install).map(([k, n]) => [k, n, "Only WHDLoad games"]), "Any") }) : null,
         row({ name: "Region", value: f.region || "Any", arrow: true, onClick: pickFrom("region", "Region", ent(facet.region), "Any") }),
         row({ name: "Language", value: f.language || "Any", arrow: true, onClick: pickFrom("language", "Language", ent(facet.language), "Any") }),
         row({ name: "Rating", value: f.rated === "1" ? "Rated" : f.rated === "0" ? "Unrated" : "Rated or not", arrow: true,
@@ -1783,38 +1794,11 @@
         t.target_system ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "System disks" }),
           el("div", { class: "rows" },
             row({ name: `${fmt(t.target_system)} Workbench, Kickstart and firmware disk${t.target_system === 1 ? "" : "s"}`, info: true,
-              sub: `Kept as your rules say, but not counted as games${t.have_games !== null ? `; you have ${fmt(t.have_system || 0)}` : ""}` }),
-            ...(t.missing_system_names || []).map((n) => row({ name: n, sub: "System disk you don't have", info: true })))) : null,
+              sub: `Kept as your rules say, but not counted as games or as missing${t.have_games !== null ? `; you have ${fmt(t.have_system || 0)}` : ""}` }))) : null,
         t.target_addons ? el("section", { class: "section" }, el("h2", { class: "section-title", text: "Updates and DLC" }),
           el("div", { class: "rows" }, row({ name: `${fmt(t.target_addons)} update${t.target_addons === 1 ? "" : "s"} and DLC in the catalogue`, info: true,
             sub: `Kept as your rules say, but not counted as games${t.have_addons !== null && t.have_addons !== undefined ? `; you have ${fmt(t.have_addons)}` : ""}` }))) : null),
       hints: [["A", "Select"], ["B", "Back"], ["LT RT", "Page"]] };
-  });
-
-  // ------------------------------------------------------------------ a system: WHDLoad
-  route(/^\/system\/([^/]+)\/whdload$/, async (ctx, slug) => {
-    await loadPlatforms();
-    const p = bySlug(slug);
-    if (!p) { location.replace("#/"); return null; }
-    try { await post("/api/scan/select", { platform: p.name }); } catch (_) { /* the list says so */ }
-    const head = { title: "WHDLoad installs", crumbs: [[p.name, `#/system/${slug}`]], back: `#/system/${slug}` };
-    const w = await get(`/api/whdload/installs?${qs({ platform: p.name })}`);
-    const games = w.games || [];
-    const ready = games.filter((g) => g.install && g.downloaded).length;
-    const need = games.filter((g) => g.install && !g.downloaded).length;
-    const has = games.filter((g) => g.install).length;
-    const job = (title, path, body) => () => runJob(ctx, head, title, () => post(path, body), () => ctx.redraw());
-    const rows = games.map((g) => row({ name: g.title, sub: g.install ? (g.how || "") : "No install exists", value: g.machine || "",
-      tag: g.install ? (g.downloaded ? ["Ready", "ok"] : ["Download needed", "warn"]) : ["None", ""], info: true }));
-    return { ...head, aside: w.available ? `${fmt(has)} of your ${fmt(games.length)} games have one` : "The list of installs is not downloaded yet",
-      keys: { X: job("Checking the installs…", "/api/whdload/check", { platform: p.name }) },
-      body: el("div", { class: "screen" }, el("div", { class: "split" }, el("div", { class: "grow rows", "data-section": "list" }, rows.length ? rows : [row({ name: "No games found", static: true })]),
-        el("aside", { class: "panel", "data-section": "panel" },
-          el("span", { class: "big-title", text: fmt(ready) }), el("p", { class: "note", text: "games are ready to install from your own disks." }),
-          el("button", { class: "btn primary", type: "button", style: "min-width:0", disabled: !ready, on: { click: job("Building WHDLoad games…", "/api/whdload/build", { platform: p.name }) } }, "Build WHDLoad games"),
-          el("button", { class: "btn", type: "button", disabled: !need, on: { click: job("Downloading installs…", "/api/whdload/download", { platform: p.name, all: true }) } }, need ? `Download ${fmt(need)} install${need === 1 ? "" : "s"} now` : "Nothing to download"),
-          el("p", { class: "note", text: "Installs are downloaded and kept up to date by themselves, with the databases, every time the app starts." })))),
-      hints: [["A", "Select"], ["B", "Back"], ["X", "Check installs"]] };
   });
 
   // ------------------------------------------------------------------ a system: saves

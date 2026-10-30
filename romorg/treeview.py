@@ -164,18 +164,6 @@ class Entry(NamedTuple):
     op: int                     # the index of its op in the plan (-1: no op: an archived file, a hidden file, a copy)
 
 
-def _in_install(d: Path, root: Path, seen: Dict[str, bool]) -> bool:
-    """Whether folder ``d`` (under ``root``) is in a WHDLoad install folder (one with ``folders.WHDLOAD_MARKER``)."""
-    from .folders import WHDLOAD_MARKER
-    key = os.fspath(d)
-    if key not in seen:
-        if d == root or root not in d.parents:
-            seen[key] = False
-        else:
-            seen[key] = (d / WHDLOAD_MARKER).is_file() or _in_install(d.parent, root, seen)
-    return seen[key]
-
-
 def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archive: Iterable[Any] = (),
             playlists: Iterable[Any] = (), archive_files: Optional[Iterable[Tuple[Tuple[str, ...], int]]] = None) -> List[Entry]:
     """Every file of the system's ROM folder and of its part of the archive as a build would leave them.
@@ -213,14 +201,13 @@ def collect(root: Path, plan: Any, archive_base: Optional[Path] = None, to_archi
         state = SAME if tuple(was) == tuple(parts) else RENAMED if was[:-1] == parts[:-1] else MOVED
         out.append(Entry(LIBRARY, tuple(parts), size, state, "/".join(was) if state != SAME else "", n))
     if root.is_dir():                                               # what the scan does not look at (hidden files, the app's own notes
-        whd: Dict[str, bool] = {}                                   # aside, WHDLoad installs): it is in the folder all the same, and stays
         for text in _file_texts(os.fspath(root)):
             if text not in known and text not in moving:
                 f = Path(text)
                 parts = _rel(f, root)
                 if parts:
                     ours = f.suffix.lower() == ".lha" and _built_whdload(f)
-                    out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if ours or _in_install(f.parent, root, whd) else IGNORED, "", -1))
+                    out.append(Entry(LIBRARY, tuple(parts), _size(f), WHDLOAD if ours else IGNORED, "", -1))
     for p in playlists:                                             # the playlists the build writes
         if getattr(p, "status", "") == "write":
             parts = _rel(Path(p.path), root)

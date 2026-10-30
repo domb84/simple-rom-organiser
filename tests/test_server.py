@@ -1018,6 +1018,73 @@ class RealModulesIntegrationTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("job did not finish")
 
+    def test_the_whdload_installs_an_earlier_version_downloaded_are_unmatched_files(self) -> None:
+        old = self.root / GAMES / "Solo (WHDLoad install)"
+        (old / "SoloHD").mkdir(parents=True)
+        (old / ".romorg-whdload.json").write_text('{"archive": "Solo.lha", "title": "Solo"}')
+        (old / "SoloHD" / "Solo.slave").write_bytes(b"slave")
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        plan = self.call("POST", "/api/library/plan", {"limit": 100})
+        self.assertNotIn("installs_remove", plan)
+        rows = self.call("POST", "/api/library/plan", {"limit": 500, "reason": "unmatched"})["items"]
+        mine = sorted(r["from"] for r in rows if "Solo (WHDLoad install)" in r["from"])
+        self.assertEqual(mine, [f"{GAMES}/Solo (WHDLoad install)/.romorg-whdload.json", f"{GAMES}/Solo (WHDLoad install)/SoloHD/Solo.slave"])
+
+    def test_the_games_you_have_list_shows_each_games_playlist_and_what_kind_of_game_it_is(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        q = urllib.request.quote
+        top = self.call("GET", f"/api/tree?platform=Commodore%20Amiga&side=library&show=have&path={q('Commodore Amiga - Games')}")
+        game = next(d for d in top["dirs"] if d["name"] == "Game")
+        self.assertEqual(game["facts"], {"platform": "OCS", "install": "", "source": "Floppy disks", "languages": ["En"], "version": ""})
+        inside = self.call("GET", f"/api/tree?platform=Commodore%20Amiga&side=library&show=have&path={q('Commodore Amiga - Games/Game')}")
+        self.assertEqual([(f["name"], f["state"]) for f in inside["files"]],
+                         [("Game (1990)(Pub)(Disk 1 of 2).adf", "moved"), ("Game (1990)(Pub)(Disk 2 of 2).adf", "moved"), ("Game (1990)(Pub).m3u", "new")])
+        # the playlist is part of the game, no game of its own: the numbers do not change
+        everything = self.call("GET", "/api/tree?platform=Commodore%20Amiga&side=library")
+        self.assertEqual(self.call("GET", "/api/tree?platform=Commodore%20Amiga&side=library&show=have")["facets"]["show"]["have"],
+                         everything["facets"]["show"]["have"])
+        self.assertNotIn("facts", next(d for d in everything["dirs"] if d["name"] != "Commodore Amiga - Games"))      # (a folder of other things)
+
+    def test_the_games_you_have_filter_on_platform_language_and_whdload(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"
+        facets = self.call("GET", base)["facets"]
+        self.assertEqual(facets["machine"], {"OCS": 1})
+        self.assertIn("En", facets["language"])
+        self.assertEqual(facets["install"], {})                                                # (no game here is played from a WHDLoad archive)
+        folders = lambda q: [d["name"] for d in self.call("GET", f"{base}&{q}")["dirs"]]          # noqa: E731
+        games = "Commodore Amiga - Games"
+        self.assertIn(games, folders("machine=OCS"))
+        self.assertNotIn(games, folders("machine=AGA"))
+        self.assertIn(games, folders("language=En"))
+        self.assertNotIn(games, folders("language=De"))
+        self.assertNotIn(games, folders("install=WHDLoad"))
+        inside = self.call("GET", f"{base}&machine=OCS&path=Commodore%20Amiga%20-%20Games/Game")
+        self.assertEqual(sorted(f["name"] for f in inside["files"]), ["Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf", "Game (1990)(Pub).m3u"])
+
+    def test_the_library_view_lists_the_firmware_without_counting_it(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"
+        top = self.call("GET", base)
+        self.assertIn("Commodore Amiga - System", [d["name"] for d in top["dirs"]])
+        fw = self.call("GET", f"{base}&path=Commodore%20Amiga%20-%20System/Firmware")
+        self.assertEqual([f["name"] for f in fw["files"]], ["Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom"])
+        everything = self.call("GET", "/api/tree?platform=Commodore%20Amiga&side=library")
+        self.assertEqual(top["facets"]["show"]["have"], everything["facets"]["show"]["have"])          # (listed, never counted)
+        self.assertEqual(top["facets"]["show"]["have"], 1)                                             # (the one game)
+
+    def test_a_whdload_archive_is_shown_with_its_game_and_is_no_game(self) -> None:
+        def entry(name, state="new", row=None):
+            return {"side": "library", "parts": ("Commodore Amiga - Games", "Zap", name), "state": state, "row": row, "text": "", "size": 0, "from": ""}
+        lha = entry("Zap (1993)(Acme).lha")
+        self.assertTrue(server.App._tree_pass(lha, {"show": "have"}))                            # (listed beside the game's disks)
+        self.assertTrue(server.App._tree_pass(entry("Zap (1993)(Acme).lha", "whdload"), {"show": "have"}))    # (one built before)
+        self.assertTrue(server.App._tree_pass(entry("Zap (1993)(Acme).m3u"), {"show": "have"}))
+        self.assertFalse(server.App._tree_pass(entry("readme.txt"), {"show": "have"}))           # (not a game's file)
+        self.assertFalse(server.App._tree_pass(entry("Zap.lha", "ignored"), {"show": "have"}))
+        self.assertIsNone(server.App._game_unit(lha, None))                                      # (no game of its own: the counts do not move)
+        self.assertIsNone(server.App._game_unit(entry("Zap (1993)(Acme).m3u"), None))
+
     def test_full_workflow(self) -> None:
         plats = self.call("GET", "/api/platforms")
         amiga = next(p for p in plats if p["name"] == "Commodore Amiga")
@@ -1036,13 +1103,13 @@ class RealModulesIntegrationTests(unittest.TestCase):
         plan = self.call("POST", "/api/library/plan", {"limit": 100})
         self.assertEqual(plan["actionable"], 6, plan)                                     # five files and a playlist
         moves = {i["from"]: i["to"] for i in plan["items"] if "from" in i}
-        self.assertEqual(moves["incoming/deep/wb.adf"], f"{WB}/Workbench v1.3 (1988)(Commodore).adf")
+        self.assertEqual(moves["incoming/deep/wb.adf"], "Commodore Amiga - System/Workbench/Workbench v1.3 (1988)(Commodore)/Workbench v1.3 (1988)(Commodore).adf")
         self.assertEqual(moves["incoming/readme.txt"], "_unmatched/incoming/readme.txt")
 
         result = self.job("/api/library/apply", {})["result"]
         self.assertFalse(result.get("failed"), result)
         self.assertTrue((self.root / "Commodore Amiga - Games" / "Game" / "Game (1990)(Pub)(Disk 1 of 2).adf").is_file())       # (a folder for the game)
-        self.assertTrue((self.root / FIRMWARE / "Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom").is_file())
+        self.assertTrue((self.root / "Commodore Amiga - System" / "Firmware" / "Kickstart v1.3 r34.5 (1987)(Commodore)(A500).rom").is_file())
         self.assertTrue((self.root / "_unmatched" / "incoming" / "readme.txt").is_file())
         self.assertFalse((self.root / "incoming").exists())  # emptied by our moves -> removed
         self.assertEqual(result["summary"]["matched_files"], 4)  # re-scanned
