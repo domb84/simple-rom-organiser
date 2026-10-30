@@ -27,7 +27,7 @@ import time
 import unicodedata
 from typing import Any, Optional
 
-from . import ratings, tags
+from . import kana, ratings, tags
 
 __all__ = ["SAME_GAME", "node", "link", "series_title", "hand_games", "notice", "table", "groups", "learn", "forget", "dat_map", "group", "merged", "signature", "clear_cache", "STYLES"]
 
@@ -59,8 +59,10 @@ def link(title: str) -> str:
     other = "".join(c for c in title if _other_script(c))
     # (a long Japanese text after the words is a subtitle or another game: "Fit Boxing 北斗の拳 ～お前はもう痩せている～"; an art book, a
     #  soundtrack, a bonus app of a game is no release of it)
-    if len(other) > (20 if at[0] > 0 else 10) or _EXTRAS_RE.search(other):
+    if _EXTRAS_RE.search(other):
         return n
+    if len(other) > (20 if at[0] > 0 else 10) and not kana.gloss(other, runs[at[0]]):
+        return n                        # (unless the Japanese text is the Latin words in katakana: "Skyline Bowling - スカイライン・ボウリング")
     words = [runs[at[0]]]
     rest = ratings.roman_key(ratings.norm_title(words[0]))
     if len(rest) < 4 or not any(w not in _FILLER for w in re.findall(r"[a-z]{4,}", rest)):
@@ -448,6 +450,64 @@ def forget(dat: Optional[str] = None) -> None:
             _MAPS.pop(dat, None)
 
 
+_YEARS: dict[str, tuple[Any, dict[str, frozenset]]] = {}
+
+
+def release_years(system: str) -> dict[str, frozenset]:
+    """``{title (casefold): {years}}`` the catalogue of the system knows its releases by (empty: it has no release dates). Only the
+    Switch has them (the eShop lists the title database is made of); the other systems' DATs name no year."""
+    if system != "Nintendo Switch":
+        return {}
+    from . import switchdb
+    path = switchdb.db_path()
+    sig = _signature([path])
+    with _LOCK:
+        hit = _YEARS.get(system)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+    out: dict[str, set] = {}
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = con.execute("SELECT c.label, t.released FROM catalogue c JOIN titles t ON t.id = c.id WHERE c.dat = ? AND t.released > 0",
+                               (switchdb.SWITCH_DAT,)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        rows = []
+    for label, released in rows:
+        out.setdefault(tags.parse_name(label + ".nsp", tags.STYLE_NOINTRO).title.casefold(), set()).add(int(released) // 10000)
+    frozen = {t: frozenset(y) for t, y in out.items()}
+    with _LOCK:
+        _YEARS[system] = (sig, frozen)
+    return frozen
+
+
+def _phonetic(titles: dict, years: dict[str, frozenset]) -> dict[str, str]:
+    """``{title in katakana: the English title it is}`` of the titles whose katakana read as one English title of the same game year
+    (within one year) and no other: ``リトルインフェルノ`` / ``Little Inferno``. A skeleton of fewer than six consonants, two English
+    titles or two titles of katakana with it, or no year for either side, joins nothing."""
+    if not years:
+        return {}
+    english: dict[str, list[str]] = {}
+    native: dict[str, list[str]] = {}
+    for cf in titles:
+        if node(cf).startswith("~"):
+            k = kana.ja_key(cf)
+            if len(k) >= 6:
+                native.setdefault(k, []).append(cf)
+        elif cf in years:
+            english.setdefault(kana.en_key(cf), []).append(cf)
+    out: dict[str, str] = {}
+    for k, ts in native.items():
+        if len(ts) != 1 or len(english.get(k, ())) != 1:
+            continue
+        t, e = ts[0], english[k][0]
+        if t in years and any(abs(a - b) <= 1 for a in years[t] for b in years[e]):
+            out[t] = e
+    return out
+
+
 def dat_map(dat: str) -> dict[str, str]:
     """``{title (casefold): group key}`` of the DAT's titles that are one game with another title of it.
 
@@ -469,6 +529,7 @@ def dat_map(dat: str) -> dict[str, str]:
     apart = not_same(system)
     latin = {n for t in titles for n in (node(t), node(series_title(t))) if n and not n.startswith("~")}
     latin_titles = {node(t) for t in titles}
+    phonetic = _phonetic(titles, release_years(system))
     natives: dict[str, set] = {}            # (the words of the titles of another script: more than one game of them is a series, not a title)
     for t in titles:
         if node(series_title(t)).startswith("~"):
@@ -488,6 +549,9 @@ def dat_map(dat: str) -> dict[str, str]:
                 tail = node(" - ".join(parts[i:]))
                 if tail in latin_titles:
                     return tbl.get(tail) or "\x01" + tail
+        if cf in phonetic:                            # (katakana of one English title of the same year: "リトルインフェルノ")
+            e = node(phonetic[cf])
+            return tbl.get(e) or "\x01" + e
         if nb.startswith("~"):
             rest = link(bare)
             if rest != nb and (rest in latin or rest in tbl) and len(natives.get(rest, ())) < 2:
