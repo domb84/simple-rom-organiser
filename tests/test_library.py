@@ -1878,6 +1878,21 @@ class WhdloadOtherLanguageTests(unittest.TestCase):
         items, sel = self.run_with([en, *de], {**boots, whdready.key_of([en + ".adf"]): [3, "Game.lha"]})
         self.assertEqual(acts(items, sel)[de[0] + ".adf"], EXCLUDED)
 
+    def test_the_combination_known_to_boot_is_judged_beside_the_one_built_slot_by_slot(self) -> None:
+        from romorg import whdready
+        d1 = "Game (1990)(Pub)(Disk 1 of 2)[cr A]"
+        cracked, original = "Game (1990)(Pub)(Disk 2 of 2)[cr A]", "Game (1990)(Pub)(Disk 2 of 2)[cp manual code]"
+        shipped = {whdready.key_of([d1 + ".adf", original + ".adf"]): [3, "Game.lha"]}
+        items, sel = self.run_with([d1, cracked, original], shipped)
+        # disk 2 is the one the install was tested with: the crack of disk 2 (the better fit for disk 1's flags) gives way to it
+        self.assertEqual(acts(items, sel), {d1 + ".adf": KEEP, cracked + ".adf": SUPERSEDED, original + ".adf": KEEP})
+        # nothing known: the slot-wise pick stands (the disk that shares disk 1's crack)
+        items, sel = self.run_with([d1, cracked, original], {})
+        self.assertEqual(acts(items, sel)[cracked + ".adf"], KEEP)
+        # (prefer WHDLoad off: the shipped list is not looked at)
+        items, sel = self.run_with([d1, cracked, original], shipped, replace(AMIGA_DP, prefer_whdload=False))
+        self.assertEqual(acts(items, sel)[cracked + ".adf"], KEEP)
+
     def test_a_renamed_disk_is_found_by_its_checksum(self) -> None:
         from unittest import mock
         from romorg import whdready

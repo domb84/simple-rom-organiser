@@ -1208,7 +1208,54 @@ def _build_sets(group: list[Item], vkeys: Mapping[str, tuple],
                     continue
             s = make(anchor, slots, ss.total, dict(ss.labels), flags, ss.name, tuple(ss.missing))
             (complete if s.complete else partial).append(s)
+    if multi and profile is not None and profile.prefer_whdload:
+        complete.extend(_booting_sets(multi, complete, make))
     return complete, partial
+
+
+def _booting_sets(multi: list[Item], have: list[_Set], make: Callable[..., _Set]) -> list[_Set]:
+    """The combinations of the group's disks the shipped list knows boot with WHDLoad (``whdready``) that no set above is. A set is built
+    slot by slot - for each disk the best fit for disk 1's flags - so the combination you have (disk 1 a crack, disks 2 and 3 the originals
+    with their manual-code flag) is no candidate when the DAT lists those disks cracked too; the combinations that were tested are, so the
+    one known to boot is judged beside the others."""
+    from . import m3u, whdready
+    by_name: dict[str, Item] = {}
+    for it in sorted(multi, key=lambda i: (i.rom.name, i.key)):
+        by_name.setdefault(whdready.shipped_name(it.rom.name, it.rom.sha1 or ""), it)
+    known = {frozenset(it.key for it in s.slots.values()) for s in have}
+    out: list[_Set] = []
+    seen: set[str] = set()
+    for name in sorted(by_name):
+        disk = m3u.parse_disk_name(by_name[name].rom.name)
+        if disk is None or disk.index != 1:
+            continue
+        for key in whdready.sets_with(name):
+            if key in seen:
+                continue
+            seen.add(key)
+            if (whdready.known().get(key) or [None])[0] != whdready.BOOTS:
+                continue
+            names = key.split("\n")
+            if not all(n in by_name for n in names):
+                continue
+            members = [by_name[n] for n in names]
+            disks = [m3u.parse_disk_name(m.rom.name) for m in members]
+            if any(d is None for d in disks):
+                continue
+            total = disks[0].total
+            if any(d.total != total for d in disks) or sorted(d.index for d in disks) != list(range(1, total + 1)):
+                continue
+            ids = frozenset(m.key for m in members)
+            if ids in known:
+                continue
+            known.add(ids)
+            slots = dict(sorted((d.index, m) for d, m in zip(disks, members)))
+            first = next(d for d in disks if d.index == 1)
+            flags = tuple(f for f in first.flags if not m3u.is_neutral_flag(f))
+            ordered = [m3u.parse_disk_name(m.rom.name) for m in slots.values()]
+            out.append(make(slots[1], slots, total, {d.index: d.label for d in ordered}, flags,
+                            m3u._slot_name(first.title, first.flags, ordered), ()))
+    return out
 
 
 def _newer(s: _Set) -> tuple:
