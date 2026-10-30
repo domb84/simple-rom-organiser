@@ -536,6 +536,77 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "my own.m3u").read_text(), "b1.chd\n")
 
 
+class DiscZipCleanTest(unittest.TestCase):
+    """A zip that holds a game's disc next to a readme: the build cleans it on the disc systems too (Amendment 110), also for a set-aside game."""
+
+    def setUp(self) -> None:
+        self.w = World(self)
+        self.profile = dataclasses.replace(library.default_profile(self.w.platform()), keep_other_language=False)
+
+    def zip_game(self, game: str, rel: str, extra: dict) -> Path:
+        import zipfile
+        raw = self.w.base / ("raw " + game)
+        sheet = self.w.discs[game].write_raw(raw, "disc")
+        z = self.w.root / rel
+        z.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in sorted(raw.iterdir()):
+                zf.write(f, f.name)
+            for name, data in extra.items():
+                zf.writestr(name, data)
+        return z
+
+    def test_the_disc_stays_in_the_zip_and_the_readme_goes_to_unmatched(self) -> None:
+        import zipfile
+        from romorg import convert
+        z = self.zip_game("Beta (Europe)", "games/beta.zip", {"readme.txt": "notes", "scans/cover.png": b"png"})
+        ops = discsys.plan_disc_splits(self.w.scan())
+        self.assertEqual([(o.src, o.status, sorted(o.extras)) for o in ops], [(z, "split", ["readme.txt", "scans/cover.png"])])
+        res = convert.apply_splits(ops, self.w.root)
+        self.assertEqual((res["split"], res["extras"], res["failed"]), (1, 2, []))
+        with zipfile.ZipFile(z) as zf:
+            self.assertEqual(sorted(zf.namelist()), ["disc.gdi", "track01.bin", "track02.raw", "track03.bin"])
+        self.assertEqual((self.w.root / "_unmatched" / "games" / "beta" / "readme.txt").read_text(), "notes")
+        self.assertEqual(discsys.plan_disc_splits(self.w.scan()), [])               # (nothing left to clean)
+
+    def test_a_set_aside_game_takes_only_its_disc_and_the_extras_go_to_unmatched(self) -> None:
+        from romorg import convert
+        z = self.zip_game("Gamma (Japan)", "gamma.zip", {"readme.txt": "notes"})          # (no English: excluded)
+        convert.apply_splits(discsys.plan_disc_splits(self.w.scan()), self.w.root)
+        plan = dreamcast.plan_library(self.w.scan(), self.profile)
+        gamma = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Gamma (Japan)"][0]
+        self.assertEqual((gamma.code, [Path(d).name for _s, d in gamma.moves]), ("excluded", ["gamma.zip"]))
+        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
+        self.assertTrue((self.w.root / "_excluded").rglob("*.zip").__next__().is_file())
+        self.assertEqual((self.w.root / "_unmatched" / "gamma" / "readme.txt").read_text(), "notes")
+
+    def test_nothing_changes_when_a_member_cannot_be_checked(self) -> None:
+        from romorg import convert
+        z = self.zip_game("Beta (Europe)", "beta.zip", {"readme.txt": "notes"})
+        before = z.read_bytes()
+        op = discsys.plan_disc_splits(self.w.scan())[0]
+        op.extras = ["no such member"]
+        self.assertEqual(len(convert.apply_splits([op], self.w.root)["failed"]), 1)
+        self.assertEqual(z.read_bytes(), before)
+
+    def test_the_same_bios_twice_is_decided_as_on_a_cartridge_system(self) -> None:
+        from romorg import bios
+        found = bios.Bios("Sega - Dreamcast", "dc_boot.bin", frozenset(("dc_boot.bin", "boot.bin")))
+        (self.w.root / "Dreamcast BIOS (1999)(Sega).bin").write_bytes(b"bios")
+        (self.w.root / "zz").mkdir()
+        (self.w.root / "zz" / "dc_boot.bin").write_bytes(b"bios")
+
+        def ident(path):
+            return found if Path(path).suffix == ".bin" and Path(path).stat().st_size == 4 else None
+        with mock.patch.object(bios, "identify", ident), mock.patch.object(bios, "identify_archive", lambda p: None):
+            plan = dreamcast.plan_library(self.w.scan(), self.profile)
+        by = {Path(o.src).name: o for o in plan.ops if Path(o.src).name in ("dc_boot.bin", "Dreamcast BIOS (1999)(Sega).bin")}
+        self.assertEqual((by["dc_boot.bin"].status, by["dc_boot.bin"].bios), ("ok", True))                 # the copy named right stays
+        spare = by["Dreamcast BIOS (1999)(Sega).bin"]
+        self.assertEqual((spare.code, spare.folder, spare.bios), ("duplicate", "_duplicates", False))
+        self.assertIn("dc_boot.bin", spare.keeper)
+
+
 class ConvertTest(unittest.TestCase):
     def setUp(self) -> None:
         self.w = World(self)

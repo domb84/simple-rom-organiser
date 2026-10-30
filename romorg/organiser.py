@@ -204,7 +204,7 @@ def _archive_stem(rom: "Rom") -> str:
 
 
 def _rom_stem(rom: "Rom") -> str:
-    return getattr(rom, "set_name", "") or _split_ext(rom.name)[0]
+    return getattr(rom, "named", "") or getattr(rom, "set_name", "") or _split_ext(rom.name)[0]
 
 
 def _target_name(rom: "Rom", src_name: str, archive_ext: Optional[str] = None,

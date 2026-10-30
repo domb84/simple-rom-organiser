@@ -217,6 +217,22 @@ class WiiUNames(Base):
         self.assertEqual(out["AVCE01"], "Voice, The (USA) (En)")                                             # (its languages are kept)
         self.assertEqual(out["AOGJ01"], "Only GameTDB (Japan) (Ja)")
 
+    def test_a_later_revision_of_a_wii_u_disc_keeps_its_rev_in_the_library_name(self) -> None:
+        from unittest import mock
+        from romorg import datfile, discmatch, organiser, scanner
+        rom = datfile.Rom(name="Star Fox Zero (USA) (En,Fr,Es).wux", size=0, crc="", md5="", sha1="", game="Star Fox Zero (USA) (En,Fr,Es)",
+                          dat="Nintendo - Wii U")
+        fake = mock.Mock()
+        fake.disc_label.return_value = rom.game
+        fake.name.return_value = "Star Fox Zero"
+        with mock.patch.object(discmatch.gametdb, "GameTdb", return_value=fake):
+            match = discmatch.make_matcher([rom])
+            plain = match(self.put("a.wux", wux("AFXE")))[0]
+            later = match(self.put("b.wux", wux("AFXE", rev=2)))[0]
+        self.assertEqual(organiser.target_filename(plain, "a.wux", None, "container"), "Star Fox Zero (USA) (En,Fr,Es).wux")
+        self.assertEqual(organiser.target_filename(later, "b.wux", None, "container"), "Star Fox Zero (USA) (En,Fr,Es) (Rev 2).wux")
+        self.assertEqual(scanner.unit_key(later), scanner.unit_key(rom))          # (the game still counts as the catalogue's: it is had)
+
 
 class IdSaves(Base):
     """The saves of an ID-based emulator as save sets of the system's games (``idsaves``)."""

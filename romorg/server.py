@@ -4228,15 +4228,16 @@ class App:
                     raise ApiError(HTTPStatus.BAD_GATEWAY, f"The S3 archive cannot be reached: {exc}", "s3_error") from None
             st, recovered = self._recover_leftovers(job, state)       # what a run that was killed left behind
             split_res: dict[str, Any] | None = None
-            if not self._is_dc(st):                                   # a zip that holds a game next to other files: the game stays, the rest is unmatched
-                convert = _mod("convert")
-                splits = [op for op in convert.plan_splits(st.result) if op.status == "split"]
-                if splits:
-                    job.report(0, len(splits), "Separating the files in zips that are no game...")
-                    split_res = convert.apply_splits(splits, st.root, progress=job.report, cancel=job.cancel)
-                    if split_res["split"]:
-                        self._rescan_into(job, st, split_res)
-                        st = self._require_scan()
+            # a zip that holds a game next to other files: the game stays, the rest is unmatched
+            convert = _mod("convert")
+            planner = _mod("discsys").plan_disc_splits if self._is_dc(st) else convert.plan_splits
+            splits = [op for op in planner(st.result) if op.status == "split"]
+            if splits:
+                job.report(0, len(splits), "Separating the files in zips that are no game...")
+                split_res = convert.apply_splits(splits, st.root, progress=job.report, cancel=job.cancel)
+                if split_res["split"]:
+                    self._rescan_into(job, st, split_res)
+                    st = self._require_scan()
             conv_res: dict[str, Any] | None = None
             if self._convert_on_build(st.platform, self._config()):      # raw discs / odd dumps are converted first
                 latest = self._latest_arg(st, {})
