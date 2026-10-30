@@ -12,6 +12,7 @@ A plain ``.iso`` is hashed as ever and uses this only when its hash matches noth
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -113,6 +114,17 @@ class DiscNameIndex:
         return None
 
 
+def with_revision(rom: Any, revision: int) -> Any:
+    """The catalogue (GameTDB) names a Wii U disc without its revision, the disc says it (the ``-02-`` of the product code): the library
+    name of a later revision keeps ``(Rev N)``, as No-Intro and Redump name it. Only the name files are given changes (``Rom.named``), the game still counts as the catalogue's."""
+    if revision <= 0 or any(_REV.match((m.group(1) or "").strip()) for m in _TAG.finditer(rom.game)):
+        return rom
+    stem = getattr(rom, "set_name", "") or rom.name.rsplit(".", 1)[0]
+    tail = re.search(r"\s*\[[^\[\]]*\]$", stem)           # (the " [AFXE01]" that tells two discs of one name apart stays last)
+    cut = tail.start() if tail else len(stem)
+    return dataclasses.replace(rom, named=f"{stem[:cut]} (Rev {revision}){stem[cut:]}")
+
+
 def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
     """``match(path)``: the DAT rom list (one rom) of the Wii or Wii U disc image at ``path``, or None. A Wii disc is found by the
     game code in its header (the DAT's serials); a Wii U disc by its product code (GameTDB's list is the catalogue)."""
@@ -137,9 +149,9 @@ def make_matcher(roms: Iterable[Any]) -> Callable[[Path], Optional[List[Any]]]:
             title = tdb.name("wiiu", info.game_id)
         finally:
             tdb.close()
-        if label and label in index.by_game:
-            return [index.by_game[label]]
-        rom = index.find([title, info.name], info.game_id[3:4], info.revision, info.disc) if (title or info.name) else None
-        return [rom] if rom is not None else None
+        rom = index.by_game.get(label) if label else None
+        if rom is None:
+            rom = index.find([title, info.name], info.game_id[3:4], info.revision, info.disc) if (title or info.name) else None
+        return [with_revision(rom, info.revision)] if rom is not None else None
 
     return match

@@ -43,6 +43,9 @@ class Rom:
     category: str = ""
     # The disc's serial where the DAT has one (libretro's mirror of Redump: ``RVL-SB4E-USA-B0``), else "".
     serial: str = ""
+    # The name a local file is given when it is not the set's own: the Wii U catalogue names a disc without its revision, the disc says
+    # it (``X (USA) (En) (Rev 2)``). Counting (have / missing) still goes by the set, see :func:`unit_key`.
+    named: str = ""
 
     @property
     def tags(self) -> "Tags":
