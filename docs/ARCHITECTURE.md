@@ -4216,3 +4216,32 @@ detector; each merge was made only where the copies were the same code.
   changed when a check fails. Left as documented exceptions: BIOS / firmware and key files (they match a list), `.7z` / `.rar` archives
   that cannot be opened (no 7-Zip here: what is in them is not known) and read errors that may pass (an unreadable file may be a game), hidden
   files, user playlists.
+
+**AMENDMENT 111 (v0.5) — the gaps of "Combine alternate titles".**
+
+* **Titles in another script.** `alttitles.node` no longer gives `""` for a title in Japanese / Korean / Chinese / Cyrillic script: it is `ratings.native_key`
+  (`"~"` + the NFKC letters and digits), so two spellings of one Japanese title (full-width forms, a middle dot) are one game. `alttitles.link` is the
+  form a title of another script is joined to an English release by: its Latin words when they are one run with the Japanese on one side only (`Astroneer -アストロニーア-`,
+  `アバトール（Abathor）`), at least four letters of a real word (not `Vol.2`), at most 20 Japanese letters before them / 10 after them, and no word of an
+  extra (art book, soundtrack, bonus app); two titles of one Latin remainder are a series and join nothing. `ratings.build_rows` now keeps the names in
+  another script of a LaunchBox game under their `~` key (and no longer the junk `"1 2"` of `大逆転裁判1＆2`), and `Store._match` looks such a title up by it;
+  an index built before this has none of them, so that link appears with the next ratings download. Switch: 132 of its 3,314 Japanese-script titles
+  join a release now (the Latin ones); the others wait for the ratings index to be rebuilt.
+* **The same-region veto** (`alttitles._two_games`): a pair of `SAME_GAME` (checked by hand) always wins over it, `library.NOT_SAME_GAME` (`{platform:
+  [(title, title)]}`: Digimon World 2003 / 3, Knockout Kings 99 / Knockout Kings on the PlayStation) splits a pair the data joins, and a title with
+  a Japanese budget series in front (`alttitles.series_title`: SuperLite 1500 / 2000 / Gold / 3in1, Simple 1000 / 1500 / 2000 (Jitsuyou) Series, Value 1500,
+  World Greatest Hits Series, Arcade Hits, each with `Vol. N`) is compared, and grouped, as its bare title (`Simple 1500 Series Vol. 93 - The Puzzle
+  Bobble - Puzzle Bobble 4` = `Puzzle Bobble 4`). Sequels and numbered entries stay apart (`Neo Atlas` / `Neo Atlas II`, `After Rain Vol. 1` / `Vol. 2`).
+  New hand pairs: SMS Minesweeper / Mine Sweeper, SNES Cannondale Cup / Exertainment Mountain Bike Rally, PS2 Adiboo and the Energy Thieves / Energy
+  Thieves, The, GBC O'Leary Manager 2000 / Barca Total 2000.
+* **Rating of a combined game** (`library._units`, `_rate_incomplete`): the best (rating, then votes) of every title of the game among all its releases
+  (kept or not, `library._rated_titles`, `_game_rating`) with at least `min_votes` votes; the title that ranks it is the title that gave it. It no longer
+  depends on which release is kept. (`totals`' "best missing" insight still rates by the title of one release.)
+* **No ratings index.** `alttitles._lb_names` keeps the names of the last index in `ratings/alttitles.json` (rewritten when the index changes) and uses
+  them when the index is gone, so the games do not come apart (N64 without the index: 518 games with it, 616 without, 518 with the remembered names).
+  `alttitles.notice(platform)` is the text the library plan's `notices` carry (`App._plan_notices`, shown under the plan, no reason for Build to ask again) when the index is missing (and, with nothing
+  remembered, that games under other titles are not combined).
+* **`library.title_key(it, combine)`** uses the combined title; `kept_titles` / `_mark_covered` / `totals` pass the profile's rule.
+* **`KEEP_APART_PLATFORMS`** `{platform: {title: [tag sets]}}` (the Amiga's is `KEEP_APART`: publishers). On a No-Intro / Redump system the tags are the
+  release's regions and `(..)` flags, casefold; a release with none is the main game (`library._release_apart`, `game_key_of`; the key's product tuple
+  gets `@n`). First entry: Game Boy `Space Invaders` (Japan, Taito 1990, 32 KB) apart from Activision's 1999 USA / Europe game. `platform_of_dat` maps a DAT to its system.

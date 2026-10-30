@@ -776,7 +776,7 @@ def _gkey(item: Item, combine: bool) -> tuple:
     hit = memo.get(combine)
     if hit is not None and hit[0] == state:
         return hit[1]
-    value = combined_key(game_dat(item.dat), tags.game_key(_tags_of(item)), combine)
+    value = game_key_of(game_dat(item.dat), _tags_of(item), combine)
     memo[combine] = (state, value)
     return value
 
@@ -843,10 +843,45 @@ KEEP_APART: dict[str, list[frozenset]] = {
 }
 # New candidates: tools/keep_apart_candidates.py lists the titles LaunchBox knows as two Amiga games (a lead to check, never a rule).
 
+# The same, per platform: ``{platform: {title (casefold): [tags of one game, tags of another, ...]}}``. ``KEEP_APART`` above is the Amiga's
+# (TOSEC: the tags are the publishers; a publisher in no list is the first game). On a No-Intro / Redump system the tags are what a
+# release's name says - its regions and its ``(..)`` flags, casefold ("japan", "namco") - and a release with none of the listed ones is
+# the title's main game. Found in the DATs by hand (a title whose releases of one region are a smaller, older game than the others').
+KEEP_APART_PLATFORMS: dict[str, dict[str, list[frozenset]]] = {
+    "Commodore Amiga": KEEP_APART,
+    "Nintendo Game Boy": {
+        "space invaders": [frozenset({"japan"})],        # Taito's 1990 game (Japan, 32 KB) / Activision's 1999 one (USA, Europe, 512 KB)
+    },
+}
 
-def _apart(title: str, publisher: str) -> str:
-    """The publisher part of a combined TOSEC key: "" (any publisher: one game), or which game of a :data:`KEEP_APART` title it is."""
-    games = KEEP_APART.get(title.strip())
+# Titles of one platform that are two games although the ratings data (or a title spelt alike) joins them: ``{platform: [(title, title)]}``.
+# Hand-checked; ``alttitles`` never puts the two in one game.
+NOT_SAME_GAME: dict[str, list[tuple[str, str]]] = {
+    "Sony PlayStation": [("Digimon World 2003", "Digimon World 3"), ("Knockout Kings 99", "Knockout Kings")],
+}
+
+_DAT_PLATFORM: Optional[dict[str, str]] = None
+
+
+def platform_of_dat(dat: str) -> Optional[str]:
+    """The name of the platform a DAT belongs to (its games DAT's, a disc DAT's included); None: not a DAT of the platforms."""
+    global _DAT_PLATFORM
+    if _DAT_PLATFORM is None:
+        from . import platforms
+        _DAT_PLATFORM = {d: p.name for p in platforms.PLATFORMS.values() for d in (*p.dats, *p.disc_dats, *p.image_set_dats)}
+    return _DAT_PLATFORM.get(game_dat(dat)) or _DAT_PLATFORM.get(dat)
+
+
+def _keep_apart_titles(dat: str) -> dict:
+    """The :data:`KEEP_APART_PLATFORMS` titles of the system ``dat`` is of (unknown: the Amiga's, what the TOSEC code was made for)."""
+    plat = platform_of_dat(dat) if dat else None
+    return KEEP_APART_PLATFORMS.get(plat, {}) if plat else KEEP_APART
+
+
+def _apart(title: str, publisher: str, dat: str = "") -> str:
+    """The publisher part of a combined TOSEC key: "" (any publisher: one game), or which game of a :data:`KEEP_APART_PLATFORMS` title it
+    is (``dat``: of the system; none: the Amiga's)."""
+    games = _keep_apart_titles(dat).get(title.strip())
     if not games:
         return ""
     parts = {publisher.strip(), *(x.strip() for x in publisher.split(" - "))}      # ("Mindscape - Future Publishing": a cover disk of Mindscape's)
@@ -854,6 +889,31 @@ def _apart(title: str, publisher: str) -> str:
         if parts & pubs:
             return f"#{n}"
     return "#0"
+
+
+def _release_apart(dat: str, t: "tags.Tags") -> str:
+    """Which game of a :data:`KEEP_APART_PLATFORMS` title a No-Intro / Redump release is (``@n``); "" for the title's main game (and for
+    every title that is no such title)."""
+    plat = platform_of_dat(dat)
+    games = KEEP_APART_PLATFORMS.get(plat, {}).get(t.title.casefold().strip()) if plat else None
+    if not games:
+        return ""
+    have = {f.casefold() for f in t.flags} | {r.casefold() for r in t.regions}
+    for n, marks in enumerate(games):
+        if have & marks:
+            return f"@{n}"
+    return ""
+
+
+def game_key_of(dat: str, t: "tags.Tags", combine: bool) -> tuple:
+    """:func:`game_key`'s key of a release by its tags (``dat``: its games DAT's): ``tags.game_key`` as "Combine alternate titles" makes it,
+    and told apart from the other game of a title two games share (:data:`KEEP_APART_PLATFORMS`)."""
+    key = combined_key(dat, tags.game_key(t), combine)
+    if t.style != STYLE_TOSEC and len(key) > 3:
+        apart = _release_apart(dat, t)
+        if apart:
+            key = key[:3] + (tuple(key[3]) + (apart,),) + key[4:]
+    return key
 
 
 _COMBINED: dict[tuple, tuple] = {}
@@ -883,7 +943,7 @@ def _combined_key(dat: str, key: tuple) -> tuple:
                         and not re.fullmatch(r"[A-Z]{1,3}", f))      #  nor a version's letter: "v1.14C", "v1.00R", "v1.44GE" - your languages choose)
         g = alttitles.group(dat, key[1])
         # which game of a KEEP_APART title: by its own title, else by its group's (Mindscape's "Four Crystals of Trazere" is its Legend)
-        apart = _apart(key[1], key[3]) if key[1].strip() in KEEP_APART or not g else _apart(g[1:], key[3])
+        apart = _apart(key[1], key[3], dat) if key[1].strip() in _keep_apart_titles(dat) or not g else _apart(g[1:], key[3], dat)
         key = (key[0], key[1], (), apart, edition, key[5])
     g = alttitles.group(dat, key[1])                        # (key[1]: the title, casefold)
     if g:
@@ -1504,13 +1564,18 @@ def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
                 if all((d := sel.decisions.get(k)) is None or d.action == KEEP for k in cs.slots.values())]
 
 
-def title_key(it: Item) -> str:
+def title_key(it: Item, combine: bool = False) -> str:
     """The game an item is of, as a person would say it: its title in lower case, letters and digits only (``Push-Over`` = ``pushover``)
     - the same for every release, edition, publisher, region and DAT of a system (floppies, an SPS release, another region's discs).
     An edition named after the title is the same game (``Wing Commander - Platinum Edition`` = ``Wing Commander``); any other subtitle
-    is not (``Lemmings - Oh No! More Lemmings`` is a game of its own)."""
-    title = _EDITION_RE.sub("", _tags_of(it).title.casefold())
-    return re.sub(r"[^0-9a-z]+", "", title)
+    is not (``Lemmings - Oh No! More Lemmings`` is a game of its own). ``combine``: the profile's "Combine alternate titles": the titles
+    of one game in other regions (``Biohazard`` / ``Resident Evil``) are one title - its group's, as :func:`game_key` has it."""
+    title = _tags_of(it).title.casefold()
+    if combine:
+        g = alttitles.group(game_dat(it.dat), title)
+        if g:
+            title = g[1:]
+    return re.sub(r"[^0-9a-z]+", "", _EDITION_RE.sub("", title))
 
 
 _EDITION_RE = re.compile(r"\s+-\s+[^-]*\bedition\s*$")
@@ -1522,7 +1587,7 @@ def kept_titles(items: Sequence[Item], sel: Selection) -> dict[str, str]:
     for it in items:
         d = sel.decisions.get(it.key)
         if d is not None and d.action == KEEP and not d.missing:
-            out.setdefault(title_key(it), it.rom.game or _rom_name(it))
+            out.setdefault(title_key(it, sel.combine_alt), it.rom.game or _rom_name(it))
     return out
 
 
@@ -1537,7 +1602,7 @@ def _mark_covered(items: Sequence[Item], sel: Selection) -> None:
     for x in sel.incomplete:
         mine = [by_key[k] for k in x.present.values() if k in by_key]
         if mine:
-            x.covered_by = have.get(title_key(mine[0]), "")
+            x.covered_by = have.get(title_key(mine[0], sel.combine_alt), "")
 
 
 def content_names(item: Item) -> tuple[str, ...]:
@@ -2317,6 +2382,7 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
         if own:
             for k in cs.slots.values():
                 owner_of[k] = own[0]
+    titles = _rated_titles(items, rdats, profile)
     units: dict[tuple, _Unit] = {}
     for it in items:
         d = sel.decisions.get(it.key)
@@ -2329,14 +2395,44 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
         u = units.get(key)
         if u is None:
             title = _tags_of(owner).title
-            r = None if tags.bonus_disc(_tags_of(owner)) else lookup(title)        # (a bonus disc is no game of its own: not rated as it)
-            if r is not None and r[1] < profile.min_votes:
+            if tags.bonus_disc(_tags_of(owner)):             # (a bonus disc is no game of its own: not rated as it)
                 r = None
+            else:
+                title, r = _game_rating(titles.get(key) or [title], lookup, profile.min_votes)
             u = units[key] = _Unit(key, owner, [], title, r, True)
         u.items.append(it)
         if d.missing:
             u.complete = False
     return sorted(units.values(), key=lambda u: _stable(u.key))
+
+
+def _rated_titles(items: Sequence[Item], rdats: set, profile: LibraryProfile) -> dict[tuple, list[str]]:
+    """``{game key: [the titles of its releases]}`` of the rated DATs' items, kept or not: a game combined from several titles
+    ("Biohazard" / "Resident Evil") is as good as the best rated of them, whichever release the rules keep."""
+    out: dict[tuple, set] = {}
+    if not profile.combine_alt_titles:
+        return {}
+    for it in items:
+        if it.dat not in rdats and game_dat(it.dat) not in rdats:
+            continue
+        t = _tags_of(it)
+        if t.bios or tags.bonus_disc(t):
+            continue
+        out.setdefault(game_key(it, True), set()).add(t.title)
+    return {k: sorted(v, key=lambda x: (x.casefold(), x)) for k, v in out.items()}
+
+
+def _game_rating(titles: Sequence[str], lookup: Callable[[str], Optional[tuple[float, int]]],
+                 min_votes: int) -> tuple[str, Optional[tuple[float, int]]]:
+    """``(title, (rating, votes) | None)``: the best rating (then the most votes) of the titles of one game that has at least ``min_votes``
+    votes, with the title it is of; the first title when none is rated."""
+    best: Optional[tuple[float, int]] = None
+    at = titles[0]
+    for t in titles:
+        r = lookup(t)
+        if r is not None and r[1] >= min_votes and (best is None or (r[0], r[1]) > best):
+            best, at = r, t
+    return at, best
 
 
 def _cutoff(units: Sequence[_Unit], profile: LibraryProfile) -> tuple:
@@ -2437,6 +2533,7 @@ def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProf
     from . import ratings as _ratings
 
     rdats = set(_ratings.rated_dats(platform))
+    titles = _rated_titles(items, rdats, profile)
     games: dict[tuple, list[Item]] = {}
     for it in items:
         d = sel.decisions.get(it.key)
@@ -2445,9 +2542,10 @@ def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProf
     for key, mine in games.items():
         owner = min(mine, key=lambda it: (_rom_name(it), it.key))
         title = _tags_of(owner).title
-        r = None if tags.bonus_disc(_tags_of(owner)) else ctx.lookup(title)
-        if r is not None and r[1] < profile.min_votes:
+        if tags.bonus_disc(_tags_of(owner)):
             r = None
+        else:
+            title, r = _game_rating(titles.get(key) or [title], ctx.lookup, profile.min_votes)
         codes: list[str] = []
         if r is None:
             if not profile.keep_unrated:
