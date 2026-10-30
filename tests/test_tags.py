@@ -168,6 +168,13 @@ class TosecParseTest(unittest.TestCase):
         self.assertEqual(parse_name("G v1.009 r30 (1990)(P)", "tosec").version, "v1.009 r30")
 
 
+class StripExtTest(unittest.TestCase):
+    def test_it_does_what_the_regex_does(self) -> None:
+        for name in ("Game (1990)(Pub).adf", "Game.v1.2.zip", "Game.toolongext", "Game.", ".hidden", "Game", "", "a.b.c", "Game.\u0660ab",
+                     "Game.ab\n", "Game.ab cd", "Game (USA).sfc", "x.12345", "x.123456"):
+            self.assertEqual(tags.strip_ext(name), tags._EXT_RE.sub("", name), repr(name))
+
+
 class VersionTest(unittest.TestCase):
     def test_order(self) -> None:
         ordered = ["", "Rev 1", "Rev 2", "Rev 10"]

@@ -276,4 +276,4 @@ def count_firmware_matches(result: Any) -> int:
 
 def is_key_file(path: Path) -> bool:
     """True for the key files of the Switch and Wii U emulators (told by name: they have no common checksum)."""
-    return Path(path).name.casefold() in KEY_NAMES
+    return os.path.basename(os.fspath(path)).casefold() in KEY_NAMES

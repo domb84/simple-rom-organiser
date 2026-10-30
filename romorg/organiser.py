@@ -61,6 +61,7 @@ import dataclasses
 import difflib
 import errno
 import functools
+import gc
 import filecmp
 import json
 import os
@@ -487,11 +488,24 @@ def bios_verdicts(ops: Sequence[RenameOp], root: Path, profile: Optional["librar
     return out
 
 
+def _clone_op(op: RenameOp) -> RenameOp:
+    """A shallow copy of ``op`` (``copy.copy`` without its generic machinery: one per file of a big scan)."""
+    new = object.__new__(RenameOp)
+    new.__dict__.update(op.__dict__)
+    return new
+
+
+def _fold_text(text: str) -> str:
+    return os.path.normcase(text).casefold()
+
+
 def _finish_op(src: Path, dst: Path, reasons: list[str], rom_name: str, dat: str,
                unmatched: bool) -> RenameOp:
-    # str(): on Windows Path equality ignores case, which would hide a case-only rename
-    same_parent = _fold(src.parent) == _fold(dst.parent)
-    at_target = str(src) == str(dst) or (src.name == dst.name and same_parent and _same_file(src, dst))   # (a hard link elsewhere is not it)
+    # (text work only: this runs for every file of a big scan, and a Path's ``parent`` / ``name`` were the hot spot.
+    # str(): on Windows Path equality ignores case, which would hide a case-only rename)
+    s, d = os.fspath(src), os.fspath(dst)
+    same_parent = _fold_text(os.path.dirname(s)) == _fold_text(os.path.dirname(d))
+    at_target = s == d or (os.path.basename(s) == os.path.basename(d) and same_parent and _same_file(src, dst))   # (a hard link elsewhere is not it)
     status = "ok" if at_target else "move"
     kind = "rename" if same_parent else "move"
     if at_target:
@@ -682,8 +696,8 @@ def _scan_units(result: "ScanResult", layout: Optional[str] = None,
     if layout is None:
         layout = getattr(result, "layout", LAYOUT_PER_DAT) or LAYOUT_PER_DAT
     units, others, unmatched_loose, unmatched_archives = _base_units(result, layout)
-    units = [dataclasses.replace(u, op=copy.copy(u.op)) for u in units]
-    others = [copy.copy(o) for o in others]
+    units = [dataclasses.replace(u, op=_clone_op(u.op)) for u in units]
+    others = [_clone_op(o) for o in others]
     if planner is not None:
         for p in unmatched_loose:
             others.append(planner.unmatched(p, "no DAT match"))
@@ -1005,8 +1019,16 @@ def plan_library(result: "ScanResult", profile: "library.LibraryProfile", missin
     """See :func:`_plan_library`; playlists on disk are looked at once for the whole plan (``m3u.one_look``)."""
     from . import m3u
 
-    with m3u.one_look():
-        return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings, lang_games, saved)
+    # (a plan makes some hundred thousand small objects that all live until it is done: the collector would look through them again and
+    # again for cycles that are not there - a good tenth of the time of a big one - so it waits)
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        with m3u.one_look():
+            return _plan_library(result, profile, missing_dats, layout, savedisk, labels, platform, ratings, lang_games, saved)
+    finally:
+        if collecting:
+            gc.enable()
 
 
 def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missing_dats: Iterable[str] = (),

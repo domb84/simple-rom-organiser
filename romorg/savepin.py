@@ -112,6 +112,11 @@ class Pinner:
         """The titles the save file ``path`` belongs to (``[]``: not pinned), the first being the main one."""
         key = os.fspath(path)
         if key not in self._done:
+            name = os.path.basename(key)
+            if saveindex.content_name(name) is None and (os.path.splitext(name)[1].lower() in _NOT_SAVES
+                                                         or not memcards.sniff_size(self._size(key))):
+                self._done[key] = []                       # (named like no save, never one by its kind or the size of a card: most files
+                return []                                  # of a big folder, found without a path object, a second look or a siblings listing)
             found = self._find(Path(path))
             if not found:                                  # the other files of its save set (the empty cards B, C, D of a game) go where
                 found = self._siblings(Path(path))         # the one that says which game it is goes
@@ -174,8 +179,8 @@ class Pinner:
         return out
 
     @staticmethod
-    def _size(path: Path) -> int:
+    def _size(path: Any) -> int:
         try:
-            return path.stat().st_size
+            return os.stat(path).st_size
         except OSError:
             return 0

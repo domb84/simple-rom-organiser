@@ -988,7 +988,7 @@ RESCUE_RULES = frozenset({"modified", "bad_size"})
 
 
 def _stem(name: str) -> str:
-    return tags._EXT_RE.sub("", name.strip())
+    return tags.strip_ext(name.strip())
 
 
 @dataclass
@@ -1033,7 +1033,7 @@ def _edition_text(name: str, publisher: str) -> str:
     (the parentheses between the publisher and the disk token); ``""`` when there are none."""
     from . import m3u
 
-    stem = tags._EXT_RE.sub("", name.strip())
+    stem = tags.strip_ext(name.strip())
     m = m3u._DISK_TOKEN.search(stem)
     head = stem[:m.start()] if m else stem
     groups = [g for g in _PAREN_RE.findall(head) if not _DATE_TOKEN_RE.match(g.strip())]

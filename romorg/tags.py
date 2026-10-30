@@ -95,6 +95,20 @@ for _codes, _lang in (
 del _codes, _lang, _c
 
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+
+
+def strip_ext(name: str) -> str:
+    """``_EXT_RE.sub("", name)`` without the regex (it runs for every file of a big folder): the only dot that can start a match is the last
+    one, and what follows it must be 1 to 5 ASCII letters or digits."""
+    if name.endswith("\n"):                      # (``$`` also matches before a final newline)
+        return _EXT_RE.sub("", name)
+    cut = name.rfind(".")
+    tail = name[cut + 1:]
+    if cut >= 0 and 1 <= len(tail) <= 5 and tail.isascii() and tail.isalnum():
+        return name[:cut]
+    return name
+
+
 _GROUP_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
 # Contract forms plus the variants seen in real DATs: "V1.1", "Rev 1.2", "v2.0-beta3".
 _VERSION_PART_RE = re.compile(
@@ -434,7 +448,7 @@ _TRAILING_DOT_RE = re.compile(r"(?<=[)\]])\.+$")
 @functools.lru_cache(maxsize=65536)
 def parse_name(name: str, style: str = STYLE_NOINTRO) -> Tags:
     """Parse a rom/set name (a trailing short extension is ignored)."""
-    base = _EXT_RE.sub("", name.strip())
+    base = strip_ext(name.strip())
     base = _TRAILING_DOT_RE.sub("", base)     # a DAT entry such as "Rex Run (World) (Aftermarket) (Unl)." (No-Intro Game Boy)
     if style == STYLE_TOSEC:
         return _parse_tosec(base)
