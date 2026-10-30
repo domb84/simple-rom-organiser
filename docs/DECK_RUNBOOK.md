@@ -121,7 +121,7 @@ This is the one run that cannot be done anywhere else: the real RetroArch config
    (Flycast, Mupen64Plus-Next, PCSX-ReARMed ...) must not add anything to the SNES numbers.
 3. **Library > Preview** with the default (Keep both ROMs): kept 2,266, excluded 853, superseded 924 (it was 2,262 / 854 / 927
    without saves), "Saves affected by this build" lists 4 rows. Choose "Archive the saves with the ROM" in the rules: 12 files of
-   4 games go to `_saves/` (needs an archive folder or the ROM folder), "Leave": they stay. Use the choice on one row (for
+   4 games go to `Saves/` (needs an archive folder or the ROM folder), "Leave": they stay. Use the choice on one row (for
    example Super Mario World (USA) = Keep both ROMs) and press Recalculate: only that game changes. **Do not Build on the real
    folder**; to see the apply, copy the SNES folder and 3 of its saves to a scratch folder and a scratch RetroArch config.
 4. **Rename.** In that scratch copy rename a ROM (e.g. `Super Mario World (USA).sfc` -> `smw.sfc`), build: its `.srm` / `.state1` /

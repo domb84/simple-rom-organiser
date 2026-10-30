@@ -96,7 +96,7 @@ class Ps2EndpointTests(PsServerCase):
         self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual(j["status"], "done", j)
-        self.assertTrue((self.arch / "_saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
+        self.assertTrue((self.arch / "Saves" / "Alpha" / "Alpha loose.state").is_file())          # not a disc image: set aside under its game
         self.assertTrue((self.roms / "Part (USA)" / "Part (USA) (Disc 2)" / "Part (USA) (Disc 2).chd").is_file())          # (a disc of a multi-disc game: in its game's folder)
         self.assertFalse(list(self.roms.rglob("*.m3u")))
         self.assertFalse((self.roms / "Alpha loose.chd").exists())
@@ -391,7 +391,7 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual(res["status"], "done", res)
         self.assertEqual(res["result"]["saves_archived"]["moved"], 2)
         self.assertEqual(self.games(), ["Gamma (Europe)/Gamma (Europe).chd"])
-        there = aside / "ps2" / "_saves"
+        there = aside / "ps2" / "Saves"
         self.assertTrue((there / "Mcd001.ps2" / "BASLUS-20946GAMMA" / "data.bin").is_file())
         self.assertTrue((there / "sstates" / "SLUS-20946 (AABBCCDD).01.p2s").is_file())
         self.assertFalse((self.pcsx2 / "memcards" / "Mcd001.ps2" / "BASLUS-20946GAMMA").exists())

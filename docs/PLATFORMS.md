@@ -30,7 +30,7 @@ in the file is looked up in a catalogue; such a match is **identified**, not **v
 * **Exclusion flags** (demo, beta, prototype, bad dump, pirate ...) apply wherever the names or DAT categories carry them.
 * **Completion figures** count the DAT's entries. The Switch has one figure per catalogue (games / updates / DLC).
 * **Saves**: only **RetroArch's** are named after the ROM, so only they are renamed with it. The other emulators tell a game by an ID; a
-  game that has saves is kept when the rules would archive it, or its saves go to the archive with it (`_saves`). Memory-card images and
+  game that has saves is kept when the rules would archive it, or its saves go to the archive with it (`Saves`). Memory-card images and
   Ryujinx's save folders are counted but never moved. A system with no emulator set up (Emulators page) shows no saves at all.
 * **Verification** (is the file intact?): cartridge systems, Amiga, Dreamcast, PlayStation, PS2, GameCube and plain Wii `.iso` verify by
   the checksum match itself; the Switch has the NCA check; Wii compressed images and the Wii U cannot be verified.

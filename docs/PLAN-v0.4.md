@@ -23,7 +23,7 @@ app's own lying around.
 3. **No reason folders in the library** when an archive is set: what the rules set aside goes straight to the archive (today's
    behaviour), and a build first sweeps old `_excluded` / `_superseded` / ... folders out (today: only when the archive folder is
    given to that build).
-4. **Nothing in the archive without a reason**: every file sits under `<system>/<_reason>/` (or `<system>/_saves/<game>/`), nothing
+4. **Nothing in the archive without a reason**: every file sits under `<system>/<_reason>/` (or `<system>/Saves/<game>/`), nothing
    at the top level, no zero-byte "folder" objects on S3, no unfinished multipart uploads left behind.
 5. **No manual step**: Build library keeps both places clean by itself (the user: "if I build a library then things get archived as
    now; there's no manual step"). A test helper checks rules 1-4 after every build in the tests; the app has no tidy button.
@@ -64,7 +64,7 @@ and phase 2's archive on S3 too (Amendment 66): builds upload, check and delete;
   the local file - no local copy is kept (the user). Never over an object of another content (a different checksum: a numbered name, as locally).
 * An inventory of the bucket (list once, kept in the data folder, refreshed when a job writes): "in the archive" counts, the tidy
   check, and finding a game in the archive without downloading anything.
-* Saves of archived games go with them (`_saves/<game>/`), as locally.
+* Saves of archived games go with them (`Saves/<game>/`), as locally.
 
 ### Phase 3 - using the archive - done 2026-10-24 (Amendment 67): browse, multi-select Restore (the archive keeps its copy),
 restored files converted to the library's form, missing games found in the archive. Not done: saves. Other tools' objects in the bucket are out of scope (the user: the app manages the bucket).

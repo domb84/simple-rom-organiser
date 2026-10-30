@@ -48,7 +48,7 @@ user a patch (`git format-patch origin/v0.2`).
      4 to ROMs the rules would archive (Super Mario World (USA), Zelda ALttP (Switch Online), Star Fox (Japan), Yoshi's Island
      (Europe) (En,Fr,De)), 2 have no ROM and no DAT entry (Super Mario Collection (Japan) (Rev 1), Yoshi's Island (USA, Asia) (Rev 1)).
    - Policy *keep both ROMs*: 4 games kept for their saves (Kept/Excluded/Superseded 2,266 / 853 / 924); *leave* and *archive*:
-     2,262 / 854 / 927, with 12 files of 4 games staying or going to `_saves`.
+     2,262 / 854 / 927, with 12 files of 4 games staying or going to `Saves`.
    Check Overview (Saves card), Library (Saves column, "Games with saves" filter, per-row choice) and Browse (Saves column and tab).
    Then do a real build on a COPY of a small ROM folder, and Undo it.
 4. Folder fields: only **Folders...** exists now; try it on every page (Overview, Library "build elsewhere" / archive, Collection,

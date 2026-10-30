@@ -580,7 +580,7 @@ class _Planner:
         return _finish_op(src, root / UNMATCHED_DIR / rel, [why], "", "", True)
 
     def _pin(self, src: Path) -> Optional[RenameOp]:
-        """The op that sets a save aside under the game it belongs to (``_saves/<Title>/``), or None when it is not pinned to one."""
+        """The op that sets a save aside under the game it belongs to (``Saves/<Title>/``), or None when it is not pinned to one."""
         if self.pinner is None:
             return None
         titles = self.pinner.titles(src)

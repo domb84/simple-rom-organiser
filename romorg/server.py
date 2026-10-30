@@ -4881,7 +4881,7 @@ class App:
 
     def _saves_moves(self, plan: Any, folder: Path, aside: Path | None, name: str | None = None) -> tuple[list[Any], dict[str, Any]]:
         """The moves that take the saves and states of the games the plan sets aside (and whose choice is "archive") to
-        ``<archive>/<system folder name>/_saves/<path below the save folder>`` (inside the ROM folder, ``<folder>/_saves``,
+        ``<archive>/<system folder name>/Saves/<path below the save folder>`` (inside the ROM folder, ``<folder>/Saves``,
         while no archive folder is used). Never over an existing file (the name gets `` (2)``). ``([], {})`` otherwise."""
         sp = self._saves_plan(plan)
         if sp is None or not sp["archive"]:

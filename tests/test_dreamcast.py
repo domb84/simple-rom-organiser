@@ -399,13 +399,13 @@ class LibraryTest(unittest.TestCase):
         profile = dataclasses.replace(self.profile, keep_extras=False)
         plan = self.plan(profile)
         by_name = {Path(o.src).name: o for o in plan.ops if Path(o.src).name in ("b1.state", "b2.state")}
-        self.assertEqual({n: (o.status, o.folder) for n, o in by_name.items()}, {"b1.state": ("move", "_saves"), "b2.state": ("move", "_saves")})
+        self.assertEqual({n: (o.status, o.folder) for n, o in by_name.items()}, {"b1.state": ("move", "Saves"), "b2.state": ("move", "Saves")})
         self.assertIn("sat with Big Game (USA) (Disc 1)", by_name["b1.state"].reason)
-        self.assertEqual(Path(by_name["b1.state"].dst), self.w.root / "_saves" / "Big Game" / "b1.state")           # under its game's title
+        self.assertEqual(Path(by_name["b1.state"].dst), self.w.root / "Saves" / "Big Game" / "b1.state")           # under its game's title
         kept = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Big Game (USA) (Disc 1)"][0]
         self.assertEqual([Path(d).name for _s, d in kept.moves], ["Big Game (USA) (Disc 1).chd"])       # only the disc image is the game
         dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
-        self.assertEqual((self.w.root / "_saves" / "Big Game" / "b1.state").read_bytes(), b"sidecar b1.state")      # set aside under its game, never deleted
+        self.assertEqual((self.w.root / "Saves" / "Big Game" / "b1.state").read_bytes(), b"sidecar b1.state")      # set aside under its game, never deleted
         self.assertFalse((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").exists())
         self.assertTrue((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).chd").is_file())
 
@@ -457,7 +457,7 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(res["failed"], [])
         got = tree(self.w.root)
         self.assertIn("Alpha (Europe) (En,Fr)/Alpha (Europe) (En,Fr).chd", got)
-        self.assertIn("_saves/Alpha/Alpha (USA) (En,Fr).state", got)                     # a save goes under its game, not with the CHD
+        self.assertIn("Saves/Alpha/Alpha (USA) (En,Fr).state", got)                     # a save goes under its game, not with the CHD
         self.assertIn("_excluded/gamma/g.chd", got)
         self.assertIn("_excluded/delta/d.chd", got)
         # second run: nothing left to do, no playlist write / stale
@@ -673,7 +673,7 @@ class ConvertTest(unittest.TestCase):
             self.assertNotIn(f"_converted_originals/raw dump/{name}", got)
         plan = dreamcast.plan_library(self.w.scan(), library.default_profile(self.w.platform()))
         where = {Path(o.src).name: o.folder for o in plan.ops if Path(o.src).name in ("readme.txt", "Epsilon.md5", "Epsilon.state")}
-        self.assertEqual(where, {"readme.txt": "_unmatched", "Epsilon.md5": "_unmatched", "Epsilon.state": "_saves"})
+        self.assertEqual(where, {"readme.txt": "_unmatched", "Epsilon.md5": "_unmatched", "Epsilon.state": "Saves"})
 
     def test_chdman_failure_leaves_nothing_behind(self) -> None:
         before = tree(self.w.root)

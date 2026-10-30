@@ -418,7 +418,7 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertIn("Two Part (USA)/Two Part (USA) (Disc 1)/Two Part (USA) (Disc 1).chd", got)
         self.assertIn("Two Part (USA)/Two Part (USA) (Disc 2)/Two Part (USA) (Disc 2).chd", got)
         self.assertIn("_excluded/d.chd", got)                             # demo (category)
-        self.assertIn("_saves/Beta/be.state", got)                        # not a disc image: set aside under its game (the option "keep other files" keeps it)
+        self.assertIn("Saves/Beta/be.state", got)                        # not a disc image: set aside under its game (the option "keep other files" keeps it)
         self.assertNotIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)
         self.assertFalse([k for k in got if k.endswith(".m3u")])
         again = discsys.plan_library(self.w.scan(), self.profile)

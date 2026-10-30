@@ -187,14 +187,14 @@ class DcEndpointTests(DcServerCase):
         plan = self.call("/api/library/plan", {})
         row = [r for r in plan["items"] if r.get("game") == "Beta (Europe)"][0]
         self.assertEqual((row["status"], row["to"], row["level"], row["files"]), ("move", "Beta (Europe)", "identified", 1))      # (its save state is no part of the game: a row of its own)
-        self.assertTrue([r for r in plan["items"] if r["from"].endswith("y.state") and r["to"].startswith("_saves/Beta/")])
+        self.assertTrue([r for r in plan["items"] if r["from"].endswith("y.state") and r["to"].startswith("Saves/Beta/")])
         self.call("/api/library/apply", {"aside_to": str(self.archive)})
         j = self.job()
         self.assertEqual(j["status"], "done")
         self.assertEqual(j["result"]["failed"], [])
         self.assertEqual(j["result"]["summary"]["correctly_placed"], 1)
         self.assertTrue((self.roms / "Beta (Europe)" / "Beta (Europe).chd").is_file())
-        self.assertTrue((self.arch / "_saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
+        self.assertTrue((self.arch / "Saves" / "Beta" / "y.state").is_file())          # not a disc image: set aside under its game, not lost
         self.assertFalse((self.roms / "x").exists())                                     # (no empty folder stays)
 
     def test_stale_move_unmatched_false_is_ignored_unmatched_always_moves(self) -> None:

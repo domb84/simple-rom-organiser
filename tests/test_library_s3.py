@@ -112,8 +112,8 @@ class S3Archive(ServerCase):
         self.job("/api/scan", {"path": str(self.root), "platform": GBA})
         res = self.job("/api/library/apply", {"aside_to": ARCH})
         self.assertEqual(res["aside"]["failed"], [])
-        self.assertEqual(self.fake.objects["arch/GBA/_saves/Run/card.bin"][0], card)
-        self.assertEqual(self.fake.objects["arch/GBA/_saves/Bash/card.bin"][0], card)                # (a copy made by the service)
+        self.assertEqual(self.fake.objects["arch/GBA/Saves/Run/card.bin"][0], card)
+        self.assertEqual(self.fake.objects["arch/GBA/Saves/Bash/card.bin"][0], card)                # (a copy made by the service)
         self.assertEqual(tree(self.root), ["Run (USA).gba"])
 
 

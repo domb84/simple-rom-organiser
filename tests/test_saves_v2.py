@@ -341,7 +341,7 @@ class Policies(SavesCase):
         self.assertEqual((plan["saves"]["archive"]["games"], plan["saves"]["leave"]["games"]), (2, 0))
 
     def test_a_changed_choice_makes_an_old_preview_stale(self) -> None:
-        root, _saves = self.world()
+        root, Saves = self.world()
         plan = self.lib_plan(root)
         self.choose("archive", "Zed (USA)")
         code, out = self.http("POST", "/api/library/apply", {"plan_id": plan["plan_id"]})
@@ -354,7 +354,7 @@ class Policies(SavesCase):
             self.assertEqual(code, 400, body)
 
     def test_library_filters_and_sort(self) -> None:
-        root, _saves = self.world()
+        root, Saves = self.world()
         put(root / "Solo (USA).sfc", self.rom["Solo (USA)"])
         self.job("/api/scan", {"path": str(root), "platform": SNES})
         self.call("POST", "/api/library/profile", {"platform": SNES, "saved_games": "keep"})        # (no copies: only the games with saves have saves)

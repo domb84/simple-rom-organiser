@@ -153,12 +153,12 @@ class ArchiveMode(SavesCase):
         res = self.lib_apply(plan, aside_to=str(aside))
         self.assertEqual(res["saves_archived"]["moved"], 4)
         self.assertEqual(self.saved_files(), solo)
-        self.assertEqual(sorted(x for x in tree(aside) if not x.endswith("/") and "_saves" in x),
-                         sorted(f"snes/_saves/{s}" for s in saves))
+        self.assertEqual(sorted(x for x in tree(aside) if not x.endswith("/") and "Saves" in x),
+                         sorted(f"snes/Saves/{s}" for s in saves))
         self.assertTrue((aside / "snes" / "Superseded" / "Zed (USA).sfc").is_file())
 
     def test_without_an_archive_folder_the_build_is_refused_and_nothing_moves(self) -> None:
-        # (was: the saves went to a _saves folder next to the roms; a build now always needs an archive)
+        # (was: the saves went to a Saves folder next to the roms; a build now always needs an archive)
         root = self.rom_folder("Zed (USA)", "Zed (Europe)")
         saves = self.save("bsnes", "Zed (USA)")
         self.mode("archive")
@@ -175,11 +175,11 @@ class ArchiveMode(SavesCase):
         self.save("bsnes", "Zed (USA)", ("{n}.srm",))
         self.mode("archive")
         aside = self.tmp / "archive"
-        put(aside / "snes" / "_saves" / "bsnes" / "Zed (USA).srm", b"older archive")
+        put(aside / "snes" / "Saves" / "bsnes" / "Zed (USA).srm", b"older archive")
         plan = self.lib_plan(root, aside_to=str(aside))
         self.lib_apply(plan, aside_to=str(aside))
-        self.assertEqual((aside / "snes" / "_saves" / "bsnes" / "Zed (USA).srm").read_bytes(), b"older archive")
-        self.assertEqual((aside / "snes" / "_saves" / "bsnes" / "Zed (USA) (2).srm").read_bytes(), b"{n}.srm")
+        self.assertEqual((aside / "snes" / "Saves" / "bsnes" / "Zed (USA).srm").read_bytes(), b"older archive")
+        self.assertEqual((aside / "snes" / "Saves" / "bsnes" / "Zed (USA) (2).srm").read_bytes(), b"{n}.srm")
         self.assertEqual(self.saved_files(), [])
 
     def test_while_retroarch_runs_the_saves_stay_and_the_rom_is_archived(self) -> None:

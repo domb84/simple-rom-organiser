@@ -544,7 +544,7 @@ is left out of that page. The choice is `page_tiles` in `config.json`.
 
 **Files next to a disc (disc systems).** On Dreamcast, PlayStation and PlayStation 2 the files in a game's folder that are not its disc
 image (a save or save state, a `.zip`, a checksum file) are **not part of the game**: by default Build library sets them aside like any file that
-matches nothing, but a save, save state or memory card goes under its game: `<archive folder>/<system folder>/_saves/<Title>/<file>` (or `_saves/` in the
+matches nothing, but a save, save state or memory card goes under its game: `<archive folder>/<system folder>/Saves/<Title>/<file>` (or `Saves/` in the
 ROM folder while no archive folder is set); the rest goes to `_unmatched`. The rule **Keep other files that
 sit with a game** (Settings, overridable per system; off by default) keeps them with the game and renames them with it, as earlier versions
 always did. Playlists, `gamelist.xml` and media folders always stay. Saves in RetroArch's own save folders are a different thing: see
@@ -554,7 +554,7 @@ always did. Playlists, `gamelist.xml` and media folders always stay. Saves in Re
 CRC32, MD5 or SHA-1 is a button: press it and it is on the clipboard, ready to search for. The app itself never downloads games.
 
 **Saves in a ROM folder go under their game.** A save file, save state or memory card lying in a system's ROM folder (not in RetroArch's own save
-folders) is not a ROM, so the build sets it aside - under the game it belongs to: `<archive>/<system>/_saves/<Title>/<file>` (the title without
+folders) is not a ROM, so the build sets it aside - under the game it belongs to: `<archive>/<system>/Saves/<Title>/<file>` (the title without
 region, version or disc, so every edition shares a folder). A file is pinned to a title when its name is a game's (`Game (USA).srm`,
 `.state1`, Flycast's `.A1.bin`), when it sat in that game's own folder, or when it is a memory card that names its games (a GameCube card by its
 game codes, a Dreamcast card by a title only one game has). A card that holds several games is **moved under the first and copied under the others**.
@@ -589,7 +589,7 @@ of another system the core plays is that system's: it is not counted or listed a
 **Saves whose name is not quite a game's.** A save that matches no ROM and no database name is read again, loosely: without a `- Copy` at the
 end, square-bracket flags and the region / language / version / revision tags of any naming scheme, and then without a scene release number in front
 (`2375 - Sonic Advance (J) (M2) (v1.1)`, `Yoshi's Island (USA, Asia) (Rev 1)`, `Tony Hawk's Pro Skater 2 (USA) - Copy`). When what is left is **exactly
-one** title of the system's database, the save is **told by its title** (Browse > Saves says *title only*; in a ROM folder it goes to `_saves/<Title>/`).
+one** title of the system's database, the save is **told by its title** (Browse > Saves says *title only*; in a ROM folder it goes to `Saves/<Title>/`).
 A title that begins with a number keeps it (`007 - The World Is Not Enough`), and two titles that differ only in punctuation are told apart by the
 exact spelling or not at all. Such a save is known by title, not by edition: it is never renamed with a ROM. The other files of a save set (the empty
 memory cards B, C, D of a game) follow the one that names the game.
@@ -909,7 +909,7 @@ readable only by you) and is never shown again; **Test connection** lists the bu
 and deletes it, and says whether checksums can be checked without downloading.
 
 A build then does what it does with an archive folder, with one difference: each file the rules set aside is **uploaded** to
-`<bucket>/<folder>/<system folder name>/_excluded/...` (`_superseded`, `_duplicates`, `_unmatched`, `_saves` ...), checked in the
+`<bucket>/<folder>/<system folder name>/_excluded/...` (`_superseded`, `_duplicates`, `_unmatched`, `Saves` ...), checked in the
 bucket (its size, its MD5 and its SHA-1, kept with the object as metadata together with its CRC32 and the path it came from), and
 only then **deleted from the disk**. No local copy is kept. A name another object already has gets a number, as in a folder; an
 object is never replaced. A build that cannot reach the bucket stops before it moves anything. Uploads a killed build left unfinished
@@ -929,7 +929,7 @@ what you want back and press **Restore** (a folder: everything in it). The archi
   already in that form comes back as it is.
 * A file that is not recognised goes back to the path it came from (an S3 object remembers it; otherwise its path in the archive
   without the reason folder).
-* Saves in `_saves` are not restored yet.
+* Saves in `Saves` are not restored yet.
 * A restored game the rules still leave out is archived again by the next build; change the rules to keep it. It is not uploaded or
   copied a second time: the archive already holds the same file, so only the local copy goes.
 
@@ -1022,7 +1022,7 @@ with no RetroArch found, and none chosen, nothing on its card matters.
     rules replace - the save games are copied to the version you have, under its name (a multi-disc game's: its playlist's); a PlayStation or
     PlayStation 2 save is converted for the other disc's game code; the existing save stays), **Keep both ROMs** (the ROM the rules would
     replace stays, so the saves keep their game), **Archive the saves with the ROM** (they move to
-    `<archive folder>/<system folder>/_saves/<core folder>/...`, or to `_saves/` in the ROM folder while no archive folder is
+    `<archive folder>/<system folder>/Saves/<core folder>/...`, or to `Saves/` in the ROM folder while no archive folder is
     used) **Leave the saves where they are**, or **Copy the save to the better version**. The last one is for the day you add a better match
     (the version your rules prefer): the old ROM is replaced, and its **save games** (memory cards, battery saves, `.srm`; never
     the save states, which belong to one exact ROM) are copied to the better ROM's name, in the same core folder. A better version that
@@ -1144,7 +1144,7 @@ switched off) shows no saves anywhere: no card, no column, no choice in the Libr
 * **The others** are told by the game's ID, so they never need a new name: Dolphin by the 4-character game code (GameCube `.gci` files
   and Wii `data` folders), Cemu by the title ID (Cemu's own `title_list_cache.xml` says which disc is which), PCSX2 by the disc's serial
   (read from `SYSTEM.CNF`; memory-card folders and save states). A game that has saves is **kept** when the rules would archive it (or you
-  choose to archive its saves with it: they go to `<archive>/<system>/_saves/...`). The saves of a memory card
+  choose to archive its saves with it: they go to `<archive>/<system>/Saves/...`). The saves of a memory card
   *image* (`.ps2`, GameCube `.raw`) cannot be split by game: they are counted but never moved.
 * On the platform page the **Overview** shows "Saves (Dolphin)" and the **Browse** tab has the Saves column and list, with the source.
 

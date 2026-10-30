@@ -8,8 +8,8 @@
       _superseded/           older versions / worse variants
       _incomplete/           multi-disk games with missing disks
       _duplicates/           extra copies of the same ROM
-      _saves/                RetroArch saves / states of the games the rules archive (they go to
-                             <archive>/<this folder's name>/_saves/ with the ROMs; a build needs an archive, so this folder
+      Saves/                 RetroArch saves / states of the games the rules archive (they go to
+                             <archive>/<this folder's name>/Saves/ with the ROMs; a build needs an archive, so this folder
                              is only seen in libraries built before, or by the saves layer)
       _converted_originals/  originals kept by "Convert to No-Intro format"
 
@@ -31,7 +31,8 @@ SUPERSEDED_DIR = "_superseded"
 INCOMPLETE_DIR = "_incomplete"
 DUPLICATES_DIR = "_duplicates"
 CONVERTED_DIR = "_converted_originals"
-SAVES_DIR = "_saves"
+SAVES_DIR = "Saves"
+OLD_SAVES_DIR = "_saves"            # what it was called before: still recognised (an archive or library built earlier)
 # A folder holding this file is a WHDLoad install downloaded next to a game's disks (romorg.whdinstalls): never scanned or moved
 WHDLOAD_MARKER = ".romorg-whdload.json"
 
@@ -56,6 +57,7 @@ ARCHIVE_NAMES = {UNMATCHED_DIR: "Unmatched", EXCLUDED_DIR: "Excluded", SUPERSEDE
                  DUPLICATES_DIR: "Duplicates"}
 
 _CANON = {d.casefold(): d for d in RESERVED_DIRS}
+_CANON[OLD_SAVES_DIR] = SAVES_DIR
 _FROM_ARCHIVE = {n.casefold(): d for d, n in ARCHIVE_NAMES.items()}
 
 

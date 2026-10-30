@@ -1,7 +1,7 @@
 """Saves lying in a ROM folder, pinned to the game they belong to.
 
 A save, a save state or a memory card in a system's folder (not in RetroArch's own save folders) is not a ROM, so a library build sets it
-aside. This module tells *which game it belongs to*, so it can be set aside under that game: ``<archive>/<system>/_saves/<Title>/<file>``.
+aside. This module tells *which game it belongs to*, so it can be set aside under that game: ``<archive>/<system>/Saves/<Title>/<file>``.
 
 A file is pinned to a title when
 
@@ -40,7 +40,7 @@ def _norm(text: str) -> str:
 
 
 def destination(root: Path, title: str, name: str) -> Path:
-    """``root/_saves/<title>/<name>``: the title made safe as a folder name."""
+    """``root/Saves/<title>/<name>``: the title made safe as a folder name."""
     from .organiser import safe_filename
     return root / SAVES_DIR / (safe_filename(title) or "Unknown") / name
 

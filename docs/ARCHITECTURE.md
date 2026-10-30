@@ -4229,3 +4229,7 @@ detector; each merge was made only where the copies were the same code.
   (move / rename / delete); the better-version facet counts an add-on's (a Switch update's) better version as the tile does; a rewritten playlist is one
   file of the tree; an emulator's files in a Switch title-ID folder are no "unmatched"; `/api/library/plan`, `/apply` and the tree default `labels` to
   "no `|Disc N` labels in a game-folder layout" (`App._library_flags`).
+
+### Amendment 110, addendum 4: the saves folder is `Saves`
+
+The folder a game's saves go to (in the archive, `<archive>/<system>/Saves/<Title>/`, and in a library built earlier) is now `Saves`, not `_saves`: it is the user's place, like the other archive names. `folders.OLD_SAVES_DIR` (`_saves`) is still recognised by `canonical_name` / `classify`, so an older archive or library is read as before.

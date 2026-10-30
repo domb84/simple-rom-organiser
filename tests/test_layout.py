@@ -42,7 +42,7 @@ def _snapshot(root: Path) -> tuple[dict[str, bytes], set[str]]:
 class FoldersModuleTests(unittest.TestCase):
     def test_reserved_names_are_one_constant(self) -> None:
         self.assertEqual(set(folders.RESERVED_DIRS), {"_unmatched", "_excluded", "_superseded", "_incomplete",
-                                                      "_duplicates", "_converted_originals", "_saves"})
+                                                      "_duplicates", "_converted_originals", "Saves"})
         self.assertIs(organiser.RESERVED_DIRS, folders.RESERVED_DIRS)
         self.assertIs(organiser.REASON_DIRS, folders.REASON_DIRS)
         self.assertIs(scanner.RESERVED_DIRS, folders.RESERVED_DIRS)
@@ -61,6 +61,12 @@ class FoldersModuleTests(unittest.TestCase):
         self.assertEqual(folders.core_parts(("_superseded", "a", "b")), ["a", "b"])
         self.assertEqual(folders.core_parts(("_unmatched", "a", "b")), ["a", "b"])
         self.assertEqual(folders.core_parts(("a", "b")), ["a", "b"])
+
+    def test_the_saves_folder_is_called_saves_and_the_old_name_is_still_recognised(self) -> None:
+        self.assertEqual(folders.SAVES_DIR, "Saves")
+        self.assertEqual(folders.canonical_name("_saves"), "Saves")
+        self.assertEqual(folders.classify(("_saves", "Game", "a.srm")), ("Saves", False))
+        self.assertEqual(folders.classify(("saves", "Game", "a.srm")), ("Saves", False))
 
 
 class LayoutBase(unittest.TestCase):
