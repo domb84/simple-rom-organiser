@@ -245,5 +245,100 @@ class KeepApartOnEveryPlatform(unittest.TestCase):
         self.assertIn(("Digimon World 2003", "Digimon World 3"), library.NOT_SAME_GAME["Sony PlayStation"])
 
 
+class KatakanaTitles(AltTitlesCase):
+    """A Japanese release whose title is its English title in katakana (``リトルインフェルノ`` / ``Little Inferno``)."""
+    YEARS = {"リトルインフェルノ": {2017}, "little inferno": {2017}, "ロスト・ウィング": {2020}, "lost wing": {2020},
+             "ゴルフストーリー": {2018}, "golf story": {2017}, "ボムスリンガー": {2019}, "booom-slang!": {2024},
+             "エイト・ドラゴン": {2021}, "tetragon": {2021}, "シカトリス": {2023}, "skittles": {2023}, "skye tales": {2023},
+             "デーモンクリスタル": {2018}, "the demon crystal": {2019}, "デーモンクリスタル4": {2021}}
+
+    def years(self, years: dict | None = None) -> None:
+        patcher = mock.patch.object(alttitles, "release_years", lambda system: self.YEARS if years is None else years)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_consonants_of_katakana_are_those_of_the_english_title(self) -> None:
+        from romorg import kana
+        for ja, en in (("リトルインフェルノ", "Little Inferno"), ("ドラゴンクエスト", "Dragon Quest"), ("スプラトゥーン2", "Splatoon 2"),
+                       ("ペルソナ５ タクティカ", "Persona 5 Tactica")):
+            self.assertEqual(kana.ja_key(ja), kana.en_key(en), ja)
+        self.assertEqual(kana.ja_key("北斗の拳"), "")                              # (a kanji: no reading)
+        self.assertNotEqual(kana.ja_key("デーモンクリスタル4"), kana.en_key("The Demon Crystal"))
+
+    def test_katakana_of_an_english_title_of_the_same_year_join_it(self) -> None:
+        self.years()
+        self.learn(["リトルインフェルノ (Japan)", "Little Inferno (USA)", "ロスト・ウィング (Japan)", "Lost Wing (USA)"])
+        m = alttitles.dat_map(DAT)
+        self.assertEqual(m["リトルインフェルノ"], m["little inferno"])
+        self.assertEqual(m["ロスト・ウィング"], m["lost wing"])
+        self.assertNotEqual(m["リトルインフェルノ"], m["lost wing"])
+
+    def test_a_year_apart_by_one_still_joins_and_by_more_does_not(self) -> None:
+        self.years()
+        self.learn(["ゴルフストーリー (Japan)", "Golf Story (USA)", "ボムスリンガー (Japan)", "Booom-Slang! (USA)"])
+        m = alttitles.dat_map(DAT)
+        self.assertEqual(m["ゴルフストーリー"], m["golf story"])
+        self.assertNotIn("ボムスリンガー", m)                                        # (2019 and 2024: another game with the same consonants)
+
+    def test_a_short_skeleton_two_candidates_or_no_year_join_nothing(self) -> None:
+        self.years()
+        self.learn(["エイト・ドラゴン (Japan)", "Tetragon (USA)",                        # (five consonants: too little to go by)
+                    "シカトリス (Japan)", "Skittles (USA)", "Skye Tales (USA)"])         # (two English titles with them)
+        self.assertEqual(alttitles.dat_map(DAT), {})
+        self.years({})                                                              # (no release dates known)
+        alttitles.clear_cache()
+        self.learn(["リトルインフェルノ (Japan)", "Little Inferno (USA)"])
+        self.assertEqual(alttitles.dat_map(DAT), {})
+
+    def test_a_sequel_stays_apart(self) -> None:
+        self.years()
+        self.learn(["デーモンクリスタル (Japan)", "The Demon Crystal (USA)", "デーモンクリスタル4 (Japan)"])
+        m = alttitles.dat_map(DAT)
+        self.assertEqual(m["デーモンクリスタル"], m["the demon crystal"])
+        self.assertNotIn("デーモンクリスタル4", m)
+
+    def test_the_same_region_veto_still_applies(self) -> None:
+        self.years()
+        self.learn(["リトルインフェルノ (Japan)", "Little Inferno (Japan)"])         # (both for Japan: two games)
+        self.assertEqual(alttitles.dat_map(DAT), {})
+
+
+class AGlossAfterTheWords(AltTitlesCase):
+    def test_a_long_katakana_text_that_says_the_words_does_not_make_another_game(self) -> None:
+        self.learn(["Skyline Bowling - スカイライン・ボウリング (Japan)", "Skyline Bowling (USA)",
+                    "Blade of Darkness ブレードオブダークネス (Japan)", "Blade of Darkness (USA)",
+                    "Fit Boxing 北斗の拳 ～お前はもう痩せている～ (Japan)", "Fit Boxing (USA)",
+                    "Knight's Retreat チェスパズル - ナイツ リトリート (Japan)", "Knight's Retreat (USA)"])
+        m = alttitles.dat_map(DAT)
+        self.assertEqual(m["skyline bowling - スカイライン・ボウリング"], m["skyline bowling"])
+        self.assertEqual(m["blade of darkness ブレードオブダークネス"], m["blade of darkness"])
+        self.assertNotIn("fit boxing 北斗の拳 ～お前はもう痩せている～", m)             # (a kanji text: a subtitle)
+        self.assertNotIn("knight's retreat チェスパズル - ナイツ リトリート", m)         # (more than the words: another text)
+
+    def test_an_art_book_with_the_words_is_no_release_of_the_game(self) -> None:
+        self.learn(["Crystar クライスタ デジタルアートブック (Japan)", "Crystar (USA)"])
+        self.assertEqual(alttitles.dat_map(DAT), {})
+
+
+class TheSwitchReleaseYears(AltTitlesCase):
+    def test_only_the_switch_has_release_dates_and_they_come_from_the_title_database(self) -> None:
+        import sqlite3
+        from romorg import switchdb
+        self.assertEqual(alttitles.release_years("Nintendo Game Boy Advance"), {})
+        self.assertEqual(alttitles.release_years("Nintendo Switch"), {})                 # (no database)
+        path = switchdb.db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path)
+        con.executescript("CREATE TABLE titles (id TEXT PRIMARY KEY, name TEXT, publisher TEXT, released INTEGER);"
+                          "CREATE TABLE catalogue (dat TEXT, id TEXT, version INTEGER, label TEXT);"
+                          "INSERT INTO titles VALUES ('0100000000001000', 'Little Inferno', 'TC', 20170701), ('0100000000002000', 'x', '', 0);"
+                          "INSERT INTO catalogue VALUES ('Nintendo - Switch', '0100000000001000', -1, 'Little Inferno (USA) (En)'),"
+                          "('Nintendo - Switch', '0100000000002000', -1, 'Nothing Known (USA) (En)'),"
+                          "('Nintendo - Switch (DLC)', '0100000000001000', -1, 'Little Inferno Extra (DLC)');")
+        con.commit()
+        con.close()
+        self.assertEqual(alttitles.release_years("Nintendo Switch"), {"little inferno": frozenset({2017})})
+
+
 if __name__ == "__main__":
     unittest.main()
