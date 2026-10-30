@@ -1504,7 +1504,7 @@
       b._file = file;
       return b;
     }
-    const upgradeTag = () => el("span", { class: "tag t-upgrade", title: "The rules prefer another version of this game, which you do not have", text: "↑ Upgrade" });
+    const upgradeTag = () => el("span", { class: "tag t-upgrade", title: "A better version of this game is available", "aria-label": "Upgrade available", text: "↑" });
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
         icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
