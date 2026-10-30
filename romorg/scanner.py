@@ -291,6 +291,11 @@ def _rel_parts(path: Path, root: Path) -> tuple[str, ...]:
     return tuple(rel.split(os.sep)) if rel else ()
 
 
+def in_emulator_folder(parts: Iterable[str]) -> bool:
+    """Whether a path (the folders above a file) has a folder named by a 16-digit title ID: it belongs to an emulator (shader caches, mods)."""
+    return any(len(p) == 16 and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
+
+
 def is_converted_original(path: Path, root: Path) -> bool:
     """True for files under ``<root>/_converted_originals/`` (or the legacy ``_unmatched/_converted_originals/``)."""
     return folders.is_converted(_rel_parts(path, root))
@@ -1344,7 +1349,7 @@ def scan(
                 parts = f.relative_to(root).parts[:-1]
             except ValueError:
                 return False
-            return any(len(p) == 16 and all(c in "0123456789abcdefABCDEF" for c in p) for p in parts)
+            return in_emulator_folder(parts)
         files = [f for f in files if not _own(f)]       # (the emulators keep caches in here: nothing else is left out - a file that is no game is unmatched)
     errors.extend(problems)
     total = len(files)

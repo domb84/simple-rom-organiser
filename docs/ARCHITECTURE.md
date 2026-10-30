@@ -4222,3 +4222,10 @@ detector; each merge was made only where the copies were the same code.
   changed when a check fails. Left as documented exceptions: BIOS / firmware and key files (they match a list), `.7z` / `.rar` archives
   that cannot be opened (no 7-Zip here: what is in them is not known) and read errors that may pass (an unreadable file may be a game), hidden
   files, user playlists.
+
+* (Amendment 110, addendum 3 - the count audit) Every count is made once from one source: the build preview's archive card
+  (`aside.coming` + `aside.existing`) counts `App._all_archive_moves` - the same list the Files tree draws (the plan's own set-asides, the leftovers of the
+  reserved folders that are not among them, and the `_saves` moves), one per file; `plan.files` is the number of ops that change something
+  (move / rename / delete); the better-version facet counts an add-on's (a Switch update's) better version as the tile does; a rewritten playlist is one
+  file of the tree; an emulator's files in a Switch title-ID folder are no "unmatched"; `/api/library/plan`, `/apply` and the tree default `labels` to
+  "no `|Disc N` labels in a game-folder layout" (`App._library_flags`).
