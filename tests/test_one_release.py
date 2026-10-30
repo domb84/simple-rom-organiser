@@ -10,7 +10,7 @@ from unittest import mock
 from romorg import library, whdready
 from romorg.library import KEEP, SUPERSEDED
 
-from tests.test_library import (AMIGA, AMIGA_DP, acts, amiga_items, cd_items, sps_items, setUpModule, tearDownModule)  # noqa: F401  (the no-WHDLoad-list patch)
+from tests.test_library import (AMIGA, AMIGA_DP, SPS_DAT, acts, amiga_items, cd_items, sps_items, setUpModule, tearDownModule)  # noqa: F401  (the no-WHDLoad-list patch)
 
 
 def kept(items, sel) -> list[str]:
@@ -19,6 +19,17 @@ def kept(items, sel) -> list[str]:
 
 def release(game: str, key: int, files: tuple = ("Disk1", "Disk2")) -> list:
     return sps_items(game, list(files), start=key)
+
+
+IPF_DAT = "Commodore Amiga - Games - [Unofficial IPF]"
+
+
+def ipf_items(names: list[str], start: int) -> list:
+    """The Unofficial IPF DAT lists each disk of a game on its own."""
+    from pathlib import Path
+    from romorg.datfile import Rom
+    return [library.Item(key=start + i, dat=IPF_DAT, rom=Rom(name=n + ".ipf", size=1, crc="", md5="", sha1="", game=n, dat=IPF_DAT),
+                         style="tosec", path=Path(n + ".ipf"), member=None) for i, n in enumerate(names)]
 
 
 class OneReleaseOfAGame(unittest.TestCase):
@@ -99,6 +110,27 @@ class OneReleaseOfAGame(unittest.TestCase):
         items = release("Alpha (1990)(Pub)[0001]", 10) + release("Beta (1990)(Pub)[0002]", 20) + release("Kick Off 2 v1.6e (1990)(Anco)[2191]", 30) \
             + release("Kick Off 2 - The Final Whistle v1.9e (1991)(Anco)[data disk][0759]", 40)
         self.assertEqual(len(kept(items, self.select(items))), 4)
+
+    def test_the_disks_of_an_unofficial_ipf_game_are_one_release(self) -> None:
+        disks = ["Nova (1990)(Pub)(Disk 1 of 2)(Program Disk)[cp manual code]", "Nova (1990)(Pub)(Disk 2 of 2)(Course Disk)"]
+        items = ipf_items(disks, 10) + amiga_items(["Nova (1990)(Pub)(Disk 1 of 2)[cr A]", "Nova (1990)(Pub)(Disk 2 of 2)[cr A]"])
+        sel = self.select(items)
+        ipf = {sel.decisions[k].action for k in (10, 11)}
+        self.assertEqual(len(ipf), 1)                                  # (both disks stay, or both go: never one of them)
+
+    def test_a_release_with_a_disk_missing_does_not_beat_a_whole_one(self) -> None:
+        # the DAT's second disk of the IPF release is in another language (excluded): only disk 1 is kept
+        items = ipf_items(["Chaos (1990)(On-line)(M3)(Disk 1 of 2)"], 10) \
+            + amiga_items(["Chaos (1990)(On-line)(Disk 1 of 2)[cr A]", "Chaos (1990)(On-line)(Disk 2 of 2)[cr A]"])
+        sel = self.select(items)
+        self.assertEqual(sel.decisions[10].action, SUPERSEDED)
+        self.assertEqual({sel.decisions[k].action for k in (1, 2)}, {KEEP})
+
+    def test_an_sps_release_beats_an_unofficial_ipf_one_when_nothing_else_tells_them_apart(self) -> None:
+        items = ipf_items(["Dyter (1990)(reLINE)(Disk 1 of 2)", "Dyter (1990)(reLINE)(Disk 2 of 2)"], 10) + sps_items("Dyter (1990)(reLINE)[0678]", ["Dyter"], start=50)
+        sel = self.select(items)
+        self.assertEqual(sel.decisions[50].action, KEEP)
+        self.assertEqual({sel.decisions[10].action, sel.decisions[11].action}, {SUPERSEDED})
 
     def test_the_incomplete_disks_of_a_set_are_no_release(self) -> None:
         items = amiga_items(["M (1990)(P)(Disk 1 of 3)", "M (1990)(P)(Disk 3 of 3)"])

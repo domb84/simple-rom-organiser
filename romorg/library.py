@@ -1484,7 +1484,7 @@ def _release_of_parts(it: Item) -> Optional[tuple]:
     """The release ``it`` is one disk / disc / image of, when it is one of several (a TOSEC "Disk N of M", a Redump "(Disc N)", an
     image of an SPS release): what is kept or set aside as a whole. None for a game of one file."""
     if it.dat in _image_set_dats() and it.rom.game:
-        return ("sps", it.dat, it.rom.game)
+        return ("sps", it.dat, _release_name(it))
     t = _tags_of(it)
     if _style(it) == STYLE_TOSEC:
         d = tags._disk(t)
@@ -1826,7 +1826,7 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
     releases: dict[tuple[str, str], list[Item]] = {}            # an SPS release's images (once: looking them up per image was n²)
     for it in items:
         if it.dat in image_sets:
-            releases.setdefault((it.dat, it.rom.game), []).append(it)
+            releases.setdefault((it.dat, _release_name(it)), []).append(it)
     verdicts: dict[tuple, bool] = {}
 
     def boots(members: list[Item]) -> bool:
@@ -1845,7 +1845,7 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
             continue
         cs = in_set.get(it.key)
         members = [by_key[k] for k in cs.slots.values() if k in by_key] if cs is not None else \
-            releases[(it.dat, it.rom.game)] if it.dat in image_sets else [it]
+            releases[(it.dat, _release_name(it))] if it.dat in image_sets else [it]
         if boots(members):
             running.add(game_key(it, profile.combine_alt_titles))
     lang_out = [it for it in items if (it.dat == gdat or it.dat in image_sets) and (d := sel.decisions.get(it.key)) is not None
@@ -1854,14 +1854,14 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
     lang_releases: dict[tuple[str, str], list[Item]] = {}
     for it in lang_out:
         if it.dat in image_sets:
-            lang_releases.setdefault((it.dat, it.rom.game), []).append(it)
+            lang_releases.setdefault((it.dat, _release_name(it)), []).append(it)
     done: set[tuple] = set()
     for it in sorted(lang_out, key=lambda i: (i.rom.name.casefold(), i.key)):
         g = game_key(it, profile.combine_alt_titles)
         if g in running or g in done:
             continue
         if it.dat in image_sets:
-            members = lang_releases[(it.dat, it.rom.game)]
+            members = lang_releases[(it.dat, _release_name(it))]
             ok = boots(members)
         else:
             members, ok = [], False
@@ -1887,6 +1887,15 @@ def _whdload_language(items: Sequence[Item], sel: Selection, profile: LibraryPro
 
 
 _DISC_RE = re.compile(r"\s*\(Dis[ck] (\d+) of (\d+)\)")
+_IMAGE_DISK_RE = re.compile(r"\s*\(Dis[kc] (?:\d+|[A-Z]) of (?:\d+|[A-Z])\)")
+
+
+def _release_name(it: Item) -> str:
+    """The release an image of an original (``Platform.image_set_dats``) belongs to: its game name before the disk's place in the set. An
+    SPS release is one entry and names itself; the Unofficial IPF DAT lists each disk of a game on its own (``(Disk 1 of 2)``,
+    ``(Disk 2 of 2)(Utility)[cp manual code]``): they are one release, not one release a disk."""
+    m = _IMAGE_DISK_RE.search(it.rom.game)
+    return it.rom.game[:m.start()] if m else it.rom.game
 _SHEETS = (".cue", ".ccd", ".mds")
 
 
@@ -1997,7 +2006,7 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             m = _DISC_RE.search(it.rom.game)
             rel = (it.dat, it.rom.game[:m.start()] if m else it.rom.game)
         elif it.dat in image_sets:
-            rel = (it.dat, it.rom.game)
+            rel = (it.dat, _release_name(it))
         else:
             rel = (it.dat, d.set_id if d.set_id is not None else it.rom.name)
         releases.setdefault(game_key(it, profile.combine_alt_titles), {}).setdefault(rel, []).append(it)
@@ -2027,6 +2036,18 @@ def _rank_across(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
 
 
+def _whole(members: Sequence[Item]) -> bool:
+    """True unless ``members`` - the kept images of one release - are some of the disks of a set (``Disk 2 of 3`` and no disk 3 among them)."""
+    nums: set[int] = set()
+    total = 0
+    for it in members:
+        d = _disk_info(_tags_of(it))
+        if d is not None:
+            nums.add(d[0])
+            total = max(total, d[1])
+    return not total or nums >= set(range(1, total + 1))
+
+
 def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
     """One release per game among the originals (SPS / IPF, ``Platform.image_set_dats``) and the floppy sets kept of it (the games DAT): the
     CD32 and CDTV discs were ranked against them by :func:`_rank_across`. In order: a version a WHDLoad install boots from (when WHDLoad is
@@ -2035,6 +2056,7 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
     re-release, an alternate dump), then the name. The others are superseded."""
     from . import whdready
     image_sets = set(_dats(platform, "image_set_dats"))
+    image_order = {d: i for i, d in enumerate(_dats(platform, "image_set_dats"))}
     gdat = getattr(platform, "game_dat", "")
     disc_dats = set(_dats(platform, "disc_dats"))
     releases: dict[tuple, dict[tuple, list[Item]]] = {}       # game -> release -> its kept files
@@ -2051,7 +2073,7 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             continue
         if it.dat == gdat and d.set_id is None and _disk_info(_tags_of(it)) is not None:
             continue                                          # (a disk of a set that is not complete: kept as it is, no release of its own)
-        rel = (it.dat, it.rom.game) if it.dat in image_sets else (it.dat, d.set_id if d.set_id is not None else it.rom.name)
+        rel = (it.dat, _release_name(it)) if it.dat in image_sets else (it.dat, d.set_id if d.set_id is not None else it.rom.name)
         releases.setdefault(game_key(it, profile.combine_alt_titles), {}).setdefault(rel, []).append(it)
     gone: set[int] = set()
     for g, rels in releases.items():
@@ -2070,10 +2092,11 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             t = _tags_of(anchor)
             level = (whdready.release_of(anchor.rom) or [None])[0] if rel[0] in image_sets else whdready.level_of(m.rom for m in members)
             flawed = any(tags.exclusion_rules(_tags_of(m)) & FLAWED_RULES for m in members)
-            info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed)
+            info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed, _whole(members))
         vkeys = tags.group_version_keys([v[1] + ".ipf" if r[0] in image_sets else v[1] for r, v in info.items()], STYLE_TOSEC)
         pool = list(rels)
-        for key in (lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS,      # (a version that boots with WHDLoad: also in another language, as _whdload_language kept it)
+        for key in (lambda r: not info[r][4],                    # (a release with a disk missing - the others are in another language - never beats a whole one)
+                    lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS,      # (a version that boots with WHDLoad: also in another language, as _whdload_language kept it)
                     lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile),
                     lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0,
                     lambda r: info[r][3],
@@ -2084,7 +2107,7 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
         newest = max(vk(r) for r in pool)                      # (the newest version: whatever its form - an original or a floppy set)
         pool = [r for r in pool if vk(r) == newest]
         win = min(pool, key=lambda r: (r[0] not in image_sets, sum(1 for f in info[r][0].dump_flags if not f.isdigit()),
-                                       info[r][1].casefold(), info[r][1], r))
+                                       image_order.get(r[0], 99), info[r][1].casefold(), info[r][1], r))     # (SPS before the Unofficial IPF: then the name)
         for rel, members in rels.items():
             if rel == win:
                 continue
@@ -2128,7 +2151,7 @@ def _prefer_unprotected(items: Sequence[Item], sel: Selection, profile: LibraryP
         if d is None or d.action != KEEP:
             continue
         if it.dat in image_sets:
-            originals.setdefault(g, {}).setdefault(it.rom.game, []).append(it)
+            originals.setdefault(g, {}).setdefault(_release_name(it), []).append(it)
         else:
             kept.setdefault(g, {}).setdefault(d.set_id if d.set_id is not None else it.rom.name, []).append(it)
     for g, sets in kept.items():                           # (a set is a crack when any disk is: TOSEC often tags disk 1 only)
