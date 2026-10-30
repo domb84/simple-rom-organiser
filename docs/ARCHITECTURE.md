@@ -4184,7 +4184,7 @@ detector; each merge was made only where the copies were the same code.
 **AMENDMENT 109 (v0.5) — Each better version says what decided it.**
 
 * A version the rules put out (`superseded`) carries the test that did it: `library._pick_best` (a game's sets) and `_one_release` (originals,
-  floppy sets) apply labelled steps in order (language, WHDLoad result, clean dump, chipset, newer version, original before floppy set, fewer
+  floppy sets) apply labelled steps in order (language, WHDLoad result, clean dump, chipset, newer version, IPF release before an ADF set, fewer
   extra flags, SPS before Unofficial IPF, name) and the reason names the first one that tells the winner from the loser: "superseded by X
   (one release of the game: a better chipset (AGA > ECS > OCS))". `_rank_across` / `_prefer_unprotected` already said so.
 * `totals.Target.why` keeps those reasons per `(game key, rom name)` (in memory); `TotalsManager.upgrade_whys` gives `{owned file name: reason}`

@@ -2175,9 +2175,9 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
         vk = lambda r: vkeys[info[r][1] + ".ipf" if r[0] in image_sets else info[r][1]]       # noqa: E731
         newest = max(vk(r) for r in pool)                      # (the newest version: whatever its form - an original or a floppy set)
         pool = [r for r in pool if vk(r) == newest]
-        ties = (("an original (an SPS / IPF release) before a floppy set", lambda r: r[0] not in image_sets),
+        ties = (("an IPF release (the original disk as it was, copy protection and all) before an ADF set (a plain sector copy)", lambda r: r[0] not in image_sets),
                 ("fewer extra dump flags ([cr] [t] [h] ...)", lambda r: sum(1 for f in info[r][0].dump_flags if not f.isdigit())),
-                ("an SPS release before an Unofficial IPF one", lambda r: image_order.get(r[0], 99)))
+                ("an SPS IPF release before an Unofficial IPF one", lambda r: image_order.get(r[0], 99)))
         win = min(pool, key=lambda r: (*(key(r) for _l, key in ties), info[r][1].casefold(), info[r][1], r))     # (then the name)
 
         def why(r: tuple) -> str:
