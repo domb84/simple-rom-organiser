@@ -1401,7 +1401,7 @@
     let view = FILE_VIEWS.find((v) => v.key === ctx.params.view) || FILE_VIEWS[0];
     let path = "", facets = null, sides = null, page = null, query = "", searching = false;
     const ticked = new Set();
-    let upgradeWaits = 0;
+    let upgradeWaits = 0, archiveTidy = 0;
     const views = el("nav", { class: "views", "data-section": "views", "aria-label": "Views" });
     const bar = el("nav", { class: "filter-bar hidden", "data-section": "filters", "aria-label": "Filters" });      // (the choices of the filters, on the page itself)
     const list = el("div", { class: "rows", "data-section": "list" });
@@ -1486,8 +1486,17 @@
       put(panel, el("span", { class: "panel-title", text: d.name }), el("p", { class: "lead", text: `${fmt(d.files)} file${d.files === 1 ? "" : "s"}` }),
         states ? el("p", { class: "note", text: states }) : null, facts.length ? el("dl", { class: "facts" }, facts) : null);
     }
+    function tidyArchive() {
+      runJob(ctx, head, "Tidying the archive…", () => post("/api/archive/tidy", { platform: p.name }), (job) => {
+        const r = job.result || {};
+        toast(`Tidied ${fmt(r.moved || 0)} file${r.moved === 1 ? "" : "s"}${r.failed_count ? `; ${fmt(r.failed_count)} failed` : ""}`, r.failed_count ? "error" : "", 8000);
+        ctx.redraw();
+      });
+    }
     function describeTicked() {
       put(panel, el("span", { class: "panel-title", text: ticked.size ? `${fmt(ticked.size)} ticked` : "Nothing ticked" }),
+        archiveTidy ? el("button", { class: "btn", type: "button", id: "panel-tidy", style: "min-width:0", on: { click: tidyArchive } }, `Tidy the archive (${fmt(archiveTidy)} files)`) : null,
+        archiveTidy ? el("p", { class: "note", text: "Games an earlier build archived by their database folder move into a folder per game, like the library. Nothing is deleted." }) : null,
         el("button", { class: "btn primary", type: "button", style: "min-width:0", disabled: !ticked.size, on: { click: () => restore([...ticked]) } }, `Restore ${ticked.size || ""}`.trim()),
         el("p", { class: "note", text: "They go back into the library under their proper names. The archive keeps its copy." }));
     }
@@ -1526,6 +1535,7 @@
       // (the counts of the library views come from the library side: the archive side's facets count the archive's files)
       if (page.facets && view.side === "library") facets = page.facets;
       if (page.sides) sides = { ...(sides || {}), [view.side]: page.sides[view.side] };
+      if (view.side === "archive" && page.facets !== undefined) archiveTidy = page.archive_tidy || 0;
       if (page.upgrades_pending && upgradeWaits++ < 12) setTimeout(() => { if (ctx.alive() && !topOverlay()) { facets = null; load(); } }, 5000);      // (the better versions are still being worked out)
       if (!facets) {
         try {

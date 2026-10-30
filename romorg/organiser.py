@@ -1199,6 +1199,31 @@ def _archive_paths(owners: dict, ops: list[RenameOp], platform: Any) -> None:
                 op.archive_rel = "/".join((GAMES_DIR, folder[g], op.dst.name))
 
 
+TIDY_EXTS = (".adf", ".ipf", ".zip", ".7z", ".lha", ".lzx", ".dms", ".adz", ".cue", ".iso", ".bin", ".chd", ".wav", ".m3u")     # (a game's files)
+
+
+def tidy_archive_parts(platform: Any, parts: Any) -> tuple[str, ...] | None:
+    """Where a file the Amiga's rules set aside in an EARLIER build lies in the archive as the library's layout has it now: ``parts`` is its
+    path below the system's part of the archive (``_excluded/Commodore Amiga - Games - [ADF]/<file>`` ...), the answer the same with the games
+    in a folder of their own below ``Commodore Amiga - Games`` (the system disks under ``Commodore Amiga - System``), or None when it is
+    laid out so already, is no Amiga game's, or no DAT knows it (``_unmatched`` keeps its source path)."""
+    parts = tuple(parts)
+    if len(parts) < 3 or parts[0] not in REASON_DIRS or parts[1] in (GAMES_DIR, SYSTEM_DIR):
+        return None
+    if platform is None or not getattr(platform, "image_set_dats", None) or any(p.endswith("(WHDLoad install)") for p in parts[:-1]):
+        return None
+    name = parts[-1]
+    if parts[1] in SYSTEM_DATS:
+        sub = SYSTEM_DATS[parts[1]]
+        return (parts[0], SYSTEM_DIR, sub) + ((_release_folder(name),) if sub == "Workbench" else ()) + (name,)
+    if not name.lower().endswith(TIDY_EXTS):
+        return None
+    from . import tags
+    stem = name.rsplit(".", 1)[0]
+    title = safe_filename(tags.parse_name(stem, "tosec").title)
+    return (parts[0], GAMES_DIR, title or stem, name) if title else None
+
+
 def _amiga_game_dats_all(platform: Any) -> frozenset:
     """The DATs of the Amiga's games: its Games DAT, the SPS releases and the discs (the library's games folder)."""
     if platform is None or not getattr(platform, "image_set_dats", None):

@@ -1565,6 +1565,21 @@ class BugCheckPlanTests(unittest.TestCase):
         good = next(op for op in plan.ops if op.src.name.startswith("Solo Game (1993)"))
         self.assertEqual(good.archive_rel, "")                                     # (a kept game is no archive's)
 
+    def test_a_file_archived_the_old_way_is_laid_out_like_the_library(self) -> None:
+        tidy = lambda *parts: organiser.tidy_archive_parts(self.AMIGA, parts)        # noqa: E731
+        adf = "Planet of Lust (1989)(Free Spirit)(Disk 1 of 2)[cr ESI].adf"
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Games - [ADF]", adf), ("_excluded", "Commodore Amiga - Games", "Planet of Lust", adf))
+        sps = "Bloodwych (1989)(Image Works)[1927].zip"
+        self.assertEqual(tidy("_superseded", "commodore-amiga-games-sps", sps), ("_superseded", "Commodore Amiga - Games", "Bloodwych", sps))
+        wb = "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)(Disk 2 of 2)(Extras).adf"
+        self.assertEqual(tidy("_excluded", "Commodore Amiga - Operating Systems - Workbench", wb),
+                         ("_excluded", "Commodore Amiga - System", "Workbench", "Workbench v1.3 rev 34.20 (1988)(Commodore)(A500-A2000)", wb))
+        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games", "Planet of Lust", adf))          # (laid out so already)
+        self.assertIsNone(tidy("_unmatched", "Commodore Amiga - Games - [ADF]", adf))                    # (no DAT knows it: its own path)
+        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "Foo (WHDLoad install)", "x.adf"))
+        self.assertIsNone(tidy("_excluded", "Commodore Amiga - Games - [ADF]", "readme.txt"))
+        self.assertIsNone(organiser.tidy_archive_parts(platforms.get_platform("Nintendo 64"), ("_excluded", "x", "Game (USA).z64")))   # (other systems stay as they are)
+
     def test_the_files_of_a_whdload_install_an_earlier_version_downloaded_are_unmatched_like_any_other_file(self) -> None:
         self.have("Solo Game (1993)(Pub).adf", f"{GAMES}/Solo Game (1993)(Pub).adf")
         old = self.root / GAMES / "Solo (WHDLoad install)"

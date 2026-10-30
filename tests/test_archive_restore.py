@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import unittest
+from unittest import mock
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -72,6 +73,20 @@ class S3Restore(ServerCase):
             "x-amz-meta-sha1": hashlib.sha1(data).hexdigest(), "x-amz-meta-md5": hashlib.md5(data).hexdigest(), "x-amz-meta-from": "old/bash.gba"})
         self.fake.objects["arch/GBA/_unmatched/readme.txt"] = (b"my notes", {})
         self.job("/api/scan", {"path": str(self.root), "platform": GBA})
+
+    def test_tidying_moves_objects_inside_the_bucket_and_keeps_their_metadata(self) -> None:
+        from romorg import organiser
+
+        with mock.patch.object(organiser, "tidy_archive_parts", side_effect=lambda p, parts: ("_excluded", "Tidy", "bash old.gba") if tuple(parts) == ("_excluded", "bash old.gba") else None):
+            res = self.job("/api/archive/tidy", {"platform": GBA})
+        self.assertEqual((res["moved"], res["failed"]), (1, []))
+        self.assertNotIn("arch/GBA/_excluded/bash old.gba", self.fake.objects)
+        data, meta = self.fake.objects["arch/GBA/_excluded/Tidy/bash old.gba"]
+        self.assertEqual(data, self.rom["Bash (USA)"])
+        self.assertEqual(meta.get("x-amz-meta-from"), "old/bash.gba")                       # (where restore puts it back: kept)
+        self.assertIn("arch/GBA/_unmatched/readme.txt", self.fake.objects)
+        files = self.call("GET", f"/api/tree?platform={Q}&side=archive&path=_excluded%2FTidy")["files"]
+        self.assertEqual([f["name"] for f in files], ["bash old.gba"])                       # (the tree follows)
 
     def test_a_missing_game_in_the_bucket_is_found_by_its_metadata_and_restored(self) -> None:
         top = self.call("GET", f"/api/tree?platform={Q}&side=library&show=missing")

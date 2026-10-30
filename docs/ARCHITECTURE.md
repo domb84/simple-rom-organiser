@@ -4142,3 +4142,16 @@ detector; each merge was made only where the copies were the same code.
   Test: `tests/test_browser.py` (`test_the_filters_are_on_the_files_page_itself`).
 * Upgrade available and WHDLoad are switches (chip with `aria-pressed`; a switch row in the X sheet), not choices: `upgrade=1` / `install=1`.
   Test: `test_upgrade_and_whdload_are_switches_not_choices`.
+
+**AMENDMENT 107 (v0.5) — The Amiga's earlier archive layout is tidied.**
+
+* Files archived by builds before Amendments 99/105 lie in the folder of the database they came from (`_excluded/Commodore Amiga - Games - [ADF]/...`,
+  `_superseded/commodore-amiga-games-sps/...`). `organiser.tidy_archive_parts(platform, parts)` says where each belongs in the library's
+  layout (`<reason>/Commodore Amiga - Games/<title>/<file>`, system disks under `Commodore Amiga - System`; title as the library names a game's
+  folder, read from the file name). `_unmatched`, WHDLoad install files, non-game files and other systems: None (their own path).
+* `POST /api/archive/tidy {platform}` (job `archive_tidy`) moves them inside the archive: a folder archive by rename (`sortroot.apply_moves`,
+  never over a file, emptied folders go), an S3 archive by a server-side copy then delete in the bucket (the metadata - `from`, `rom` ... - is
+  kept; `s3archive.Inventory.rename` keeps the inventory); a name taken gets a number; nothing is deleted. The Archive view's side panel offers
+  "Tidy the archive (N files)" when `archive_tidy` (the top folder's answer: existing archive files that would move) is above 0.
+* What an earlier build left in the ROM folder's own `_excluded/` ... is laid out the same way when a build sweeps it into the archive
+  (`App._relay_sweep`).

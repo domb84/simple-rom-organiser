@@ -21,6 +21,7 @@ and renames it into place, never over a file. The object stays in the archive.
 from __future__ import annotations
 
 import hashlib
+import dataclasses
 import json
 import os
 import threading
@@ -161,6 +162,21 @@ class Inventory:
             if info.metadata:
                 self._meta[info.key] = {"etag": info.etag, "size": info.size, "meta": dict(info.metadata)}
                 self._meta_dirty = True
+
+    def rename(self, src: str, dst: str) -> None:
+        """An object of the bucket was moved (copied and deleted there): the inventory and the kept metadata follow."""
+        top = src[len(self.target.prefix):].split("/", 1)[0]
+        dtop = dst[len(self.target.prefix):].split("/", 1)[0]
+        with self._lock:
+            info = self._tops.get(top, {}).pop(src, None)
+            if info is not None and dtop in self._tops:
+                self._tops[dtop][dst] = dataclasses.replace(info, key=dst)
+                self._note_dirs(dtop, dst)
+            kept = self._meta.pop(src, None)
+            if kept is not None:
+                self._meta[dst] = kept
+                self._meta_dirty = True
+            self.version += 1
 
     def has_meta(self, key: str) -> bool:
         """The object's metadata is known (kept from an upload or an earlier HEAD, for the ETag it has now)."""

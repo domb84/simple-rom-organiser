@@ -34,6 +34,7 @@ import stat
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import traceback
 import webbrowser
@@ -4132,6 +4133,23 @@ class App:
         return keep, arch
 
     @staticmethod
+    def _relay_sweep(platform: Any, folder: Path, aside: Path, sweep: list[Any]) -> list[Any]:
+        """The Amiga's files an earlier build left in ``_excluded/`` ... go to the archive in the library's layout (a folder per game, below
+        ``Commodore Amiga - Games``), like those the build sets aside now (``organiser.tidy_archive_parts``)."""
+        organiser, sortroot = _mod("organiser"), _mod("sortroot")
+        home = aside / folder.name
+        names = sortroot.Names()
+        for m in sweep:
+            try:
+                parts = Path(m.dst).relative_to(home).parts
+            except ValueError:
+                continue
+            new = organiser.tidy_archive_parts(platform, parts)
+            if new:
+                m.dst = names.free(home.joinpath(*new))
+        return sweep
+
+    @staticmethod
     def _pinned_copies(plan: Any, folder: Path) -> list[Any]:
         """For a build with no archive folder: the copies of the saves that belong to several games, made in the folder's ``_saves``
         from where the build put the save (under the first title)."""
@@ -4241,7 +4259,7 @@ class App:
                 if follow:
                     res["saves"] = follow
             if aside is not None and not job.cancel.is_set():       # the tidy-up: what was archived leaves this folder
-                sweep = sortroot.plan_sweep({st.platform.name: st.root}, aside)       # what earlier builds left in _excluded/ ...
+                sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside))       # what earlier builds left in _excluded/ ...
                 out = {"moved": 0, "failed": []}
                 if sweep:
                     out = self._archive_moves(sweep, [state.root, aside], st.root,
@@ -5499,6 +5517,78 @@ class App:
 
         return {"job": self.jobs.start("restore", work, platform=platform.name).to_dict()}
 
+    @staticmethod
+    def _tidy_pairs(platform: Any, files: list[tuple[str, int]]) -> list[tuple[str, str]]:
+        """``(path, new path)`` below the system's part of the archive of every file an earlier build laid out the old way (the Amiga's games
+        in the folder of the database they came from): ``organiser.tidy_archive_parts``. A name already taken gets a number."""
+        organiser = _mod("organiser")
+        taken = {rel.casefold() for rel, _s in files}
+        out: list[tuple[str, str]] = []
+        for rel, _size in files:
+            new = organiser.tidy_archive_parts(platform, rel.split("/"))
+            if new is None:
+                continue
+            dst = "/".join(new)
+            stem, dot, ext = dst.rpartition(".") if "." in new[-1] else (dst, "", "")
+            n = 1
+            while dst.casefold() in taken:
+                n += 1
+                dst = f"{stem} ({n}){dot}{ext}"
+            taken.add(dst.casefold())
+            out.append((rel, dst))
+        return out
+
+    def archive_tidy(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/archive/tidy {platform}``: lay out what earlier builds archived the old way as the library's layout has it now (the
+        Amiga's games in a folder per game below ``Commodore Amiga - Games``, the system disks below ``Commodore Amiga - System``). Moves
+        inside the archive only (an S3 archive: copied and deleted in the bucket, the metadata kept); nothing is deleted."""
+        platform = self._resolve_platform(body.get("platform"))
+        state = self._state_of(platform)
+        if state is None:
+            raise ApiError(HTTPStatus.CONFLICT, "Scan this system first.", "no_scan")
+        base, inv, files = self._archive_side(state)
+        pairs = self._tidy_pairs(platform, files)
+        if not pairs:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Nothing to tidy: the archive is laid out as the library is.", "nothing")
+
+        def work(job: Job) -> Any:
+            sortroot = _mod("sortroot")
+            failed: list[dict[str, str]] = []
+            moved = 0
+            if inv is None:
+                res = sortroot.apply_moves([sortroot.SMove(base / a, base / b, a.split("/")[0]) for a, b in pairs], keep=[base],
+                                           progress=lambda i, n, name: job.report(i, n, f"Tidying {name}"), cancel=job.cancel.is_set)
+                moved, failed = res["moved"], [{"path": str(f.get("path", "")), "error": f.get("error", "")} for f in res["failed"]]
+            else:
+                s3 = _mod("s3")
+                lock = threading.Lock()
+                done = [0]
+
+                def one(pair: tuple[str, str]) -> None:
+                    a, b = inv.key(base / pair[0]), inv.key(base / pair[1])
+                    if job.cancel.is_set() or a is None or b is None:
+                        return
+                    try:
+                        inv.client.copy(a, b)
+                        inv.client.delete(a)
+                        inv.rename(a, b)
+                        with lock:
+                            done[0] += 1
+                    except (OSError, s3.S3Error) as exc:
+                        with lock:
+                            failed.append({"path": pair[0], "error": str(exc)})
+                    job.report(done[0] + len(failed), len(pairs), f"Tidying {pair[0].rsplit('/', 1)[-1]}")
+
+                with ThreadPoolExecutor(max_workers=4, thread_name_prefix="romorg-tidy") as pool:
+                    list(pool.map(one, pairs))
+                moved = done[0]
+                inv.save_meta()
+            state.items.pop(("library", "tree"), None)
+            state.items.pop(("library", "treeidx"), None)
+            return {"action": "tidy", "moved": moved, "failed": failed[:20], "failed_count": len(failed)}
+
+        return {"job": self.jobs.start("archive_tidy", work, platform=platform.name).to_dict()}
+
     def archive_save(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/settings/archive {dir, platform?}``: the archive folder for every system, or (with ``platform``) for that
         system alone. An empty ``dir`` goes back to the default (for a system: to the global setting)."""
@@ -5696,7 +5786,7 @@ class App:
             planned = {os.path.normcase(str(s)) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
                        for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])}
             # (what earlier builds set aside goes to the archive, except a file the plan takes back into the library: a game the rules keep now)
-            moves = list(arch) + [m for m in sortroot.plan_sweep({state.platform.name: state.root}, aside)
+            moves = list(arch) + [m for m in self._relay_sweep(state.platform, state.root, aside, sortroot.plan_sweep({state.platform.name: state.root}, aside))
                                   if os.path.normcase(str(m.src)) not in planned]
             try:
                 moves += self._saves_moves(plan, state.root, aside)[0]
@@ -6372,6 +6462,9 @@ class App:
             out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] not in ("missing", "saveonly") and self._tree_pass(e, f))
                             for s in ("library", "archive")}
             out["archive_root"] = self._archive_where(base)
+            if side == "archive" and base is not None:                      # (files an earlier build archived the old way: "Tidy the archive")
+                organiser = _mod("organiser")
+                out["archive_tidy"] = sum(1 for e in entries if e["side"] == "archive" and e["state"] == "existing" and organiser.tidy_archive_parts(platform, e["parts"]) is not None)
             out["archive_restorable"] = sum(1 for e in entries if e["state"] == "missing" and not e.get("saves_only")
                                             and (e["row"] or {}).get("in_archive"))
             inv = self._s3_inventory(base) if base is not None else None
@@ -6866,6 +6959,7 @@ ROUTES: dict[tuple[str, str], Callable[[App, dict[str, str], Any], Any]] = {
     ("POST", "/api/settings/s3"): App.s3_settings_save,
     ("POST", "/api/settings/s3/test"): App.s3_test,
     ("POST", "/api/archive/restore"): App.archive_restore,
+    ("POST", "/api/archive/tidy"): App.archive_tidy,
     ("GET", "/api/settings/tiles"): App.tiles_get,
     ("POST", "/api/settings/tiles"): App.tiles_save,
     ("GET", "/api/library/insights"): App.library_insights,

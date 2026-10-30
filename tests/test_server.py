@@ -1062,6 +1062,25 @@ class RealModulesIntegrationTests(unittest.TestCase):
         inside = self.call("GET", f"{base}&machine=OCS&path=Commodore%20Amiga%20-%20Games/Game")
         self.assertEqual(sorted(f["name"] for f in inside["files"]), ["Game (1990)(Pub)(Disk 1 of 2).adf", "Game (1990)(Pub)(Disk 2 of 2).adf", "Game (1990)(Pub).m3u"])
 
+    def test_the_archive_is_tidied_to_the_library_layout_what_an_earlier_build_archived_the_old_way(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        base = self.tmp / "rom-archive" / self.root.name
+        old = base / "_excluded" / "Commodore Amiga - Games - [ADF]" / "Old Game (1990)(Pub)(Disk 1 of 2).adf"
+        stray = base / "_unmatched" / "Commodore Amiga - Games - [ADF]" / "Stray (1990)(Pub).adf"
+        for f in (old, stray):
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b"x")
+        url = "/api/tree?platform=Commodore%20Amiga&side=archive"
+        self.assertEqual(self.call("GET", url)["archive_tidy"], 1)                       # (the unmatched file keeps its path: nothing to tidy)
+        res = self.job("/api/archive/tidy", {"platform": "Commodore Amiga"})["result"]
+        self.assertEqual((res["moved"], res["failed"]), (1, []))
+        self.assertTrue((base / "_excluded" / "Commodore Amiga - Games" / "Old Game" / old.name).is_file())
+        self.assertFalse(old.exists())
+        self.assertFalse(old.parent.exists())                                              # (the emptied folder goes)
+        self.assertTrue(stray.is_file())
+        self.assertEqual(self.call("GET", url)["archive_tidy"], 0)
+        self.assertEqual(self.http("POST", "/api/archive/tidy", {"platform": "Commodore Amiga"})[0], 400)
+
     def test_games_with_a_better_version_are_tagged_and_filtered(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"
