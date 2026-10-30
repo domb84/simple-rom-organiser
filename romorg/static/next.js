@@ -1464,7 +1464,7 @@
       }
       add("Why", r.reason ? r.reason.replace(/^excluded: /, "Excluded: ") : CAT_TEXT[r.category] || "");
       if (r.year) add("Year", String(r.year));
-      if (file.upgrade) add("Better version", "The rules prefer another version of this game, which you do not have");
+      if (file.upgrade) add("Better version", file.upgrade_why || "The rules prefer another version of this game, which you do not have");
       const btns = [];
       if (r.game_ref) btns.push(el("button", { class: "btn", type: "button", id: "panel-choose", on: { click: () => gameMenu(file) } }, "Keep or exclude…"));
       if (r.cs_kind !== undefined && r.cs_kind !== null) btns.push(el("button", { class: "btn", type: "button", on: { click: () => details(file) } }, "More details"));
@@ -1510,12 +1510,12 @@
         on: { click: () => (view.side === "archive" ? describe(file) : r.game_ref ? gameMenu(file) : describe(file)), focus: () => describe(file) } },
         tick || el("span", { class: "dot", style: `background:${STATE_DOT[file.state] || "#6b7686"}` }),
         el("span", { class: "row-name" }, nameOf(file), sub ? el("small", { text: sub }) : null),
-        companion(file) || file.upgrade ? el("span", { class: "row-tags" }, companion(file) ? el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) }) : null, file.upgrade ? upgradeTag() : null) : null,
+        companion(file) || file.upgrade ? el("span", { class: "row-tags" }, companion(file) ? el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) }) : null, file.upgrade ? upgradeTag(file.upgrade_why) : null) : null,
         el("span", { class: "row-value", text: STATE_TEXT[file.state] || "" }));
       b._file = file;
       return b;
     }
-    const upgradeTag = () => el("span", { class: "tag t-upgrade", title: "A better version of this game is available", "aria-label": "Upgrade available", text: "↑" });
+    const upgradeTag = (why) => el("span", { class: "tag t-upgrade", title: why ? `A better version of this game is available: ${why}` : "A better version of this game is available", "aria-label": "Upgrade available", text: "↑" });
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
         icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
@@ -1772,7 +1772,8 @@
       } else {
         put(panel, el("span", { class: "panel-title", text: it.title || it.name }),
           el("p", { class: "note", text: (it.better || []).length === 1 ? "Your rules prefer a version you do not have:" : "Your rules prefer versions you do not have:" }),
-          ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })));
+          ...(it.better || []).map((b) => el("p", { class: "note", text: (b.files || []).length > 1 ? `${b.name} (${b.files.length} disks)` : b.name })),
+          it.why ? el("p", { class: "note", text: `Why: ${it.why}` }) : null);
       }
     };
     const draw = () => {

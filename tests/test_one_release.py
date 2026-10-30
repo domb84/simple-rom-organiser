@@ -111,6 +111,16 @@ class OneReleaseOfAGame(unittest.TestCase):
             + release("Kick Off 2 - The Final Whistle v1.9e (1991)(Anco)[data disk][0759]", 40)
         self.assertEqual(len(kept(items, self.select(items))), 4)
 
+    def test_a_version_put_out_says_what_decided_it(self) -> None:
+        items = release("Chaos Engine, The (1993)(Renegade)[0106]", 10) + release("Chaos Engine, The (1994)(Renegade)(AGA)[1324]", 20)
+        self.assertIn("a better chipset (AGA > ECS > OCS)", self.select(items).decisions[10].reason)
+        items = release("Falcon v1.00 (1989)(Mirrorsoft)[0368]", 10) + release("Falcon v1.1 (1989)(Mirrorsoft)[1754]", 20)
+        self.assertIn("a newer version", self.select(items).decisions[10].reason)
+        items = [*amiga_items(["Giga (1988)(SCA)[m baddump]"]), *amiga_items(["Giga (1988)(SCA)"])]
+        items[1] = replace(items[1], key=2)
+        sel = self.select(items, replace(AMIGA_DP, exclude=frozenset()))
+        self.assertIn("a clean dump", sel.decisions[1].reason)
+
     def test_the_disks_of_an_unofficial_ipf_game_are_one_release(self) -> None:
         disks = ["Nova (1990)(Pub)(Disk 1 of 2)(Program Disk)[cp manual code]", "Nova (1990)(Pub)(Disk 2 of 2)(Course Disk)"]
         items = ipf_items(disks, 10) + amiga_items(["Nova (1990)(Pub)(Disk 1 of 2)[cr A]", "Nova (1990)(Pub)(Disk 2 of 2)[cr A]"])

@@ -1262,13 +1262,9 @@ def _newer(s: _Set) -> tuple:
     return (s.vkey, s.date)
 
 
-def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
-    """Best language, then (``prefer_whdload``) the version WHDLoad works best from (``whdready.level``), then clean (no disk a bad dump
-    or modified: allowed, those are kept only when nothing clean is), then cracked, then best platform (AGA > ECS > OCS: the floppies'
-    chipset - discs are ranked across DATs, :func:`_rank_across`), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]),
-    then name."""
+def _set_steps(prefer_whdload: bool) -> tuple[tuple[str, Callable[[_Set], Any]], ...]:
+    """The ordered tests :func:`_pick_best` applies (lowest value wins) with what each means in words."""
     from . import whdready
-    pool = sets
 
     def whd(s: _Set) -> int:                                # (boots > installs the files > installs disk images > not known)
         return -(whdready.level_of(it.rom for it in s.slots.values()) or 0) if prefer_whdload else 0
@@ -1276,12 +1272,37 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     def flawed(s: _Set) -> bool:
         return any(tags.exclusion_rules(_tags_of(it)) & FLAWED_RULES for it in s.slots.values())
 
-    for key in (lambda s: s.lang_rank, whd, flawed, lambda s: not s.cracked, lambda s: s.platform_rank):
+    return (("a language you prefer", lambda s: s.lang_rank),
+            ("a better WHDLoad result", whd),
+            ("a clean dump (the other has a bad or modified disk)", flawed),
+            ("not cracked", lambda s: not s.cracked),
+            ("a better chipset (AGA > ECS > OCS)", lambda s: s.platform_rank))
+
+
+def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
+    """Best language, then (``prefer_whdload``) the version WHDLoad works best from (``whdready.level``), then clean (no disk a bad dump
+    or modified: allowed, those are kept only when nothing clean is), then cracked, then best platform (AGA > ECS > OCS: the floppies'
+    chipset - discs are ranked across DATs, :func:`_rank_across`), then newest, then fewest modification flags ([t] [h] [tr] [f] [a]),
+    then name."""
+    pool = sets
+    for _label, key in _set_steps(prefer_whdload):
         best = min(key(s) for s in pool)
         pool = [s for s in pool if key(s) == best]
     newest = max(_newer(s) for s in pool)
     pool = [s for s in pool if _newer(s) == newest]
     return min(pool, key=lambda s: (s.mods, s.anchor.rom.name.casefold(), s.anchor.rom.name, s.refs))
+
+
+def _why_set(win: _Set, lose: _Set, prefer_whdload: bool) -> str:
+    """In words: the first test of :func:`_pick_best` that tells ``win`` from ``lose`` (the one that put ``lose`` out)."""
+    for label, key in _set_steps(prefer_whdload):
+        if key(win) != key(lose):
+            return label
+    if _newer(win) != _newer(lose):
+        return "a newer version"
+    if win.mods != lose.mods:
+        return "fewer modifications ([t] [h] [tr] [f] [a])"
+    return "the first of the same by name"
 
 
 # --------------------------------------------------------------------------- select
@@ -2142,25 +2163,40 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed, _whole(members))
         vkeys = tags.group_version_keys([v[1] + ".ipf" if r[0] in image_sets else v[1] for r, v in info.items()], STYLE_TOSEC)
         pool = list(rels)
-        for key in (lambda r: not info[r][4],                    # (a release with a disk missing - the others are in another language - never beats a whole one)
-                    lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS,      # (a version that boots with WHDLoad: also in another language, as _whdload_language kept it)
-                    lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile),
-                    lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0,
-                    lambda r: info[r][3],
-                    lambda r: tags.PLATFORM_ORDER.index(tags.platform_class(info[r][0]))):
+        steps = (("it has every disk of the release (the other is missing some)", lambda r: not info[r][4]),   # (a release with a disk missing - the others are in another language - never beats a whole one)
+                 ("a version a WHDLoad install boots from", lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS),   # (also in another language, as _whdload_language kept it)
+                 ("a language you prefer", lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile)),
+                 ("a better WHDLoad result", lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0),
+                 ("a clean dump (the other is a bad or modified dump)", lambda r: info[r][3]),
+                 ("a better chipset (AGA > ECS > OCS)", lambda r: tags.PLATFORM_ORDER.index(tags.platform_class(info[r][0]))))
+        for _label, key in steps:
             best = min(key(r) for r in pool)
             pool = [r for r in pool if key(r) == best]
         vk = lambda r: vkeys[info[r][1] + ".ipf" if r[0] in image_sets else info[r][1]]       # noqa: E731
         newest = max(vk(r) for r in pool)                      # (the newest version: whatever its form - an original or a floppy set)
         pool = [r for r in pool if vk(r) == newest]
-        win = min(pool, key=lambda r: (r[0] not in image_sets, sum(1 for f in info[r][0].dump_flags if not f.isdigit()),
-                                       image_order.get(r[0], 99), info[r][1].casefold(), info[r][1], r))     # (SPS before the Unofficial IPF: then the name)
+        ties = (("an original (an SPS / IPF release) before a floppy set", lambda r: r[0] not in image_sets),
+                ("fewer extra dump flags ([cr] [t] [h] ...)", lambda r: sum(1 for f in info[r][0].dump_flags if not f.isdigit())),
+                ("an SPS release before an Unofficial IPF one", lambda r: image_order.get(r[0], 99)))
+        win = min(pool, key=lambda r: (*(key(r) for _l, key in ties), info[r][1].casefold(), info[r][1], r))     # (then the name)
+
+        def why(r: tuple) -> str:
+            """The first test that tells ``win`` from ``r``: what put ``r`` out."""
+            for label, key in steps:
+                if key(r) != key(win):
+                    return label
+            if vk(r) != vk(win):
+                return "a newer version"
+            for label, key in ties:
+                if key(r) != key(win):
+                    return label
+            return "the first of the same by name"
         for rel, members in rels.items():
             if rel == win:
                 continue
+            reason = f"superseded by {info[win][1]} (one release of the game: {why(rel)})"
             for it in members:
-                sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=info[win][1],
-                                                 reason=f"superseded by {info[win][1]} (one release of the game)")
+                sel.decisions[it.key] = Decision(key=it.key, action=SUPERSEDED, superseded_by=info[win][1], reason=reason)
                 gone.add(it.key)
     if gone:
         sel.sets = [cs for cs in sel.sets if not gone & set(cs.slots.values())]
@@ -2745,6 +2781,10 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             kept_sets = list(complete)
         collapse = (best or latest) and bool(complete)       # leftovers of a group with a kept set go
         in_complete = {it.key for s in complete for it in s.slots.values()}
+        set_of: dict[int, _Set] = {}
+        for cs_ in complete:
+            for it in cs_.slots.values():
+                set_of.setdefault(it.key, cs_)
         kept_keys: dict[int, Optional[int]] = {}
         for s in sorted(kept_sets, key=lambda s: (s.name.casefold(), s.name, s.refs)):
             sid: Optional[int] = None
@@ -2772,8 +2812,13 @@ def _select_tosec(dat: str, dat_items: list[Item], profile: LibraryProfile, best
             elif it.key in in_complete:
                 if collapse:
                     winner = _winner_name(kept_sets)
+                    why = ""
+                    if best and kept_sets:
+                        lost = set_of.get(it.key)
+                        if lost is not None:
+                            why = f" ({_why_set(kept_sets[0], lost, profile.prefer_whdload)})"
                     decide(it, SUPERSEDED, superseded_by=winner,
-                           reason=f"superseded by {winner}")
+                           reason=f"superseded by {winner}{why}")
                 else:
                     decide(it, KEEP)
             elif collapse:       # a disk of no complete set, in a game that has one: not part of the best set

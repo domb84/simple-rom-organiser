@@ -3840,7 +3840,8 @@ class App:
         rows = manager.upgrades(platform.name)
         if rows is None:
             return {"platform": platform.name, "ready": False, "items": []}
-        return {"platform": platform.name, "ready": True, "items": manager.describe_upgrades(platform, rows)}
+        return {"platform": platform.name, "ready": True,
+                "items": manager.describe_upgrades(platform, rows, manager.upgrade_whys(platform.name))}
 
     def library_vanished(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """Paged, searchable list of the titles that have no kept version (``library.vanish_report``)."""
@@ -6425,6 +6426,7 @@ class App:
                 item["saved_keep"], item["saved_why"] = True, entries[ref].get("saved_why", "")
             if isinstance(ref, int) and entries[ref].get("up"):
                 item["upgrade"] = True                                    # (the rules prefer another version of this game, which you lack)
+                item["upgrade_why"] = entries[ref].get("up_why", "")      # (and what decided it)
         if page["dirs"]:
             self._folder_tags(page["dirs"], entries, side, path)
             self._folder_facts(page["dirs"], entries, side, path, platform)
@@ -6582,12 +6584,17 @@ class App:
             if e["side"] == "library" and (got := facts.get(tuple(e["parts"][:-1]))) is not None:
                 e.update(got)
 
-    def _upgrade_names(self, platform: Any) -> set[str] | None:
-        """The names of the files you own whose game has a version the rules prefer that you lack (None while the numbers are not ready)."""
+    def _upgrade_names(self, platform: Any) -> dict[str, str] | None:
+        """``{the name of a file you own: why the rules put it out}`` for the games that have a version the rules prefer which you lack
+        (the text is "" when it is not known; None while the numbers are not ready)."""
         if not self._totals_want(platform):
             return None
-        rows = self._totals().upgrades(platform.name)
-        return None if rows is None else {n for _, have, _ in rows for n in have}
+        manager = self._totals()
+        rows = manager.upgrades(platform.name)
+        if rows is None:
+            return None
+        whys = manager.upgrade_whys(platform.name)
+        return {n: whys.get(n, "") for _, have, _ in rows for n in have}
 
     def _mark_upgrades(self, entries: list[dict[str, Any]], owned: set[str] | None) -> None:
         """``entry["up"]``: a kept file of the library whose game has a version the rules prefer that you lack (what the "upgrade" filter,
@@ -6595,14 +6602,28 @@ class App:
         for e in entries:
             row = e["row"]
             e["up"] = bool(owned and e["side"] == "library" and row and row.get("category") == "kept" and self._has_upgrade(row, owned))
+            e["up_why"] = self._upgrade_why(row, owned) if e["up"] else ""
 
     @staticmethod
-    def _has_upgrade(row: dict[str, Any], owned: set[str]) -> bool:
+    def _upgrade_name(row: dict[str, Any], owned: Any) -> str | None:
+        """The name among ``owned`` that this row's file goes by (None: it is not one of them)."""
         game = row.get("game_ref") or {}
         for n in (row.get("rom_name"), game.get("game") if isinstance(game, dict) else "", row.get("name")):
-            if n and (n in owned or os.path.splitext(n)[0] in owned):
-                return True
-        return False
+            if n:
+                for cand in (n, os.path.splitext(n)[0]):
+                    if cand in owned:
+                        return cand
+        return None
+
+    @classmethod
+    def _has_upgrade(cls, row: dict[str, Any], owned: Any) -> bool:
+        return cls._upgrade_name(row, owned) is not None
+
+    @classmethod
+    def _upgrade_why(cls, row: dict[str, Any], owned: Any) -> str:
+        """Why the rules put this file's version out (what decided it), or "" when that is not known."""
+        name = cls._upgrade_name(row, owned)
+        return str(owned.get(name) or "") if name is not None and isinstance(owned, dict) else ""
 
     def library_insights(self, query: dict[str, str], body: Any) -> dict[str, Any]:
         """``GET /api/library/insights?platform=&want=a,b``: the numbers of the tiles that need a calculation of their own

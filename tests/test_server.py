@@ -1097,6 +1097,17 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertEqual(self.call("GET", base)["facets"]["upgrade"], {})
             self.assertEqual(self.call("GET", f"{base}&upgrade=1")["dirs"], [])               # (the cached list of the other answer is not reused)
 
+    def test_a_file_with_a_better_version_says_what_decided_it(self) -> None:
+        self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
+        base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have&path=Commodore%20Amiga%20-%20Games/Game"
+        name = "Game (1990)(Pub)(Disk 1 of 2).adf"
+        why = "superseded by Game v2 (one release of the game: a better chipset (AGA > ECS > OCS))"
+        with mock.patch.object(server.App, "_upgrade_names", return_value={name: why}):
+            files = {f["name"]: f for f in self.call("GET", base)["files"]}
+            self.assertEqual(files[name]["upgrade_why"], why)
+        with mock.patch.object(server.App, "_upgrade_names", return_value={name}):             # (a reason that is not known: none)
+            self.assertEqual({f["name"]: f.get("upgrade_why") for f in self.call("GET", base)["files"]}[name], "")
+
     def test_the_library_view_lists_the_firmware_without_counting_it(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
         base = "/api/tree?platform=Commodore%20Amiga&side=library&show=have"

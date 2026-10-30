@@ -4180,3 +4180,15 @@ detector; each merge was made only where the copies were the same code.
   `App._pinned_copies` and the no-archive branch of the build are gone.
 * Every check that sets a file aside yields a `library.Decision` (`keeper` is its new field); `organiser._plan_core` collects them (spare copies
   of a rom, the rules, `bios_verdicts`) and applies them in one pass (`_apply_decision` -> `_set_aside`, which also clears `op.bios`).
+
+**AMENDMENT 109 (v0.5) — Each better version says what decided it.**
+
+* A version the rules put out (`superseded`) carries the test that did it: `library._pick_best` (a game's sets) and `_one_release` (originals,
+  floppy sets) apply labelled steps in order (language, WHDLoad result, clean dump, chipset, newer version, original before floppy set, fewer
+  extra flags, SPS before Unofficial IPF, name) and the reason names the first one that tells the winner from the loser: "superseded by X
+  (one release of the game: a better chipset (AGA > ECS > OCS))". `_rank_across` / `_prefer_unprotected` already said so.
+* `totals.Target.why` keeps those reasons per `(game key, rom name)` (in memory); `TotalsManager.upgrade_whys` gives `{owned file name: reason}`
+  for the games `upgrades()` lists. `/api/library/upgrades` rows have `why`; the Files tree gives each tagged file `upgrade_why` (`App._upgrade_names`
+  is now `{name: reason}`; a plain set of names still works, with no reason).
+* The new UI shows it as the "↑" tag's tooltip, as "Better version: <reason>" in the file's detail panel and as "Why: ..." on the Needs-a-look
+  "Better versions" list.

@@ -5,6 +5,7 @@ and the ``/api/library/totals`` endpoint with the real modules."""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -661,6 +662,20 @@ class BugCheckTotalsTests(unittest.TestCase):
         self.assertFalse(totals.counts_as_game("Nintendo - Switch (DLC)", totals.apart_dats(sw)))
         self.assertTrue(totals.row_is_bios({"category": "bios"}) and totals.row_is_bios({"tags": {"bios": True}}))
         self.assertFalse(totals.row_is_bios({"category": "kept"}) or totals.row_is_bios(None))
+
+    def test_the_target_says_why_a_version_the_rules_put_out_lost(self) -> None:
+        old, new = "Game v1.0 (1990)(Pub)", "Game v1.1 (1990)(Pub)"
+        profile = dataclasses.replace(EN, one_per_game=True, best_variant=True)
+        t = totals.compute_target(AMIGA, [dat_of([old, new])], profile)
+        (key,) = t.games
+        self.assertEqual(t.games[key], frozenset({new + ".adf"}))
+        self.assertIn("a newer version", t.why[(key, old + ".adf")])
+        self.assertNotIn((key, new + ".adf"), t.why)                                        # (the kept one lost to nothing)
+        # ... and the list of better versions carries it (the file you own, then the row)
+        m = self.manager([dat_of([old, new])])
+        u = totals.compute_user_items([Item(key=0, dat=GAMES, rom=dat_of([old]).roms[0], style="tosec", path=Path("g.adf"), member=None)], AMIGA, profile)
+        rows = [(k, sorted(n), sorted(t.games[k])) for k, (st, n) in u.games.items() if k in t.games and not (n & t.games[k])]
+        self.assertEqual(m.describe_upgrades(AMIGA, rows, {old + ".adf": "because"})[0]["why"], "because")
 
     def test_a_borrowed_disk_is_part_of_its_set_s_space_and_no_game_of_its_own(self) -> None:
         m = self.manager([dat_of([FOO1, FOO3, FOO2_DE])])

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from . import library, tags
-from .library import EXCLUDED, INCOMPLETE, KEEP, Item
+from .library import EXCLUDED, INCOMPLETE, KEEP, SUPERSEDED, Item
 
 HAVE, INCOMPLETE_OWNED, EXCLUDED_OWNED = "have", "incomplete", "excluded"
 
@@ -166,6 +166,7 @@ class Target:
     borrowed: dict[tuple, frozenset] = field(default_factory=dict)   # game key -> the disks of other editions its kept set borrows
     names: dict[tuple, str] = field(default_factory=dict)            # game key -> a name to show for it (the DAT's game name)
     explain: Optional[dict] = None              # why a "top N" keeps the number of games it keeps (:func:`_explain_top`)
+    why: dict[tuple, str] = field(default_factory=dict)              # (game key, rom name) -> why the rules put that version out (a better one is kept)
 
     @property
     def count(self) -> int:
@@ -241,9 +242,11 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
     names = _names(items, kept, profile)
+    why = {(library.game_key(it, profile.combine_alt_titles), library._rom_name(it)): d.reason for it in items
+           if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED and d.reason}
     explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain)
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why)
 
 
 def _game_name(it: Item) -> str:
@@ -511,6 +514,23 @@ class TotalsManager:
                     rows.append((key, sorted(names), sorted(target.games[key])))
             return rows
 
+    def upgrade_whys(self, name: str) -> dict[str, str]:
+        """``{the name of a file you own: why the rules put that version out}`` for the owned games :meth:`upgrades` lists (what decided it:
+        the rule that tells the preferred version from yours). Empty while the numbers are not ready."""
+        with self._cv:
+            want, t, u = self._want.get(name), self._targets.get(name), self._users.get(name)
+            if want is None or want.ukey is None or t is None or u is None or t[0] != want.tkey or u[0] != want.ukey \
+                    or isinstance(t[1], Exception) or isinstance(u[1], Exception):
+                return {}
+            target, user = t[1], u[1]
+            out: dict[str, str] = {}
+            for key, (state, names) in user.games.items():
+                if state == HAVE and key in target.games and not (names & target.games[key]):
+                    for n in names:
+                        if (text := target.why.get((key, n))):
+                            out[n] = text
+            return out
+
     def insights(self, platform: Any, wants: list[str], lookup: Optional[Callable[[str], Any]]) -> Optional[dict[str, Any]]:
         """The numbers of the page tiles that need a calculation of their own (``space``, ``best_missing``, ``avg_rating``, ``regions``),
         from the cached target and, once scanned, your games. None while those are not ready. Each is cached until the rules, the
@@ -652,7 +672,8 @@ class TotalsManager:
         rows.sort(key=lambda r: (r["title"].lower(), r["dat"]))
         return rows
 
-    def describe_upgrades(self, platform: Any, rows: list[tuple[tuple, list[str], list[str]]]) -> list[dict[str, Any]]:
+    def describe_upgrades(self, platform: Any, rows: list[tuple[tuple, list[str], list[str]]],
+                          whys: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
         """The rows of :meth:`upgrades` with the DAT's name and, for every preferred version, its files with size and checksums
         (a disc: one file per track; a catalogue without checksums, like Switch and Wii U: none)."""
         from . import discsys
@@ -679,6 +700,7 @@ class TotalsManager:
             for n, roms in found:
                 releases.setdefault(_release_of(n), []).extend(roms)
             out.append({"title": title, "dat": key[0], "have": have,
+                        "why": next((whys[n] for n in have if whys and n in whys), ""),
                         "better": [{"name": n, "files": [{"name": r.name, "size": r.size, "crc": r.crc, "md5": r.md5, "sha1": r.sha1}
                                                          for r in roms]} for n, roms in releases.items()]})
         out.sort(key=lambda r: (r["title"].lower(), r["dat"]))
