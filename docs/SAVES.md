@@ -25,7 +25,9 @@ PS2 and Switch) shows no saves anywhere.*
   which saves have no ROM here), the Library preview (rows say *kept*, *archive* or *leave*), and the systems list (a save count).
 * **Two copies of one game.** An ID-based save belongs to the *first* file of that ID in the list; the second copy has none and the rules
   may archive it. RetroArch saves belong to the file with that exact name.
-* **Choices.** Per game on the Library tab, or one default (your Library defaults, which a system can override).
+* **System › Saves.** One row per save set, its tag what the next build does with it (the same answer as the plan's rows). The panel says that, what
+  happens if a rule replaces the game, and its release. A: the game's own choice. Y (PlayStation, PlayStation 2): a copy of the save for another region.
+* **Choices.** Per game on System › Saves, or one default (your Library defaults, which a system can override).
 * **Running programs.** Before saves are archived the app looks for the program's process (`/proc`). Saves of a
   running program stay where they are; the others in the same build still move, and the preview and the result say which program it was.
 * **Emulator folders inside a ROM folder.** An emulator's data folder that lies inside a system's ROM folder (a portable Ryujinx with the

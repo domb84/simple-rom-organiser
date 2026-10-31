@@ -1552,7 +1552,7 @@ class SavesScreenTests(NoMachineFolders, UiTestCase):
         self.tap("A")
         offered = self.sheet()
         self.assertIn("If a rule replaces Gamma", offered)
-        self.assertIn("Copy or convert them to the new version, from Settings › Saves", offered)
+        self.assertIn("Copy or convert them, from Settings › Saves", offered)
         self.page.wait("document.activeElement.dataset.current === '1'", timeout=30)     # (the focus is on the current one)
         self.assertIn("Use the default", self.page.eval("document.activeElement.textContent"))
         for _ in range(4):

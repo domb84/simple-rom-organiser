@@ -4635,3 +4635,25 @@ stays too: on Linux it is only a tidy close, but it is what `restart_workers` an
 
 Tests that said Windows but test Linux behaviour stayed: `tests/test_retroarch_windows.py` became `tests/test_retroarch_files.py` (the config byte for byte, moves that never
 leave a file twice, backups, names differing by case, BIOS files), `tests/test_winproc.py` became `tests/test_process.py`.
+
+## Amendment 116: the two saves features of the old page, on System › Saves (2026-10-31)
+
+The old page had two things the new UI lacked: a game's own choice for its saves, and the copy of a save for another region. They are on System › Saves only
+(screens 42-45 of the canvas), not in the Files game menu.
+
+**The list.** `/api/scan/results?kind=saves` now gives, per row of the page, `key`, `effect` (no such field until the plan is made), `choice` (the game's `saved_overrides` entry
+or ""), `release` {region, code} when known and `convert` {set, from, to, regions, disc?} when there is a target, and at page level `default_choice` and `plan_ready`.
+`effect` comes from `_set_effect`, factored out of `_saves_effect`, so a set and its plan row cannot disagree; a save of a release you have no file for that the build copies
+to the one you have is `carry` too (it has no plan row). Measured on the real plan: no row disagreed with the plan's rows on PlayStation 2, PlayStation, SNES or Amiga.
+
+**Never waiting for the plan.** `_saves_plan_now` reads the plan the Files list uses. When it is not made it is made on one background thread (under the tree lock, so it reuses
+the Files list's work; not while a job runs), the request waits 1.5 s, then the rows go out without `effect` and `plan_ready` false: the panel says "Working it out…" and the page
+asks again every 2.5 s, redrawing once it is ready. A small system is ready within the wait; on the real Amiga folder (69,530 ops) the list comes in 1.5 s and the tags 27 s later.
+
+**Rows with no game.** A row needs `dat` and `game` for a choice: `match` none, and the sets told only by a game code ("no game file here": `dat` is empty) have no A action and keep
+their old tags (`No game`, `No ROM here`). `No ROM here` also stays for a game of the database with nothing to do, because "Follows the game" would be false of it.
+
+**Targets.** PlayStation 2: every other code of the title in the game database, other regions first. PlayStation, and a PlayStation 2 disc the database does not know: one disc of
+another region you have with no save of its own, its code read from the disc (`_foreign_code` is shared with `_offer_conversions`).
+
+`saves_convert` now drops the plans: a plan carries the save report it was made with, and the copy is a new save.

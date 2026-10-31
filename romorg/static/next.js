@@ -1833,11 +1833,11 @@
     let have = "", current = null, defaultChoice = "", serial = 0, poll = 0;
     const nav = el("nav", { class: "views" });
     const list = el("div", { class: "rows", "data-section": "list" });
-    const panel = el("aside", { class: "panel", "data-section": "panel" });
+    const panel = el("aside", { class: "panel snug", "data-section": "panel" });
     const hasGame = (i) => i.match !== "none" && !!i.dat && !!i.game;
     const canCopy = (i) => !!i.convert;
     const releaseText = (i) => [i.release && i.release.region, i.release && i.release.code].filter(Boolean).join(" · ");
-    const choiceName = (v) => (SAVED_CHOICES.find((c) => c.value === v) || { label: v }).label;
+    const choiceOf = (v) => SAVED_CHOICES.find((c) => c.value === v) || { label: v, short: v };
     /** The tag of a row: what the next build does; a save with no game, or none of a game you have, as before. */
     const savesTag = (i) => {
       if (!hasGame(i) && i.match !== "rom") return i.match === "dat" ? ["No ROM here", "warn"] : ["No game", ""];
@@ -1854,7 +1854,7 @@
       const game = hasGame(i), copy = canCopy(i);
       put(panel, el("span", { class: "panel-title", text: i.title }),
         el("dl", { class: "facts" }, el("dt", { text: "On the next build" }), el("dd", { text: nextBuild(i) }),
-          game ? [el("dt", { text: "If a rule replaces it" }), el("dd", { text: `${choiceName(i.choice || defaultChoice)} (${i.choice ? "only this game" : "default"})` })] : null,
+          game ? [el("dt", { text: "If a rule replaces it" }), el("dd", { text: `${choiceOf(i.choice || defaultChoice).label} (${i.choice ? "only this game" : "default"})` })] : null,
           releaseText(i) ? [el("dt", { text: "This release" }), el("dd", { text: releaseText(i) })] : null,
           !game ? [el("dt", { text: "Save files" }), el("dd", { text: `${fmt(i.files)}` }),
             el("dt", { text: "From" }), el("dd", { text: i.source && i.source !== "retroarch" ? i.label : (i.cores || []).join(", ") || "-" }),
@@ -1869,7 +1869,7 @@
     /** The game's own choice: only the plan changes (the list says what the build does then). */
     async function changeWhat(i) {
       const v = await picker(`If a rule replaces ${i.title}`, [
-        { label: "Use the default", sub: `${choiceName(defaultChoice)}, from Settings › Saves`, value: "default", current: !i.choice },
+        { label: "Use the default", sub: `${choiceOf(defaultChoice).short}, from Settings › Saves`, value: "default", current: !i.choice },
         ...SAVED_CHOICES.map((c) => ({ label: c.label, sub: c.sub.replace(" (default)", ""), value: c.value, current: c.value === i.choice })),
       ], { cls: "tight" });
       if (v === null || v === (i.choice || "default")) return;
@@ -1883,7 +1883,7 @@
         ...(c.to || []).map((code) => ({ label: (c.regions || {})[code] || code, sub: code, value: { to_code: code }, aside: "Make a copy" })),
         ...(c.disc ? [{ label: c.disc.region || c.disc.name, sub: c.disc.code, value: { to_file: c.disc.file }, aside: "Make a copy" }] : []),
       ], { lead: `${[i.title, releaseText(i)].filter(Boolean).join(", ")}. Your save stays as it is.`, hints: [["A", "Make a copy"], ["B", "Cancel"]],
-        note: "Experimental: a game that keeps the region inside its save may still refuse the copy." });
+        cls: "pinned", note: "Experimental: a game that keeps the region inside its save may still refuse the copy." });
       if (!body) return;
       try {
         const r = await post("/api/saves/convert", { platform: p.name, set: c.set, ...body });
@@ -2213,11 +2213,11 @@
 
   // ------------------------------------------------------------------ Settings: saves
   const SAVED_CHOICES = [
-    { value: "convert", label: "Copy or convert them to the new version", sub: "The old save stays where it is (default)" },
-    { value: "carry", label: "Copy them to the better version", sub: "Both ROMs stay where a save would not work" },
-    { value: "keep", label: "Keep both ROMs", sub: "The old ROM stays, so its saves keep their game" },
-    { value: "archive", label: "Archive the saves with the ROM", sub: "They move to the archive with it" },
-    { value: "leave", label: "Leave the saves where they are", sub: "They are not touched" },
+    { value: "convert", label: "Copy or convert them to the new version", short: "Copy or convert them", sub: "The old save stays where it is (default)" },
+    { value: "carry", label: "Copy them to the better version", short: "Copy them", sub: "Both ROMs stay where a save would not work" },
+    { value: "keep", label: "Keep both ROMs", short: "Keep both ROMs", sub: "The old ROM stays, so its saves keep their game" },
+    { value: "archive", label: "Archive the saves with the ROM", short: "Archive them", sub: "They move to the archive with it" },
+    { value: "leave", label: "Leave the saves where they are", short: "Leave them", sub: "They are not touched" },
   ];
   /** What a build does with a game's saves (the ``effect`` of a save): the tag, its colour, the line of the Saves panel. */
   const SAVES_EFFECT = {
