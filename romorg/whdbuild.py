@@ -51,6 +51,7 @@ class Extra:
     expansion: Any                                    # ``whdexpansions.Expansion``
     names: list[str]
     disks: list[tuple[Path, Optional[str]]] = field(default_factory=list)
+    sps: bool = False                                 # its disks are an SPS release's images (a zip / 7z of them, or loose .ipf files)
 
 
 @dataclass
@@ -188,7 +189,7 @@ def targets(plan: Any, platform: Any, planned: bool = False) -> list[Target]:
             best[g] = (rank, t)
     got = {g: t for g, (_r, t) in best.items()}
     if merged:
-        _attach_expansions(got, merged, unit_item, disk_number, owners, sel)
+        _attach_expansions(got, merged, unit_item, disk_number, owners, sel, image_sets)
     wanted = {g for g, t in got.items() if t.extra or t.prefer_disk}
     if wanted:                                                # (the versions the rules set aside: what an install that fails falls back to)
         sets: dict[tuple, list[int]] = {}
@@ -210,7 +211,7 @@ def targets(plan: Any, platform: Any, planned: bool = False) -> list[Target]:
 
 
 def _attach_expansions(got: dict[tuple, Target], merged: set[int], unit_item: Callable[[int], Any], disk_number: Callable[[int], tuple],
-                       owners: dict, sel: Any) -> None:
+                       owners: dict, sel: Any, image_sets: Any = ()) -> None:
     """Give each game's target the disks of the expansions its install takes in (``Target.extra``, in the install's own order): per
     expansion one kept release - a set in disk order, or a disk."""
     from . import library, whdexpansions, whdready
@@ -226,7 +227,20 @@ def _attach_expansions(got: dict[tuple, Target], merged: set[int], unit_item: Ca
     for (g, arc, titles), rels in groups.items():
         m, e = objs[(arc, titles)]
         t = got.get(g)
-        if t is None or t.archive != m.archive or t.sps:
+        if t is None or t.archive != m.archive:
+            continue
+        if any(owners[k][1].dat in image_sets for ks in rels.values() for k in ks):       # (an SPS release: its images, a zip / 7z of them one unit)
+            games: dict[str, list[int]] = {}
+            for ks in rels.values():
+                for k in ks:
+                    if owners[k][1].dat in image_sets:
+                        games.setdefault(owners[k][1].rom.game, []).append(k)
+            ks = games[sorted(games)[0]]
+            parts = [unit_item(k) for k in ks]
+            found = {it.path for _op, _u, it in parts}
+            t.extra.append(Extra(expansion=e, names=[parts[0][1].rom.game], sps=True,
+                                 disks=sorted(((f, None) for f in found), key=lambda d: (d[0].name.casefold(), str(d[0])))))
+            t.merge = m
             continue
         keys = sorted(sorted(rels.values(), key=lambda ks: min(owners[k][1].rom.name for k in ks))[0], key=disk_number)
         parts = [unit_item(k) for k in keys]
@@ -295,7 +309,7 @@ def _disk_data(t: Target, extra: Optional[list[Extra]] = None) -> list[bytes]:
         if t.merge is not None and t.merge.save_disk:
             out.append(_BLANK_DISK)
         for x in extra:
-            out.extend(_read_disks(x.disks, False))
+            out.extend(_read_disks(x.disks, x.sps))
     return out
 
 
