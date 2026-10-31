@@ -10,7 +10,7 @@ from unittest import mock
 from romorg import library, whdready
 from romorg.library import KEEP, SUPERSEDED
 
-from tests.test_library import (AMIGA, AMIGA_DP, SPS_DAT, acts, amiga_items, cd_items, sps_items, setUpModule, tearDownModule)  # noqa: F401  (the no-WHDLoad-list patch)
+from tests.test_library import (AMIGA, AMIGA_DP, GAMES, SPS_DAT, acts, amiga_items, cd_items, sps_items, setUpModule, tearDownModule)  # noqa: F401  (the no-WHDLoad-list patch)
 
 
 def kept(items, sel) -> list[str]:
@@ -59,6 +59,29 @@ class LaterEditionWins(unittest.TestCase):
 class OneReleaseOfAGame(unittest.TestCase):
     def select(self, items, profile=AMIGA_DP):
         return library.select(items, profile, AMIGA)
+
+    def combined(self, *titles: str):
+        """The titles are learned as the titles of the games DAT, so ``SAME_GAME`` can make them one game."""
+        from romorg import alttitles
+        with alttitles._LOCK:
+            alttitles._DATS[library.game_dat(GAMES)] = ("Commodore Amiga", {t.casefold(): ({}, 1) for t in titles})
+            alttitles._MAPS.pop(library.game_dat(GAMES), None)
+        self.addCleanup(alttitles.clear_cache)
+        self.addCleanup(lambda: alttitles._DATS.pop(library.game_dat(GAMES), None))
+
+    def test_the_later_edition_of_a_game_of_several_titles_wins_over_an_earlier_original(self) -> None:
+        # "Kick Off" and "Kick Off Plus Extra Time" are one game (SAME_GAME): the 1990 set beats the 1988 original
+        self.combined("Kick Off", "Kick Off Plus Extra Time")
+        items = release("Kick Off v1.1 (1988)(Anco)[0189]", 10) + release("Kick Off Plus Extra Time (1990)(Anco)", 20)
+        sel = self.select(items)
+        self.assertEqual(kept(items, sel), ["Kick Off Plus Extra Time (1990)(Anco)"])
+        gone = [d for d in sel.decisions.values() if d.action == SUPERSEDED]
+        self.assertTrue(gone and all(d.tag == "Edition" for d in gone))
+
+    def test_the_earlier_edition_is_the_fallback_when_the_later_one_is_missing_a_disk(self) -> None:
+        self.combined("Kick Off", "Kick Off Plus Extra Time")
+        items = release("Kick Off v1.1 (1988)(Anco)[0189]", 10) + ipf_items(["Kick Off Plus Extra Time (1990)(Anco)(Disk 1 of 2)"], 20)
+        self.assertEqual(kept(items, self.select(items)), ["Kick Off v1.1 (1988)(Anco)[0189]"])
 
     def test_the_newest_version_of_the_originals_stays(self) -> None:
         items = release("Falcon v1.00 (1989)(Mirrorsoft)[0368]", 10) + release("Falcon v1.1 (1989)(Mirrorsoft)[1754]", 20)

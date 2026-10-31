@@ -2226,8 +2226,8 @@ def _whole(members: Sequence[Item]) -> bool:
 
 def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: Any) -> None:
     """One release per game among the originals (SPS / IPF, ``Platform.image_set_dats``) and the floppy sets kept of it (the games DAT): the
-    CD32 and CDTV discs were ranked against them by :func:`_rank_across`. In order: a version a WHDLoad install boots from (when WHDLoad is
-    preferred), your languages, how well an install runs from it (``whdready.level``), a clean dump, the best chipset (AGA > ECS > OCS), the
+    CD32 and CDTV discs were ranked against them by :func:`_rank_across`. In order: a whole release, the latest edition when the game has
+    several titles (the year of the release), a version a WHDLoad install boots from (when WHDLoad is preferred), your languages, how well an install runs from it (``whdready.level``), a clean dump, the best chipset (AGA > ECS > OCS), the
     newest version (an original or a floppy set alike), the original before a floppy set, the fewest extra tags (a compilation, a budget
     re-release, an alternate dump), then the name. The others are superseded."""
     from . import whdready
@@ -2271,7 +2271,12 @@ def _one_release(items: Sequence[Item], sel: Selection, profile: LibraryProfile,
             info[rel] = (t, rel[1] if rel[0] in image_sets else _stem(anchor.rom.name), level, flawed, _whole(members))
         vkeys = tags.group_version_keys([v[1] + ".ipf" if r[0] in image_sets else v[1] for r, v in info.items()], STYLE_TOSEC)
         pool = list(rels)
+        several = len({info[r][0].title.casefold() for r in rels}) > 1      # (a game of several titles: its editions)
+
+        def year(r: tuple) -> int:
+            return int(re.sub(r"\D", "0", info[r][0].date or "")[:4] or 0)
         steps = (("Complete", "it has every disk of the release (the other is missing some)", lambda r: not info[r][4]),   # (a release with a disk missing - the others are in another language - never beats a whole one)
+                 ("Edition", "a later edition (of another title of the game)", lambda r: -year(r) if several else 0),      # (the later edition wins, the earlier ones are the fallback: only whole releases compete)
                  ("WHDLoad", "a version a WHDLoad install boots from", lambda r: profile.prefer_whdload and info[r][2] != whdready.BOOTS),   # (also in another language, as _whdload_language kept it)
                  ("Language", "a language you prefer", lambda r: _lang_rank(tags.variant_languages(info[r][0]), profile)),
                  ("WHDLoad", "a better WHDLoad result", lambda r: -(info[r][2] or 0) if profile.prefer_whdload else 0),
