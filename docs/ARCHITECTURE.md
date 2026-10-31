@@ -4390,3 +4390,24 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
   untried (the Starter Kit already holds those courses). Found on the way: `DF0:file` after "ask the disk by a file" took the first disk
   that has the file, not the one in the drive - `course2` was the game disk's `course` (both disks hold `course`, `Selection`, `Title.Music`);
   now the disk in the drive wins when it has the file (`split` of the install's file system).
+* **Addendum (Kick Off 2: Return to Europe / The Final Whistle did not boot)**: two causes, found by running WHDLoad by hand in the PUAE
+  core (a `load` script in the archive: `WHDLoad <slave> Preload >RAM:log`; the core's helper runs `DH0:load` when it exists).
+  (1) *The icon.* These packages ship a **tool** icon (`do_Type` 3) for the game; the helper starts a game with `WBRun "<name>" SYNC`, and
+  WBRun on a tool icon wants a file of that name ("object not found"), so WHDLoad never ran and the helper's end - ReadMe in MultiView, then
+  MkCustom's "Custom WHDLoad options not set" requester - was what showed (an earlier classifier called that ReadMe page a game). The real
+  Installer's `(tooltype (setdefaulttool "WHDLoad"))` makes the icon a project: `amigainstall.edit_icon` now does too (only a tool icon, only
+  when a default tool is given). Kick Off 3 and Cadaver ship project icons, hence booted. (2) *The disk.* Both slaves read the boot block
+  (`resload_CRC16` of the first 1 KB) and accept a short list (RTE `3EEE`; FW `A071 E24C 49BD 9CCD 38F5`); every cracked ADF of the TOSEC set
+  fails with WHDLoad's "The data/disk-files are damaged or it is an unsupported version" - [cr QTX] / [b] / [f Abandon] / [cr SR], [cr Subway],
+  [cr CSL] (all 7 variants), [cr Popcorn], [cr Roncler Gang], [cr TT]. What boots: the SPS releases (RTE 0169; FW 0759, 0166 = v2.1e, 2739 = v1.9g
+  DE) and FW v1.8e `[b]` (its boot block is on the list). Verified by eye on screenshots through scan, plan, library build and `whdload_build`
+  (`ko2fix/shots/final-*.png`: RTE title "Kick Off 2 - Return to Europe", FW "Final Whistle" credits screen).
+  Data: `whdknown.json.gz` says -1 (installs, does not boot) for every cracked ADF above (the 8 not in it before are added, with their checksums)
+  and 3 for the booting ones; the standalone rows of the two in `whdexpansions.json` (`tools/gen_whdexpansions.py`) are **level 0**: the install
+  is theirs, but the row no longer claims a boot - `whdbuild.targets` builds one only from a version the list boots (an SPS release; with only
+  the cracks the library keeps a plain ADF and no archive, the game stays a title of its own). The library already prefers the SPS release over an
+  ADF set (one release of the game), so a library that has it builds from it. Classifier (`whdwork/puae/shot.py`): `classify4` calls a mostly
+  black page of light text with the OS mouse pointer a "text" page, not a game (the pointer alone is no sign - Gridiron's, PGA Tour's, Power
+  Pinball's own pointers are games); of the 49 earlier "game" results of `exptest/boot2.json` and `exptest2/boot_c.json` 4 change (the
+  KO2 pair in each); the others were looked at by eye. PowerMonger WW1's row (level 3) rests on a screen the same runs called blank - not
+  re-run here.

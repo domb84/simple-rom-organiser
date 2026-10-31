@@ -56,6 +56,13 @@ class TableTests(unittest.TestCase):
         shipped = json.loads((Path(whdexpansions.__file__).with_name("whdexpansions.json")).read_text(encoding="utf-8"))
         self.assertEqual(shipped, {"merge": tool.SEED_MERGE, "standalone": tool.SEED_STANDALONE})
 
+    def test_the_shipped_list_knows_which_kick_off_2_disks_boot(self) -> None:
+        by = whdready.known()
+        sps = "Kick Off 2 - Return to Europe v2.1e (1991)(Anco)[data disk][0169] - KickOff2_ReturnToEurope.ipf"
+        self.assertEqual(by[sps][0], whdready.BOOTS)
+        self.assertEqual(by["Kick Off 2 - Return to Europe v2.1e (1991)(Anco)[cr QTX].adf"][0], whdready.NO_BOOT)
+        self.assertEqual(by["Kick Off 2 - The Final Whistle v1.9e (1991)(Anco)[cr CSL][data disk].adf"][0], whdready.NO_BOOT)
+
     def test_every_answer_is_a_pattern_and_a_title_belongs_to_one_install(self) -> None:
         seen: dict[str, str] = {}
         for m in whdexpansions.merges():
@@ -436,6 +443,25 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(whdbuild.targets(plan, AMIGA), [])                                  # (the list's "does not boot" stands for an unproven row)
         with table(unproven), mock.patch.object(whdready, "known", return_value={}):
             self.assertEqual(len(whdbuild.targets(plan, AMIGA)), 1)
+
+    def test_kick_off_2_data_disks_are_built_only_from_a_version_the_list_boots(self) -> None:
+        # (the slaves check the boot block against a few CRCs: a crack fails with "data/disk-files are damaged or unsupported version" -
+        #  the shipped table's rows must not claim a boot the list says it does not have)
+        shipped = json.loads(Path(whdexpansions.__file__).with_name("whdexpansions.json").read_text(encoding="utf-8"))
+        for title, arc in (("Kick Off 2 - Return to Europe", "KickOff2ReturnToEurope.lha"),
+                           ("Kick Off 2 - The Final Whistle", "KickOff2FinalWhistle.lha")):
+            name = f"{title} v2.1e (1991)(Anco)[cr QTX][data disk]"
+            self.discs[name] = make_adf("KO2", {"x": b"x"})
+            plan = self.plan([name])
+            with table(shipped):
+                self.assertEqual((whdexpansions.standalone_row(title)["archive"], whdexpansions.standalone_row(title)["level"]), (arc, 0))
+            with table(shipped), mock.patch.object(whdready, "known", return_value={f"{name}.adf": [-1, arc]}):
+                self.assertEqual(whdbuild.targets(plan, AMIGA), [])                  # (a crack the slave refuses: no archive, a game of its own)
+            with table(shipped), mock.patch.object(whdready, "known", return_value={}):
+                self.assertEqual(whdbuild.targets(plan, AMIGA), [])                  # (nothing known of it: not claimed either)
+            with table(shipped), mock.patch.object(whdready, "known", return_value={f"{name}.adf": [3, arc]}):
+                [t] = whdbuild.targets(plan, AMIGA)                                   # (a version seen to boot: built)
+                self.assertEqual((t.archive, t.level), (arc, 3))
 
     def test_the_disk_that_holds_the_file_the_install_needs_comes_first(self) -> None:
         good = make_adf("Ext", {"C/BEXT": b"x"})

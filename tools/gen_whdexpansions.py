@@ -88,8 +88,11 @@ SEED_MERGE: list[dict[str, Any]] = [
 
 # expansions with an install of their own (built from their disks alone), and the install of one disk of a package of two
 SEED_STANDALONE: list[dict[str, Any]] = [
-    {"title": "Kick Off 2 - Return to Europe", "archive": "KickOff2ReturnToEurope.lha", "level": 3},
-    {"title": "Kick Off 2 - The Final Whistle", "archive": "KickOff2FinalWhistle.lha", "level": 3},
+    # (these two install and boot only from the original releases: the slaves check the disk's boot block against a short list of CRCs
+    #  and every cracked ADF of the TOSEC set fails with WHDLoad's "data/disk-files are damaged or unsupported version". Level 0: the
+    #  install is theirs; whether a version boots is what the shipped list says of its disks - the SPS releases do, the cracks do not)
+    {"title": "Kick Off 2 - Return to Europe", "archive": "KickOff2ReturnToEurope.lha", "level": 0},
+    {"title": "Kick Off 2 - The Final Whistle", "archive": "KickOff2FinalWhistle.lha", "level": 0},
     {"title": "PowerMonger - World War 1 Edition", "archive": "PowermongerWW1.lha", "level": 3},
     {"title": "Kick Off 3 - European Challenge", "archive": "KickOff3EC.lha", "level": 3},
     # (Graham Gooch's Second Innings is not here: its install from the expansion disk alone stops at a WHDLoad requester - it wants the
