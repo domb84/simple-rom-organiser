@@ -4525,3 +4525,17 @@ the same within the noise); an unsigned payload was not tried (the SHA-256 of a 
 
 Left: the first listing of a system's folder (one request per 1,000 objects) is not parallel; a resumable multipart upload after a crash (the unfinished one is
 aborted and the file sent again); the setting is not in the UI.
+
+* **Addendum (Star Trek 25th Anniversary: cause found)**: the install is right and the game runs; the black screen is PUAE's default
+  `puae_cpu_compatibility = "memory"` (also "exact"; a 68030/68040 model does not help either), the same family as The Chaos Engine above.
+  With `puae_cpu_compatibility = "compatible"` the SPS [1466] install (built by the app's interpreter from the SPS zip, 9.1 MB lha;
+  `/home/deck/.cache/romorg-speed/startrek/sps.lha`) and the ADF install both start the game: the starfield intro and the credits page
+  ("Executive Producer Brian Fargo / Produced by Bruce Schlickbernd") at 5000 frames on A1200 + 8 MB fast RAM
+  (`/home/deck/.cache/romorg-speed/startrek/shots/sps-5000.png`, `cs-5000.png`; the same run with the default option stays black,
+  `spsdef-5000.png`). Found by dumping WHDLoad's coredump (`CoreDump` + `CoreDumpPath=WHDSaves:` in S:WHDLoad.prefs) and reading the
+  Amiga's task / screen / interrupt state from it (tools in the scratch dir `startrek/`): the game had opened its 320x200x8 screen and
+  window, its VBlank server ran, the main task waited on a signal (0x40000000) that never came, nothing was drawn. Ruled out on the way:
+  files / data.000 (identical to the ADF sets), slave CRC (the game executable matches), WHDLoad 19.1 options (NoCache, NoVBRMove,
+  NoFileCache, PAL / NTSC, NoResInt), fast RAM size, audio, immediate blits. Not changed in the app: the core option is the user's
+  RetroArch setting (as for Chaos Engine), so the shipped list keeps -1 (it is the default-settings result and `AgaKeptReleases` pins it).
+  After the intro the screen is black again at 6000-11500 frames (headless, no input): not examined further.
