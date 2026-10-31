@@ -612,5 +612,29 @@ class BuiltArchiveScanTests(unittest.TestCase):
                          was["unmatched_files"] + was["unsupported"] + was["errors"] + 1)   # (only the user's own archive)
 
 
+class AgaKeptReleases(unittest.TestCase):
+    """The AGA games the real Amiga plan keeps as an SPS release: their releases are in the shipped list as booting (3), and the three whose
+    installs were run and booted by eye without a result (Star Trek 25th, Ace Ball, 1869's FLT cracks) stay at -1."""
+
+    BOOT = ["Alien Breed II - The Horror Continues (1993)(Team 17)(AGA)[0044]", "Blitz Tennis (1997)(Acid)(OCS-AGA)[2765]",
+            "Body Blows (1994)(Team 17)(AGA)[1322]", "Chaos Engine 2, The (1996)(Renegade)(AGA)[0173]", "Coala (1995)(Empire)(ECS-AGA)[0242]",
+            "DreamWeb (1994)(Empire)(AGA)[1815]", "Fantastic Dizzy (1993)(Codemasters)(M6)[1904]",
+            "Ishar 2 - Messengers of Doom (1993)(Silmarils)(AGA)(M3)[0787]", "Jurassic Park v1.00 (1993)(Ocean)(AGA)(M5)[0836]",
+            "Lion King, The (1995)(Virgin)(AGA)[0527]", "Second Samurai (1994)(Psygnosis)(AGA)[1624]",
+            "Transarctica (1993)(Silmarils)(M3)[0744]", "Virocop v1.01 (1995)(Renegade)(AGA)[1920]"]
+
+    def test_sps_releases_boot(self) -> None:
+        for rel in self.BOOT:
+            entry = whdready.release(rel)
+            self.assertIsNotNone(entry, rel)
+            self.assertEqual(entry[0], whdready.BOOTS, rel)
+
+    def test_failures_stay_not_booting(self) -> None:
+        self.assertEqual(whdready.level(["Ace Ball (1995)(TimSoft)(OCS-AGA)[cr WT].adf"]), whdready.NO_BOOT)
+        self.assertEqual(whdready.release("Star Trek - 25th Anniversary (1994)(Interplay)(AGA)[HD][1466]")[0], whdready.NO_BOOT)
+        self.assertEqual(whdready.level([f"1869 - History Experience Part I (1993)(Flair)(Disk {n} of 3)({c}){x}.adf"
+                                         for n, c, x in ((1, "A", "[cr FLT]"), (2, "B", ""), (3, "C", ""))]), whdready.NO_BOOT)
+
+
 if __name__ == "__main__":
     unittest.main()
