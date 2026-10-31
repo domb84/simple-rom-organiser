@@ -26,17 +26,20 @@ import hashlib
 import hmac
 import http.client
 import os
+import re
 import socket
 import ssl
+import threading
 import time
 import urllib.parse
 import uuid
 import xml.etree.ElementTree as ET
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-__all__ = ["Config", "Client", "S3Error", "load_config", "probe", "sign_v4", "EMPTY_SHA256", "META_PREFIX"]
+__all__ = ["Config", "Client", "S3Error", "Cancelled", "load_config", "probe", "sign_v4", "EMPTY_SHA256", "META_PREFIX"]
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 META_PREFIX = "x-amz-meta-"
@@ -44,6 +47,10 @@ CHUNK = 1 << 20
 DEFAULT_PART = 64 << 20                 # 64 MiB parts (S3: 5 MiB to 5 GiB, at most 10,000 parts)
 RETRIES = 5
 RETRY_STATUS = {429, 500, 502, 503, 504}
+PART_WORKERS = 4                        # parts of a multipart upload on the wire at once (all files together; see Client.parts)
+IDLE_MAX = 20.0                         # seconds an idle kept-open connection is trusted (servers close idle ones)
+MAX_IDLE = 64                           # kept-open connections
+SEND_BLOCK = 256 << 10                  # http.client sends a file body in blocks of this size (its default is 8 KiB)
 
 
 class S3Error(Exception):
@@ -52,6 +59,10 @@ class S3Error(Exception):
     def __init__(self, status: int, code: str, message: str, region: str = "") -> None:
         super().__init__(f"{code or 'Error'} ({status}): {message}" if status else message)
         self.status, self.code, self.message, self.region = status, code, message, region
+
+
+class Cancelled(Exception):
+    """The caller's ``cancel`` said stop (raised from a body being streamed; never retried, never an S3Error)."""
 
 
 @dataclass
@@ -180,13 +191,25 @@ def _xml(data: bytes) -> ET.Element:
 
 class Client:
     def __init__(self, config: Config, timeout: float = 60.0, multipart_threshold: int = DEFAULT_PART,
-                 part_size: int = DEFAULT_PART, sleep: Callable[[float], None] = time.sleep) -> None:
+                 part_size: int = DEFAULT_PART, sleep: Callable[[float], None] = time.sleep, parts: int = PART_WORKERS) -> None:
         self.cfg = config
         self.timeout = timeout
         self.multipart_threshold = max(multipart_threshold, 5 << 20)
         self.part_size = max(part_size, 5 << 20)
+        self.parts = max(1, parts)
         self._sleep = sleep
         self._region = config.region
+        self._ctx: Optional[ssl.SSLContext] = None
+        self._idle: List[Tuple[http.client.HTTPConnection, float]] = []     # kept-open connections (HTTP keep-alive), any thread's
+        self._pool_lock = threading.Lock()
+        self._part_slots = threading.BoundedSemaphore(self.parts)           # parts on the wire at once, over every upload
+
+    def close(self) -> None:
+        """Close the kept-open connections (the client stays usable: the next request opens a new one)."""
+        with self._pool_lock:
+            idle, self._idle = self._idle, []
+        for conn, _t in idle:
+            conn.close()
 
     # ---- plumbing
     @property
@@ -213,14 +236,42 @@ class Client:
 
     def _connect(self) -> http.client.HTTPConnection:
         if self.cfg.scheme == "http":
-            return http.client.HTTPConnection(self.cfg.host, self.cfg.port, timeout=self.timeout)
-        return http.client.HTTPSConnection(self.cfg.host, self.cfg.port, timeout=self.timeout, context=ssl.create_default_context())
+            return http.client.HTTPConnection(self.cfg.host, self.cfg.port, timeout=self.timeout, blocksize=SEND_BLOCK)
+        if self._ctx is None:                                    # (loading the CA certificates costs milliseconds: once)
+            self._ctx = ssl.create_default_context()
+        return http.client.HTTPSConnection(self.cfg.host, self.cfg.port, timeout=self.timeout, context=self._ctx, blocksize=SEND_BLOCK)
+
+    def _acquire(self) -> Tuple[http.client.HTTPConnection, bool]:
+        """A kept-open connection (``reused`` True) or a new one: a TCP and TLS handshake costs 2 to 3 round trips, so
+        connections are kept open (HTTP keep-alive) and handed from request to request, whichever thread asks."""
+        now = time.monotonic()
+        stale: List[http.client.HTTPConnection] = []
+        got = None
+        with self._pool_lock:
+            while self._idle:
+                conn, t = self._idle.pop()
+                if now - t > IDLE_MAX:
+                    stale.append(conn)
+                    continue
+                got = conn
+                break
+        for conn in stale:
+            conn.close()
+        return (got, True) if got is not None else (self._connect(), False)
+
+    def _release(self, conn: http.client.HTTPConnection) -> None:
+        with self._pool_lock:
+            if len(self._idle) < MAX_IDLE:
+                self._idle.append((conn, time.monotonic()))
+                return
+        conn.close()
 
     def _request(self, method: str, key: str, query: Optional[Dict[str, str]] = None, headers: Optional[Dict[str, str]] = None,
                  body: Optional[Callable[[], Any]] = None, payload_hash: str = EMPTY_SHA256, sink: Optional[IO[bytes]] = None,
                  ok: Tuple[int, ...] = (200, 204, 206)) -> Tuple[int, Dict[str, str], bytes]:
         """One request, retried. ``body`` makes a fresh body each try (bytes or an open file). With ``sink`` the answer's body is
-        written there (rewound for a retry) and ``b""`` returned."""
+        written there (rewound for a retry) and ``b""`` returned. Connections are kept open between requests; a kept-open one
+        the service has closed meanwhile is replaced at once (not counted as a failed try)."""
         query = dict(query or {})
         path = self._path(key)
         url = path + ("?" + "&".join(f"{_quote(k)}={_quote(v)}" for k, v in sorted(query.items())) if query else "")
@@ -231,32 +282,46 @@ class Client:
             region = self._region or "us-east-1"
             hdrs = sign_v4(method, self.cfg.netloc, path, query, dict(headers or {}), payload_hash,
                            self.cfg.access_key, self.cfg.secret_key, region, datetime.datetime.now(datetime.timezone.utc))
-            conn = self._connect()
-            data = body() if body is not None else None
-            try:
-                conn.request(method, url, body=data, headers=hdrs)
-                resp = conn.getresponse()
-                status = resp.status
-                rhead = {k.lower(): v for k, v in resp.getheaders()}
-                if status in ok and sink is not None:
-                    sink.seek(0)
-                    sink.truncate()
-                    while True:
-                        block = resp.read(CHUNK)
-                        if not block:
-                            break
-                        sink.write(block)
-                    return status, rhead, b""
-                payload = resp.read()
-            except (OSError, http.client.HTTPException, socket.timeout) as exc:
-                last = exc
+            result: Optional[Tuple[int, Dict[str, str], bytes]] = None
+            while True:
+                conn, reused = self._acquire()
+                data = body() if body is not None else None
+                keep = False
+                try:
+                    conn.request(method, url, body=data, headers=hdrs)
+                    resp = conn.getresponse()
+                    status = resp.status
+                    rhead = {k.lower(): v for k, v in resp.getheaders()}
+                    if status in ok and sink is not None:
+                        sink.seek(0)
+                        sink.truncate()
+                        while True:
+                            block = resp.read(CHUNK)
+                            if not block:
+                                break
+                            sink.write(block)
+                        payload = b""
+                    else:
+                        payload = resp.read()
+                    keep = not resp.will_close
+                    result = (status, rhead, payload)
+                except (OSError, http.client.HTTPException, socket.timeout) as exc:
+                    if reused:
+                        continue                                  # (the kept-open connection was closed under us: a new one)
+                    last = exc
+                finally:
+                    if hasattr(data, "close"):
+                        data.close()
+                    if keep:
+                        self._release(conn)
+                    else:
+                        conn.close()
+                break
+            if result is None:
                 continue
-            finally:
-                if hasattr(data, "close"):
-                    data.close()
-                conn.close()
+            status, rhead, payload = result
             if status in ok:
-                return status, rhead, payload
+                return result
             err = self._error(status, rhead, payload, method)
             if status in RETRY_STATUS:
                 last = err
@@ -327,61 +392,103 @@ class Client:
         return h.get("etag", "").strip('"')
 
     def put_file(self, key: str, path: Path, metadata: Optional[Dict[str, str]] = None,
-                 progress: Optional[Callable[[int, int], None]] = None, digests: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
-        """Upload a file (streamed). Returns ``{"etag", "md5", "size", "parts"}``; ``md5`` is the file's own (hex). ``digests``:
-        its (md5, sha256) when the caller read them already (a single-part upload then reads the file once more, to send it)."""
+                 progress: Optional[Callable[[int, int], None]] = None, digests: Optional[Tuple[str, str]] = None,
+                 cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+        """Upload a file (streamed). Returns ``{"etag", "md5", "size", "parts", "verified"}``; ``md5`` is the file's own (hex).
+        ``digests``: its (md5, sha256) when the caller read them already (a single-part upload then reads the file once more,
+        to send it). ``verified``: the service's answer proves the stored bytes (a single-part upload whose ETag is the MD5 sent,
+        which the service also checked against ``Content-MD5``); a multipart upload is not (the caller checks size with a HEAD).
+        ``cancel``: polled while the body is streamed; True raises :class:`Cancelled` (a multipart upload is aborted)."""
         _ = self.region
         path = Path(path)
         size = path.stat().st_size
         if size <= self.multipart_threshold:
             md5, sha, n = (digests[0], digests[1], size) if digests else file_digests(path)
             headers = {"Content-MD5": _b64md5(md5), "Content-Length": str(n), **self._meta_headers(metadata)}
-            _s, h, _b = self._request("PUT", key, headers=headers, body=lambda: open(path, "rb"), payload_hash=sha)
+            _s, h, _b = self._request("PUT", key, headers=headers, body=lambda: _Slice(path, 0, n, cancel), payload_hash=sha)
             if progress:
                 progress(size, size)
-            return {"etag": h.get("etag", "").strip('"'), "md5": md5, "size": size, "parts": 1}
-        return self._multipart(key, path, size, metadata, progress)
+            etag = h.get("etag", "").strip('"')
+            return {"etag": etag, "md5": md5, "size": size, "parts": 1, "verified": etag.lower() == md5}
+        whole = digests[0] if digests else file_digests(path)[0]
+        return self._multipart(key, path, size, metadata, progress, whole, cancel)
 
     def _multipart(self, key: str, path: Path, size: int, metadata: Optional[Dict[str, str]],
-                   progress: Optional[Callable[[int, int], None]]) -> Dict[str, Any]:
+                   progress: Optional[Callable[[int, int], None]], whole_md5: str,
+                   cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+        """Parts are sent in parallel (at most ``parts`` on the wire, over all uploads of this client; each streamed from the file,
+        its MD5 / SHA-256 read just before it is sent, in its own thread, so the hashing of one part overlaps the sending of the
+        others). Memory stays at a few blocks. The first failure stops the others and aborts the upload."""
         part = max(self.part_size, -(-size // 10000))
+        count = -(-size // part)
         _s, _h, data = self._request("POST", key, {"uploads": ""}, headers=self._meta_headers(metadata))
         upload = _xml(data).findtext("UploadId") or ""
         if not upload:
             raise S3Error(0, "", "the service gave no upload id")
-        whole = hashlib.md5()
-        done: List[Tuple[int, str]] = []
-        try:
-            offset, number = 0, 1
-            while offset < size:
-                length = min(part, size - offset)
-                md5, sha, n = file_digests(path, offset, length, also=whole)    # (the whole file's MD5 on the way)
+        stop = threading.Event()
+        lock = threading.Lock()
+        sent = [0]
+        md5s: Dict[int, str] = {}
+        etags: Dict[int, str] = {}
 
-                def body(start: int = offset, count: int = length) -> Any:
-                    return _Slice(path, start, count)
+        def halt() -> bool:
+            return stop.is_set() or bool(cancel and cancel())
+
+        def send(number: int) -> None:
+            offset = (number - 1) * part
+            length = min(part, size - offset)
+            with self._part_slots:
+                if halt():
+                    raise Cancelled()
+                md5, sha, n = file_digests(path, offset, length)
                 headers = {"Content-MD5": _b64md5(md5), "Content-Length": str(n)}
-                _s, h, _b = self._request("PUT", key, {"partNumber": str(number), "uploadId": upload}, headers=headers, body=body,
-                                          payload_hash=sha)
-                done.append((number, h.get("etag", "").strip('"')))
-                offset += length
-                number += 1
+                _s, h, _b = self._request("PUT", key, {"partNumber": str(number), "uploadId": upload}, headers=headers,
+                                          body=lambda: _Slice(path, offset, length, halt), payload_hash=sha)
+            with lock:
+                md5s[number] = md5
+                etags[number] = h.get("etag", "").strip('"')
+                sent[0] += length
                 if progress:
-                    progress(offset, size)
-            xml = ("<CompleteMultipartUpload>" + "".join(f"<Part><PartNumber>{n}</PartNumber><ETag>\"{e}\"</ETag></Part>"
-                                                         for n, e in done) + "</CompleteMultipartUpload>").encode("utf-8")
+                    progress(sent[0], size)
+
+        try:
+            with ThreadPoolExecutor(max_workers=min(self.parts, count), thread_name_prefix="romorg-part") as pool:
+                pending: set = set()
+                nxt = 1
+                try:
+                    while nxt <= count or pending:
+                        while nxt <= count and len(pending) < self.parts and not halt():
+                            pending.add(pool.submit(send, nxt))
+                            nxt += 1
+                        if not pending:
+                            break
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        errors = [e for e in (f.exception() for f in done) if e is not None]
+                        if errors:                           # (the real failure, not the stop it caused in the others)
+                            raise next((e for e in errors if not isinstance(e, Cancelled)), errors[0])
+                    if halt():
+                        raise Cancelled()
+                except BaseException:
+                    stop.set()                               # (the parts still running stop at their next block)
+                    raise
+            xml = ("<CompleteMultipartUpload>" + "".join(f"<Part><PartNumber>{n}</PartNumber><ETag>\"{etags[n]}\"</ETag></Part>"
+                                                         for n in range(1, count + 1)) + "</CompleteMultipartUpload>").encode("utf-8")
             _s, _h, data = self._request("POST", key, {"uploadId": upload}, headers={"Content-Length": str(len(xml))},
                                          body=lambda: xml, payload_hash=hashlib.sha256(xml).hexdigest())
             root = _xml(data)
             if root.tag == "Error":                              # (S3 can answer 200 with an error in the body)
                 raise S3Error(200, root.findtext("Code") or "", root.findtext("Message") or "")
             etag = (root.findtext("ETag") or "").strip('"')
+            want = hashlib.md5(b"".join(bytes.fromhex(md5s[n]) for n in range(1, count + 1))).hexdigest() + f"-{count}"
+            if re.fullmatch(r"[0-9a-f]{32}-\d+", etag.lower()) and etag.lower() != want:
+                raise OSError(f"{key}: the object's ETag {etag} is not the one of the parts sent ({want})")
         except BaseException:
             try:
                 self.abort_upload(key, upload)
             except S3Error:
                 pass
             raise
-        return {"etag": etag, "md5": whole.hexdigest(), "size": size, "parts": len(done)}
+        return {"etag": etag, "md5": whole_md5, "size": size, "parts": count, "verified": False}
 
     def get_bytes(self, key: str, start: Optional[int] = None, end: Optional[int] = None) -> bytes:
         """The object, or the bytes ``start`` to ``end`` (inclusive) of it."""
@@ -467,16 +574,20 @@ class Client:
 
 
 class _Slice:
-    """A read-only window ``[start, start + count)`` of a file, for http.client to stream a part from."""
+    """A read-only window ``[start, start + count)`` of a file, for http.client to stream a body from. ``cancel`` is polled at each
+    read: True raises :class:`Cancelled`."""
 
-    def __init__(self, path: Path, start: int, count: int) -> None:
+    def __init__(self, path: Path, start: int, count: int, cancel: Optional[Callable[[], bool]] = None) -> None:
         self._f = open(path, "rb")
         self._f.seek(start)
         self._left = count
+        self._cancel = cancel
 
     def read(self, n: int = -1) -> bytes:
         if self._left <= 0:
             return b""
+        if self._cancel is not None and self._cancel():
+            raise Cancelled()
         n = self._left if n is None or n < 0 else min(n, self._left)
         data = self._f.read(n)
         self._left -= len(data)

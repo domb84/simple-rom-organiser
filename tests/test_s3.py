@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,10 +31,29 @@ class FakeS3:
         self.requests: list[str] = []
         self.page = 1000
         self.lock = threading.Lock()
+        self.connections = 0            # TCP connections accepted
+        self.drop = 0                   # close the connection without an answer for this many next requests
+        self.part_delay = 0.0           # seconds a part's PUT takes (to see parts overlap)
+        self.parts_now = 0              # part PUTs being served now / at most at once
+        self.parts_max = 0
+        self.final_etag = ""            # what a completed multipart upload answers instead of the real ETag
 
 
 def _handler(fake: FakeS3):
     class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"                       # (keep-alive)
+
+        def setup(self) -> None:
+            super().setup()
+            with fake.lock:
+                fake.connections += 1
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):      # (a client that stopped sending: a cancel, a refused body)
+                self.close_connection = True
+
         def log_message(self, *a) -> None:  # noqa: D401
             pass
 
@@ -81,6 +101,10 @@ def _handler(fake: FakeS3):
             body = self._body()
             with fake.lock:
                 fake.requests.append(f"{self.command} {self.path}")
+                if fake.drop:
+                    fake.drop -= 1
+                    self.close_connection = True            # (an idle connection the service closed: no answer at all)
+                    return
                 if fake.fail:
                     self._err(fake.fail.pop(0), "SlowDown")
                     return
@@ -98,6 +122,13 @@ def _handler(fake: FakeS3):
             key = urllib.parse.unquote(parts[2]) if len(parts) > 2 else ""
             meta = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("x-amz-meta-")}
             c = self.command
+            if c == "PUT" and "uploadId" in q and fake.part_delay:
+                with fake.lock:
+                    fake.parts_now += 1
+                    fake.parts_max = max(fake.parts_max, fake.parts_now)
+                time.sleep(fake.part_delay)
+                with fake.lock:
+                    fake.parts_now -= 1
             with fake.lock:
                 if c == "GET" and not key and "uploads" in q:
                     xml = "".join(f"<Upload><Key>{k}</Key><UploadId>{i}</UploadId><Initiated>x</Initiated></Upload>"
@@ -128,7 +159,8 @@ def _handler(fake: FakeS3):
                     k, ps, m = fake.uploads.pop(q["uploadId"])
                     data = b"".join(ps[n] for n in sorted(ps))
                     fake.objects[k] = (data, m)
-                    self._send(200, f"<CompleteMultipartUploadResult><ETag>&quot;x-{len(ps)}&quot;</ETag></CompleteMultipartUploadResult>".encode())
+                    etag = fake.final_etag or hashlib.md5(b"".join(hashlib.md5(ps[n]).digest() for n in sorted(ps))).hexdigest() + f"-{len(ps)}"
+                    self._send(200, f"<CompleteMultipartUploadResult><ETag>&quot;{etag}&quot;</ETag></CompleteMultipartUploadResult>".encode())
                 elif c == "DELETE" and "uploadId" in q:
                     fake.uploads.pop(q["uploadId"], None)
                     self._send(204)
@@ -254,12 +286,10 @@ class Calls(unittest.TestCase):
         src = self.tmp / "big.chd"
         src.write_bytes(os.urandom(6 << 20))
         real = s3.file_digests
-        calls = []
 
         def bad(path, start=0, length=None, also=None):
-            calls.append(1)
             md5, sha, n = real(path, start, length, also)
-            return ("0" * 32 if len(calls) == 2 else md5), sha, n           # the second part's MD5 is wrong: the server refuses it
+            return ("0" * 32 if start else md5), sha, n                      # the second part's MD5 is wrong: the server refuses it
         s3.file_digests = bad
         try:
             with self.assertRaises(s3.S3Error) as cm:
@@ -268,6 +298,87 @@ class Calls(unittest.TestCase):
             s3.file_digests = real
         self.assertEqual(cm.exception.code, "BadDigest")
         self.assertEqual((self.fake.uploads, self.fake.objects), ({}, {}))     # aborted: nothing half there
+
+    def test_connections_are_kept_open_and_shared_between_threads(self) -> None:
+        _ = self.client.region
+        for i in range(10):
+            self.client.put_bytes(self.client.key(f"k{i}"), b"x" * i)
+        self.assertEqual(self.fake.connections, 1)                   # (one handshake for 11 requests)
+        self.client.close()
+        self.client.head(self.client.key("k1"))
+        self.assertEqual(self.fake.connections, 2)
+
+        def work(i: int) -> None:
+            for _ in range(5):
+                self.client.head(self.client.key(f"k{i}"))
+        threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertLessEqual(self.fake.connections, 2 + 4)           # (at most one per thread at once, then reused)
+
+    def test_a_connection_the_service_closed_meanwhile_is_replaced_without_a_back_off(self) -> None:
+        slept: list[float] = []
+        client = s3.Client(self.client.cfg, sleep=slept.append)
+        k = client.key("a")
+        client.put_bytes(k, b"a")
+        self.fake.drop = 1                                           # the kept-open connection is dead on the next request
+        self.assertEqual(client.head(k).size, 1)
+        self.assertEqual((slept, self.fake.connections), ([], 2))
+        self.fake.drop = 1                                           # a fresh connection that fails is a real failure: back off
+        client.close()
+        self.assertEqual(client.head(k).size, 1)
+        self.assertEqual(len(slept), 1)
+
+    def test_parts_go_in_parallel_but_never_more_than_asked(self) -> None:
+        self.fake.part_delay = 0.15
+        src = self.tmp / "big.chd"
+        src.write_bytes(os.urandom((5 << 20) * 6 + 7))
+        for parts in (1, 3):
+            self.fake.parts_max = 0
+            client = self.make(multipart_threshold=5 << 20, part_size=5 << 20, parts=parts)
+            seen: list[int] = []
+            r = client.put_file(client.key(f"big{parts}.chd"), src, {"sha1": "s"}, progress=lambda a, b: seen.append(a))
+            self.assertEqual((r["parts"], r["verified"], r["md5"]), (7, False, hashlib.md5(src.read_bytes()).hexdigest()))
+            self.assertEqual(self.fake.objects[f"arch/big{parts}.chd"][0], src.read_bytes())
+            self.assertEqual((self.fake.parts_max, seen[-1], seen == sorted(seen)), (parts, src.stat().st_size, True))
+        self.assertEqual(self.fake.uploads, {})
+
+    def test_a_single_put_is_verified_by_its_etag_and_a_multipart_one_by_the_etag_of_its_parts(self) -> None:
+        src = self.tmp / "a.bin"
+        src.write_bytes(b"abc" * 1000)
+        self.assertTrue(self.client.put_file(self.client.key("a"), src)["verified"])
+        client = self.make(multipart_threshold=5 << 20, part_size=5 << 20)
+        src.write_bytes(os.urandom(11 << 20))
+        r = client.put_file(client.key("b"), src)
+        self.assertEqual((r["parts"], r["verified"], r["etag"].endswith("-3")), (3, False, True))     # (size is the caller's HEAD)
+        self.fake.final_etag = "0" * 32 + "-3"                                                         # a service that names other parts
+        with self.assertRaises(OSError):
+            client.put_file(client.key("c"), src)
+
+    def test_a_cancel_stops_a_multipart_upload_between_blocks_and_aborts_it(self) -> None:
+        client = self.make(multipart_threshold=5 << 20, part_size=5 << 20, parts=2)
+        src = self.tmp / "big.chd"
+        src.write_bytes(os.urandom(16 << 20))
+        asked = []
+
+        def cancel() -> bool:
+            asked.append(1)
+            return len(asked) > 3
+        with self.assertRaises(s3.Cancelled):
+            client.put_file(client.key("big.chd"), src, cancel=cancel)
+        self.assertEqual((self.fake.uploads, self.fake.objects), ({}, {}))
+
+    def test_a_failing_part_stops_the_others_and_aborts(self) -> None:
+        self.fake.part_delay = 0.05
+        client = self.make(multipart_threshold=5 << 20, part_size=5 << 20, parts=3)
+        src = self.tmp / "big.chd"
+        src.write_bytes(os.urandom(5 * (5 << 20)))
+        _ = client.region
+        self.fake.fail = [400]                                       # the first request after this (a part or the start) is refused for good
+        with self.assertRaises(s3.S3Error) as cm:
+            client.put_file(client.key("big.chd"), src)
+        self.assertEqual(cm.exception.status, 400)
+        self.assertEqual((self.fake.uploads, self.fake.objects), ({}, {}))
 
     def test_a_body_that_does_not_match_its_md5_is_refused(self) -> None:
         real = s3._b64md5

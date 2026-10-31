@@ -4481,3 +4481,47 @@ Decided with the user (Kick Off 3 and Kick Off 3 - European Challenge): two rele
     installs (ECS version), the slave stops at "DOS-Error #121 (file is not executable) on reading 1869" on A500 and A1200
     (`shots/a1869-*`); the only set that boots is the unofficial Polish translation ([cr Aquarius][tr pl Aquarius], language-excluded) and the German releases.
   Tools used: `/home/deck/.cache/romorg-speed/aga16/{setup,plan,libflow,boot,tryv,cand,addload}.py`.
+
+## Amendment 114: faster uploads to the S3 archive (2026-10-31)
+
+Measured against the user's real bucket (MEGA S4, `s3.g.megas4.com`, from the Deck; real Amiga ADF / SPS files of 0.1 to 2 MB, N64 ROMs of 25 to 35 MB,
+a 447 MB PS2 CHD; every object under a throw-away prefix `archive/_romorg-perftest-<time>/`, all deleted afterwards, prefix listed empty each run; about 3 GB
+sent in all; `tools/s3_bench.py` does this and refuses any request outside the prefix). The line is noisy (the same run varies by a factor of 2 to 3 within
+minutes), so the table gives the figures of the runs and A/B pairs run next to each other.
+
+Facts: a HEAD of a missing key takes 52 ms (TCP + TLS + request: the old code opened a new connection per request); one 64 MiB PUT on one stream runs at
+17 MB/s; four streams reach 20 to 27 MB/s at best (about 160 to 220 Mbit/s: the ceiling of the line or the bucket; more streams do not add); a single small
+object costs about 0.25 s of service time however fast the line is, so small files need many in flight (1 worker 3.9 files/s, 16 to 32 workers 10 to 13 files/s,
+the most this bucket gave).
+
+| workload | before (v0.5) | after | requests per file |
+|---|---|---|---|
+| 60 small files / 51 MB, 16 workers, A/B pair run back to back | 12.6 s, then 7.1 s (2.02 req, 121 connections) | 5.6 s, 6.1 s, 8.0 s (1.02 req, 15 connections) | 2.02 -> 1.02 |
+| same, 4 workers | 12.3 s (4.9 files/s) | 6.4 s (9.3 files/s) | 2.02 -> 1.02 |
+| 100 small files / 87 MB, 16 workers (v0.5 only) | 7.7 s (13 files/s; 1 / 4 / 8 / 32 workers: 57 / 35 / 29 / 8.9 s) | - | |
+| 4 medium files / 134 MB | 4.9 s (27 MB/s) with 4 workers, 8.0 s (17 MB/s) with 1 | 7.5 s (18 MB/s) in a slow minute: the line, not the code | 2.25 -> 1.25 |
+| one 447 MB CHD (7 parts of 64 MiB) | 25.3 s (17.6 MB/s) | 19.5 s (22.9 MB/s), parts in parallel | 11 -> 11 (one HEAD stays) |
+| one 32 MiB multipart upload, 1 stream vs 4 streams, alternating | 7.5 and 5.4 MB/s | 17.4 and 11.6 MB/s (2 streams 20 MB/s) | |
+
+Changes, and what each is worth:
+* **Connections are kept open** (`Client._acquire/_release`, a shared pool of idle connections, any thread's): 121 connections for 60 files became 15 (one per
+  worker); a connection the service closed while idle is replaced at once without a back-off and without using up a retry; idle ones older than 20 s are not
+  trusted. The TLS context is built once, and `http.client` sends a body in 256 KiB blocks (default 8 KiB). Worth about one round trip of 50 ms and the TLS
+  handshake of every request.
+* **No verification HEAD for a single-part upload**: the service refuses a body whose MD5 differs from `Content-MD5`, and its ETag is that MD5, so the PUT's
+  answer is the check (size = the `Content-Length` it accepted). If the ETag is not the MD5, with `verify="head"`, or for a multipart upload (whose final ETag is
+  compared with the MD5 of the parts' MD5s, and which keeps its one HEAD for the size and the `sha1`) the object is read back as before. A file whose size or
+  time changed during the upload fails and stays. Halves the requests of a small file: the largest single win for many files.
+* **Parts of a multipart upload go in parallel** (`Client(parts=4)`: at most 4 parts on the wire over all uploads of the client, each streamed from the file;
+  its MD5 / SHA-256 are read in its own thread just before it is sent, so hashing overlaps sending; the whole file's MD5 comes from the caller's digests). The
+  first failure stops the others at their next block and aborts the upload; memory stays at a few blocks. The setting is `s3_parts` in config.json.
+* **Two pools** (`upload_moves`): small files (up to 8 MiB) in a pool of `WORKERS` = 16 (the setting `s3_workers` or `$ROMORG_S3_WORKERS`, 1 to 64), big files
+  in a pool of 3, biggest first, so a CHD does not wait behind 3,000 ADFs and the end is not one big file alone.
+* **Cancel works inside a big upload** (`put_file(cancel=)`, polled at every block: the multipart upload is aborted, the local file stays) and stops the queued
+  files (before, every file was queued at once and a cancel stopped nothing).
+
+Not done because it did not measure as worth it: more than 4 parts (the 8-stream run was no faster; the line is the limit), more than 16 small-file workers (32 gave
+the same within the noise); an unsigned payload was not tried (the SHA-256 of a part costs about 1 s per 450 MB, a few percent of the upload).
+
+Left: the first listing of a system's folder (one request per 1,000 objects) is not parallel; a resumable multipart upload after a crash (the unfinished one is
+aborted and the file sent again); the setting is not in the UI.

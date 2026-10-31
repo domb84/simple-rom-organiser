@@ -5262,7 +5262,12 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, "The S3 connection is not set up (Settings > S3 connection).", "no_s3")
         secret = self._s3_secret_path().read_text(encoding="utf-8").strip()
         s3 = _mod("s3")
-        return s3.Client(s3.Config(c["endpoint"], target.bucket, c["access_key"], secret, c["region"], target.prefix))
+        try:
+            parts = int(self._config().get("s3_parts") or 0)
+        except (TypeError, ValueError):
+            parts = 0
+        return s3.Client(s3.Config(c["endpoint"], target.bucket, c["access_key"], secret, c["region"], target.prefix),
+                         **({"parts": parts} if parts > 0 else {}))
 
     def s3_test(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/settings/s3/test {location}``: the connection test (list, put a small object with metadata, read it, delete
@@ -5345,7 +5350,8 @@ class App:
             return sortroot.apply_moves(moves, keep=keep, progress=progress, cancel=cancel)
         if inv.client is None:
             return {"moved": 0, "failed": [{"path": str(m.src), "error": inv.error} for m in moves][:20], "cancelled": False}
-        res = _mod("s3archive").upload_moves(inv.client, inv, moves, keep=keep, root=root, progress=progress, cancel=cancel)
+        res = _mod("s3archive").upload_moves(inv.client, inv, moves, keep=keep, root=root, progress=progress, cancel=cancel,
+                                                  workers=_mod("s3archive").default_workers(self._config().get("s3_workers")))
         inv.save_meta()
         return res
 

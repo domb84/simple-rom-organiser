@@ -33,10 +33,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import s3, sortroot
 
-__all__ = ["Target", "parse", "stand_in", "Inventory", "upload_moves", "display", "STAND_IN_DIR", "WORKERS"]
+__all__ = ["Target", "parse", "stand_in", "Inventory", "upload_moves", "display", "STAND_IN_DIR", "WORKERS", "default_workers"]
 
 STAND_IN_DIR = "s3-archive"
-WORKERS = 4                              # uploads at once (small files are bound by the round trips, big ones by the line)
+WORKERS = 16                             # small files at once (they are bound by the round trips; measured, docs Amendment 114)
+ENV_WORKERS = "ROMORG_S3_WORKERS"
+BIG_FILE = 8 << 20                       # a file above this many bytes is "big": it goes to the pool of BIG_WORKERS
+BIG_WORKERS = 3                          # big uploads at once (a few streams fill the line; a multipart one sends its parts in parallel too)
 
 
 @dataclass(frozen=True)
@@ -244,9 +247,25 @@ def _same(info: s3.ObjectInfo, d: Dict[str, Any]) -> bool:
     return bool(meta) and meta.get("md5") == d["md5"]
 
 
-def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optional[Path]) -> Tuple[str, int]:
+def default_workers(configured: Any = None) -> int:
+    """Uploads at once: ``$ROMORG_S3_WORKERS`` / the ``s3_workers`` setting (1 to 64), else :data:`WORKERS`."""
+    try:
+        n = int(os.environ.get(ENV_WORKERS) or configured or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return max(1, min(n, 64)) if n > 0 else WORKERS
+
+
+def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optional[Path],
+                cancel: Optional[Callable[[], bool]] = None, verify: str = "etag") -> Tuple[str, int]:
     """Upload, check, and (a move) delete the local file. Returns ("moved" | "already", bytes sent). A copy whose source is in the
-    archive itself (a save of several games: a copy under each of the others) is made by the service."""
+    archive itself (a save of several games: a copy under each of the others) is made by the service.
+
+    The check before the local file goes: a single-part PUT is checked by the service's own answer (it refused a body whose MD5 is
+    not ``Content-MD5``, and its ETag is that MD5: the stored bytes are the ones read; the size is the ``Content-Length`` it
+    accepted), so no HEAD is sent; a service whose ETag is not the MD5, a multipart upload (its parts were each checked, the
+    final ETag is compared with the one of the parts' MD5s) and ``verify="head"`` read the object back with a HEAD (size, ETag
+    or ``md5`` metadata, ``sha1``). A file whose size or time changed during the upload fails."""
     src = Path(m.src)
     src_key = inv.key(src)
     if src_key is not None:
@@ -259,6 +278,9 @@ def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optio
             raise OSError(f"the copy at {key} does not check out")
         inv.add(full)
         return "moved", 0
+    if cancel and cancel():
+        raise s3.Cancelled()
+    before = src.stat()
     d = _digests(src)
     have = inv.get(key)
     if have is not None:
@@ -278,12 +300,16 @@ def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optio
                 meta["from"] = src.relative_to(root).as_posix()
             except ValueError:
                 pass
-        r = client.put_file(key, src, meta, digests=(d["md5"], d["sha256"]))
-        if r["md5"] != d["md5"]:
+        r = client.put_file(key, src, meta, digests=(d["md5"], d["sha256"]), cancel=cancel)
+        after = src.stat()
+        if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns) or r["md5"] != d["md5"]:
             raise OSError("the file changed while it was uploaded")
-        full = client.head(key)
-        if full is None or not _same(full, d) or full.metadata.get("sha1") != d["sha1"]:
-            raise OSError(f"the object at {key} does not check out after the upload")
+        if r["verified"] and verify != "head" and r["size"] == d["size"]:
+            full = s3.ObjectInfo(key, d["size"], r["etag"], "", {k[len(s3.META_PREFIX):]: v for k, v in client._meta_headers(meta).items()})
+        else:
+            full = client.head(key)
+            if full is None or not _same(full, d) or full.metadata.get("sha1") != d["sha1"]:
+                raise OSError(f"the object at {key} does not check out after the upload")
         sent, how = d["size"], "moved"
     inv.add(full)
     if not getattr(m, "copy", False):
@@ -293,9 +319,13 @@ def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optio
 
 def upload_moves(client: s3.Client, inv: Inventory, moves: List[Any], keep: Iterable[Path] = (), root: Optional[Path] = None,
                  progress: Optional[Callable[[int, int, str], None]] = None, cancel: Optional[Callable[[], bool]] = None,
-                 workers: int = WORKERS) -> Dict[str, Any]:
+                 workers: Optional[int] = None, verify: str = "etag") -> Dict[str, Any]:
     """Do ``moves`` (``sortroot.SMove``, targets below ``inv.base``) as uploads; folders emptied in the ROM folder are removed
-    (``keep`` never). Returns ``{"moved", "failed": [{path, error}], "cancelled", "uploaded", "bytes", "already"}``."""
+    (``keep`` never). The biggest files go first (so the end is not one big file alone) and ``workers`` run at once (default
+    :func:`default_workers`); a cancel stops the files not yet started and, between parts, the ones running (their multipart
+    uploads are aborted, their local files stay). Returns ``{"moved", "failed": [{path, error}], "cancelled", "uploaded", "bytes",
+    "already"}``."""
+    workers = default_workers() if workers is None else workers
     res: Dict[str, Any] = {"moved": 0, "failed": [], "cancelled": False, "uploaded": 0, "bytes": 0, "already": 0}
     jobs: List[Tuple[Any, str]] = []
     for m in moves:
@@ -314,14 +344,27 @@ def upload_moves(client: s3.Client, inv: Inventory, moves: List[Any], keep: Iter
     done = 0
     copies = [j for j in jobs if j[0].copy]            # (a copy is made of a file this run uploads: after it)
     singles = [j for j in jobs if not j[0].copy]
+
+    def size_of(j: Tuple[Any, str]) -> int:
+        try:
+            return Path(j[0].src).stat().st_size
+        except OSError:
+            return 0
     for batch in (singles, copies):
-        with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="romorg-s3") as pool:
+        batch.sort(key=lambda j: -size_of(j))
+        # Two pools, so that the two kinds of file do not wait for each other: small files are bound by the round trips (many at
+        # once pay), big ones by the line (a few streams fill it; each big multipart file also sends its parts in parallel).
+        sizes = {id(j[0]): size_of(j) for j in batch}
+        small_pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="romorg-s3")
+        big_pool = ThreadPoolExecutor(max_workers=max(1, min(workers, BIG_WORKERS)), thread_name_prefix="romorg-s3big")
+        try:
             futures = {}
             for m, key in batch:
                 if cancel and cancel():
                     res["cancelled"] = True
                     break
-                futures[pool.submit(_upload_one, client, inv, m, key, root)] = m
+                pool = big_pool if sizes[id(m)] > BIG_FILE else small_pool
+                futures[pool.submit(_upload_one, client, inv, m, key, root, cancel, verify)] = m
             for fut in as_completed(futures):
                 m = futures[fut]
                 done += 1
@@ -334,8 +377,13 @@ def upload_moves(client: s3.Client, inv: Inventory, moves: List[Any], keep: Iter
                     res["bytes"] += sent
                     if not m.copy:
                         emptied.add(Path(m.src).parent)
+                except s3.Cancelled:
+                    res["cancelled"] = True
                 except (OSError, ValueError, s3.S3Error) as exc:
                     res["failed"].append({"path": str(m.src), "error": str(exc)})
+        finally:
+            small_pool.shutdown(wait=True)
+            big_pool.shutdown(wait=True)
         if res["cancelled"]:
             break
     sortroot._remove_empty_dirs(emptied, keep)
