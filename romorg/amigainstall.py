@@ -2422,6 +2422,9 @@ def icon_info(data: bytes) -> tuple[Optional[str], list[str], int, int]:
     return tool, tts, start, off
 
 
+_WBTOOL, _WBPROJECT = 3, 4                                # (``do_Type`` of an icon)
+
+
 def edit_icon(data: bytes, ops: list[tuple[str, Optional[str]]], tool: Optional[str] = None, stack: Optional[int] = None,
               noposition: bool = False) -> bytes:
     """The icon with its tooltypes set (``(name, value)``; value None removes it, "" leaves the bare name), as the Installer's
@@ -2447,6 +2450,8 @@ def edit_icon(data: bytes, ops: list[tuple[str, Optional[str]]], tool: Optional[
     body += struct.pack(">I", (len(tts) + 1) * 4) + b"".join(text(t) for t in tts) if tts else b""
     head = bytearray(data[:start])
     struct.pack_into(">I", head, 50, 1 if tool is not None else 0)       # (pointers on the Amiga: here only "there is one")
+    if tool and head[48] == _WBTOOL:                      # (a default tool makes it a project: Workbench / WBRun start the tool with it;
+        head[48] = _WBPROJECT                             #  a tool icon with no file of its name - Kick Off 2's - is "object not found")
     struct.pack_into(">I", head, 54, 1 if tts else 0)
     if stack is not None:
         struct.pack_into(">I", head, 74, stack)

@@ -491,6 +491,21 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from(">I", icon, 74)[0], 10240)
         self.assertTrue(icon.endswith(b"TRAILER"))                         # (what follows - an OS3.5 image - is kept)
 
+    def test_a_tool_icon_given_a_default_tool_becomes_a_project(self) -> None:
+        # (Kick Off 2's Return to Europe / Final Whistle ship a TOOL icon: WBRun on it wants a file of the icon's name -
+        #  "object not found" - the game never started and the helper fell through to the ReadMe page)
+        tool_icon = bytearray(make_icon(["Slave=Game.Slave"]))
+        tool_icon[48] = 3
+        tool_icon = bytes(tool_icon)
+        out = ai.edit_icon(tool_icon, [("PreLoad", "")], "WHDLoad", 10240)
+        self.assertEqual(out[48], 4)
+        self.assertEqual(ai.icon_info(out)[:2], ("WHDLoad", ["Slave=Game.Slave", "PreLoad"]))
+        self.assertEqual(ai.edit_icon(tool_icon, [("PreLoad", "")])[48], 3)          # (only a default tool makes a project)
+        project = make_icon([], "x")
+        self.assertEqual(ai.edit_icon(project, [], "WHDLoad")[48], 4)
+        drawer = bytearray(make_icon([])); drawer[48] = 2
+        self.assertEqual(ai.edit_icon(bytes(drawer), [], "WHDLoad")[48], 2)          # (a drawer / disk icon is left)
+
     def test_amigados_patterns(self) -> None:
         rx = ai.pattern_regex("~(#?.info|l)")
         self.assertTrue(rx.fullmatch("level1"))
