@@ -200,6 +200,7 @@
       o.icon ? icon(o.icon, "row-icon") : null,
       el("span", { class: "row-name" }, o.name, o.sub ? el("small", { text: o.sub }) : null),
       o.tag ? el("span", { class: `tag ${o.tag[1] || ""}`, text: o.tag[0] }) : null,
+      o.tags ? el("span", { class: "row-tags" }, o.tags.map(([text, cls]) => el("span", { class: `tag ${cls || ""}`, text }))) : null,
       o.sw !== undefined ? el("span", { class: `switch${o.sw ? " on" : ""}`, "aria-hidden": "true" }) : null,
       o.value !== undefined && o.value !== null ? el("span", { class: `row-value ${o.valueCls || ""}`, text: o.value + (o.arrow ? " ›" : "") })
         : o.arrow ? el("span", { class: "row-value", text: "›" }) : null,
@@ -358,17 +359,21 @@
   }
   const topOverlay = () => overlays[overlays.length - 1] || null;
 
-  /** A full-height list of choices from the right: resolves to the chosen value, or null (B / Esc / outside). */
-  function picker(title, options) {
+  /** A full-height list of choices from the right: resolves to the chosen value, or null (B / Esc / outside).
+   *  ``extra``: {cls, lead (a line under the title), note (a warning under the list), hints}. */
+  function picker(title, options, extra = {}) {
     return new Promise((resolve) => {
       let o = null;
       const pick = (v) => { closeOverlay(o, false); resolve(v); };
       const rows = options.map((opt) => el("button", { class: "row", type: "button", "data-current": opt.current ? "1" : null,
         on: { click: () => pick(opt.value) } },
         el("span", { class: "row-name" }, opt.label, opt.sub ? el("small", { text: opt.sub }) : null),
+        opt.aside ? el("span", { class: "row-value", text: opt.aside }) : null,
         opt.current ? el("span", { class: "row-current" }, icon("check"), "Current") : null));
-      const sheet = el("section", { class: "sheet", role: "dialog", "aria-label": title }, el("h2", { text: title }), el("div", { class: "rows" }, rows));
-      o = openOverlay(el("div", { class: "overlay side" }, sheet), () => resolve(null), [["A", "Choose"], ["B", "Cancel"]]);
+      const sheet = el("section", { class: `sheet ${extra.cls || ""}`, role: "dialog", "aria-label": title }, el("h2", { text: title }),
+        extra.lead ? el("p", { class: "sheet-lead", text: extra.lead }) : null, el("div", { class: "rows" }, rows),
+        extra.note ? el("div", { class: "sheet-note", text: extra.note }) : null);
+      o = openOverlay(el("div", { class: "overlay side" }, sheet), () => resolve(null), extra.hints || [["A", "Choose"], ["B", "Cancel"]]);
       setTimeout(() => focusEl(rows.find((r) => r.dataset.current) || rows[0]));
     });
   }
@@ -1825,32 +1830,102 @@
     try { await post("/api/scan/select", { platform: p.name }); } catch (_) { /* below */ }
     const head = { title: "Saves", crumbs: [[p.name, `#/system/${slug}`]], back: `#/system/${slug}` };
     const views = [["", "All"], ["1", "Matched"], ["0", "No game"]];
-    let have = "";
+    let have = "", current = null, defaultChoice = "", serial = 0, poll = 0;
     const nav = el("nav", { class: "views" });
     const list = el("div", { class: "rows", "data-section": "list" });
     const panel = el("aside", { class: "panel", "data-section": "panel" });
-    const describe = (i) => put(panel, el("span", { class: "panel-title", text: i.title }),
-      el("dl", { class: "facts" }, el("dt", { text: "Save files" }), el("dd", { text: `${fmt(i.files)}` }),
-        el("dt", { text: "From" }), el("dd", { text: i.source && i.source !== "retroarch" ? i.label : (i.cores || []).join(", ") || "-" }),
-        i.name !== i.title ? [el("dt", { text: "Named" }), el("dd", { text: i.name })] : null));
+    const hasGame = (i) => i.match !== "none" && !!i.dat && !!i.game;
+    const canCopy = (i) => !!i.convert;
+    const releaseText = (i) => [i.release && i.release.region, i.release && i.release.code].filter(Boolean).join(" · ");
+    const choiceName = (v) => (SAVED_CHOICES.find((c) => c.value === v) || { label: v }).label;
+    /** The tag of a row: what the next build does; a save with no game, or none of a game you have, as before. */
+    const savesTag = (i) => {
+      if (!hasGame(i) && i.match !== "rom") return i.match === "dat" ? ["No ROM here", "warn"] : ["No game", ""];
+      if (i.match === "dat" && (!i.effect || i.effect === "rename")) return ["No ROM here", "warn"];
+      return SAVES_EFFECT[i.effect || ""];
+    };
+    const nextBuild = (i) => {
+      if (i.effect === undefined) return "Working it out…";
+      if (i.effect) return SAVES_EFFECT[i.effect][2];
+      return i.match === "rom" ? "Nothing changes: it stays with the game" : i.match === "dat" ? "Nothing changes: you have no ROM of this game" : "Nothing changes";
+    };
+    const describe = (i) => {
+      current = i;
+      const game = hasGame(i), copy = canCopy(i);
+      put(panel, el("span", { class: "panel-title", text: i.title }),
+        el("dl", { class: "facts" }, el("dt", { text: "On the next build" }), el("dd", { text: nextBuild(i) }),
+          game ? [el("dt", { text: "If a rule replaces it" }), el("dd", { text: `${choiceName(i.choice || defaultChoice)} (${i.choice ? "only this game" : "default"})` })] : null,
+          releaseText(i) ? [el("dt", { text: "This release" }), el("dd", { text: releaseText(i) })] : null,
+          !game ? [el("dt", { text: "Save files" }), el("dd", { text: `${fmt(i.files)}` }),
+            el("dt", { text: "From" }), el("dd", { text: i.source && i.source !== "retroarch" ? i.label : (i.cores || []).join(", ") || "-" }),
+            i.name !== i.title ? [el("dt", { text: "Named" }), el("dd", { text: i.name })] : null] : null),
+        game || copy ? el("div", { class: "acts" },
+          game ? el("button", { class: "act", type: "button", tabindex: "-1", id: "saves-change", on: { click: () => changeWhat(i) } }, glyph("A"), "Change what happens") : null,
+          copy ? el("button", { class: "act", type: "button", tabindex: "-1", id: "saves-copy", on: { click: () => copyFor(i) } }, glyph("Y"), "Copy for another region") : null) : null);
+      Screen.current.hints = [game ? ["A", "Change what happens"] : null, copy ? ["Y", "Copy for another region"] : null, ["B", "Back"], ["LB RB", "Views"]].filter(Boolean);
+      stripKey = "";
+      renderStrip();
+    };
+    /** The game's own choice: only the plan changes (the list says what the build does then). */
+    async function changeWhat(i) {
+      const v = await picker(`If a rule replaces ${i.title}`, [
+        { label: "Use the default", sub: `${choiceName(defaultChoice)}, from Settings › Saves`, value: "default", current: !i.choice },
+        ...SAVED_CHOICES.map((c) => ({ label: c.label, sub: c.sub.replace(" (default)", ""), value: c.value, current: c.value === i.choice })),
+      ], { cls: "tight" });
+      if (v === null || v === (i.choice || "default")) return;
+      try { await post("/api/library/saved", { platform: p.name, choice: v, games: [{ dat: i.dat, game: i.game }] }); } catch (err) { toast(err.message, "error"); return; }
+      await load();
+    }
+    /** A copy of the save for another release (experimental: the original stays). */
+    async function copyFor(i) {
+      const c = i.convert;
+      const body = await picker("Copy the save for another region", [
+        ...(c.to || []).map((code) => ({ label: (c.regions || {})[code] || code, sub: code, value: { to_code: code }, aside: "Make a copy" })),
+        ...(c.disc ? [{ label: c.disc.region || c.disc.name, sub: c.disc.code, value: { to_file: c.disc.file }, aside: "Make a copy" }] : []),
+      ], { lead: `${[i.title, releaseText(i)].filter(Boolean).join(", ")}. Your save stays as it is.`, hints: [["A", "Make a copy"], ["B", "Cancel"]],
+        note: "Experimental: a game that keeps the region inside its save may still refuse the copy." });
+      if (!body) return;
+      try {
+        const r = await post("/api/saves/convert", { platform: p.name, set: c.set, ...body });
+        if (r.skipped_running) { toast("The emulator is running: close it and try again.", "error"); return; }
+        const n = r.saves || 0;
+        toast(n ? `${fmt(n)} save${n === 1 ? "" : "s"} converted from ${r.old} to ${r.new}` : "Nothing was converted (the card has no save of that game, or the new name is taken).", n ? "ok" : "error", 10000);
+      } catch (err) { toast(err.message, "error"); return; }
+      await load();
+    }
     const load = async () => {
+      const mine = ++serial;
       put(nav, el("span", { class: "glyph" }, "LB"), ...views.map(([v, label]) => el("button", { class: `chip${v === have ? " on" : ""}`, type: "button", tabindex: "-1",
-        on: { click: () => { have = v; load(); } } }, label)), el("span", { class: "glyph" }, "RB"));
+        on: { click: () => { have = v; current = null; load(); } } }, label)), el("span", { class: "glyph" }, "RB"));
       let data;
       try { data = await get(`/api/scan/results?${qs({ kind: "saves", offset: 0, limit: 300, have })}`); } catch (err) { put(list, message(err.message, "bad")); return; }
-      if (!ctx.alive()) return;
-      const rows = (data.items || []).map((i) => {
-        const r = row({ name: i.title, sub: `${fmt(i.files)} file${i.files === 1 ? "" : "s"}`, tag: i.match === "rom" ? ["Follows the game", "ok"] : i.match === "dat" ? ["No ROM here", "warn"] : ["No game", ""], onClick: () => describe(i) });
+      if (!ctx.alive() || mine !== serial) return;
+      defaultChoice = data.default_choice || "";
+      const items = data.items || [];
+      const rows = items.map((i) => {
+        const r = row({ name: i.title, sub: `${fmt(i.files)} file${i.files === 1 ? "" : "s"}`, key: i.key, tags: [i.choice ? ["Your choice", "mine"] : null, savesTag(i)].filter(Boolean),
+          onClick: () => { describe(i); if (mode !== "mouse" && hasGame(i)) changeWhat(i); } });
         r.addEventListener("focus", () => describe(i));
         return r;
       });
       put(list, ...(rows.length ? rows : [row({ name: "No saves found for this system", static: true })]));
-      if (mode !== "mouse" && rows[0]) focusEl(rows[0]);
+      Screen.current.aside = $("head-aside").textContent = [...new Set(items.map((i) => i.label))].join(", ");
+      const at = Math.max(0, items.findIndex((i) => current && i.key === current.key));       // (after a choice or a copy: the same row)
+      if (items[at]) { describe(items[at]); if (mode !== "mouse") focusEl(rows[at]); } else put(panel);
+      clearInterval(poll);
+      if (data.plan_ready === false) {                         // (a big system: the tags are there once the plan is)
+        poll = setInterval(async () => {
+          if (topOverlay()) return;
+          const d = await get(`/api/scan/results?${qs({ kind: "saves", offset: 0, limit: 1, have })}`).catch(() => null);
+          if (d && d.plan_ready && ctx.alive() && !topOverlay()) load();
+        }, 2500);
+        Screen.timers.push(poll);
+      }
     };
-    const step = (d) => { const i = views.findIndex(([v]) => v === have); have = views[(i + d + views.length) % views.length][0]; load(); };
-    ctx.show({ ...head, keys: { LB: () => step(-1), RB: () => step(1) },
+    const step = (d) => { const i = views.findIndex(([v]) => v === have); have = views[(i + d + views.length) % views.length][0]; current = null; load(); };
+    ctx.show({ ...head, keys: { LB: () => step(-1), RB: () => step(1), Y: () => { if (current && canCopy(current)) copyFor(current); } },
       body: el("div", { class: "screen tight" }, nav, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
-      hints: [["A", "Details"], ["B", "Back"], ["LB RB", "Views"]] });
+      hints: [["B", "Back"], ["LB RB", "Views"]] });
     await load();
     return null;
   });
@@ -2144,6 +2219,16 @@
     { value: "archive", label: "Archive the saves with the ROM", sub: "They move to the archive with it" },
     { value: "leave", label: "Leave the saves where they are", sub: "They are not touched" },
   ];
+  /** What a build does with a game's saves (the ``effect`` of a save): the tag, its colour, the line of the Saves panel. */
+  const SAVES_EFFECT = {
+    "": ["Follows the game", "ok"],
+    rename: ["Follows the game", "ok", "Renamed with the game"],
+    keep: ["Kept for its saves", "warn", "Stays: you have saves for this version"],
+    archive: ["Goes to the archive", "warn", "Goes to the archive with the ROM"],
+    leave: ["Left where it is", "", "The ROM goes, the save is not touched"],
+    carry: ["Copied to the new version", "ok", "Copied to the version you will have"],
+    receive: ["Gets a copy", "ok", "Gets a copy of the save of another version"],
+  };
   route(/^\/settings\/saves$/, async (ctx) => {
     const [d, beh, ra] = await Promise.all([get("/api/library/defaults"), get("/api/saves/behaviour"), get("/api/retroarch")]);
     const rows = [

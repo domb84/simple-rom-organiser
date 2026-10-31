@@ -108,7 +108,7 @@ class SaveSet:
         return self.saves + self.states
 
     def public(self) -> Dict[str, Any]:
-        return {"name": self.name, "match": self.match, "dat": self.dat, "game": self.game, "title": self.title or self.name,
+        return {"name": self.name, "key": self.key, "match": self.match, "dat": self.dat, "game": self.game, "title": self.title or self.name,
                 "files": self.files, "saves": self.saves, "states": self.states, "screenshots": self.shots,
                 "bytes": self.bytes, "cores": list(self.cores), "source": self.source, "label": self.shown,
                 "cards": self.cards, "guess": self.guess}

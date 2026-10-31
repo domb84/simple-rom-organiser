@@ -450,6 +450,9 @@ def _search_text(item: dict[str, Any]) -> str:
     return "\n".join(parts).lower()
 
 
+CODE_REGIONS = {"U": "USA", "E": "Europe", "P": "Japan", "A": "Asia", "K": "Korea"}     # (the third letter of a PlayStation game code)
+
+
 def _rows(items: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
     return [(i, _search_text(i)) for i in items]
 
@@ -845,6 +848,7 @@ class App:
         self._scans: dict[str, ScanState] = {}                    # the finished scans of the systems visited, most recent last
         self._disk_load = threading.Lock()                         # (one saved scan read at a time: a click waits for the start's)
         self._tree_lock = threading.RLock()                        # (one Files list made at a time: a request waits for the one being made)
+        self._saves_worker: threading.Thread | None = None         # (the plan the Saves list waits for, made in the background)
         self._s3_inv: dict[str, Any] = {}                         # the inventories of the S3 archives in use (s3archive), by stand-in folder
         self._archive_scans: dict[str, tuple[Any, dict[str, str]]] = {}   # archive folder -> (its stamp, {game: path}) of its last scan
         self._dat_cache: tuple[Any, tuple[list[Any], list[str]]] | None = None
@@ -3139,6 +3143,7 @@ class App:
                     setattr(holder, attr, empty)
             holder.items.pop(("library", "tree"), None)
             holder.items.pop(("library", "treeidx"), None)
+        self._drop_plans(state)                                   # (a plan knows the saves it was made with)
         return res
 
     def library_saved(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -3314,6 +3319,8 @@ class App:
             rows = self._saves_sort_sets(rows, query.get("sort", "").strip())
         page = _page(rows, query.get("offset"), query.get("limit"), query.get("q"))
         page["kind"] = kind
+        if kind == "saves":
+            self._saves_page(state, page)
         if report is not None and kind in ("games", "matched", "missing"):
             page["saves_on"] = True
             page["items"] = [dict(it, saves=self._row_saves(report, kind, it)) for it in page["items"]]
@@ -4967,15 +4974,110 @@ class App:
                         return {"saves": src.saves, "states": 0, "total": src.saves, "effect": "receive", "game": src.game, "dat": src.dat,
                                 "from": src.title or src.name, "convert": {"from": old_code, "to": new_code}}
             return None
-        effect = ""
-        if stem in sp["kept"]:
-            effect = "keep"
-        elif stem in sp["gone"]:
-            effect = "archive" if st in sp["archive"] else "carry" if stem in sp.get("ps2_stems", ()) or any(a == st.name for a, _b in sp.get("carry", ())) else "leave"
-        elif st.renames and any(ra.fold_name(a) == stem for a, _b in sp["pairs"]):
-            effect = "rename"
-        return {"saves": st.saves, "states": st.states, "total": st.files, "effect": effect,
+        return {"saves": st.saves, "states": st.states, "total": st.files, "effect": self._set_effect(sp, stem, st),
                 "game": st.game, "dat": st.dat}
+
+    def _set_effect(self, sp: dict[str, Any], stem: str, st: Any) -> str:
+        """What the build does with the save set ``st`` (``stem``: its folded name): ``keep`` | ``archive`` | ``leave`` | ``carry`` | ``rename`` |
+        ``""`` (nothing). A save of a release you have no file for that is copied to the one you have is ``carry`` too."""
+        carried = any(a == st.name for a, _b in sp.get("carry", ()))
+        if stem in sp["kept"]:
+            return "keep"
+        if stem in sp["gone"]:
+            return "archive" if st in sp["archive"] else "carry" if stem in sp.get("ps2_stems", ()) or carried else "leave"
+        if st.renames and any(_mod("retroarch").fold_name(a) == stem for a, _b in sp["pairs"]):
+            return "rename"
+        if carried or (st.source == "pcsx2" and sp.get("ps2") and self._set_code(st) in {a for a, _b in sp["ps2"]}):
+            return "carry"
+        return ""
+
+    def _saves_plan_now(self, state: ScanState, report: Any, wait: float = 1.5) -> dict[str, Any] | None:
+        """:meth:`_saves_plan` of the plan the Files list uses, when it is made. When it is not, it is made in the background (never while a
+        job runs): a short wait, in which a small system is ready, then None, and the Saves list asks again."""
+        key = self._library_flags({}, state.platform)
+
+        def ready() -> dict[str, Any] | None:
+            plan = state.library_plans.get(key)
+            if plan is None or plan.profile != self._profile(state.platform) or getattr(plan, "save_report", None) is not report:
+                return None
+            return getattr(plan, "_saves_plan", None)
+
+        def run() -> None:
+            try:
+                with self._tree_lock:                              # (the Files list being made makes the same plan: that one is used)
+                    plan = self._library_plan(state, *key)
+                    if getattr(plan, "save_report", None) is not report:
+                        self._drop_plans(state)                    # (made before these saves were read)
+                        plan = self._library_plan(state, *key)
+                    self._saves_plan(plan)
+            except Exception:  # noqa: BLE001 - the list only shows less
+                traceback.print_exc()
+
+        sp = ready()
+        job = self.jobs.current
+        if sp is not None or (job is not None and job.status == "running"):
+            return sp
+        with self._lock:
+            worker = self._saves_worker
+            if worker is None or not worker.is_alive():
+                worker = self._saves_worker = threading.Thread(target=run, name="romorg-saves-plan", daemon=True)
+                worker.start()
+        worker.join(wait)
+        return ready()
+
+    def _saves_page(self, state: ScanState, page: dict[str, Any]) -> None:
+        """The rows of a page of the Saves list get what its screen says of a game: ``effect`` (what the next build does; no such field until
+        the plan is made: ``plan_ready`` is false), ``choice`` (the game's own, or ""), ``release`` and ``convert``. Only the rows of the page."""
+        report = self._saves_report(state)
+        profile = self._profile(state.platform)
+        sp = self._saves_plan_now(state, report)
+        own = {(d, n): a for d, n, a in profile.saved_overrides}
+        discs = self._discs_by_title(state)
+        items = []
+        for item in page["items"]:
+            st = report.sets[item["key"]]
+            row = dict(item, choice=own.get((st.dat, st.game), "") if st.match != "none" else "")
+            if sp is not None:
+                row["effect"] = self._set_effect(sp, st.key, st)
+            code = self._set_code(st) if state.platform.name in _mod("savecarry").CONVERTIBLE else self._save_code(st)[0]
+            region = ", ".join(_mod("tags").parse_name(st.game or st.name).regions) or self._save_code(st)[1] or ", ".join(self._regions_of_code(code))
+            if code or region:
+                row["release"] = {"region": region, "code": code}
+            convert = self._set_convert(state, report, st, code, discs)
+            if convert is not None:
+                row["convert"] = convert
+            items.append(row)
+        page.update(items=items, default_choice=profile.saved_games, plan_ready=sp is not None)
+
+    def _discs_by_title(self, state: ScanState) -> dict[str, list[dict[str, Any]]]:
+        """The games you have by folded title, on a system whose saves are converted (else nothing)."""
+        out: dict[str, list[dict[str, Any]]] = {}
+        if state.platform.name in _mod("savecarry").CONVERTIBLE:
+            for item, _t in self._kind_rows(state, "games"):
+                if item.get("have") and item.get("files"):
+                    out.setdefault(self._fold_title(item.get("title") or item["name"]), []).append(item)
+        return out
+
+    def _set_convert(self, state: ScanState, report: Any, st: Any, code: str, discs: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
+        """What a save can be copied for (None: nothing): ``to`` the codes of the other releases the game database knows (a PlayStation 2 save,
+        other regions first; ``regions`` names each) and ``disc`` a disc of another region you have with no save of its own (``file``, ``code``,
+        ``region``, ``name``). The targets of ``POST /api/saves/convert``."""
+        if state.platform.name not in _mod("savecarry").CONVERTIBLE or not code:
+            return None
+        title = st.title or st.guess or st.game or st.name
+        mine = set(self._regions_of_code(code))
+        to = sorted((c for c in self._ps2_codes(title, CODE_REGIONS.values()) if c != code), key=lambda c: (bool(set(self._regions_of_code(c)) & mine), c)) \
+            if st.source == "pcsx2" else []
+        out: dict[str, Any] = {"set": st.key, "from": code, "to": to, "regions": {c: ", ".join(self._regions_of_code(c)) for c in to}}
+        for item in discs.get(self._fold_title(title), ()):
+            regions = (item.get("tags") or {}).get("regions") or ()
+            if self._foreign_code(st, regions) and not (report.game_counts(item.get("dat", ""), item["name"]) or {}).get("saves"):
+                file = str(item["files"][0]).split("::", 1)[0]
+                new = _mod("pcsx2").read_serial(Path(state.root) / file, psx=True)
+                if new and new != code and new not in to:
+                    out["disc"] = {"file": file, "code": new, "region": ", ".join(regions), "name": item["name"]}
+                    break
+        return out if to or "disc" in out else None
 
     def retroarch_shared(self, query: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/retroarch/shared {base?}``: the asset folders RetroArch uses against those in ``base`` (default: the
@@ -6091,12 +6193,17 @@ class App:
                                              else (row.get("rom_name") or e["parts"][-1])).title
             mine = set((row.get("tags") or {}).get("regions") or ())
             for st in by_title.get(self._fold_title(title), []):
-                code = self._set_code(st)
-                theirs = set(self._regions_of_code(code)) if code else set()
-                if not code or not theirs or theirs & mine:
+                code = self._foreign_code(st, mine)
+                if not code:
                     continue
                 row["convert"] = {"set": st.key, "from": code, "to": [], "disc": True, "name": st.title or st.name}
                 break
+
+    def _foreign_code(self, st: Any, regions: Iterable[str]) -> str:
+        """The game code of a save set when it is known to be of another region than ``regions``, else ""."""
+        code = self._set_code(st)
+        theirs = set(self._regions_of_code(code)) if code else set()
+        return code if theirs and not theirs & set(regions) else ""
 
     def _set_code(self, st: Any) -> str:
         """The game code a save set is for: from its name (a set with no game file here), its save folder (PCSX2), or the one code on its
@@ -6126,7 +6233,7 @@ class App:
     @staticmethod
     def _regions_of_code(code: str) -> list[str]:
         letter = code[2:3] if len(code) == 10 else ""
-        return [{"U": "USA", "E": "Europe", "P": "Japan", "A": "Asia", "K": "Korea"}[letter]] if letter in "UEPAK" and letter else []
+        return [CODE_REGIONS[letter]] if letter in CODE_REGIONS else []
 
     def _same_title(self, items: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
         """The games of ``items`` with ``title`` (then as another transliteration spells it: Okami, Ookami). The folded titles of a list are
@@ -6227,7 +6334,7 @@ class App:
         import re
         m = re.search(r"\b([A-Z]{4})-(\d{5})\b", st.name)
         if m:
-            return f"{m.group(1)}-{m.group(2)}", {"U": "USA", "E": "Europe", "P": "Japan", "A": "Asia", "K": "Korea"}.get(m.group(1)[2], "")
+            return f"{m.group(1)}-{m.group(2)}", CODE_REGIONS.get(m.group(1)[2], "")
         m = re.search(r"\b([A-Z0-9]{3}[EPJKUW](?:[A-Z0-9]{2})?)\b", st.name)
         if m and st.source == "dolphin":
             return m.group(1), {"E": "USA", "P": "Europe", "J": "Japan", "K": "Korea", "W": "Taiwan"}.get(m.group(1)[3], "")
