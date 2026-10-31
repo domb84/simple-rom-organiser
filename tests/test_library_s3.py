@@ -47,7 +47,7 @@ class S3Archive(ServerCase):
         self.assertEqual((got["access_key"], got["secret_set"]), (AK, True))
         self.assertNotIn(SK, str(got) + str(self.call("GET", "/api/status")))
         secret = self.tmp / "data" / "s3-secret"
-        self.assertEqual((secret.read_text(), stat.S_IMODE(secret.stat().st_mode) if os.name == "posix" else 0o600), (SK, 0o600))
+        self.assertEqual((secret.read_text(), stat.S_IMODE(secret.stat().st_mode)), (SK, 0o600))
         self.assertNotIn(SK, (self.tmp / "data" / "config.json").read_text())
         self.call("POST", "/api/settings/s3", {"endpoint": "s3.example", "access_key": "other"})       # no secret given: the stored one stays
         self.assertEqual(secret.read_text(), SK)

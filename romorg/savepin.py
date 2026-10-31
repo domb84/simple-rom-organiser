@@ -66,13 +66,9 @@ class Pinner:
                 for rom in dat.roms:
                     for n in (rom.game, rom.set_name, os.path.splitext(rom.name)[0]):
                         if n:
-                            table.setdefault(self.fold(n), (rom, dname))
+                            table.setdefault(n, (rom, dname))
             self._by_name = table
         return self._by_name
-
-    @staticmethod
-    def fold(name: str) -> str:
-        return name.casefold() if os.name == "nt" else name
 
     def title_of(self, rom: Any, dat: str) -> str:
         from . import library
@@ -153,7 +149,7 @@ class Pinner:
             return []                                               # neither named like a save nor the size of a card
         table = self._names()
         for head, rest in saveindex._cuts(name):                    # the longest name that is a game's, the rest a core's save suffix
-            hit = table.get(self.fold(head))
+            hit = table.get(head)
             if hit is not None and (is_save_suffix(rest) or saveindex._STATE.match(rest)):
                 return [self.title_of(hit[0], hit[1])]
         card = memcards.read(path)

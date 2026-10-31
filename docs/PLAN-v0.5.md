@@ -7,7 +7,7 @@ as **the** UI of the app, replacing the old one ("the old one is too complicated
 * the mock-ups: Design canvas "Deck big-screen UI" (<https://claude.ai/artifact/XtrHAcpjdPEazRNq8dqdct>) - Home, a system, Build,
   Building, Rules, list picker, the file tree (folders, inside a folder, archive), Archive settings (where, folder, S3);
 * our own small CSS / JS kit, **no framework** (the user asked; none of the big-screen web frameworks fits a stdlib, no-build app);
-* it works with a **controller, a mouse or touch, and a keyboard** - one UI on the Deck, in Desktop Mode and on Windows;
+* it works with a **controller, a mouse or touch, and a keyboard** - one UI on the Deck, in Game Mode and in Desktop Mode;
 * 1280x720 is the base size; bigger windows get more columns and wider panels, never smaller text.
 
 ## The kit

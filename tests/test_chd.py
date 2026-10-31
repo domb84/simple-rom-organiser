@@ -27,7 +27,7 @@ from romorg import cdecc, chd, datfile, flacdec  # noqa: E402
 #   ROMORG_REAL_DC_DIR  the folder of Redump-named Dreamcast games, one folder per game with its .chd (and sidecar
 #                       .zip) inside - the four REAL_TITLES below (default: /home/deck/MEGA/Emulation/roms/dreamcast)
 #   ROMORG_REAL_CHD_FULL=1  also hash every track of all four discs (slow)
-# e.g. in a Windows cmd: set ROMORG_REAL_DC_DIR=F:\Emulation\roms\dreamcast
+# e.g. ROMORG_REAL_DC_DIR=/run/media/deck/SD/Emulation/roms/dreamcast
 SCRATCH = Path("/tmp/claude-1000/-home-deck-Dev-simple-rom-organiser/"
                "cfc5ea37-4261-428c-9422-29acd65cac97/scratchpad")
 _DAT_SPEC = os.environ.get("ROMORG_REAL_DC_DAT") or str(SCRATCH / "redump" / "Sega - Dreamcast*.dat")

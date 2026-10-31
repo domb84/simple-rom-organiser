@@ -36,7 +36,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable, Optional, Sequence
 
-from . import cdimage, chdtool, chdwrite, discarchive, organiser, scanner, winproc
+from . import cdimage, chdtool, chdwrite, discarchive, organiser, scanner
 from . import chd as chdlib
 from .folders import CONVERTED_DIR
 
@@ -446,7 +446,7 @@ def apply_conversions(ops: Iterable[CdConvertOp], root: Path, progress: Optional
                     break
                 failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
             except (OSError, ValueError, chdlib.ChdError) as exc:
-                failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+                failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
         removed += organiser.tidy_after(root, [Path(s).parent for op in converted for s, _d in op.moves]
                                         + [Path(s).parent for op in converted for s in op.deleted], created,
                                         organiser.protected_dirs(root, [], set()))

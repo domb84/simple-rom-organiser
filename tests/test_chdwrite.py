@@ -157,8 +157,7 @@ class RealSetTest(unittest.TestCase):
 
 class LongPathTest(unittest.TestCase):
     def test_sets_deeper_than_260_characters(self) -> None:
-        """Windows' old MAX_PATH: sheets and track files in a folder whose path is over 260 characters long are
-        found and read (with the LongPathsEnabled setting; without it the folder cannot even be made)."""
+        """Sheets and track files in a folder whose path is over 260 characters long are found and read."""
         with tempfile.TemporaryDirectory() as tmp:
             deep = Path(tmp)
             while len(str(deep)) < 300:
@@ -489,7 +488,7 @@ def sheet_cases() -> dict:
     """``name -> (sheet path, text, {file: bytes}, options, expected)``. ``expected`` is a key of
     ``SheetSyntaxTest.CHDMAN`` (chdman 0.289 takes the sheet and writes that SHA-1, and so must the writer),
     ``"refused"`` (chdman and the writer both refuse it), ``"ours:<key>"`` (chdman 0.289 refuses it, the writer
-    deliberately takes it: a UTF-8 byte order mark, a sheet in the Windows ANSI code page) or ``"chdman"`` (chdman
+    deliberately takes it: a UTF-8 byte order mark) or ``"chdman"`` (chdman
     takes it with a layout the writer does not reproduce, so the writer refuses it rather than write another CHD)."""
     d, a, d3 = T.make_data_track(32, 1), T.make_audio_track(32, 2), T.make_data_track(40, 3)
     cases: dict = {}
@@ -535,9 +534,6 @@ def sheet_cases() -> dict:
     case("cue_track_and_index_garbage", "x.cue", 'FILE "a.bin" BINARY\n  TRACK 01x MODE1/2352\n    INDEX 01 00:00:00x\n'
          '    INDEX 02 00:00:05\n', {"a.bin": d}, "one")
     case("cue_subfolder_slash", "x.cue", 'FILE "sub/a.bin" BINARY\n' + t1, {"sub/a.bin": d}, "one")
-    if os.name == "nt":
-        case("cue_subfolder_backslash", "x.cue", 'FILE "sub\\a.bin" BINARY\n' + t1, {"sub/a.bin": d}, "one")
-        case("cue_trailing_space_in_quotes", "x.cue", 'FILE "a.bin " BINARY\n' + t1, {"a.bin": d}, "one")
     case("cue_iso", "x.cue", 'FILE "a.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n',
          {"a.iso": T.make_iso(32, 5)}, "iso")
     gaps = ('REM GENRE Game\nFILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
@@ -607,15 +603,9 @@ def sheet_cases() -> dict:
     case("gdi_text_after_tracks", "x.gdi", plain + "junk line here\n", g, "refused")
     case("gdi_out_of_order", "x.gdi", "3\n3 80 4 2352 t3.bin 0\n1 0 4 2352 t1.bin 0\n2 40 0 2352 t2.raw 0\n", g,
          "chdman")
-    if os.name == "nt" and "é".encode("mbcs", "replace") == b"\xe9":
-        # a sheet in the ANSI code page (Western European here): chdman 0.289 cannot open the names it reads from it
-        case("cue_ansi_name", "x.cue", 'FILE "Pokémon ü.bin" BINARY\n' + t1, {"Pokémon ü.bin": d}, "ours:one",
-             enc="cp1252")
-        case("gdi_ansi_name", "x.gdi", gdi('"Pokémon ü.bin"'), first("Pokémon ü.bin"), "ours:gdi", enc="cp1252")
-    elif os.name != "nt":
-        # on POSIX the bytes of a name that is not UTF-8 are the file name, as chdman opens it
-        case("cue_ansi_name", "x.cue", 'FILE "Pokémon.bin" BINARY\n' + t1, {os.fsdecode(b"Pok\xe9mon.bin"): d}, "one",
-             enc="cp1252")
+    # the bytes of a name that is not UTF-8 are the file name, as chdman opens it
+    case("cue_ansi_name", "x.cue", 'FILE "Pokémon.bin" BINARY\n' + t1, {os.fsdecode(b"Pok\xe9mon.bin"): d}, "one",
+         enc="cp1252")
     return cases
 
 
@@ -624,8 +614,8 @@ class SheetSyntaxTest(unittest.TestCase):
     quoting, apostrophes inside quotes, double spaces, tabs, CR LF, trailing white space, case-sensitive keywords,
     REM / FLAGS / PREGAP / POSTGAP / INDEX 00, C ``atoi`` numbers, the GDI offset column that chdman ignores.
 
-    ``CHDMAN`` is the header SHA-1 chdman 0.289 ``createcd`` wrote for each kind of accepted case (recorded on
-    Windows with the real chdman; the tracks are generated, so the numbers are stable). With ``ROMORG_CHDMAN_ORACLE``
+    ``CHDMAN`` is the header SHA-1 chdman 0.289 ``createcd`` wrote for each kind of accepted case (recorded
+    with the real chdman; the tracks are generated, so the numbers are stable). With ``ROMORG_CHDMAN_ORACLE``
     set to a chdman executable, every case also goes through that chdman and its verdict is compared."""
 
     CHDMAN = {"one": "2431ddbbcbb7fd3ba1545b5624935217a28b6903", "two": "f9177f2adc2e06e0548a7fefee35c9e2eb2a87b8",

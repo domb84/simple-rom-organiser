@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -150,13 +149,7 @@ class Pure(unittest.TestCase):
             r = saveindex.build([(mine, root, True), (other, root, False)], {}, {}, per_core=False)
             self.assertEqual(r.totals()["unmatched_sets"], 2)
 
-    @unittest.skipUnless(os.name == "nt", "names are compared without regard to case on Windows only")
-    def test_case_is_ignored_on_windows(self) -> None:
-        r = self.build(["zed (usa).srm"], {retroarch.fold_name("Zed (USA)"): ("D", "Zed (USA)", "Zed")})
-        self.assertEqual(next(iter(r.sets.values())).match, "rom")
-
-    @unittest.skipIf(os.name == "nt", "names are compared without regard to case on Windows only")
-    def test_case_matters_elsewhere(self) -> None:
+    def test_case_matters(self) -> None:
         r = self.build(["zed (usa).srm"], {retroarch.fold_name("Zed (USA)"): ("D", "Zed (USA)", "Zed")})
         self.assertEqual(next(iter(r.sets.values())).match, "none")
 

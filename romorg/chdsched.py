@@ -20,9 +20,8 @@ spread over *processes*. A job (a scan, a Verify fully, the verification after a
 Results are identical to the sequential :func:`romorg.chd.hash_track` (property-tested). ``workers <= 1`` (config
 ``chd_workers`` / ``$ROMORG_CHD_WORKERS`` = 1) selects the old sequential path inside the calling thread.
 
-Linux and Windows run the same pool: each worker is drained by its own thread with blocking pipe reads (no
-``select``), a frozen Windows exe starts itself with ``--chd-worker`` (it has no separate interpreter), no console
-window flashes, and a worker is killed with its process group (POSIX) or its process tree (Windows).
+Each worker is drained by its own thread with blocking pipe reads (no ``select``), and a worker is killed with its
+process group.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import fcntl
 import signal
 import subprocess
 import sys
@@ -42,21 +42,13 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Sequence
 
 from . import chd as chdlib
-from . import multihash, winproc
-
-try:                             # POSIX only: used to enlarge the workers' pipes
-    import fcntl
-except ImportError:              # Windows
-    fcntl = None  # type: ignore[assignment]
+from . import multihash, process
 
 ENV_WORKERS = "ROMORG_CHD_WORKERS"
 CHUNK_BYTES = 4 << 20            # extracted bytes per work unit (2-8 MB measured best, see tools/bench_chd.py)
 MAX_BUDGET = 256 << 20           # hunks handed out but not yet hashed
 PER_WORKER_BYTES = 80 << 20      # what one worker process costs in RAM (python + a chunk + temporaries)
 MAX_WORKERS = 32
-# automatic worker count on Windows. Measured on 16 threads for reading (hashing) and writing (built-in writer,
-# PS1 / Dreamcast sets): 8 is clearly slower, 12 / 14 / 16 are equal within noise, and 12 leaves the UI some room
-WINDOWS_MAX_AUTO = 12
 INFLIGHT = 2                     # requests in flight per worker (hides the pipe / hashing latency)
 MAX_RESPAWNS = 3
 _F_SETPIPE_SZ = 1031
@@ -71,26 +63,7 @@ class Cancelled(Exception):
 
 
 def mem_available() -> Optional[int]:
-    """Bytes of RAM available without swapping (``MemAvailable`` / Windows' available physical memory), None when
-    unknown."""
-    if winproc.IS_WINDOWS:
-        try:
-            import ctypes
-
-            class _Status(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-            st = _Status()
-            st.dwLength = ctypes.sizeof(_Status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):  # type: ignore[attr-defined]
-                return int(st.ullAvailPhys)
-        except Exception:  # noqa: BLE001 - only a hint for the worker count
-            pass
-        return None
+    """Bytes of RAM available without swapping (``MemAvailable``), None when unknown."""
     try:
         with open("/proc/meminfo", "rb") as f:
             for line in f:
@@ -111,8 +84,6 @@ def default_workers(configured: Any = 0) -> int:
     if n > 0:
         return max(1, min(n, MAX_WORKERS))
     n = os.cpu_count() or 1
-    if winproc.IS_WINDOWS:      # starting a process costs more there (a onefile exe unpacks itself per worker)
-        n = min(WINDOWS_MAX_AUTO, max(1, n - 1))
     mem = mem_available()
     if mem is not None:
         n = min(n, max(2, (mem - (256 << 20)) // PER_WORKER_BYTES))
@@ -166,17 +137,6 @@ class _Release:
     done: threading.Event = field(default_factory=threading.Event)
 
 
-def _worker_popen_kwargs() -> dict:
-    """POSIX: its own session (killed as a group). Windows: no console at all (``DETACHED_PROCESS``): a worker
-    talks only through its pipes, and a hidden console (``CREATE_NO_WINDOW``) costs a conhost process per worker,
-    which made starting a dozen of them about a third slower. (Consequence: a console-subsystem helper started by a
-    worker would get a console window of its own; the worker starts none. Keep it that way, or pass
-    ``CREATE_NO_WINDOW`` to that helper.)"""
-    if winproc.IS_WINDOWS:
-        return {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0x00000008)}
-    return winproc.popen_kwargs(new_session=True)
-
-
 def spawn_worker() -> "subprocess.Popen":
     """Start one ``romorg.chdworker`` process (binary pipes on stdin / stdout); :class:`PoolError` when it cannot."""
     env = dict(os.environ)
@@ -185,40 +145,22 @@ def spawn_worker() -> "subprocess.Popen":
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("PYTHONSTARTUP", None)
     try:
-        if getattr(sys, "frozen", False):   # PyInstaller exe: sys.executable is the app itself (its worker mode)
-            cmd = [sys.executable, "--chd-worker"]
-        else:
-            cmd = [sys.executable, "-B", "-u", "-m", "romorg.chdworker"]
-        proc = subprocess.Popen(cmd, env=env,
+        proc = subprocess.Popen([sys.executable, "-B", "-u", "-m", "romorg.chdworker"], env=env,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                bufsize=0, **_worker_popen_kwargs())
+                                bufsize=0, **process.popen_kwargs(new_session=True))
     except OSError as exc:
         raise PoolError(f"cannot start a worker: {exc}") from exc
-    if fcntl is not None:
-        for pipe in (proc.stdout, proc.stdin):
-            try:
-                fcntl.fcntl(pipe.fileno(), _F_SETPIPE_SZ, 1 << 20)
-            except (OSError, AttributeError):
-                pass
+    for pipe in (proc.stdout, proc.stdin):
+        try:
+            fcntl.fcntl(pipe.fileno(), _F_SETPIPE_SZ, 1 << 20)
+        except (OSError, AttributeError):
+            pass
     return proc
 
 
 def _terminate(proc: "subprocess.Popen") -> None:
-    """Kill a worker that is still running (one that has exited is left alone).
-
-    POSIX: its process group. Windows: the process itself (``TerminateProcess``); ``taskkill /T`` costs about
-    0.2 s per call, which a dozen workers per job turned into seconds, and a worker started from the interpreter has
-    no children. Only the frozen one-file exe needs the tree: its bootloader runs the app in a child process."""
+    """Kill a worker that is still running with its process group (one that has exited is left alone)."""
     if proc.poll() is not None:
-        return
-    if winproc.IS_WINDOWS:
-        if getattr(sys, "frozen", False):
-            winproc.kill_tree(proc)
-            return
-        try:
-            proc.kill()
-        except OSError:
-            pass
         return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
@@ -325,7 +267,7 @@ class _Worker:
 
     def kill(self) -> None:
         """Kill the process and wait for it to exit (idempotent, any thread). Releases addressed to it count as
-        done only then: Windows keeps a file locked until the process holding it is gone."""
+        done only then."""
         with self.sched._cv:
             self.dead = True
             pending, self.releases = list(self.releases), deque()
@@ -439,9 +381,8 @@ class Scheduler:
     def release(self, path: Any, timeout: float = 60.0) -> bool:
         """Make every worker close the CHD ``path`` it keeps open from earlier chunks; returns once they have.
 
-        A worker keeps its last CHDs open between chunks (their hunk maps are parsed once). On POSIX that never
-        matters, but Windows refuses to rename or delete a file another process has open (WinError 32), so a
-        caller that is about to move a file it hashed here - the new CHD of a conversion - releases it first.
+        A worker keeps its last CHDs open between chunks (their hunk maps are parsed once), so a caller that is
+        about to move a file it hashed here - the new CHD of a conversion - releases it first.
         Chunks already sent for the file are decoded first (a later request simply reopens it). A worker that
         failed or is being killed counts once its process has exited; a broken pool (which hands out no more work)
         has its remaining workers killed. False when a worker did not answer within ``timeout`` seconds: the
@@ -519,7 +460,7 @@ class Scheduler:
         dt = time.monotonic() - self._t0
         return self.stats["bytes"] / dt if dt > 0 else 0.0
 
-    # -- sequential path (workers = 1 / no POSIX / pool broken): exactly the old in-process behaviour
+    # -- sequential path (workers = 1 / pool broken): exactly the old in-process behaviour
     def _sequential(self, info, indexes, progress, cancel) -> Dict[int, dict]:
         out: Dict[int, dict] = {}
         t0 = time.monotonic()
@@ -567,8 +508,7 @@ class Scheduler:
 
     def _worker_failed(self, w: _Worker, chunks: List[_Chunk], exc: BaseException) -> None:
         """A worker died / garbled its pipe: retry its chunks elsewhere, respawn it (a few times), else give up.
-        When the pool breaks, the surviving workers are killed too: they would get no more work, and on Windows
-        they would keep the files they had open locked."""
+        When the pool breaks, the surviving workers are killed too: they would get no more work."""
         burst = max(0, self.workers - 1)        # every worker can die at once (OOM killer): a chunk may meet that many dead ones
         with self._cv:
             if w in self._workers:

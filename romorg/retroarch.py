@@ -17,7 +17,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import time
@@ -26,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-__all__ = ["Install", "WinSystem", "detect_installs","read_cfg", "resolve", "settings_of", "is_running", "write_cfg",
+__all__ = ["Install", "detect_installs", "read_cfg", "resolve", "settings_of", "is_running", "write_cfg",
            "classify", "plan_relocation", "apply_relocation", "override_warnings",
            "SETTING_KEYS", "split_save", "match_save", "pairs_from_moves", "plan_follow", "apply_follow", "core_infos",
            "cores_for_platform", "cores_for_platforms", "check_bios_cores", "check_bios", "apply_bios", "shared_base", "shared_folders", "apply_shared"]
@@ -42,7 +41,7 @@ BACKUP_SUFFIX = ".romorg-backup-"
 @dataclass
 class Install:
     id: str
-    kind: str                 # steam | flatpak | native | windows | portable | custom
+    kind: str                 # steam | flatpak | native | custom
     label: str
     cfg: Path
     base: Path                # what ":" means in the config (the folder that holds the config / the program)
@@ -69,265 +68,14 @@ def _steam_libraries(roots: Iterable[Path]) -> List[Path]:
     return out
 
 
-# The image names RetroArch for Windows has shipped under. Not a prefix match: ``RetroArch-...-setup.exe`` is the
-# installer, not a running RetroArch.
-_WIN_IMAGE_RE = re.compile(r"^retroarch(_debug|_angle)?\.exe$", re.IGNORECASE)
-
-
-def _is_retroarch_image(name: str) -> bool:
-    return bool(_WIN_IMAGE_RE.match(str(name).replace("\\", "/").rsplit("/", 1)[-1].strip()))
-
-
-def _win_processes() -> List[tuple]:
-    """``(pid, image name)`` of every process, from a Toolhelp snapshot (no child process, so no console window and no
-    localised text to parse; about a millisecond where ``tasklist`` takes 160 ms). Windows only."""
-    import ctypes
-    from ctypes import wintypes
-
-    class Entry(ctypes.Structure):
-        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
-                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
-                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
-
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
-    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(Entry))
-    k32.Process32FirstW.restype = k32.Process32NextW.restype = wintypes.BOOL
-    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    snap = k32.CreateToolhelp32Snapshot(0x00000002, 0)                     # TH32CS_SNAPPROCESS
-    if not snap or snap == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
-    out: List[tuple] = []
-    try:
-        entry = Entry()
-        entry.dwSize = ctypes.sizeof(Entry)
-        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
-        while ok:
-            out.append((int(entry.th32ProcessID), entry.szExeFile))
-            ok = k32.Process32NextW(snap, ctypes.byref(entry))
-    finally:
-        k32.CloseHandle(snap)
-    return out
-
-
-def _win_process_path(pid: int) -> str:
-    """The full path of a running process's program (``""`` when it may not be read). Windows only."""
-    import ctypes
-    from ctypes import wintypes
-
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    k32.OpenProcess.restype = wintypes.HANDLE
-    k32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
-    k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    handle = k32.OpenProcess(0x1000, False, pid)                           # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return ""
-    try:
-        size = wintypes.DWORD(32768)
-        buf = ctypes.create_unicode_buffer(size.value)
-        return buf.value if k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) else ""
-    finally:
-        k32.CloseHandle(handle)
-
-
-class WinSystem:
-    """What only the real Windows machine can tell :func:`detect_installs`: the registry, the drives, the running
-    processes. Every method answers ``[]`` when it cannot tell. Tests pass their own object (or none at all: a call with
-    a made-up ``home`` / ``env`` / ``platform`` never looks at the real machine)."""
-
-    @staticmethod
-    def _reg(root_name: str, key: str, names: Iterable[str]) -> List[str]:
-        out: List[str] = []
-        try:
-            import winreg                                                   # Windows only, so imported here
-        except ImportError:
-            return out
-        root = getattr(winreg, root_name)
-        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
-            try:
-                with winreg.OpenKey(root, key, 0, winreg.KEY_READ | view) as k:
-                    for name in names:
-                        try:
-                            value, kind = winreg.QueryValueEx(k, name)
-                        except OSError:
-                            continue
-                        if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and isinstance(value, str) and value.strip():
-                            out.append(os.path.expandvars(value) if kind == winreg.REG_EXPAND_SZ else value)
-            except OSError:
-                continue
-        return out
-
-    def uninstall_dirs(self) -> List[Path]:
-        """Where the official installer put RetroArch (its uninstall entry), per machine or per user."""
-        out: List[Path] = []
-        key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\RetroArch"
-        for root in ("HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"):
-            for value in self._reg(root, key, ("InstallLocation", "UninstallString", "DisplayIcon")):
-                d = _dir_of_registry_value(value)
-                if d is not None and d not in out:
-                    out.append(d)
-        return out
-
-    def steam_roots(self) -> List[Path]:
-        # (Steam writes "c:/program files (x86)/steam": realpath gives the folder its real spelling)
-        values = self._reg("HKEY_CURRENT_USER", r"Software\Valve\Steam", ("SteamPath",))
-        values += self._reg("HKEY_LOCAL_MACHINE", r"Software\Valve\Steam", ("InstallPath",))
-        out: List[Path] = []
-        for v in values:
-            try:
-                p = Path(os.path.realpath(v))
-            except (OSError, ValueError):
-                continue
-            if p not in out:
-                out.append(p)
-        return out
-
-    def drives(self) -> List[Path]:
-        """The roots of the fixed drives (no network, removable or optical drive is touched)."""
-        out: List[Path] = []
-        try:
-            import ctypes
-            k32 = ctypes.WinDLL("kernel32")
-            k32.GetDriveTypeW.argtypes = (ctypes.c_wchar_p,)
-            mask = int(k32.GetLogicalDrives())
-            for i in range(26):
-                root = f"{chr(65 + i)}:\\"
-                if mask >> i & 1 and k32.GetDriveTypeW(root) == 3:         # DRIVE_FIXED
-                    out.append(Path(root))
-        except (OSError, AttributeError, ImportError):
-            pass
-        return out
-
-    def running_dirs(self) -> List[Path]:
-        """The folder of every RetroArch that runs right now."""
-        out: List[Path] = []
-        try:
-            for pid, name in _win_processes():
-                if _is_retroarch_image(name):
-                    path = _win_process_path(pid)
-                    if path and Path(path).parent not in out:
-                        out.append(Path(path).parent)
-        except (OSError, AttributeError, ImportError):
-            pass
-        return out
-
-
-def _dir_of_registry_value(value: str) -> Optional[Path]:
-    """The folder an uninstall entry's value names: ``InstallLocation`` is the folder, ``UninstallString`` /
-    ``DisplayIcon`` a program in it (quoted, perhaps with arguments or an icon index)."""
-    v = value.strip()
-    if v.startswith('"'):
-        v = v[1:].split('"', 1)[0]
-    else:
-        m = re.match(r"^(.*?\.(?:exe|ico))(?=$|[\s,])", v, re.IGNORECASE)
-        if m:
-            v = m.group(1)
-    v = v.strip()
-    if not v:
-        return None
-    is_program = bool(re.search(r"\.(exe|ico)$", v, re.IGNORECASE))
-    # split by hand: the value is a Windows path whatever platform the caller (a test) runs on
-    v = v.replace("/", "\\")
-    if is_program:
-        v = v.rsplit("\\", 1)[0] if "\\" in v else ""
-    if len(v) > 3:
-        v = v.rstrip("\\")
-    return Path(v) if v else None
-
-
-def _shim_target(folder: Path) -> Optional[Path]:
-    """The folder a Scoop shim of RetroArch (``retroarch.shim`` next to the shim exe: ``path = "..."``) points at.
-    A Chocolatey shim keeps its target inside the exe: that install is found through Chocolatey's tools folder."""
-    try:
-        text = (folder / "retroarch.shim").read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
-        return None
-    m = re.search(r'^\s*path\s*=\s*"?([^"\r\n]+?)"?\s*$', text, re.MULTILINE)
-    return Path(m.group(1)).parent if m else None
-
-
-def _windows_candidates(home: Path, env: dict, system: Optional[Any]) -> List[tuple]:
-    """``(kind, label, folder)`` of every place a RetroArch for Windows is known to live, most likely first. RetroArch
-    for Windows keeps ``retroarch.cfg`` next to ``retroarch.exe`` in every one of them (``:`` in its paths is that
-    folder), so the folder is also the base. Only ``env`` and ``system`` name drives: no drive letter is guessed."""
-    def e(name: str) -> str:
-        for k, v in env.items():                              # Windows environment names are case-insensitive
-            if str(k).upper() == name.upper() and v:
-                return str(v)
-        return ""
-
-    out: List[tuple] = []
-
-    def portable(d: Path) -> None:
-        out.append(("portable", f"RetroArch ({d})", d))
-
-    # 1. the official installer: older versions default to %APPDATA%\RetroArch, newer ones to C:\RetroArch-Win64, and
-    #    it records the folder the user chose in its uninstall entry
-    out.append(("windows", "RetroArch", Path(e("APPDATA") or home / "AppData" / "Roaming") / "RetroArch"))
-    for d in (system.uninstall_dirs() if system else []):
-        out.append(("windows", f"RetroArch ({d})", d))
-    # 2. Steam: the Steam folder (registry, Program Files) and every library folder it lists, on any drive
-    steam_roots = list(system.steam_roots()) if system else []
-    steam_roots += [Path(v) / "Steam" for v in (e("ProgramFiles(x86)"), e("ProgramFiles")) if v]
-    for lib in _steam_libraries(steam_roots):
-        out.append(("steam", "RetroArch (Steam)", lib / "steamapps" / "common" / "RetroArch"))
-    # 3. retroarch.exe on PATH (a Scoop shim names its target in a .shim file)
-    for raw in e("PATH").split(os.pathsep):
-        raw = raw.strip().strip('"')
-        if not raw:
-            continue
-        target = _shim_target(Path(raw))
-        if target is not None:
-            portable(target)
-        portable(Path(raw))
-    drive = e("SystemDrive")
-    sysroot = Path(drive + "\\") if drive else None
-    # 4. Chocolatey: Get-ToolsLocation, i.e. %ChocolateyToolsLocation% (default C:\tools), folder RetroArch-Win64 / RetroArch
-    tools = [Path(v) for v in (e("ChocolateyToolsLocation"),) if v] + ([sysroot / "tools"] if sysroot else [])
-    for t in tools:
-        for n in ("RetroArch-Win64", "RetroArch"):
-            portable(t / n)
-    # 5. Scoop: <scoop>\apps\retroarch\current, per user (%SCOOP%, default %USERPROFILE%\scoop) and global
-    #    (%SCOOP_GLOBAL%, default %ProgramData%\scoop)
-    scoops = [Path(v) for v in (e("SCOOP"),) if v] + [home / "scoop"]
-    scoops += [Path(v) for v in (e("SCOOP_GLOBAL"),) if v] + [Path(v) / "scoop" for v in (e("ProgramData"),) if v]
-    for sc in scoops:
-        portable(sc / "apps" / "retroarch" / "current")
-    # 6. the folders people unpack the portable .7z into
-    for d in (home / "RetroArch-Win64", home / "RetroArch", home / "Desktop" / "RetroArch-Win64", home / "Desktop" / "RetroArch",
-              home / "Downloads" / "RetroArch-Win64", home / "Documents" / "RetroArch-Win64", home / "Documents" / "RetroArch"):
-        portable(d)
-    # 7. front ends that bring their own: LaunchBox (%USERPROFILE%\LaunchBox\Emulators\RetroArch), EmuDeck for Windows
-    #    (%APPDATA%\EmuDeck\Emulators\RetroArch); RetroBat (C:\RetroBat\emulators\retroarch) with the drive roots below
-    portable(home / "LaunchBox" / "Emulators" / "RetroArch")
-    if e("APPDATA"):
-        portable(Path(e("APPDATA")) / "EmuDeck" / "Emulators" / "RetroArch")
-    # 8. \RetroArch-Win64, \RetroArch (and RetroBat, LaunchBox) at the root of every fixed drive
-    roots = list(system.drives()) if system else []
-    if sysroot is not None and sysroot not in roots:
-        roots.insert(0, sysroot)
-    for r in roots:
-        for rel in ("RetroArch-Win64", "RetroArch", "RetroBat/emulators/retroarch", "LaunchBox/Emulators/RetroArch"):
-            portable(r / rel)
-    # 9. a RetroArch that runs right now, wherever it is
-    for d in (system.running_dirs() if system else []):
-        portable(d)
-    return out
-
-
 def detect_installs(home: Optional[Path] = None, env: Optional[dict] = None, platform: Optional[str] = None,
-                    custom: Iterable[str] = (), system: Optional[Any] = None) -> List[Install]:
+                    custom: Iterable[str] = ()) -> List[Install]:
     """Every RetroArch whose ``retroarch.cfg`` can be found, plus the custom ones (a path to a cfg, to its folder, or to
     the program next to it).
 
-    ``system`` (Windows) answers what the environment cannot: see :class:`WinSystem`. It defaults to the real machine
-    only for a plain call on Windows; with a ``home``, ``env`` or ``platform`` given, nothing outside them is read.
-    ``ROMORG_RETROARCH_DETECT=0`` in the environment turns the search of this machine off for such a plain call (only
-    the custom ones are found): the test suite sets it, so that no test ever works on the user's own RetroArch."""
+    With a ``home``, ``env`` or ``platform`` given, nothing outside them is read. ``ROMORG_RETROARCH_DETECT=0`` in the
+    environment turns the search of this machine off for a plain call (only the custom ones are found): the test suite
+    sets it, so that no test ever works on the user's own RetroArch."""
     live = home is None and env is None and platform is None
     home = Path(home) if home else Path.home()
     env = dict(os.environ if env is None else env)
@@ -357,11 +105,6 @@ def detect_installs(home: Optional[Path] = None, env: Optional[dict] = None, pla
         add("flatpak", "RetroArch (Flatpak)", home / ".var/app/org.libretro.RetroArch/config/retroarch/retroarch.cfg")
         add("native", "RetroArch", Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "retroarch" / "retroarch.cfg")
         add("native", "RetroArch (Snap)", home / "snap/retroarch/current/.config/retroarch/retroarch.cfg")
-    elif platform == "win32":
-        if system is None and live and sys.platform == "win32":
-            system = WinSystem()
-        for kind, label, d in _windows_candidates(home, env, system):
-            add(kind, label, d / "retroarch.cfg", d)
     elif platform == "darwin":
         add("native", "RetroArch", home / "Library/Application Support/RetroArch/config/retroarch.cfg",
             home / "Library/Application Support/RetroArch")
@@ -371,7 +114,7 @@ def detect_installs(home: Optional[Path] = None, env: Optional[dict] = None, pla
             is_file = p.is_file()
         except (OSError, ValueError):
             continue
-        if is_file and p.suffix.lower() != ".cfg":           # not a config (retroarch.exe picked in a file dialog):
+        if is_file and p.suffix.lower() != ".cfg":           # not a config (the program itself was named):
             p, is_file = p.parent, False                      # it stands for its folder
         cfg = p if is_file else p / "retroarch.cfg"
         add("custom", f"RetroArch ({cfg.parent})", cfg)
@@ -441,10 +184,6 @@ def is_running() -> bool:
                     except OSError:
                         continue
             return False
-        if sys.platform == "win32":
-            # the process list itself, not ``tasklist``: that is a child process (a console window flashing from the
-            # windowed app on every page load), 160 ms, and its "no tasks" line is in the user's language
-            return any(_is_retroarch_image(name) for _pid, name in _win_processes())
         out = subprocess.run(["pgrep", "-i", "retroarch"], capture_output=True, timeout=10)
         return out.returncode == 0
     except (OSError, subprocess.SubprocessError, AttributeError, ImportError):
@@ -474,7 +213,7 @@ def _cfg_text(value: Any) -> str:
 
 
 def _key(path: Any) -> str:
-    """A path as a comparison key: links resolved, and on Windows neither case nor the kind of slash counts."""
+    """A path as a comparison key: links resolved."""
     return os.path.normcase(os.path.realpath(path))
 
 
@@ -509,25 +248,10 @@ def _fresh(path: Path) -> Path:
     return out
 
 
-def to_cfg_path(path: Path, home: Optional[Path] = None, install: Optional[Install] = None) -> str:
+def to_cfg_path(path: Path, home: Optional[Path] = None) -> str:
     """How a folder is written in ``retroarch.cfg``: ``~/...`` under the home folder (as RetroArch itself does), else
-    absolute.
-
-    Windows: RetroArch there does not expand ``~`` and writes absolute paths with backslashes; a folder inside its own
-    folder it writes as ``:\\saves`` (``:`` is the folder of ``retroarch.exe``), which is what keeps a portable install
-    working when its folder moves. With ``install`` given, a folder inside the install is written that way too, but
-    only when ``retroarch.exe`` really lies in the install's base (else ``:`` would mean another folder)."""
+    absolute."""
     home = Path(home) if home else Path.home()
-    if os.name == "nt":
-        path = Path(os.path.abspath(path))
-        if install is not None and (install.base / "retroarch.exe").is_file():
-            try:
-                rel = path.relative_to(os.path.abspath(install.base))
-                if rel.parts:
-                    return ":\\" + "\\".join(rel.parts)
-            except ValueError:
-                pass
-        return str(path)
     try:
         rel = path.relative_to(home)
         return "~/" + rel.as_posix() if rel.parts else "~"
@@ -577,26 +301,8 @@ def write_cfg(cfg: Path, changes: Dict[str, Any]) -> Path:
     return backup
 
 
-def _unlink(path: Any) -> bool:
-    """Delete a file. Windows refuses to delete one with the read-only attribute: it is cleared for the delete (and put
-    back if the delete still fails). Returns True when the attribute had to be cleared."""
-    try:
-        os.unlink(path)
-        return False
-    except PermissionError:
-        if os.name != "nt" or os.access(path, os.W_OK):
-            raise
-    os.chmod(path, stat.S_IWRITE)
-    try:
-        os.unlink(path)
-    except OSError:
-        os.chmod(path, stat.S_IREAD)
-        raise
-    return True
-
-
 def _cross_device(exc: OSError, src: Any, dst: Any) -> bool:
-    if exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == 17:   # ERROR_NOT_SAME_DEVICE
+    if exc.errno == errno.EXDEV:
         return True
     try:
         return os.stat(src).st_dev != os.stat(os.path.dirname(os.path.abspath(dst))).st_dev
@@ -608,9 +314,9 @@ def _move(src: Any, dst: Any) -> None:
     """Move one file: never onto an existing file, and never leaving it in both places.
 
     A hard link plus removing the old name (a rename that cannot replace anything); where the file system has no hard
-    links, a plain rename; a copy only onto another drive. When the old name cannot be removed in the end (the file is
-    open in another program: Windows), the new one is taken away again and the error raised, so a failed move leaves
-    exactly what was there before. Two names of one file that differ only by case are a rename."""
+    links, a plain rename; a copy only onto another drive. When the old name cannot be removed in the end, the new one is
+    taken away again and the error raised, so a failed move leaves exactly what was there before. Two names of one file
+    that differ only by case are a rename."""
     src, dst = Path(src), Path(dst)
     if os.path.lexists(dst):
         if _same_file_other_case(src, dst):
@@ -637,23 +343,18 @@ def _move(src: Any, dst: Any) -> None:
             _discard(dst)
             raise
     try:
-        cleared = _unlink(src)
+        os.unlink(src)
     except OSError as exc:
         _discard(dst)
         if os.path.lexists(dst):                              # could not be taken away either: say so
             raise OSError(exc.errno, f"{exc} (it is now also at {dst}: remove one of the two by hand)") from None
         raise
-    if cleared and linked:
-        try:
-            os.chmod(dst, stat.S_IREAD)                       # the link shares the attribute that was cleared
-        except OSError:
-            pass
 
 
 def _discard(path: Any) -> None:
     try:
         if os.path.lexists(path):
-            _unlink(path)
+            os.unlink(path)
     except OSError:
         pass
 
@@ -720,8 +421,8 @@ def plan_relocation(install: Install, save_dir: Path, state_dir: Path, sort_save
     rel = Relocation(old={"save": str(old_save), "state": str(old_state), "sort_saves": cur["sort_savefiles_enable"],
                           "sort_states": cur["sort_savestates_enable"]},
                      new={"save": str(save_dir), "state": str(state_dir), "sort_saves": sort_saves, "sort_states": sort_states})
-    rel.changes = {"savefile_directory": to_cfg_path(save_dir, home, install),
-                   "savestate_directory": to_cfg_path(state_dir, home, install),
+    rel.changes = {"savefile_directory": to_cfg_path(save_dir, home),
+                   "savestate_directory": to_cfg_path(state_dir, home),
                    "sort_savefiles_enable": sort_saves, "sort_savestates_enable": sort_states,
                    "savefiles_in_content_dir": False, "savestates_in_content_dir": False}
     old_sorted = {"save": bool(cur["sort_savefiles_enable"]), "state": bool(cur["sort_savestates_enable"])}
@@ -849,9 +550,8 @@ def split_save(name: str) -> Optional[tuple]:
 
 
 def fold_name(name: str) -> str:
-    """A content name as it is compared with a save's name: Windows ignores case, everywhere else it matters (RetroArch
-    writes the name exactly as the content file has it)."""
-    return name.casefold() if os.name == "nt" else name
+    """A content name as it is compared with a save's name: case matters, RetroArch writes the name exactly as the content file has it."""
+    return name
 
 
 _SUFFIX_BAD = " ()"            # a core's suffix never has spaces (or the brackets of a game's name)
@@ -862,15 +562,13 @@ class SaveMatcher:
 
     def __init__(self, wanted: Iterable[str]) -> None:
         self.wanted = wanted if isinstance(wanted, (set, dict, frozenset)) else set(wanted)
-        self.fold = {name.casefold(): name for name in self.wanted} if os.name == "nt" else None
 
     def match(self, name: str) -> Optional[tuple]:
         cut = name.rfind(".")
         while cut > 0:
             head = name[:cut]
-            hit = head if head in self.wanted else (self.fold.get(head.casefold()) if self.fold is not None else None)
-            if hit is not None and not any(ch in name[cut:] for ch in _SUFFIX_BAD):
-                return hit, name[cut:]
+            if head in self.wanted and not any(ch in name[cut:] for ch in _SUFFIX_BAD):
+                return head, name[cut:]
             cut = name.rfind(".", 0, cut)
         return None
 
@@ -879,8 +577,7 @@ def match_save(name: str, wanted: Iterable[str]) -> Optional[tuple]:
     """``(content name, suffix)`` when ``name`` is a save or state file of one of the ``wanted`` games: the game's name, then a
     dot, then whatever the core adds (``.srm``, ``.state1.png``, Flycast's ``.A1.bin`` memory cards, ``.1.srm``, ``.eep`` ...).
     The longest game name wins, so ``Game (USA).A1.bin`` belongs to ``Game (USA)`` and not to a shorter ``Game``; a dot
-    inside a name (``Dr. Mario``) is only a cut where the part before it is itself one of the games and what follows is a plain suffix (no spaces).
-    On Windows the names are compared without regard to case; the returned name is the one in ``wanted``."""
+    inside a name (``Dr. Mario``) is only a cut where the part before it is itself one of the games and what follows is a plain suffix (no spaces)."""
     return SaveMatcher(wanted).match(name)
 
 
@@ -1440,7 +1137,7 @@ def shared_folders(install: Install, base: str, home: Optional[Path] = None) -> 
         else:
             status = "set"
         rows.append({"key": key, "label": label, "current": raw, "current_path": str(cur) if cur else "",
-                     "want": str(want) if want else "", "want_cfg": to_cfg_path(want, home, install) if want else "",
+                     "want": str(want) if want else "", "want_cfg": to_cfg_path(want, home) if want else "",
                      "status": status, "want_has_files": bool(want and _has_entries(want)),
                      "current_has_files": bool(cur and _has_entries(cur))})
     return rows
@@ -1464,7 +1161,7 @@ def set_asset_folder(install: Install, key: str, folder: str, home: Optional[Pat
         raise KeyError(key)
     want = Path(os.path.expanduser(folder)) if folder else None
     row = {"key": key, "want": str(want) if want else "default", "status": "set",
-           "want_cfg": to_cfg_path(want, home, install) if want else "default"}
+           "want_cfg": to_cfg_path(want, home) if want else "default"}
     return apply_shared(install, [row], [key], home)
 
 
@@ -1485,7 +1182,7 @@ def apply_shared(install: Install, rows: List[dict], keys: Iterable[str], home: 
         for key in _BUILTIN_LISTS:
             name = (cfg.get(key, "").replace("\\", "/").rsplit("/", 1)[-1]) or ""
             if name and (playlist / "builtin" / name).is_file():
-                changes[key] = to_cfg_path(playlist / "builtin" / name, home, install)
+                changes[key] = to_cfg_path(playlist / "builtin" / name, home)
     if not changes:
         return {"changed": [], "cfg_backup": None}
     backup = write_cfg(install.cfg, changes)

@@ -145,13 +145,12 @@ class DiscoveryTest(unittest.TestCase):
         if not cands:
             self.skipTest("no absolute path of libFLAC to link to")
         real = cands[0].resolve()
-        # a loaded DLL cannot be deleted on Windows (ctypes never unloads it): the copy may stay behind
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             lib = Path(tmp) / "tools" / "lib"
             lib.mkdir(parents=True)
             try:
                 (lib / "libFLAC.so.14").symlink_to(real)
-            except OSError:                     # Windows without the symlink privilege: a copy loads the same
+            except OSError:                     # no symlinks here: a copy loads the same
                 shutil.copy2(real, lib / "libFLAC.so.14")
             with mock.patch.dict(os.environ, {bundle.ENV_BUNDLE: tmp}):
                 os.environ.pop(flacnative.ENV_LIB, None)

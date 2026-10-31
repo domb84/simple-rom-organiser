@@ -729,20 +729,15 @@ else:
 
 
 def install_script(path: Path, source: str) -> Path:
-    """An executable stand-in for a command-line tool, written in Python: ``<path>.py`` plus a launcher (a
-    ``#!`` script on POSIX, a ``.cmd`` on Windows). Returns the launcher; calling it again replaces the script."""
+    """An executable stand-in for a command-line tool, written in Python: ``<path>.py`` plus a ``#!`` launcher. Returns the
+    launcher; calling it again replaces the script."""
     import sys
     path = Path(path)
     script = path.with_name(path.name + ".py")
     script.write_text(source, encoding="utf-8", newline="\n")
-    if os.name == "nt":
-        launcher = path.with_name(path.name + ".cmd")
-        launcher.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
-    else:
-        launcher = path
-        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
-        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return launcher
+    path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
 
 
 def install_fake_chdman(folder: Path) -> Path:
@@ -786,7 +781,7 @@ def isolate_temp(testcase, base: Path, ram: bool = False) -> Path:
 
 
 def make_symlink(link, target) -> None:
-    """``link`` -> ``target``; skips the test where symlinks are not allowed (Windows without developer mode)."""
+    """``link`` -> ``target``; skips the test where symlinks are not allowed."""
     import unittest
     try:
         Path(link).symlink_to(target)
@@ -795,30 +790,16 @@ def make_symlink(link, target) -> None:
 
 
 def find_bash():
-    """A bash that really runs. On Windows Git for Windows' bash comes first: PATH can hold WSL's System32
-    bash.exe ahead of it (it sees Linux paths, not ours), which is kept only as a last resort. Elsewhere: PATH."""
+    """A bash that really runs, from PATH."""
     import shutil
     import subprocess
     found = shutil.which("bash")
-    git_bash = []
-    git = shutil.which("git")
-    if git:
-        root = Path(git).resolve().parent.parent
-        git_bash = [str(root / "bin" / "bash.exe"), str(root / "usr" / "bin" / "bash.exe")]   # bin\ first: its wrapper has coreutils on PATH
-    parts = os.path.normcase(found or "").replace("/", "\\").split("\\")
-    if os.name == "nt" and "system32" in parts:          # WSL launcher (or the Store stub)
-        cands = git_bash + [found]
-    else:
-        cands = [found] + git_bash
-    for c in cands:
-        if not c or not os.path.exists(c):
-            continue
-        try:
-            if subprocess.run([c, "-c", "exit 0"], capture_output=True, timeout=20).returncode == 0:
-                return c
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return None
+    if not found:
+        return None
+    try:
+        return found if subprocess.run([found, "-c", "exit 0"], capture_output=True, timeout=20).returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def tree(root: Path) -> dict[str, str]:
@@ -1163,11 +1144,5 @@ def old_cd_metadata(tracks: Sequence[tuple], order: str = "<") -> bytes:
 
 
 def bash_env(bash: str) -> dict:
-    """The environment to run `bash` scripts in. Git for Windows' bash.exe started from PowerShell / cmd has no
-    coreutils (dirname, mktemp ...) on PATH unless its own usr\bin is added; harmless elsewhere."""
-    env = dict(os.environ)
-    if os.name == "nt":
-        d = Path(bash).resolve().parent
-        extra = [str(d)] + ([str(d.parent / "usr" / "bin")] if d.name == "bin" else [])
-        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
-    return env
+    """The environment to run `bash` scripts in."""
+    return dict(os.environ)

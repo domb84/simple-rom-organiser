@@ -66,7 +66,6 @@ import filecmp
 import json
 import os
 import re
-import stat
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -79,7 +78,7 @@ if TYPE_CHECKING:
     from .scanner import Entry, Match, ScanResult
 
 UNDO_PREFIX = ".romorg-undo-"          # the undo logs of versions before 0.4 (removed by purge_undo_logs)
-from . import folders, winproc  # noqa: E402
+from . import folders  # noqa: E402
 from .cancellation import is_cancelled  # noqa: E402  (the reserved folder names live in folders.py only)
 from .folders import (CODE_DIRS, CONVERTED_DIR, DUPLICATES_DIR, EXCLUDED_DIR, INCOMPLETE_DIR,  # noqa: E402,F401
                       REASON_DIRS, RESERVED_DIRS, SUPERSEDED_DIR, UNMATCHED_DIR)
@@ -1704,34 +1703,6 @@ _NO_LINK_ERRNOS = {errno.EPERM, errno.EXDEV, errno.EMLINK, errno.ENOSYS,
                    getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1)}
 
 
-def _unlink_linked(src: Path, dst: Path) -> None:
-    """Remove ``src`` after ``dst`` was made as a hard link to it.
-
-    Windows refuses to delete a file with the read-only attribute (common for ROMs unpacked from an archive), and then
-    refuses to delete the new link as well: the file would stay under both names. The attribute belongs to the file, not
-    to a name, so it is cleared for the delete and set again on the name that stays. Elsewhere this is ``os.unlink``."""
-    if os.name != "nt":
-        os.unlink(src)
-        return
-    try:
-        os.unlink(src)
-        return
-    except PermissionError:
-        st = os.lstat(src)
-        if not st.st_file_attributes & stat.FILE_ATTRIBUTE_READONLY:
-            raise
-    os.chmod(src, st.st_mode | stat.S_IWRITE)
-    try:
-        os.unlink(src)
-    except OSError:
-        try:
-            os.unlink(dst)                 # possible now that the attribute is cleared: the file is in one place again
-        finally:
-            os.chmod(src, st.st_mode)
-        raise
-    os.chmod(dst, st.st_mode)
-
-
 def _move_exclusive(src: Path, dst: Path) -> None:
     """Move src -> dst without ever replacing an existing dst.
 
@@ -1749,7 +1720,7 @@ def _move_exclusive(src: Path, dst: Path) -> None:
             raise
     else:
         try:
-            _unlink_linked(src, dst)
+            os.unlink(src)
         except OSError:
             try:
                 os.unlink(dst)
@@ -1830,26 +1801,6 @@ def _protected_dirs(root: Path, ops: Sequence[RenameOp], dat_names: Iterable[str
     return out
 
 
-def _rmdir_empty(d: Path) -> None:
-    """``os.rmdir``. On Windows an empty folder with the read-only attribute (Explorer sets it on customised folders) is
-    removed too; a folder that is not empty keeps its attribute."""
-    try:
-        os.rmdir(d)
-        return
-    except PermissionError:
-        if os.name != "nt":
-            raise
-        st = os.lstat(d)
-        if not st.st_file_attributes & stat.FILE_ATTRIBUTE_READONLY:
-            raise
-    os.chmod(d, st.st_mode | stat.S_IWRITE)
-    try:
-        os.rmdir(d)
-    except OSError:
-        os.chmod(d, st.st_mode)
-        raise
-
-
 def _remove_empty_dirs(candidates: Iterable[Path], root: Path, protected: set[str]) -> list[str]:
     """rmdir candidates (and then their parents) that are empty; deepest first."""
     removed: list[str] = []
@@ -1857,7 +1808,7 @@ def _remove_empty_dirs(candidates: Iterable[Path], root: Path, protected: set[st
     for d in todo:
         while _rel_to(d, root) not in (None, Path(".")) and _fold(d) not in protected:
             try:
-                _rmdir_empty(d)  # fails unless empty: never removes content
+                os.rmdir(d)  # fails unless empty: never removes content
             except OSError:
                 break
             removed.append(str(d))
@@ -1967,7 +1918,7 @@ def apply_renames(ops: Iterable[RenameOp], root: Path, progress: Optional[Progre
                 done.append({"src": str(original[id(op)]), "dst": str(op.dst)})
             except (OSError, ValueError) as exc:
                 failed.append({"src": str(original[id(op)]), "dst": str(op.dst),
-                               "error": winproc.long_path_hint(exc, op.src, op.dst)})      # (Windows: paths over 260)
+                               "error": str(exc)})
             tick(op.dst.name)
         if cancelled or not blocked:
             break

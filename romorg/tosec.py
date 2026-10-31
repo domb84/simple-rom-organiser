@@ -10,7 +10,6 @@ import re
 import shutil
 import tempfile
 import threading
-import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -62,8 +61,7 @@ _held = threading.local()
 def update_lock(blocking: bool = False, directory: Optional[Path] = None):
     """Exclusive cross-process lock (``update.lock`` in the data dir) for DAT updates.
 
-    Re-entrant within a thread. Uses ``fcntl.flock`` on POSIX and ``msvcrt.locking`` on Windows. Raises
-    :class:`Busy` when another process holds it (unless ``blocking``).
+    Re-entrant within a thread. Uses ``fcntl.flock``. Raises :class:`Busy` when another process holds it (unless ``blocking``).
     """
     depth = getattr(_held, "depth", 0)
     if depth:
@@ -73,43 +71,18 @@ def update_lock(blocking: bool = False, directory: Optional[Path] = None):
         finally:
             _held.depth -= 1
         return
-    try:
-        import fcntl
-    except ImportError:  # non-POSIX
-        fcntl = None  # type: ignore[assignment]
-    try:
-        import msvcrt
-    except ImportError:
-        msvcrt = None  # type: ignore[assignment]
+    import fcntl
     fd = None
-    if fcntl is None and msvcrt is not None:
+    try:
+        fd = os.open(str((Path(directory) if directory is not None else paths.data_dir()) / "update.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        fd = None  # unwritable data dir: the update itself reports the real error
+    if fd is not None:
         try:
-            fd = os.open(str((Path(directory) if directory is not None else paths.data_dir()) / "update.lock"), os.O_RDWR | os.O_CREAT, 0o644)
-        except OSError:
-            fd = None
-        if fd is not None:
-            while True:
-                try:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # byte-range lock: released when the fd closes
-                    break
-                except OSError as exc:
-                    if blocking:
-                        time.sleep(0.2)
-                        continue
-                    os.close(fd)
-                    raise Busy("Another copy of the app is updating the DATs") from exc
-    if fcntl is not None:
-        try:
-            fd = os.open(str((Path(directory) if directory is not None else paths.data_dir()) / "update.lock"), os.O_RDWR | os.O_CREAT, 0o644)
-        except OSError:
-            fd = None  # unwritable data dir: the update itself reports the real error
-        if fd is not None:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-            except OSError as exc:
-                os.close(fd)
-                raise Busy("Another copy of the app is updating the DATs") from exc
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except OSError as exc:
+            os.close(fd)
+            raise Busy("Another copy of the app is updating the DATs") from exc
     _held.depth = 1
     try:
         yield

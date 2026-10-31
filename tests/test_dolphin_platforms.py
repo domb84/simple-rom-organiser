@@ -51,7 +51,7 @@ class DolphinCase(base.DcServerCase):
         super().setUp()
         home = self.base / "home"
         home.mkdir()
-        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(home)})
         env.start()
         self.addCleanup(env.stop)
         self.dolphin = self.base / "dolphin"
@@ -135,7 +135,7 @@ class WiiUTests(base.DcServerCase):
         super().setUp()
         home = self.base / "home"
         home.mkdir()
-        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(home)})
         env.start()
         self.addCleanup(env.stop)
         xml = self.base / "wiiutdb.xml"

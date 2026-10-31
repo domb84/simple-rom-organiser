@@ -234,7 +234,7 @@ class Sync(Export):
         self.assertEqual(libexport.apply_export(ep, allow_mass=True)["removed"], 35)
 
     def test_a_name_that_only_changes_case_does_not_remove_the_file(self) -> None:
-        # Windows / exFAT: "Game A.gba" and "game a.gba" are one file. The sync saw the new spelling as "already there" and
+        # exFAT: "Game A.gba" and "game a.gba" are one file. The sync saw the new spelling as "already there" and
         # the old spelling as "no longer kept", and deleted the one file there is.
         self.build()
         self.plan.ops[0] = op(self.root / "a.gba", self.root / "game a.gba")
@@ -284,18 +284,9 @@ class MoveSafety(unittest.TestCase):
 
     def test_a_file_another_program_holds_open_is_not_copied_instead(self) -> None:
         ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
-        with open(self.root / "a.gba", "rb"), mock.patch.object(libexport.sortroot, "RETRY_SLEEP", 0.01):
+        with open(self.root / "a.gba", "rb"):
             res = libexport.apply_export(ep)
-        if os.name == "nt":                                    # Windows: the open file can be neither renamed nor deleted
-            self.assertEqual((res["moved"], res["copied"]), (1, 0))
-            self.assertEqual([f["rel"] for f in res["failed"]], ["Game A.gba"])
-            self.assertTrue((self.root / "a.gba").is_file())
-            self.assertEqual(self.files(self.dest), ["b.gba"], "the held file must not be in two places")
-            again = libexport.plan_export(self.plan, self.root, self.dest, "move")       # free now: the next build takes it
-            self.assertEqual(libexport.apply_export(again)["moved"], 1)
-            self.assertFalse((self.root / "a.gba").exists())
-        else:
-            self.assertEqual((res["moved"], res["failed"]), (2, []))
+        self.assertEqual((res["moved"], res["failed"]), (2, []))
 
     def test_a_rename_that_fails_for_another_reason_than_another_drive_is_not_turned_into_a_copy(self) -> None:
         def denied(src, dst, *a, **k):
@@ -309,7 +300,7 @@ class MoveSafety(unittest.TestCase):
         self.assertEqual(self.files(self.root), ["a.gba", "b.gba", "c.gba"])
 
     def test_to_another_drive_the_file_is_copied_then_removed(self) -> None:
-        os.chmod(self.root / "a.gba", stat.S_IREAD)             # read-only: Windows refuses a plain delete
+        os.chmod(self.root / "a.gba", stat.S_IREAD)
         self.addCleanup(lambda: [os.chmod(p, stat.S_IREAD | stat.S_IWRITE) for p in (self.root / "a.gba", self.dest / "Game A.gba") if p.exists()])
         with _other_drive():
             ep = libexport.plan_export(self.plan, self.root, self.dest, "move")
@@ -326,7 +317,7 @@ class MoveSafety(unittest.TestCase):
                 raise PermissionError(errno.EACCES, "in use", str(p))
             return real(p, *a, **k)
 
-        with _other_drive(), mock.patch.object(libexport.sortroot.os, "unlink", unlink), mock.patch.object(libexport.sortroot, "RETRY_SLEEP", 0):
+        with _other_drive(), mock.patch.object(libexport.sortroot.os, "unlink", unlink):
             res = libexport.apply_export(libexport.plan_export(self.plan, self.root, self.dest, "move"))
         self.assertEqual((res["moved"], res["copied"]), (1, 1))
         self.assertEqual([f["rel"] for f in res["failed"]], ["Game A.gba"])

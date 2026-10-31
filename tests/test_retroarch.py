@@ -273,9 +273,8 @@ class Bios(World):
 
 class Shared(World):
     def written(self, rel: str) -> str:
-        """How a folder under the home folder is written in the cfg: ``~/...``, but absolute on Windows (RetroArch
-        there does not expand ``~``; see ``ra.to_cfg_path``)."""
-        return str(self.home / rel) if os.name == "nt" else "~/" + rel
+        """How a folder under the home folder is written in the cfg: ``~/...`` (see ``ra.to_cfg_path``)."""
+        return "~/" + rel
 
     def setUp(self) -> None:
         super().setUp()
@@ -359,17 +358,11 @@ class SaveRecogniser(unittest.TestCase):
 
     def test_name_keys_cover_every_possible_game_name(self) -> None:
         keys = ra.save_name_keys(["Game (USA).srm", "Game (USA).state1.png", "Dr. Mario (USA).srm", "Game (USA).A1.bin"])
-        self.assertTrue({"Game (USA)", "Dr. Mario (USA)"} <= {k for k in keys} or os.name == "nt")
+        self.assertTrue({"Game (USA)", "Dr. Mario (USA)"} <= {k for k in keys})
         self.assertNotIn("Dr", keys)
         self.assertNotIn(ra.fold_name("Mario (USA)"), keys)
 
-    @unittest.skipUnless(os.name == "nt", "Windows ignores case, everywhere else RetroArch's names are exact")
-    def test_windows_compares_names_without_case(self) -> None:
-        self.assertEqual(ra.match_save("MARIO (usa).SRM", {"Mario (USA)"}), ("Mario (USA)", ".SRM"))
-        self.assertIn(ra.fold_name("Mario (USA)"), ra.save_name_keys(["MARIO (USA).srm"]))
-
-    @unittest.skipIf(os.name == "nt", "Windows ignores case")
-    def test_elsewhere_case_matters(self) -> None:
+    def test_case_matters(self) -> None:
         self.assertIsNone(ra.match_save("MARIO (usa).srm", {"Mario (USA)"}))
         self.assertNotIn("Mario (USA)", ra.save_name_keys(["MARIO (USA).srm"]))
 

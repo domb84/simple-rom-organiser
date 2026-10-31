@@ -452,7 +452,6 @@ class MultiDatTests(unittest.TestCase):
         res = self._scan([self.games])
         self.assertEqual([(p.name, "dangling" in m) for p, m in res.errors], [("gone.adf", True)])
 
-    @unittest.skipUnless(os.name == "posix", "bytes filenames")
     def test_undecodable_filename_matched_with_cache(self) -> None:
         name = os.fsdecode(b"G\xe4me\xff.adf")
         try:

@@ -12,7 +12,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -60,12 +59,6 @@ def _other_drive(real_rename=os.rename):
     return mock.patch.object(sr.os, "rename", rename)
 
 
-def _set_read_only(path: Path) -> None:
-    os.chmod(path, stat.S_IREAD)
-    if os.name == "nt":
-        assert os.stat(path).st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
-
-
 class MovesNeverDuplicate(World):
     """A move is a rename; only a target on another drive is a copy + delete, and then the file is never left in both places."""
 
@@ -75,17 +68,10 @@ class MovesNeverDuplicate(World):
     def test_a_file_another_program_holds_open_is_not_copied(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
         dst = self.root / "snes" / "a.sfc"
-        with open(a, "rb"):                                # Windows: blocks rename and delete, allows reading
-            with mock.patch.object(sr, "RETRY_SLEEP", 0.01):
-                res = self.move(a, dst)
-        if os.name == "nt":
-            self.assertEqual(res["moved"], 0)
-            self.assertEqual([f["path"] for f in res["failed"]], [str(a)])
-            self.assertTrue(a.is_file())
-            self.assertFalse(dst.exists(), "the file must not be in two places")
-        else:                                              # POSIX: an open file moves like any other
-            self.assertEqual((res["moved"], res["failed"]), (1, []))
-            self.assertTrue(dst.is_file() and not a.exists())
+        with open(a, "rb"):
+            res = self.move(a, dst)
+        self.assertEqual((res["moved"], res["failed"]), (1, []))           # an open file moves like any other
+        self.assertTrue(dst.is_file() and not a.exists())
 
     def test_a_rename_that_fails_for_another_reason_than_another_drive_is_not_turned_into_a_copy(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
@@ -101,8 +87,8 @@ class MovesNeverDuplicate(World):
         self.assertTrue(a.is_file())
         self.assertFalse(dst.exists())
 
-    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs POSIX permissions (not root)")
-    def test_posix_a_source_folder_without_write_permission_does_not_leave_a_copy(self) -> None:
+    @unittest.skipIf(os.geteuid() == 0, "needs permissions (not root)")
+    def test_a_source_folder_without_write_permission_does_not_leave_a_copy(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
         dst = self.root / "snes" / "a.sfc"
         os.chmod(a.parent, 0o555)
@@ -111,32 +97,6 @@ class MovesNeverDuplicate(World):
         self.assertEqual((res["moved"], len(res["failed"])), (0, 1))
         self.assertTrue(a.is_file())
         self.assertFalse(dst.exists())
-
-    @unittest.skipUnless(os.name == "nt", "sharing violations are a Windows matter")
-    def test_windows_a_file_that_is_held_for_a_moment_is_tried_again(self) -> None:
-        a = self.f("in/a.sfc", b"aaaa")
-        dst = self.root / "snes" / "a.sfc"
-        fh = open(a, "rb")
-        timer = threading.Timer(0.12, fh.close)
-        timer.start()
-        self.addCleanup(timer.join)
-        res = self.move(a, dst)
-        self.assertEqual((res["moved"], res["failed"]), (1, []))
-        self.assertTrue(dst.is_file() and not a.exists())
-
-    @unittest.skipUnless(os.name == "nt", "sharing violations are a Windows matter")
-    def test_windows_many_blocked_files_do_not_each_wait(self) -> None:
-        files = [self.f(f"in/{i}.sfc") for i in range(6)]
-        naps: list = []
-        with mock.patch.object(sr, "RETRY_BUDGET", 3), mock.patch.object(sr.time, "sleep", naps.append):
-            handles = [open(p, "rb") for p in files]
-            try:
-                res = sr.apply_moves([sr.SMove(p, self.root / "snes" / p.name, "x") for p in files])
-            finally:
-                for h in handles:
-                    h.close()
-        self.assertEqual((res["moved"], len(res["failed"])), (0, 6))
-        self.assertEqual(len(naps), 3)
 
     def test_to_another_drive_it_is_a_copy_and_the_original_goes(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
@@ -159,7 +119,7 @@ class MovesNeverDuplicate(World):
                 raise PermissionError(errno.EACCES, "in use", str(path))
             return real_unlink(path, *args, **kw)
 
-        with _other_drive(), mock.patch.object(sr.os, "unlink", unlink), mock.patch.object(sr, "RETRY_SLEEP", 0):
+        with _other_drive(), mock.patch.object(sr.os, "unlink", unlink):
             res = self.move(a, dst)
         self.assertEqual(res["moved"], 0)
         self.assertEqual([f["path"] for f in res["failed"]], [str(a)])
@@ -179,7 +139,7 @@ class MovesNeverDuplicate(World):
                 raise PermissionError(errno.EACCES, "in use", str(path))
             return real_unlink(path, *args, **kw)
 
-        with _other_drive(), mock.patch.object(sr.os, "unlink", unlink), mock.patch.object(sr, "RETRY_SLEEP", 0):
+        with _other_drive(), mock.patch.object(sr.os, "unlink", unlink):
             res = self.move(game, dst, "folder")
         self.assertEqual((res["moved"], len(res["failed"])), (0, 1))
         self.assertEqual(sorted(p.relative_to(game).as_posix() for p in game.rglob("*") if p.is_file()), before)
@@ -193,8 +153,8 @@ class MovesNeverDuplicate(World):
     def test_read_only_files_move_also_to_another_drive_and_stay_read_only(self) -> None:
         a = self.f("in/a.sfc", b"aaaa")
         b = self.f("in/b.sfc", b"bbbb")
-        _set_read_only(a)
-        _set_read_only(b)
+        os.chmod(a, stat.S_IREAD)
+        os.chmod(b, stat.S_IREAD)
         d1, d2 = self.root / "snes" / "a.sfc", self.aside / "_unmatched" / "b.sfc"
         self.addCleanup(lambda: [os.chmod(p, stat.S_IWRITE | stat.S_IREAD) for p in (a, b, d1, d2) if p.exists()])
         res = self.move(a, d1)
@@ -203,26 +163,8 @@ class MovesNeverDuplicate(World):
             res2 = self.move(b, d2)
             self.assertEqual((res2["moved"], res2["failed"]), (1, []))
             self.assertFalse(a.exists() or b.exists() or a.parent.exists())
-            self.assertFalse(os.access(d2, os.W_OK) and os.name == "nt")
         self.assertEqual((d1.read_bytes(), d2.read_bytes()), (b"aaaa", b"bbbb"))
         self.assertFalse(os.access(d1, os.W_OK))
-
-    @unittest.skipUnless(os.name == "nt", "the read-only attribute of a folder is a Windows matter")
-    def test_windows_an_emptied_read_only_folder_is_removed_and_a_full_one_keeps_its_attribute(self) -> None:
-        a = self.f("in/deep/a.sfc")
-        self.f("full/keep.txt")
-        for d in (a.parent, a.parent.parent, self.root / "full"):
-            _set_read_only(d)
-        self.addCleanup(lambda: [os.chmod(d, stat.S_IWRITE | stat.S_IREAD) for d in (self.root / "full", self.root / "in") if d.exists()])
-        res = self.move(a, self.root / "snes" / "a.sfc")
-        self.assertEqual(res["moved"], 1)
-        self.assertFalse((self.root / "in").exists())
-        (self.root / "empty").mkdir()
-        _set_read_only(self.root / "empty")
-        sr.remove_empty_tree(self.root, keep=[self.root / "snes"])
-        self.assertFalse((self.root / "empty").exists())
-        self.assertTrue((self.root / "full" / "keep.txt").is_file())
-        self.assertTrue(os.stat(self.root / "full").st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
 
     def test_a_folder_in_use_stays_and_nothing_else_fails(self) -> None:
         a = self.f("busy/a.sfc")
@@ -235,8 +177,6 @@ class MovesNeverDuplicate(World):
                                  keep=[self.root])
             self.assertEqual((res["moved"], res["failed"]), (2, []))
             self.assertFalse((self.root / "free").exists())
-            if os.name == "nt":
-                self.assertTrue((self.root / "busy").is_dir())     # Windows cannot remove another program's current folder
         finally:
             proc.communicate(b"")
             proc.stdout.close()

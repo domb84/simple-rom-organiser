@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -33,11 +34,6 @@ import threading
 import time
 import zlib
 from pathlib import Path
-
-try:                    # POSIX: CPU time of the reaped children
-    import resource
-except ImportError:     # Windows: measured with a job object instead (tools/benchproc.py)
-    resource = None  # type: ignore[assignment]
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -228,17 +224,6 @@ def run_child(kind: str, spec: dict, env_extra: dict | None = None) -> dict:
     env = dict(os.environ)
     env.update(env_extra or {})
     cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "--child", kind, json.dumps(spec)]
-    if resource is None:                    # Windows: CPU and peak memory of the whole process tree
-        sys.path.insert(0, str(HERE))
-        import benchproc
-        m = benchproc.run(cmd, env=env)
-        if m.returncode != 0:
-            raise SystemExit(f"job failed ({kind}): {m.stderr[-800:]}")
-        res = json.loads(m.stdout.strip().splitlines()[-1])
-        res["_cpu"] = m.cpu or 0.0
-        res["_wall_total"] = m.wall
-        res["_rss_mb"] = m.peak_mb or 0.0
-        return res
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.perf_counter()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)

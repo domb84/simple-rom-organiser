@@ -14,13 +14,9 @@ against the built AppImage. It checks (and prints one line each)
 
 and exits 1 when a required check fails. Outside an AppImage the bundle checks are skipped.
 
-Inside a Windows package (the single-file exe, or the .zip whose ``app\\native`` folder holds the DLLs) the package
-check (:func:`check_windows_package`) replaces the AppImage one: a libFLAC that ships must be the one loaded and must
-encode, Zstandard must come from ``compression.zstd`` (or another library), and a libsndfile that ships must load.
-
-``--require-native`` (the Windows builds, ``packaging/build_windows*.ps1``) makes what a shipped package must bring
-REQUIRED: libFLAC must load, Zstandard must come from a library (``compression.zstd`` / libzstd), and the writer must
-run in worker processes and store the audio track as FLAC (``cdfl``).
+``--require-native`` makes what a shipped package must bring REQUIRED: libFLAC must load, Zstandard must come from a
+library (``compression.zstd`` / libzstd), and the writer must run in worker processes and store the audio track as FLAC
+(``cdfl``).
 """
 
 from __future__ import annotations
@@ -289,93 +285,15 @@ def check_writer(require_native: bool = False) -> Tuple[bool, str]:
                   + ("; " + "; ".join(extra) if extra else ""))
 
 
-def windows_package_dirs() -> List[Path]:
-    """The folders of the Windows package this runs from, or ``[]`` (a source tree, Linux, the AppImage).
-
-    The single-file exe: its bundle (``sys._MEIPASS``) and the exe's folder. The .zip (``<top>\\python``,
-    ``<top>\\app\\romorg``, ``<top>\\app\\native``, see ``packaging/build_windows.ps1``): the ``app`` folder."""
-    if not sys.platform.startswith("win"):
-        return []
-    if getattr(sys, "frozen", False):
-        dirs = [Path(sys._MEIPASS)] if getattr(sys, "_MEIPASS", None) else []
-        return dirs + [Path(sys.executable).resolve().parent]
-    app = Path(__file__).resolve().parent.parent
-    if app.name.lower() == "app" and (app / "native").is_dir():
-        return [app]
-    return []
-
-
-def _shipped(dirs: List[Path], pattern: str) -> List[Path]:
-    out: List[Path] = []
-    for d in dirs:
-        for sub in (d, d / "native"):
-            try:
-                out += sorted(p for p in sub.glob(pattern) if p.is_file())
-            except OSError:
-                pass
-    return out
-
-
-def _inside(path: str, dirs: List[Path]) -> bool:
-    try:
-        p = Path(path).resolve()
-    except (OSError, ValueError):
-        return False
-    return any(p.is_relative_to(d.resolve()) for d in dirs)
-
-
-def check_windows_package(dirs: List[Path], require_native: bool = False) -> List[Tuple[str, str]]:
-    """What a Windows package brings, one ``(status, text)`` per library (the Windows counterpart of the AppImage's
-    bundle check): libFLAC loaded from the package and encoding, ``compression.zstd``, libsndfile."""
-    from . import flacenc, flacnative, nativeflac, zstdnative
-    out: List[Tuple[str, str]] = []
-    where = ", ".join(str(d) for d in dirs)
-    flac_dlls = _shipped(dirs, "*FLAC*.dll")
-    lib = flacnative.library_path()
-    if lib and _inside(lib, dirs):
-        pcm = _synthetic_pcm(588 * 4)
-        try:
-            frames = flacenc.encode(pcm, big_endian=False)
-            back, _end = flacnative.decode_frames(frames, 0, 588 * 4)
-            why = "" if back.tobytes() == pcm else "the frames do not decode to the test block"
-        except Exception as exc:  # noqa: BLE001 - reported
-            frames, why = b"", f"{type(exc).__name__}: {exc}"
-        if why:
-            out.append(("FAIL", f"package libFLAC {lib} loads but cannot encode: {why}"))
-        else:
-            out.append(("OK", f"package libFLAC {lib} encodes and decodes a test block ({len(frames)} bytes)"))
-    elif flac_dlls:
-        why = (f"libFLAC {lib} from outside the package was loaded" if lib
-               else f"it does not load ({flacnative.status()['note']})")
-        out.append(("FAIL", f"the package ships {flac_dlls[0]} but {why}"))
-    else:
-        out.append(("FAIL" if require_native else "WARN",
-                    f"no libFLAC in the package ({where}): audio tracks are stored with LZMA (larger files)"))
-    st = zstdnative.status()
-    if st["native"]:
-        out.append(("OK", f"package Zstandard: {st['library']}"))
-    else:
-        out.append(("FAIL", f"no Zstandard library in the package ({st['note']}): built with a Python before 3.14?"))
-    snd = _shipped(dirs, "libsndfile*.dll")
-    if not snd:
-        out.append(("SKIP", "no libsndfile in this package (optional: libFLAC decodes the audio)"))
-    elif nativeflac.available():
-        out.append(("OK", f"package libsndfile loads ({snd[0]})"))
-    else:
-        out.append(("FAIL", f"the package ships {snd[0]} but it does not load"))
-    return out
-
-
-# Every module of the package and every file of the web UI. A package (the PyInstaller exe, the Windows .zip, the
-# AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
+# Every module of the package and every file of the web UI. A package (the AppImage, the .pyz) that lacks one of them starts and then fails on the page that needs it: the server imports its
 # modules by name, on first use. tests/test_packaging.py keeps both lists equal to what is in the source tree.
 APP_MODULES = (
     "adf", "alttitles", "amigados", "whdbuild", "amigahw", "amigainstall", "autoupdate", "bundle", "cancellation", "cdecc", "cdimage", "chd", "chdhuff", "chdsched", "chdtool", "chdworker", "chdwrite",
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "emudata", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
     "bios", "biosdata", "cdconvert", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "kana", "kept", "keyfiles", "lha", "libexport", "library", "lzx", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nativelib", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
-    "platforms", "playstation", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "s3", "s3archive", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
+    "platforms", "playstation", "process", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "s3", "s3archive", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdexpansions", "whdinstalls", "whdready",
-    "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",
+    "totals", "treeview", "xfd", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("next.html", "next.js", "next.css")
 # the parts of the page (next.html) the script draws every screen into
@@ -455,11 +373,7 @@ def main(argv: List[str] | None = None) -> int:
             lines.append(("OK", f"bundle at {root}: tools/lib/libFLAC, tools/lib/libzstd, licenses/THIRD_PARTY.md"))
         lines += check_bundled_libraries(root)
     else:
-        package = windows_package_dirs()
-        if package:
-            lines += check_windows_package(package, require_native)
-        else:
-            lines.append(("SKIP", "not running from an AppImage or a Windows package (no bundle)"))
+        lines.append(("SKIP", "not running from an AppImage (no bundle)"))
     status, text = check_chdman()
     lines.append((status, text))
     try:

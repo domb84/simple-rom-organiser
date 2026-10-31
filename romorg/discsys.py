@@ -48,7 +48,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import chd as chdlib
 from . import bios, cdimage, chdsched, discarchive, chdtool, chdwrite, flacnative, folders, multihash, organiser, scanner, tags, tempspace
-from . import meter, winproc
+from . import meter
 from .cancellation import is_cancelled
 from .datfile import DatFile, Rom
 from .folders import CONVERTED_DIR, DUPLICATES_DIR, UNMATCHED_DIR
@@ -830,7 +830,6 @@ def hash_all_chdman(path: Path, info: chdlib.Chd, chdman: chdtool.Chdman, root: 
                     prog: Optional[_Progress] = None) -> dict[int, dict]:
     """Every track via ``chdman extractcd`` into scratch space (RAM when safe, else the app's cache folder, NEVER the
     ROM folder ``root``; deleted afterwards). Raises :class:`chdtool.NoTempSpace` when neither has room."""
-    chdtool.chdman_input(path)          # a non-ASCII Windows path chdman cannot open: ChdmanError before any scratch use
     need = sum(t.size for t in info.tracks)
     work = chdtool.acquire_workdir(chdman, need, [root])
     where = " (in RAM)" if work.where == "ram" else " (on disk)"
@@ -2062,18 +2061,13 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
             return hash_tracks_python(info, range(len(info.tracks)), prog, sched), "verified with the built-in reader"
 
     if chdman is not None and engine == "chdman":
+        report("verifying with chdman extract")
         try:
-            chdtool.chdman_input(path)
-        except chdtool.ChdmanError:
-            pass                                    # chdman cannot be given this path: the built-in reader below
-        else:
-            report("verifying with chdman extract")
-            try:
-                return by_chdman("engine chdman")
-            except chdtool.ChdmanError as exc:
-                if exc.cancelled:
-                    raise
-                report(f"chdman extract failed ({str(exc).splitlines()[0]}) - verifying with the built-in reader")
+            return by_chdman("engine chdman")
+        except chdtool.ChdmanError as exc:
+            if exc.cancelled:
+                raise
+            report(f"chdman extract failed ({str(exc).splitlines()[0]}) - verifying with the built-in reader")
     report("verifying the new CHD with the built-in reader (independent of chdman)")
     if progress:
         prog.report = lambda d, t, m: progress(d, t, f"{label}: {m}")
@@ -2089,65 +2083,18 @@ def verify_new_chd(path: Path, info: chdlib.Chd, root: Path, chdman: Optional[ch
     return got, "verified independently with the built-in reader" + (f" ({stats['text']})" if stats.get("text") else "")
 
 
-# chdman 0.289 on Windows is not long-path aware: it opens "<folder of the .gdi>\<name>" exactly as joined (the
-# ".." segments are not resolved first), and from 260 characters on that open fails - or chdman spins forever
-# (measured with crafted sheets: 258 characters work, 260 hang). A relative name must keep the joined path below it.
-_CHDMAN_MAX_PATH = 259
-_CHDMAN_PATH_LIMIT = os.name == "nt"
-
-
-def _chdman_reads(work: Path, rel: str) -> bool:
-    """Whether chdman can open the track file named ``rel`` in a ``.gdi`` written to ``work``."""
-    if cdimage.sheet_quote(rel) is None:
-        return False
-    return not _CHDMAN_PATH_LIMIT or len(os.path.abspath(work)) + 1 + len(rel) < _CHDMAN_MAX_PATH
-
-
-def _chdman_input_problem(path: Path) -> str:
-    """Why chdman cannot be given ``path`` as its ``-i`` file on this system ("" = it can): chdman 0.289 on Windows
-    cannot open an input file whose path has a non-ASCII character in it (measured: ``createcd``, ``createdvd`` and
-    ``extractcd`` fail with "No such file or directory"; non-ASCII names *inside* a UTF-8 sheet, and a non-ASCII
-    ``-o`` path, are fine). Linux / macOS take any name."""
-    if _CHDMAN_PATH_LIMIT and not str(path).isascii():
-        return "chdman cannot open a file with a non-ASCII character in its path on Windows"
-    return ""
-
-
-def _chdman_path_problem(op: "DcConvertOp", new: Path) -> str:
-    """Why chdman cannot convert ``op`` into ``new`` on this system ("" = it can): on Windows a path chdman opens
-    (the sheet, its track files as the sheet names them, the new CHD) of 260 characters or more fails - or, for a
-    track file, makes chdman spin forever (see ``_CHDMAN_MAX_PATH``) - and so does a sheet or ISO whose path has a
-    non-ASCII character (:func:`_chdman_input_problem`). The built-in writer has neither limit."""
-    if not _CHDMAN_PATH_LIMIT:
-        return ""
-    if op.gdi_text is None:                 # a generated GDI lives in a scratch folder, see _convert_one
-        why = _chdman_input_problem(Path(os.path.abspath(op.src)))
-        if why:
-            return why
-    paths = [new]
-    if op.gdi_text is None:                 # a generated GDI's own names are checked by _gdi_track_ref
-        paths += [op.src] + (sheet_track_files(op.src) or [])
-    for p in paths:
-        full = str(p) if Path(p).is_absolute() else os.path.join(os.getcwd(), str(p))
-        if len(full) >= _CHDMAN_MAX_PATH:
-            return f"chdman cannot open paths of 260 characters or more on Windows ({Path(p).name})"
-    return ""
-
-
 def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
     """What the generated ``.gdi`` in ``work`` names for the track file ``src``, without copying it if at all possible.
 
     chdman reads a GDI's track files as ``<folder of the .gdi> + <name>``, so the file must be reachable from
     ``work`` under a plain name. In order of preference (the files can be gigabytes):
 
-    1. a symlink ``work/name`` (POSIX; Windows only with Developer Mode or as administrator - else WinError 1314);
-    2. a hard link ``work/name`` (same volume, NTFS; no privilege needed);
-    3. no file at all: a relative path from ``work`` to the original (same drive; chdman 0.289 joins it as is),
-       when chdman can read it back: a name it can tokenize (:func:`cdimage.sheet_quote` - apostrophes, double
-       spaces and non-ASCII letters are fine, the sheet is written in UTF-8, which chdman reads on every
-       platform) and, on Windows, a joined path under 260 characters (see ``_CHDMAN_MAX_PATH``);
-    4. a copy, the last resort (another drive and no links, or a path chdman could not open), after checking the
-       free space.
+    1. a symlink ``work/name``;
+    2. a hard link ``work/name`` (same volume);
+    3. no file at all: a relative path from ``work`` to the original (chdman 0.289 joins it as is), when chdman can
+       read it back: a name it can tokenize (:func:`cdimage.sheet_quote` - apostrophes, double spaces and non-ASCII
+       letters are fine, the sheet is written in UTF-8, which chdman reads on every platform);
+    4. a copy, the last resort (no links, or a name chdman could not read), after checking the free space.
 
     Returns the name to write into the ``.gdi`` (unquoted: :func:`_link_gdi_dir` quotes it)."""
     src = Path(os.path.abspath(src))
@@ -2158,17 +2105,12 @@ def _gdi_track_ref(src: Path, work: Path, name: str) -> str:
     except (OSError, NotImplementedError):
         pass
     try:
-        if os.name == "nt" and not os.access(src, os.W_OK):
-            raise OSError("read-only source: a link to it could not be deleted again")
         os.link(src, dst)
         return name
     except OSError:
         pass
-    try:
-        rel = os.path.relpath(src, work)
-    except ValueError:                                      # another drive (Windows): no relative path exists
-        rel = ""
-    if rel and _chdman_reads(work, rel):
+    rel = os.path.relpath(src, work)
+    if cdimage.sheet_quote(rel) is not None:                # (chdman can read it back)
         return rel
     size = src.stat().st_size
     chdtool.check_space(work, size)
@@ -2273,11 +2215,7 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         label = op.rom_name
         # Who writes: the built-in writer, unless chdman was chosen and is there. A set whose layout the built-in
         # writer does not take goes to chdman when there is one.
-        # chdman cannot open long paths on Windows: the built-in writer takes such a set, whatever was chosen.
-        too_long = _chdman_path_problem(op, new) if chdman is not None else ""
-        use_chdman = chdman is not None and writer == "chdman" and not too_long
-        if too_long and writer == "chdman" and progress:
-            progress(0, 1, f"{label}: {too_long} - converting with the built-in writer")
+        use_chdman = chdman is not None and writer == "chdman"
         def builtin() -> bool:
             """Write with the built-in writer; False = this set has a layout it does not take (nothing written)."""
             try:
@@ -2286,9 +2224,8 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
                 op.via = "builtin"
                 return True
             except cdimage.ImageError as exc:
-                if chdman is None or too_long:
-                    raise chdtool.ChdmanError(f"this set cannot be converted: {exc}"
-                                              + (f"; {too_long}" if too_long else "")) from exc
+                if chdman is None:
+                    raise chdtool.ChdmanError(f"this set cannot be converted: {exc}") from exc
                 if progress:
                     progress(0, 1, f"{label}: {exc} - converting with chdman")
                 return False
@@ -2300,14 +2237,6 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
             if op.gdi_text is not None:
                 chdtool.check_access(chdman, Path(op.src).parent)
                 gdi_work, source = _link_gdi_dir(op, chdman, root)
-                too_long = _chdman_input_problem(Path(os.path.abspath(source)))
-                if too_long:                    # the scratch folder's path: the built-in writer takes the set
-                    chdtool.remove_workdir(gdi_work)
-                    gdi_work = None
-                    if progress:
-                        progress(0, 1, f"{label}: {too_long} - converting with the built-in writer")
-                    if builtin():
-                        use_chdman = False
             if use_chdman:
                 make(chdman, source, new,
                      progress=(lambda d, t, m: progress(d, t, f"{label}: {m}")) if progress else None,
@@ -2331,8 +2260,8 @@ def _convert_one(op: DcConvertOp, root: Path, chdman: Optional[chdtool.Chdman], 
         finally:
             info.close()
             if sched is not None and not sched.release(new):
-                # the workers close it: Windows renames / deletes no file that is open. One that did not answer
-                # in time is killed with the others (the next request starts new ones).
+                # the workers close it. One that did not answer in time is killed with the others (the next request
+                # starts new ones).
                 sched.restart_workers()
         bad = [str(i + 1) for i, t in enumerate(game.tracks) if not _rom_ok(t, got.get(i, {}))]
         if bad:
@@ -2394,8 +2323,7 @@ def apply_conversions(ops: Iterable[DcConvertOp], root: Path, chdman: Optional[c
                     break
                 failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
             except (OSError, ValueError, chdlib.ChdError) as exc:
-                failed.append({"src": str(op.src), "dst": str(op.dst),
-                               "error": winproc.long_path_hint(exc, op.src, op.dst)})
+                failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
         removed += organiser.tidy_after(root, [Path(s).parent for op in converted for s, _d in op.moves]
                                         + [Path(s).parent for op in converted for s in op.deleted], created,
                                         organiser.protected_dirs(root, [], set()))

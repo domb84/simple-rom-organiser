@@ -64,17 +64,6 @@ def setUpModule() -> None:
         if shutil.which(exe):
             cmd = [exe] + _flags(port_n, profile)
             break
-    if cmd is None and os.name == "nt":       # Windows: not on PATH, but in its usual place (Edge is Chromium too)
-        for var, rel in (("ProgramFiles", r"Google\Chrome\Application\chrome.exe"),
-                         ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
-                         ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"),
-                         ("ProgramFiles", r"BraveSoftware\Brave-Browser\Application\brave.exe"),
-                         ("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe"),
-                         ("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe")):
-            exe = os.path.join(os.environ.get(var, ""), rel)
-            if os.environ.get(var) and os.path.isfile(exe):
-                cmd = [exe] + _flags(port_n, profile)
-                break
     if cmd is None and shutil.which("flatpak-spawn"):
         probe = subprocess.run(["flatpak-spawn", "--host", "flatpak", "info", "com.brave.Browser"],
                                capture_output=True, timeout=30)
@@ -106,7 +95,7 @@ def tearDownModule() -> None:
             _proc.wait()
     if _profile:
         # every run made a new profile (30 to 40 MB) and none was ever removed. The browser's helper processes let
-        # go of their files a moment after the main one exits (Windows refuses to delete an open file).
+        # go of their files a moment after the main one exits.
         for _ in range(20):
             shutil.rmtree(_profile, ignore_errors=True)
             if not os.path.exists(_profile):
@@ -271,7 +260,7 @@ class NoMachineFolders:
         super().setUp()
         home = Path(tempfile.mkdtemp(prefix="romorg-ui-home-"))
         self.addCleanup(shutil.rmtree, home, True)
-        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(home)})
         env.start()
         self.addCleanup(env.stop)
 

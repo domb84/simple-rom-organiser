@@ -108,14 +108,13 @@ def store(key: str, nin: Dict[str, Dict[str, str]], switch: Dict[str, Any], fold
             switch["off"] = ",".join(off)
 
 
-# the process each emulator runs as: the start of its name, on Linux (/proc/<pid>/comm is cut at 15 characters) and of its image on
-# Windows (builds differ: Dolphin.exe, pcsx2-qt.exe, pcsx2-qtx64-avx2.exe, Ryujinx.Ava.exe ...)
+# the process each emulator runs as: the start of its name (/proc/<pid>/comm is cut at 15 characters)
 _PROCESS = {
-    "dolphin": (("dolphin-emu",), ("dolphin",)),
-    "cemu": (("cemu",), ("cemu",)),
-    "pcsx2": (("pcsx2",), ("pcsx2",)),
-    "eden": (("eden", "yuzu", "sudachi", "suyu"), ("eden", "yuzu", "sudachi", "suyu")),
-    "ryujinx": (("ryujinx",), ("ryujinx",)),
+    "dolphin": ("dolphin-emu",),
+    "cemu": ("cemu",),
+    "pcsx2": ("pcsx2",),
+    "eden": ("eden", "yuzu", "sudachi", "suyu"),
+    "ryujinx": ("ryujinx",),
 }
 # the save source of a save set -> the emulators whose process must be closed before its files are moved
 _SOURCE_EMULATORS = {"dolphin": ("dolphin",), "cemu": ("cemu",), "pcsx2": ("pcsx2",), "switch": ("eden", "ryujinx")}
@@ -125,7 +124,7 @@ def running(key: str) -> bool:
     """True while the emulator ``key`` runs (an emulator writes to its save files, and keeps them open, while it plays)."""
     if key not in _PROCESS:
         return False
-    names, images = _PROCESS[key]
+    names = _PROCESS[key]
     try:
         if sys.platform.startswith("linux"):
             for d in Path("/proc").iterdir():
@@ -136,10 +135,6 @@ def running(key: str) -> bool:
                     except OSError:
                         continue
             return False
-        if sys.platform == "win32":
-            from . import retroarch
-            return any(str(name).lower().endswith(".exe") and str(name).lower().startswith(images)
-                       for _pid, name in retroarch._win_processes())
         return subprocess.run(["pgrep", "-i", "-f", names[0]], capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.SubprocessError, AttributeError, ImportError):
         return False

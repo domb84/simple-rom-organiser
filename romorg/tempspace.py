@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
-from . import winproc
+from . import process
 
 JOB_PREFIX = "romorg-job-"
 MARKER = ".romorg-temp-marker"
@@ -114,8 +114,6 @@ def free_bytes(path: Path) -> int:
     p = Path(path)
     while not p.exists() and p != p.parent:
         p = p.parent
-    if not hasattr(os, "statvfs"):  # Windows
-        return shutil.disk_usage(p).free
     st = os.statvfs(p)
     return st.f_bavail * st.f_frsize
 
@@ -280,8 +278,8 @@ class Workdir:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Whether the owner of a scratch folder still runs (:func:`winproc.pid_alive`: never a signal on Windows)."""
-    return winproc.pid_alive(pid)
+    """Whether the owner of a scratch folder still runs (:func:`process.pid_alive`)."""
+    return process.pid_alive(pid)
 
 
 def acquire(needed: int, avoid: Sequence[Path] = (), accept: Optional[Callable[[Path], str]] = None) -> Workdir:

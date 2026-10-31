@@ -5,8 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/dist/simple-rom-organiser.pyz}"
-# $PYTHON, else the first of python3 / python that really runs: on Windows "python3" is often only the Microsoft
-# Store stub (it prints "Python was not found" and exits 49), and an old python may come first on PATH.
+# $PYTHON, else the first of python3 / python that really runs (an old python may come first on PATH).
 if [[ -z "${PYTHON:-}" ]]; then
   for cand in python3 python; do
     if "$cand" -c 'import sys, zipapp; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
@@ -14,12 +13,6 @@ if [[ -z "${PYTHON:-}" ]]; then
       break
     fi
   done
-  # the Windows launcher knows every installed Python: ask it for the newest one's path
-  if [[ -z "${PYTHON:-}" ]] && command -v py >/dev/null 2>&1; then
-    PYTHON="$(py -3 -c 'import sys, zipapp; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)' \
-      2>/dev/null)" || PYTHON=""
-    PYTHON="${PYTHON%$'\r'}"
-  fi
 fi
 [[ -n "${PYTHON:-}" ]] || { echo "build_pyz.sh: no working python3 / python found (set PYTHON)" >&2; exit 1; }
 

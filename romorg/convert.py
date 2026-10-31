@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterable, Iterator, Optional
 
-from . import folders, organiser, scanner, winproc
+from . import folders, organiser, scanner
 from .datfile import archive_stem
 
 if TYPE_CHECKING:
@@ -508,7 +508,7 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
             _convert_one(op, root, created)
             converted.append(op)
         except errors as exc:
-            failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+            failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
     # repacks: compressed in threads (LZMA releases the GIL: ~3 MB/s a core), put in place one by one here
     workers = max(1, min(len(repacks), os.cpu_count() or 1))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="romorg-7z") as pool:
@@ -538,7 +538,7 @@ def apply_conversions(ops: Iterable[ConvertOp], root: Path, progress: Optional[P
                 except InterruptedError:
                     cancelled = True
                 except errors as exc:
-                    failed.append({"src": str(op.src), "dst": str(op.dst), "error": winproc.long_path_hint(exc, op.src, op.dst)})
+                    failed.append({"src": str(op.src), "dst": str(op.dst), "error": str(exc)})
                 finally:
                     if tmp.exists():
                         try:
@@ -703,5 +703,5 @@ def apply_splits(ops: Iterable[SplitOp], root: Path, progress: Optional[Progress
             split += 1
             extras += len(made)
         except errors as exc:
-            failed.append({"src": str(op.src), "error": winproc.long_path_hint(exc, op.src, op.src)})
+            failed.append({"src": str(op.src), "error": str(exc)})
     return {"split": split, "extras": extras, "failed": failed, "cancelled": cancelled}

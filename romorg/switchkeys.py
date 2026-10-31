@@ -9,7 +9,6 @@ The decrypted header is checked by its magic (``NCA2`` / ``NCA3``), so a wrong k
 
 from __future__ import annotations
 
-import os
 import struct
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -158,12 +157,9 @@ def find_prod_keys(extra: Iterable[Path] = (), home: Optional[Path] = None) -> O
     """The first ``prod.keys`` that exists in the given folders or the usual places of Eden, yuzu, Sudachi and Ryujinx."""
     home = Path(home) if home else Path.home()
     cands: List[Path] = [Path(p) / "prod.keys" for p in extra]
-    for share in (home / ".local" / "share", home / ".config", home / "AppData" / "Roaming"):
+    for share in (home / ".local" / "share", home / ".config"):
         for app in ("eden", "yuzu", "sudachi", "suyu", "Ryujinx"):
             cands += [share / app / "keys" / "prod.keys", share / app / "system" / "prod.keys"]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        cands += [Path(appdata) / app / "keys" / "prod.keys" for app in ("eden", "yuzu")] + [Path(appdata) / "Ryujinx" / "system" / "prod.keys"]
     for c in cands:
         if c.is_file():
             return c

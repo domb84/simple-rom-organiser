@@ -79,7 +79,7 @@ class GroupAndWriteTests(unittest.TestCase):
             p.parent.mkdir(parents=True, exist_ok=True)
             try:
                 p.write_bytes(os.urandom(64))
-            except OSError:  # '|' is not a legal Windows file name; the planner only reads the name
+            except OSError:  # '|' is not a legal name everywhere (exFAT); the planner only reads the name
                 pass
             r = _rom(n)
             out.append(Match(Entry(p, None, r.size, r.crc, None), [r]))
@@ -462,7 +462,7 @@ class SlotWiseTests(GroupAndWriteTests):
         (root / "z.zip").write_bytes(b"x")
         try:
             (root / "p|1.adf").write_bytes(b"x")
-        except OSError:  # not a legal Windows file name
+        except OSError:  # not a legal name everywhere (exFAT)
             pass
         ops = plan_playlists([PlaylistSpec("Z", "Games", 2, [
             PlaylistDisk(1, root / "z.zip", "a.adf", ""), PlaylistDisk(2, root / "z.zip", "b.adf", "")])],

@@ -1,7 +1,7 @@
 """A small pure-Python reader for ``.7z`` archives (listing + streaming one member), and a writer of one-file archives, stdlib only.
 
-Why: starting ``7z.exe`` costs ~80 ms on Windows, so listing a library of thousands of ``.7z`` files with it
-takes minutes, and a machine without 7-Zip cannot read them at all. The listing (names, sizes, CRC-32) only
+Why: starting ``7z`` for every file makes listing a library of thousands of ``.7z`` files take minutes, and a
+machine without 7-Zip cannot read them at all. The listing (names, sizes, CRC-32) only
 needs the archive's header, and the common case (LZMA / LZMA2 / stored data, which is what 7-Zip, No-Intro and
 TOSEC packs use) is handled by :mod:`lzma`. Anything else (encryption, BCJ and other filters, PPMd, BZip2,
 multi-volume ...) raises :class:`Unsupported`, and the caller falls back to the real ``7z``.

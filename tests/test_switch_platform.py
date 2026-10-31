@@ -24,7 +24,7 @@ class SwitchPlatformCase(base.DcServerCase):
         super().setUp()
         home = self.base / "home"
         home.mkdir()
-        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(home)})
         env.start()
         self.addCleanup(env.stop)
         path = switchdb.db_path()

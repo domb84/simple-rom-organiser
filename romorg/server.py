@@ -30,7 +30,6 @@ import secrets
 import shutil
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -680,24 +679,15 @@ def _which_7z() -> str | None:
 
 
 def _os_name() -> str:
-    """``windows``, ``linux``, ``darwin`` or ``sys.platform``: for UI text that differs per platform."""
-    if sys.platform.startswith("win"):
-        return "windows"
+    """``linux``, ``darwin`` or ``sys.platform``: for UI text that differs per platform."""
     if sys.platform.startswith("linux"):
         return "linux"
     return sys.platform
 
 
 def _is_hidden(path: Path) -> bool:
-    """A folder the folder browser leaves out unless asked: a dot name, and on Windows what is marked hidden or system
-    (``$RECYCLE.BIN``, ``System Volume Information``, ``AppData`` ...)."""
-    if path.name.startswith("."):
-        return True
-    try:
-        attrs = getattr(os.lstat(path), "st_file_attributes", 0)          # (only Windows has it)
-    except OSError:
-        return False
-    return bool(attrs & (stat.FILE_ATTRIBUTE_HIDDEN | stat.FILE_ATTRIBUTE_SYSTEM))
+    """A folder the folder browser leaves out unless asked: a dot name."""
+    return path.name.startswith(".")
 
 
 def _places() -> list[dict[str, str]]:
@@ -742,11 +732,7 @@ def _places() -> list[dict[str, str]]:
     elif sys.platform == "darwin":
         for child in children(Path("/Volumes")):
             add(child.name, child)
-    elif sys.platform.startswith("win"):
-        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-            add(f"{letter}:", Path(f"{letter}:\\"))
-    if not sys.platform.startswith("win"):
-        add("Computer (/)", Path("/"))
+    add("Computer (/)", Path("/"))
     return places
 
 
@@ -1381,7 +1367,7 @@ class App:
             else:
                 info = {"found": False, "kind": "", "label": "",
                         "hint": (notes[0] + ". " if notes else "") + chdtool.install_hint(),
-                        "steps": chdtool.install_steps()}         # Windows: chdman.exe from mamedev.org; else MAME
+                        "steps": chdtool.install_steps()}
             info["override"] = str(cfg.get(chdtool.CONFIG_KEY) or "")
             info["notes"] = notes
             state = (time.monotonic(), found, info)
@@ -4413,10 +4399,6 @@ class App:
         for inst in installs:
             if str(inst.cfg) == want:
                 return inst
-        if os.name == "nt" and isinstance(want, str) and want:      # Windows: the same file in another spelling
-            for inst in installs:
-                if os.path.normcase(os.path.normpath(str(inst.cfg))) == os.path.normcase(os.path.normpath(want)):
-                    return inst
         return installs[0] if installs else None
 
     def _ra_required(self) -> tuple[Any, Any, dict[str, Any]]:
@@ -4481,7 +4463,7 @@ class App:
         for raw in (save_dir, state_dir):
             try:
                 p = Path(os.path.abspath(os.path.expanduser(raw)))
-                is_file, anchored = p.is_file(), _existing_parent(p).exists()
+                is_file = p.is_file()
             except (OSError, ValueError):
                 raise ApiError(HTTPStatus.BAD_REQUEST, f"Not a usable folder: {raw}") from None
             for bad in (sel.base,):
@@ -4489,8 +4471,6 @@ class App:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "Choose a folder for the saves, not RetroArch's own folder.")
             if is_file:
                 raise ApiError(HTTPStatus.BAD_REQUEST, f"That is a file, not a folder: {p}")
-            if not anchored:                                  # Windows: a drive that is not there (on POSIX "/" always is)
-                raise ApiError(HTTPStatus.BAD_REQUEST, f"The drive of that folder does not exist: {p}")
             paths.append(p)
         try:
             rel = ra.plan_relocation(sel, paths[0], paths[1], _bool_arg(body.get("sort_saves")),
@@ -4521,12 +4501,6 @@ class App:
             have = cur.get(k, "")
             want = "true" if v is True else "false" if v is False else str(v)
             if have != want:
-                if os.name == "nt" and k.endswith("_directory") and have and want:
-                    # Windows: the same folder in another spelling (case, slashes, ":\saves" against the full path)
-                    ra = _mod("retroarch")
-                    a, b = ra.resolve(have, sel), ra.resolve(want, sel)
-                    if a is not None and b is not None and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
-                        continue
                 return True
         return False
 
@@ -6949,7 +6923,7 @@ class App:
     def _writer_facts(self, info: dict[str, Any]) -> None:
         """The writer settings and what this installation can do: ``zstd_writer`` (a Zstandard library compresses),
         ``flac_encoder`` (libFLAC encodes; without it audio tracks are stored with LZMA, larger than chdman's) and
-        ``os`` (``windows`` / ``linux`` / ``darwin`` / ...: which install steps and path examples the UI shows)."""
+        ``os`` (``linux`` / ``darwin`` / ...)."""
         cfg = self._config()
         info["writer"] = self._chd_writer(cfg)
         info["preset"] = self._chd_preset(cfg)
@@ -7234,9 +7208,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(exc).__name__}: {exc}"})
 
     def _discard_body(self) -> None:
-        """Read and drop the request body of a request answered without it (403, 404, 405). Windows resets a socket
-        closed with unread data (RST), which can destroy the response before the client reads it (WinError 10053
-        on the client). A body larger than ``MAX_BODY`` or one that does not arrive just ends the connection."""
+        """Read and drop the request body of a request answered without it (403, 404, 405). A socket closed with unread
+        data is reset (RST), which can destroy the response before the client reads it. A body larger than ``MAX_BODY``
+        or one that does not arrive just ends the connection."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -7297,9 +7271,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, dumps(data), "application/json; charset=utf-8")
 
     def _send(self, status: int, data: bytes, content_type: str) -> None:
-        """Send one response. A browser that went away meanwhile (a closed tab, a cancelled fetch: WinError 10053
-        ``ConnectionAbortedError`` on Windows, ``BrokenPipeError`` / ``ConnectionResetError``) only ends this
-        connection: no traceback, and :meth:`_api` never tries a 500 on the dead socket."""
+        """Send one response. A browser that went away meanwhile (a closed tab, a cancelled fetch: ``BrokenPipeError`` /
+        ``ConnectionResetError``) only ends this connection: no traceback, and :meth:`_api` never tries a 500 on the
+        dead socket."""
         try:
             self._write_response(status, data, content_type)
         except ConnectionError:
@@ -7395,8 +7369,8 @@ def running_instance() -> str | None:
         return None
     if pid == os.getpid():
         return None
-    if pid and not _mod("winproc").pid_alive(pid):
-        return None  # owner gone (never a signal on Windows; someone else's process counts as alive)
+    if pid and not _mod("process").pid_alive(pid):
+        return None  # owner gone (someone else's process counts as alive)
     shown = f"[{host}]" if ":" in host else host
     url = f"http://{shown}:{port}/"
     try:

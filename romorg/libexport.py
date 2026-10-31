@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, List, Optional
 
-from . import meter, sortroot, winproc
+from . import meter, sortroot
 
 __all__ = ["MODES", "ExportError", "Transfer", "PlaylistWrite", "ExportPlan", "check_destination", "kept_files",
            "plan_export", "apply_export", "MANIFEST_DIR", "Removal", "MASS_MIN", "normalize_mode"]
@@ -420,7 +420,7 @@ def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
         if os.path.lexists(target):
             raise FileExistsError("a file appeared there")
         try:
-            sortroot._retry(os.replace, src, target)    # (Windows: a file held for a moment is tried again)
+            os.replace(src, target)
             tick(t.size)
             return "move"                               # same drive: a rename, nothing is written again
         except OSError as exc:
@@ -452,7 +452,7 @@ def _transfer(t: Transfer, target: Path, mode: str, cancel, tick) -> str:
         raise
     if t.action == "move":
         try:
-            sortroot.remove_file(src)                   # (Windows: also a read-only original)
+            os.unlink(src)
             return "move"
         except OSError as exc:
             t.reason = f"copied, but the original could not be removed: {exc}"
@@ -507,7 +507,6 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
         meter.add(n)
 
     cancelled = lambda: bool(cancel and cancel())   # noqa: E731
-    sortroot.reset_retries()
     try:
         for t in todo:
             if cancelled():
@@ -525,7 +524,7 @@ def apply_export(plan: ExportPlan, progress: Optional[ProgressFn] = None,
                 out["cancelled"] = True
                 break
             except (OSError, ValueError) as exc:
-                out["failed"].append({"rel": t.rel, "error": winproc.long_path_hint(exc, t.src, target)})
+                out["failed"].append({"rel": t.rel, "error": str(exc)})
                 continue
             try:
                 mt = os.stat(target).st_mtime_ns

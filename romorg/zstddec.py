@@ -1,7 +1,6 @@
 """Pure-Python Zstandard decompressor (RFC 8878), the fallback of :mod:`romorg.zstdnative`.
 
-Used only when no Zstandard library can be loaded (Python before 3.14 on a system without libzstd - in practice the
-Windows build). It decodes whole frames into memory, which is how CHD hunks come: one frame of a few kilobytes each.
+Used only when no Zstandard library can be loaded (Python before 3.14 on a system without libzstd). It decodes whole frames into memory, which is how CHD hunks come: one frame of a few kilobytes each.
 It is slow (about a megabyte per second) but complete: raw, RLE and compressed blocks, Huffman literals (one or four
 streams, direct or FSE-coded weights, "treeless" reuse), FSE sequences in all four modes and repeat offsets.
 Dictionaries are not supported (chdman uses none) and the optional content checksum is not checked - the caller

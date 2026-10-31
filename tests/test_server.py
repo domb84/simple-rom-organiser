@@ -485,7 +485,7 @@ class StaticAndSecurityTests(ServerTestCase):
         self.assertEqual((status, body), (200, {"cancelled": False}))
 
     def test_rejected_post_body_is_read(self) -> None:
-        # Windows resets a socket closed with unread data, which can destroy the 403 before the client reads it
+        # a socket closed with unread data is reset, which can destroy the 403 before the client reads it
         import io
 
         def handler(headers: dict[str, str], body: bytes) -> Any:
@@ -602,22 +602,6 @@ class EndpointTests(ServerTestCase):
         listing = self.get(f"/api/fs/list?hidden=1&path={self.q(str(self.roms))}")
         self.assertEqual([d["name"] for d in listing["dirs"]], [".hidden", "sub"])
         self.assertEqual(self.get("/api/fs/list")["path"], str(Path.home().resolve()))
-
-    def test_fs_list_leaves_out_what_windows_marks_hidden_or_system(self) -> None:
-        import stat
-        (self.roms / "$RECYCLE.BIN").mkdir()
-        real = os.lstat
-
-        def lstat(path: Any, *a: Any, **k: Any) -> Any:
-            st = real(path, *a, **k)
-            if Path(path).name == "$RECYCLE.BIN":                      # what Windows reports for it
-                return mock.Mock(wraps=st, st_file_attributes=stat.FILE_ATTRIBUTE_HIDDEN | stat.FILE_ATTRIBUTE_SYSTEM, st_mode=st.st_mode)
-            return st
-        with mock.patch.object(server.os, "lstat", lstat):
-            listing = self.get(f"/api/fs/list?path={self.q(str(self.roms))}")
-            self.assertEqual([d["name"] for d in listing["dirs"]], ["sub"])
-            listing = self.get(f"/api/fs/list?hidden=1&path={self.q(str(self.roms))}")
-            self.assertEqual([d["name"] for d in listing["dirs"]], ["$RECYCLE.BIN", ".hidden", "sub"])
 
     def test_fs_list_rejects_bad_paths(self) -> None:
         for bad in ("relative/dir", str(self.roms / "missing"), str(self.roms / "file.txt")):
@@ -863,7 +847,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(server._tags_json(rom, real_tags)["variant_languages"], ["De"])
 
 class DeadSocketTests(unittest.TestCase):
-    """A browser that closes the connection mid-response (WinError 10053 on Windows) only ends that connection."""
+    """A browser that closes the connection mid-response only ends that connection."""
 
     def _handler(self, error: Exception) -> tuple[Any, list]:
         writes: list = []
@@ -1334,13 +1318,13 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertNotIn("Traceback", data["error"])
             return err.code, data
 
-    def _retroarch_portable(self, name: str = "RetroArch-Win64") -> tuple[Path, Path]:
-        """A portable install as RetroArch for Windows lays it out: the program, the config and the folders in one."""
+    def _retroarch_portable(self, name: str = "RetroArch") -> tuple[Path, Path]:
+        """A folder that holds the program, the config (one written on Windows: ``:\\saves``) and the save folders."""
         ra_dir = self.tmp / name
         (ra_dir / "saves" / "Flycast").mkdir(parents=True)
         (ra_dir / "states").mkdir()
         (ra_dir / "saves" / "Flycast" / "Sonic (USA).srm").write_bytes(b"save")
-        (ra_dir / "retroarch.exe").write_bytes(b"")
+        (ra_dir / "retroarch").write_bytes(b"")
         (ra_dir / "retroarch.cfg").write_bytes(b'savefile_directory = ":\\saves"\nsavestate_directory = ":\\states"\n'
                                                b'sort_savefiles_enable = "true"\nsort_savestates_enable = "true"\n'
                                                b'savefiles_in_content_dir = "false"\nsavestates_in_content_dir = "false"\n')
@@ -1354,28 +1338,26 @@ class RealModulesIntegrationTests(unittest.TestCase):
     def test_retroarch_bad_input_is_answered_with_a_clean_error(self) -> None:
         ra_dir, cfg = self._retroarch_portable()
         a_file = self.root / "kick.rom"
-        missing_drive = next((f"{c}:\\" for c in "ZYXWVUTSRQ" if not os.path.exists(f"{c}:\\")), None) if os.name == "nt" else None
         with mock.patch("romorg.retroarch.is_running", return_value=False):
             # choosing an install
-            for custom in (str(self.tmp / "nowhere"), str(a_file), str(self.root), (missing_drive or "") + "RetroArch", "bad\0name"):
+            for custom in (str(self.tmp / "nowhere"), str(a_file), str(self.root), "RetroArch", "bad\0name"):
                 code, data = self.status("/api/retroarch/select", {"custom": custom})
                 self.assertEqual(code, 400, (custom, data))
             self.assertEqual(self.call("GET", "/api/retroarch")["installs"], [])           # a ROM was not taken for a config
             self.assertEqual(self.status("/api/retroarch/select", {"cfg": str(cfg)})[0], 400)       # not in the list (yet)
             self.assertEqual(self.status("/api/retroarch/select", {"custom": "", "cfg": 5})[0], 200)
-            info = self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir / "retroarch.exe")})      # the program picked
+            info = self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir / "retroarch")})      # the program picked
             self.assertEqual((info["selected"], [i["cfg"] for i in info["installs"]]), (str(cfg), [str(cfg)]))
             self.assertEqual(info["settings"]["savefile_path"], str(ra_dir / "saves"))
             # where the saves go
-            bad_dirs = [None, "", 5, ["x"], str(a_file), str(ra_dir)] + ([missing_drive + "saves"] if missing_drive else [])
-            for save_dir in bad_dirs:
+            for save_dir in (None, "", 5, ["x"], str(a_file), str(ra_dir)):
                 for path in ("/api/retroarch/plan", "/api/retroarch/apply"):
                     code, data = self.status(path, {"save_dir": save_dir})
                     self.assertEqual(code, 400, (path, save_dir, data))
             self.assertEqual(self.status("/api/retroarch/plan", {"save_dir": str(self.tmp / "ok"), "state_dir": str(a_file)})[0], 400)
             self.assertEqual(self.status("/api/retroarch/plan", {})[0], 400)
             # shared folders, BIOS
-            for body in ({}, {"base": 5}, {"base": str(a_file)}, {"base": (missing_drive or "/nowhere/") + "assets"}):
+            for body in ({}, {"base": 5}, {"base": str(a_file)}, {"base": "/nowhere/assets"}):
                 code, data = self.status("/api/retroarch/shared", body)
                 self.assertEqual(code, 200, (body, data))
                 self.assertTrue(all(r["status"] in ("none", "ok", "unset", "set") for r in data["rows"]))
@@ -1387,7 +1369,7 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertEqual(self.status("/api/retroarch/bios", {})[0], 409)                # no system has a folder
             code, data = self.status("/api/retroarch/bios", {"platform": "Commodore Amiga", "search_dir": str(a_file)})
             self.assertEqual(code, 200, data)
-            self.assertEqual(self.status("/api/retroarch/bios", {"platform": 5, "search_dir": (missing_drive or "/nowhere/") + "bios"})[0], 200)
+            self.assertEqual(self.status("/api/retroarch/bios", {"platform": 5, "search_dir": "/nowhere/bios"})[0], 200)
             for paths in (5, "kick.rom", [5, None, {"a": 1}], None):
                 res = self.job("/api/retroarch/bios/apply", {"platform": "Commodore Amiga", "mode": 9, "paths": paths})["result"]
                 self.assertEqual((res["placed"], res["failed"]), (0, []), paths)
@@ -1415,37 +1397,6 @@ class RealModulesIntegrationTests(unittest.TestCase):
             self.assertEqual((res["moved"], len(res["failed"]), res["cfg_backup"]), (0, 1, None))
             self.assertTrue((ra_dir / "saves" / "Flycast" / "Sonic (USA).srm").is_file())
             self.assertEqual(cfg.read_bytes(), before)
-
-    @unittest.skipUnless(os.name == "nt", "how RetroArch for Windows spells folders")
-    def test_retroarch_windows_spelling_of_the_folders_it_already_uses_is_no_change(self) -> None:
-        ra_dir, cfg = self._retroarch_portable()
-        with mock.patch("romorg.retroarch.is_running", return_value=False):
-            self.call("POST", "/api/retroarch/select", {"custom": str(ra_dir)})
-            before = cfg.read_bytes()
-            same = {"save_dir": str(ra_dir).upper().replace("\\", "/") + "/SAVES/", "state_dir": str(ra_dir / "states"),
-                    "sort_saves": True, "sort_states": True}
-            plan = self.call("POST", "/api/retroarch/plan", same)
-            self.assertEqual((plan["counts"]["move"], plan["counts"]["ok"], plan["empty"]), (0, 1, True), plan)
-            self.assertEqual(self.status("/api/retroarch/plan", {"save_dir": str(ra_dir).upper() + "\\"})[0], 400)      # its own folder
-            moved = {"save_dir": str(ra_dir / "user" / "saves"), "state_dir": str(ra_dir / "user" / "states"),
-                     "sort_saves": True, "sort_states": True}
-            plan = self.call("POST", "/api/retroarch/plan", moved)
-            self.assertEqual(plan["cfg_changes"]["savefile_directory"], ":\\user\\saves")          # as RetroArch writes it
-            res = self.job("/api/retroarch/apply", {**moved, "backup": True})["result"]
-            self.assertEqual((res["moved"], res["failed"]), (1, []))
-            self.assertIn(b'savefile_directory = ":\\user\\saves"\n', cfg.read_bytes())
-            info = self.call("GET", "/api/retroarch")
-            self.assertEqual(info["settings"]["savefile_path"], str(ra_dir / "user" / "saves"))
-            self.assertEqual(Path(res["cfg_backup"]).read_bytes(), before)
-            # a second install, chosen by a path typed in another case: that one is selected, not the first in the list
-            other, other_cfg = self._retroarch_portable("Other-RA")
-            info = self.call("POST", "/api/retroarch/select", {"custom": str(other).upper().replace("\\", "/")})
-            self.assertEqual(len(info["installs"]), 2)
-            self.assertEqual(os.path.normcase(info["selected"]), os.path.normcase(str(other_cfg)))
-            self.assertEqual(os.path.normcase(info["settings"]["savefile_path"]), os.path.normcase(str(other / "saves")))
-            info = self.call("POST", "/api/retroarch/select", {"custom": str(other)})      # the same one again: still two
-            self.assertEqual(len(info["installs"]), 2)
-            self.assertEqual(os.path.normcase(self.call("GET", "/api/retroarch")["selected"]), os.path.normcase(str(other_cfg)))
 
     def test_a_library_build_in_place_can_move_what_it_sets_aside_out_of_the_folder(self) -> None:
         self.job("/api/scan", {"path": str(self.root), "platform": "Commodore Amiga"})
@@ -1663,7 +1614,6 @@ class TreeTotalsAgreementTests(unittest.TestCase):
 
 
 class ReviewFixTests(ServerTestCase):
-    @unittest.skipUnless(os.name == "posix", "undecodable (bytes) file names only exist on POSIX")
     def test_undecodable_filenames_serialise(self) -> None:
         bad = os.fsdecode(b"bad\xffname.adf")
         self.result.unmatched.append(Entry(self.roms / bad, None, 1, "00000000"))

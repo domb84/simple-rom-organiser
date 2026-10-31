@@ -18,7 +18,7 @@ import zlib
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, Optional
 
-from . import scanner, sevenzip, winproc
+from . import scanner, sevenzip
 
 __all__ = ["EXTS", "DISC_EXTS", "Member", "list_members", "open_member", "iter_files", "hash_member", "hash_members", "extract_members", "is_disc_archive", "ArchiveError"]
 
@@ -89,7 +89,7 @@ def open_member(path: Path, name: str) -> Iterator[BinaryIO]:
     if exe is None:
         raise ArchiveError("this 7z archive needs 7-Zip to be read")
     proc = subprocess.Popen([exe, "e", "-so", "-p", "--", str(path), name], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, creationflags=winproc.NO_WINDOW)
+                            stderr=subprocess.DEVNULL)
     try:
         assert proc.stdout is not None
         yield proc.stdout  # type: ignore[misc]

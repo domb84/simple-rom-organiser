@@ -58,7 +58,7 @@ grep -q '"version"' <<<"$STATUS" || { echo "status missing version" >&2; exit 1;
 grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >&2; exit 1; }
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
-# the parts of the page the script draws into (also checked by packaging/smoke_test.ps1 on Windows), and its own files
+# the parts of the page the script draws into, and its own files
 for part in head main strip overlays toasts; do
   grep -q "id=\"$part\"" <<<"$MAIN" || { echo "the page lacks $part" >&2; exit 1; }
 done

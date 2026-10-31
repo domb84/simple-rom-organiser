@@ -5,7 +5,7 @@ the calls release the GIL, so the CHD reader's decode threads scale with the cor
 libsndfile can be loaded, or a hunk is not decoded exactly, the caller uses the Python decoder.
 
 Where the library comes from (first hit wins): ``ROMORG_SNDFILE`` (a path), ``libsndfile*`` next to the app / in a
-``native`` folder beside it, then the system's (``libsndfile.so.1`` on Linux, ``libsndfile-1.dll`` on Windows).
+``native`` folder beside it, then the system's (``libsndfile.so.1``).
 ``ROMORG_NATIVE_FLAC=0`` turns it off. libsndfile is LGPL-2.1+ and is only ever loaded dynamically.
 
 CHD stores each ``cdfl`` hunk as bare FLAC frames (no ``fLaC`` marker or STREAMINFO), so a minimal stream header is
@@ -97,8 +97,7 @@ def _candidates():
     env = os.environ.get(ENV_LIB)
     if env:
         yield env
-    names = ("libsndfile-1.dll", "libsndfile_x64.dll", "libsndfile.dll", "libsndfile.so.1", "libsndfile.so",
-             "libsndfile.dylib")
+    names = ("libsndfile.so.1", "libsndfile.so", "libsndfile.dylib")
     for f in nativelib.app_folders():
         for sub in ("", "native", "_soundfile_data"):
             for n in names:

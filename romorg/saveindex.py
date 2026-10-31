@@ -16,7 +16,7 @@ name (``Game (USA).srm``, ``Game (USA).state1``, ``Game (USA).state1.png``, Flyc
 A save file is a save (``.srm``, ``.eep``, a memory card ...), a state (``.state``, ``.state1``, ``.state.auto``) or a state's
 screenshot (``.state1.png``). Screenshots are kept apart and never counted.
 
-Names are compared without regard to case on Windows only (``retroarch.fold_name``).
+Names are compared exactly (``retroarch.fold_name``): RetroArch writes a save's name as the content file has it.
 """
 
 from __future__ import annotations

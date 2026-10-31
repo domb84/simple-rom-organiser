@@ -15,7 +15,6 @@ Matching a game's saves of the two emulators is then a lookup by title ID (and b
 from __future__ import annotations
 
 import json
-import os
 import re
 import struct
 from dataclasses import dataclass, field
@@ -148,10 +147,6 @@ def detect_eden(home: Optional[Path] = None) -> Dict[str, object]:
     for flatpak, name in (("dev.eden_emu.eden", "eden"), ("org.yuzu_emu.yuzu", "yuzu")):            # (the flatpaks keep their own XDG folders)
         base = home / ".var" / "app" / flatpak
         cands.append((name, base / "config" / name, base / "data" / name))
-    appdata = os.environ.get("APPDATA")
-    if appdata:                                                                                       # Windows: one folder holds config and data
-        for name in ("eden", "yuzu", "sudachi", "suyu"):
-            cands.append((name, Path(appdata) / name / "config", Path(appdata) / name))
     for name, conf, share in cands:
         ini = conf / "qt-config.ini"
         if ini.is_file() or share.is_dir():
@@ -182,10 +177,7 @@ def detect_ryujinx(home: Optional[Path] = None, near: Iterable[Path] = ()) -> Di
             if (up / "bis" / "user").is_dir() or (up / "bis" / "system").is_dir():
                 return read(up, True)
     home = Path(home) if home else Path.home()
-    places = [home / ".config" / "Ryujinx"]
-    if os.environ.get("APPDATA"):
-        places.append(Path(os.environ["APPDATA"]) / "Ryujinx")                                        # Windows
-    for base in places:
-        if (base / "Config.json").is_file() or (base / "bis").is_dir():
-            return read(base, False)
+    base = home / ".config" / "Ryujinx"
+    if (base / "Config.json").is_file() or (base / "bis").is_dir():
+        return read(base, False)
     return {}

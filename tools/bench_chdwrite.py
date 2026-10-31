@@ -17,8 +17,8 @@ Examples::
     tools/bench_chdwrite.py ps2.iso@cd --workers 8 --libflac /path/to/libFLAC.so --verify
 
 Columns: ``s`` seconds of the conversion itself (``write_chd``, or the whole chdman run), ``total s`` with the
-interpreter start, ``cpu s`` / ``procs`` / ``peak MB`` of the run and every process it started (``procs`` and an
-all-processes peak on Windows only), ``size`` and ``x ref`` against the reference, ``sha1`` = equal to the reference,
+interpreter start, ``cpu s`` / ``peak MB`` of the run and every process it started, ``size`` and ``x ref`` against the
+reference, ``sha1`` = equal to the reference,
 ``engine`` / ``workers`` / ``fallbacks`` as reported by the writer. ``--verify`` also times what a Convert does next:
 hashing every track of the new CHD with the app's scheduler (``verify s``).
 
@@ -26,8 +26,7 @@ chdman always runs its default preset (here and in the table), so with ``--prese
 built-in zstd rows compares against default-preset chdman output: not like-for-like (``sha1`` is still valid, the
 header SHA-1 covers the raw data).
 
-chdman on Windows: some builds fail on absolute paths, so it is started in the folder that holds both the input
-and ``--out``, with relative paths (both must be on one drive).
+chdman is started in the folder that holds both the input and ``--out``, with relative paths.
 """
 
 from __future__ import annotations

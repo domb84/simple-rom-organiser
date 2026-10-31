@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Container, Iterable, Optional, Sequence, Union
 
-from . import meter, multihash, sevenzip, winproc
+from . import meter, multihash, process, sevenzip
 from .cancellation import is_cancelled
 from .datfile import archive_stem, unit_key
 
@@ -951,8 +951,8 @@ def default_cache_path() -> Optional[Path]:
 
 
 def find_7z() -> Optional[str]:
-    """Locate a 7-Zip command line binary on PATH (on Windows also in Program Files and next to the app)."""
-    return winproc.find_tool(("7z", "7zz", "7za"))
+    """Locate a 7-Zip command line binary on PATH."""
+    return process.find_tool(("7z", "7zz", "7za"))
 
 
 def parse_7z_slt(text: str) -> list[tuple[str, int, str]]:
@@ -1000,7 +1000,6 @@ def list_7z(path: Path, exe: str) -> list[tuple[str, int, str]]:
         encoding="utf-8",
         errors="replace",
         timeout=300,
-        creationflags=winproc.NO_WINDOW,
     )
     if proc.returncode != 0:
         lines = [ln.strip() for ln in (proc.stderr + "\n" + proc.stdout).splitlines() if ln.strip()]
@@ -1023,7 +1022,7 @@ class _CountingReader:
         return data
 
 
-PURE_7Z_MEMBER_LIMIT = 8 << 20  # below this a member is decoded in Python: starting 7z.exe costs more than that
+PURE_7Z_MEMBER_LIMIT = 8 << 20  # below this a member is decoded in Python: starting 7z costs more than that
 
 
 def _hash_7z_member_pure(path: Path, member: str, size: int, strategies: Sequence[str],
@@ -1058,7 +1057,6 @@ def hash_7z_member(path: Path, member: str, exe: Optional[str], size: int, strat
     proc = subprocess.Popen(
         [exe, "e", "-so", "-p", "--", str(path), member],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        creationflags=winproc.NO_WINDOW,
     )
     timer = threading.Timer(timeout, proc.kill)
     timer.daemon = True

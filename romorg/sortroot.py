@@ -11,13 +11,11 @@ import errno
 import filecmp
 import os
 import shutil
-import stat
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import meter, winproc
+from . import meter
 from .folders import CONVERTED_DIR, RESERVED_DIRS, archive_dir
 
 __all__ = ["SMove", "ASIDE_FOLDERS", "plan_sweep", "count_sweep", "apply_moves", "inside", "overlap", "check_folders", "Names", "UNMATCHED", "move_path", "remove_file", "remove_dir"]
@@ -159,79 +157,13 @@ def count_sweep(folders: Dict[str, Path]) -> int:
 
 
 # --------------------------------------------------------------------------- doing it
-RETRIES = 3                    # Windows: a file another program holds for a moment (antivirus, the indexer, a preview)
-RETRY_SLEEP = 0.1
-RETRY_BUDGET = 40              # ... but a run with many blocked files does not wait for each of them
-_WIN_BUSY = (5, 32, 33)        # access denied, sharing violation, lock violation
-_WIN_NOT_SAME_DEVICE = 17
-_budget = [RETRY_BUDGET]
-
-
-def reset_retries() -> None:
-    """A new run: it may wait for files held by other programs again (see ``RETRY_BUDGET``)."""
-    _budget[0] = RETRY_BUDGET
-
-
 def _cross_device(exc: OSError) -> bool:
-    return exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == _WIN_NOT_SAME_DEVICE
-
-
-def _retry(fn: Callable[..., Any], *args: Any) -> Any:
-    """Call ``fn``. On Windows a sharing violation / access denied is tried again a few times after a short wait (elsewhere
-    this is one plain call)."""
-    n = 0
-    while True:
-        try:
-            return fn(*args)
-        except OSError as exc:
-            n += 1
-            if os.name != "nt" or getattr(exc, "winerror", None) not in _WIN_BUSY or n >= RETRIES or _budget[0] <= 0:
-                raise
-            _budget[0] -= 1
-            time.sleep(RETRY_SLEEP)
-
-
-def _read_only(path: Any) -> bool:
-    """Windows: the read-only attribute is set (it stops a delete, not a rename)."""
-    if os.name != "nt":
-        return False
-    try:
-        return bool(os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
-    except (OSError, AttributeError):
-        return False
-
-
-def _without_read_only(fn: Callable[[Any], None], path: Any) -> None:
-    """``fn(path)`` (a delete); on Windows a read-only file / folder has its attribute cleared for it, and gets it back when
-    the delete still fails."""
-    if not _read_only(path):                           # always the case outside Windows: one plain call
-        _retry(fn, path)
-        return
-    mode = os.lstat(path).st_mode
-    os.chmod(path, mode | stat.S_IWRITE)
-    try:
-        _retry(fn, path)
-    except OSError:
-        try:
-            os.chmod(path, mode)
-        except OSError:
-            pass
-        raise
-
-
-def remove_file(path: Any) -> None:
-    """``os.unlink`` that also removes a read-only file on Windows (as it does everywhere else)."""
-    _without_read_only(os.unlink, path)
-
-
-def remove_dir(path: Any) -> None:
-    """``os.rmdir`` (an EMPTY folder only) that also removes a read-only folder on Windows."""
-    _without_read_only(os.rmdir, path)
+    return exc.errno == errno.EXDEV
 
 
 def _drop(path: Any) -> None:
     try:
-        remove_file(path)
+        os.unlink(path)
     except OSError:
         pass
 
@@ -252,7 +184,7 @@ def _move_file_across(src: Path, dst: Path) -> None:
         _drop(dst)
         raise
     try:
-        remove_file(src)
+        os.unlink(src)
     except BaseException:
         _drop(dst)
         raise
@@ -284,7 +216,7 @@ def _move_tree_across(src: Path, dst: Path) -> None:
                 pass                                   # it stays in the new place: not lost
         for d in reversed(made):
             try:
-                remove_dir(d)
+                os.rmdir(d)
             except OSError:
                 pass
         raise
@@ -294,7 +226,7 @@ def _move_tree_across(src: Path, dst: Path) -> None:
         except OSError:
             pass
         try:
-            remove_dir(dirpath)
+            os.rmdir(dirpath)
         except OSError:
             pass                                       # in use: an empty folder stays behind
 
@@ -305,7 +237,7 @@ def move_path(src: Path, dst: Path) -> None:
     file another program holds open is not copied (which would leave it in two places)."""
     src, dst = Path(src), Path(dst)
     try:
-        _retry(os.rename, src, dst)
+        os.rename(src, dst)
         return
     except OSError as exc:
         if not _cross_device(exc):
@@ -329,7 +261,7 @@ def _remove_empty_dirs(dirs: Iterable[Path], stop: Iterable[Path], only: Optiona
             if mine is not None and os.path.normcase(str(cur)) not in mine:
                 break
             try:
-                remove_dir(cur)
+                os.rmdir(cur)
             except OSError:
                 break
             cur = cur.parent
@@ -359,7 +291,6 @@ def apply_moves(moves: List[SMove], keep: Iterable[Path] = (),
     res: Dict[str, Any] = {"moved": 0, "failed": [], "cancelled": False}
     emptied: set = set()
     made: List[str] = []
-    reset_retries()
     try:
         for i, m in enumerate(moves):
             if cancel and cancel():
@@ -371,7 +302,7 @@ def apply_moves(moves: List[SMove], keep: Iterable[Path] = (),
                 if m.note == ALREADY and os.path.isfile(m.dst) and not m.copy:
                     if not filecmp.cmp(m.src, m.dst, shallow=False):
                         raise FileExistsError("another file is already there")
-                    remove_file(m.src)                       # (the archive has it: the copy here goes)
+                    os.unlink(m.src)                         # (the archive has it: the copy here goes)
                     emptied.add(m.src.parent)
                     res["moved"] += 1
                     continue
@@ -387,8 +318,8 @@ def apply_moves(moves: List[SMove], keep: Iterable[Path] = (),
                 meter.add(m.size)
                 emptied.add(m.src.parent)
                 res["moved"] += 1
-            except (OSError, ValueError) as exc:           # (Windows: with the hint when a path is too long)
-                res["failed"].append({"path": str(m.src), "error": winproc.long_path_hint(exc, m.src, m.dst)})
+            except (OSError, ValueError) as exc:
+                res["failed"].append({"path": str(m.src), "error": str(exc)})
         _remove_empty_dirs(emptied, keep)
     finally:
         for d in reversed(made):                       # a folder made for a move that then failed does not stay behind empty

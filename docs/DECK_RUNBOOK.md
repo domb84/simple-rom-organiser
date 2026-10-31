@@ -1,5 +1,7 @@
 # Runbook: verify the Windows-pass work on a real Steam Deck
 
+**Windows support was removed on 2026-10-31 (Amendment 115).** The `HANDOVER_WINDOWS*.md` files and the `packaging\*.ps1` scripts this file names are in the git history (commit `e6865c2`).
+
 **Latest handover for v0.2 (branch `v0.2`, 2026-10-08): `docs/HANDOVER_DECK_2.md`. Start there; this runbook has the detailed steps.**
 
 

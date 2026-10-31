@@ -6,8 +6,7 @@ that practically every system has is *loaded* through ctypes, in this order
 1. ``compression.zstd`` (Python 3.14+),
 2. ``$ROMORG_LIBZSTD`` (a path; tests / development),
 3. the copy bundled in the AppImage (``tools/lib``, see :mod:`romorg.bundle`),
-4. on Windows a ``libzstd.dll`` / ``zstd.dll`` next to the app or in its ``native`` folder,
-5. the system's ``libzstd`` (ctypes' normal search and the usual library folders).
+4. the system's ``libzstd`` (ctypes' normal search and the usual library folders).
 
 When none is found the pure-Python decoder of :mod:`romorg.zstddec` does the work: correct, but about a megabyte per
 second, so :func:`native` is False and the self-check says so. ``ROMORG_NO_ZSTD=1`` forces that fallback.
@@ -32,8 +31,7 @@ class ZstdError(Exception):
 
 
 def _candidates() -> List[str]:
-    return nativelib.candidates("libzstd", "zstd", ENV_LIB, names=("libzstd.so.1", "libzstd.so", "libzstd.1.dylib"),
-                                win_names=("libzstd.dll", "zstd.dll"))
+    return nativelib.candidates("libzstd", "zstd", ENV_LIB, names=("libzstd.so.1", "libzstd.so", "libzstd.1.dylib"))
 
 
 def _stdlib() -> Optional[Callable[[bytes, int], bytes]]:

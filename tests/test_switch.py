@@ -333,7 +333,7 @@ class Api(ServerCase):
         super().setUp()
         self.home = self.tmp / "home"                                 # (nothing is installed: what this machine has must not leak in)
         self.home.mkdir()
-        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home)})
         env.start()
         self.addCleanup(env.stop)
         self.eden, self.ryu = self.tmp / "nand", self.tmp / "portable"
@@ -401,16 +401,8 @@ class Stores(Base):
 
 
 class MoreDetection(Base):
-    def test_eden_in_a_flatpak_and_on_windows_and_ryujinx_on_windows(self) -> None:
+    def test_eden_in_a_flatpak(self) -> None:
         home = self.tmp / "home"
         data = home / ".var" / "app" / "dev.eden_emu.eden" / "data" / "eden"
         (data / "nand").mkdir(parents=True)
         self.assertEqual(switchsaves.detect_eden(home)["nand"], str(data / "nand"))
-        with mock.patch.dict(os.environ, {"APPDATA": str(self.tmp / "AppData")}):
-            win = self.tmp / "AppData" / "eden"
-            (win / "nand").mkdir(parents=True)
-            (self.tmp / "AppData" / "Ryujinx" / "bis").mkdir(parents=True)
-            empty = self.tmp / "empty"
-            empty.mkdir()
-            self.assertEqual(switchsaves.detect_eden(empty)["nand"], str(win / "nand"))
-            self.assertEqual(switchsaves.detect_ryujinx(empty)["data"], str(self.tmp / "AppData" / "Ryujinx"))

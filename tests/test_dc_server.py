@@ -458,9 +458,8 @@ class DcEndpointTests(DcServerCase):
             self.assertIs(self.call("/api/chdman")["flac_encoder"], False)
         with mock.patch("romorg.flacenc.available", return_value=True):
             self.assertIs(self.call("/api/chdman")["flac_encoder"], True)
-        want = "windows" if sys.platform.startswith("win") else ("linux" if sys.platform.startswith("linux")
-                                                                  else sys.platform)
-        self.assertEqual(self.call("/api/chdman")["os"], want)          # which install steps / path examples to show
+        want = "linux" if sys.platform.startswith("linux") else sys.platform
+        self.assertEqual(self.call("/api/chdman")["os"], want)
         self.assertEqual(self.call("/api/status")["os"], want)
 
     def test_libsndfile_decoding_is_named(self) -> None:
@@ -480,9 +479,8 @@ class DcEndpointTests(DcServerCase):
 
 
 class LongPathConvertTest(DcServerCase):
-    """Convert through the HTTP API in a library whose paths run past Windows' old 260-character MAX_PATH (works
-    with the LongPathsEnabled setting; skipped where such a folder cannot be made): the built-in writer's
-    ``.chd.romorg.part`` file, the generated GDI of a cue-only Redump set, the placed CHD and the originals moved to
+    """Convert through the HTTP API in a library whose paths are over 260 characters long (skipped where such a folder
+    cannot be made): the built-in writer's ``.chd.romorg.part`` file, the generated GDI of a cue-only Redump set, the placed CHD and the originals moved to
     ``_converted_originals`` all live there. The folder names have apostrophes and double spaces on purpose."""
 
     def setUp(self) -> None:
@@ -522,18 +520,6 @@ class LongPathConvertTest(DcServerCase):
         self.assertTrue((self.roms / "_converted_originals" / "cue only set" / "g.cue").is_file())
         self.assertFalse([p for p in self.roms.rglob("*") if p.name.endswith(".romorg.part")])
 
-    def test_chdman_is_not_given_paths_it_cannot_open(self) -> None:
-        """chdman 0.289 on Windows fails on paths of 260 characters or more (and spins forever on a track file
-        that long): with chdman chosen as the writer, such a set is written by the built-in writer instead."""
-        self.discs["Epsilon (USA)"].write_raw(self.roms / "gdi set", "e")
-        self.use_fake_chdman()
-        self.call("/api/chdman", {"writer": "chdman", "engine": "python"})
-        self.scan()
-        with mock.patch("romorg.discsys._CHDMAN_PATH_LIMIT", True), \
-                mock.patch("romorg.chdtool.create_cd", side_effect=AssertionError("chdman was run")):
-            res = self.run_job("/api/convert/apply", {})
-        self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {"builtin": 1}))
-
 
 ODD_NAME = "Tony's  Café Ünï 日本 (USA)"      # apostrophe, double space, accents, Japanese
 
@@ -542,10 +528,7 @@ ODD_NAME = "Tony's  Café Ünï 日本 (USA)"      # apostrophe, double space, a
 class OddNamesConvertTest(DcServerCase):
     """Names with an apostrophe, a double space and non-ASCII letters, as track files, sheet and game: the built-in
     writer and the real chdman (chosen as the writer; for a cue-only set it gets the generated GDI) must produce the
-    same CHD (equal header SHA-1) from a ``.gdi`` set and from a ``.cue`` set, with the same files moved aside.
-
-    chdman 0.289 on Windows cannot open an input file whose path has a non-ASCII character (measured), so there a
-    ``.gdi`` set - and a ``.cue`` set whose scratch folder is not ASCII - goes to the built-in writer instead."""
+    same CHD (equal header SHA-1) from a ``.gdi`` set and from a ``.cue`` set, with the same files moved aside."""
 
     def raw_set(self, folder: Path, gdi_style: bool) -> None:
         disc = self.discs[ODD_NAME]
@@ -585,8 +568,6 @@ class OddNamesConvertTest(DcServerCase):
                     self.assertEqual((s["raw"], s["convertible"]), (1, 1), s)
                     res = self.run_job("/api/convert/apply", {})
                     via = "chdman" if writer == "chdman" else "builtin"
-                    if os.name == "nt" and (gdi_style or not tempfile.gettempdir().isascii()):
-                        via = "builtin"
                     self.assertEqual((res["converted"], res["failed"], res["written_by"]), (1, [], {via: 1}), res)
                     placed = lib / ODD_NAME / f"{ODD_NAME}.chd"
                     self.assertTrue(placed.is_file(), [str(p) for p in lib.rglob("*")])

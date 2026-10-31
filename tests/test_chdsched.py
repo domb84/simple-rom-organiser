@@ -20,7 +20,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import chdtestlib as T  # noqa: E402
-from romorg import chd, chdsched, discsys, dreamcast, scanner, winproc  # noqa: E402
+from romorg import chd, chdsched, discsys, dreamcast, scanner  # noqa: E402
 
 
 def reference(path: str) -> dict[int, dict]:
@@ -237,8 +237,8 @@ class CancelAndCrashTest(Base):
 
 
 class WorkerProcessTest(Base):
-    """What the pool needs from the platform (written for Windows, run everywhere): real worker processes, binary
-    pipes, no console window, no inherited file handles, and files the workers had open can be moved afterwards."""
+    """What the pool needs from the platform: real worker processes, binary pipes, no inherited file handles, and files the
+    workers had open can be moved afterwards."""
 
     def test_the_pool_really_runs_worker_processes(self) -> None:
         with chd.Chd(self.path, load_map=False) as c, chdsched.Scheduler(2, chunk_bytes=4000) as s:
@@ -262,11 +262,7 @@ class WorkerProcessTest(Base):
             cmd, kw = seen[0]
             self.assertEqual((kw["bufsize"], kw.get("text"), kw.get("universal_newlines")), (0, None, None))
             self.assertEqual((kw["stdin"], kw["stdout"]), (subprocess.PIPE, subprocess.PIPE))
-            if winproc.IS_WINDOWS:
-                self.assertTrue(kw["creationflags"] & subprocess.DETACHED_PROCESS)    # no console, no window
-                self.assertNotEqual(kw.get("close_fds"), False)       # only the pipes are inherited
-            else:
-                self.assertTrue(kw["start_new_session"])
+            self.assertTrue(kw["start_new_session"])
             # a request whose bytes include CR LF and a lone LF must come back untranslated
             payload = b"\r\n\n\x1a\x00" * 1000
             head = {"id": 1, "op": "compress", "codecs": ["zlib", "", "", ""], "hunk_bytes": len(payload), "cd": False,
@@ -288,7 +284,7 @@ class WorkerProcessTest(Base):
         finally:
             f.close()
         try:
-            os.replace(held, self.dir / "moved.bin")     # WinError 32 if a worker had inherited the handle
+            os.replace(held, self.dir / "moved.bin")
             os.remove(self.dir / "moved.bin")
         finally:
             for proc in procs:
@@ -301,11 +297,8 @@ class WorkerProcessTest(Base):
             with chd.Chd(self.path, load_map=False) as c:
                 first = s.hash_tracks(c, range(len(c.tracks)))
             self.assertTrue(s.pooled)
-            if winproc.IS_WINDOWS:                        # the workers keep it open for the next chunks ...
-                with self.assertRaises(PermissionError):
-                    os.replace(self.path, moved)
             self.assertTrue(s.release(Path(self.path)))
-            os.replace(self.path, moved)                  # ... until it is released
+            os.replace(self.path, moved)
             with chd.Chd(moved, load_map=False) as c:     # the pool goes on working
                 self.assertEqual(s.hash_tracks(c, range(len(c.tracks))), first)
             self.assertTrue(s.pooled)
@@ -322,7 +315,7 @@ class WorkerProcessTest(Base):
             threads = [w.thread for w in s._workers]
             s.broken = True                               # as after a worker failed for good
             self.assertTrue(s.release(self.path))
-            os.replace(self.path, moved)                  # WinError 32 if a survivor still had it open
+            os.replace(self.path, moved)
             self.assertTrue(all(p.poll() is not None for p in procs))
             for t in threads:
                 t.join(5)
@@ -415,24 +408,6 @@ class WorkerProcessTest(Base):
                     s.hash_tracks(c, range(len(c.tracks)))
             self.assertLessEqual(len(s._gone), 2)
 
-    def test_killing_workers_needs_no_taskkill_unless_frozen(self) -> None:
-        with mock.patch("romorg.winproc.kill_tree") as tree:
-            live = chdsched.spawn_worker()
-            chdsched.kill_worker(live)                     # an interpreter's worker has no children
-            self.assertIsNotNone(live.poll())
-            done = chdsched.spawn_worker()
-            done.stdin.close()
-            done.wait(10)
-            frozen = chdsched.spawn_worker()
-            with mock.patch.object(sys, "frozen", True, create=True):
-                chdsched.kill_worker(done)                 # it has exited: nothing to kill
-                try:
-                    chdsched.kill_worker(frozen)
-                finally:
-                    frozen.kill()
-                    frozen.wait(10)
-        self.assertEqual(tree.call_count, 1 if winproc.IS_WINDOWS else 0)   # the one-file exe: its whole tree
-
     def test_release_without_workers_or_after_close_returns_at_once(self) -> None:
         self.assertTrue(chdsched.Scheduler(1).release(self.path))
         s = chdsched.Scheduler(2)
@@ -466,8 +441,7 @@ class ErrorsTest(Base):
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch("romorg.chdsched.mem_available", return_value=64 << 30):
                 cpus = os.cpu_count() or 1
-                auto = min(chdsched.WINDOWS_MAX_AUTO, max(1, cpus - 1)) if winproc.IS_WINDOWS else cpus
-                self.assertEqual(chdsched.default_workers(0), min(chdsched.MAX_WORKERS, auto))
+                self.assertEqual(chdsched.default_workers(0), min(chdsched.MAX_WORKERS, cpus))
                 self.assertEqual(chdsched.default_workers(3), 3)           # the config key
                 self.assertEqual(chdsched.default_workers(1), 1)
                 self.assertEqual(chdsched.default_workers(999), chdsched.MAX_WORKERS)

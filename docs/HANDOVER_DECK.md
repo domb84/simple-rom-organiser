@@ -1,5 +1,7 @@
 # Handover: picking the Windows work up on the Steam Deck (or any Linux machine)
 
+**Windows support was removed on 2026-10-31 (Amendment 115).** The `HANDOVER_WINDOWS*.md` files and the `packaging\*.ps1` scripts this file names are in the git history (commit `e6865c2`).
+
 Written 2026-10-06 on Windows. Everything below is on `origin/main` (`git pull`). Read this file first, then
 `docs/HANDOVER_WINDOWS.md` (what the Linux side built) and `docs/HANDOVER_WINDOWS_2.md` (what the Windows pass did and
 measured). Nothing here needs the earlier conversation.

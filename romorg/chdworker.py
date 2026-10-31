@@ -22,7 +22,7 @@ The GameCube image reader (:mod:`romorg.rvz`) decodes in the same processes::
 ``chdman extractcd`` / ``extractdvd`` would write for them. The worker keeps its opened CHDs (and their parsed hunk
 maps) between requests, so a file's map is parsed once per worker, not once per chunk. It exits at EOF of stdin.
 
-Closing a file it keeps open (Windows cannot rename or delete a file another process has open)::
+Closing a file it keeps open::
 
     request  {"id": -1, "op": "release", "path": "..."}
     reply    {"id": -1, "n": 0}
@@ -41,7 +41,7 @@ ENV_CRASH = "ROMORG_CHDWORKER_CRASH"            # ... and "always" / "once:<mark
 
 
 def _same(path: str) -> str:
-    """``path`` in a form that compares equal for the same file (Windows: any case, either slash)."""
+    """``path`` in a form that compares equal for the same file."""
     return os.path.normcase(os.path.abspath(path))
 
 

@@ -135,13 +135,11 @@ class NativeLib(unittest.TestCase):
         with mock.patch.dict(os.environ, {"X_LIB": "/mine/libx.so"}), \
                 mock.patch.object(nativelib.bundle, "lib_dir", return_value=None), \
                 mock.patch.object(nativelib.ctypes.util, "find_library", return_value="libx.so.1"):
-            got = nativelib.candidates("libx", "x", "X_LIB", names=("libx.so.1", "libx.so"), win_names=("x.dll",))
+            got = nativelib.candidates("libx", "x", "X_LIB", names=("libx.so.1", "libx.so"))
         self.assertEqual(got[0], "/mine/libx.so")                                     # the variable first
         self.assertEqual(got[1], "libx.so.1")                                         # then the loader's own answer
         self.assertEqual(len(got), len(set(got)))                                     # ("libx.so.1" given twice, listed once)
         self.assertIn("libx.so", got)
-        if not sys.platform.startswith("win"):
-            self.assertNotIn("x.dll", got)
 
     def test_a_bundled_library_comes_before_the_system_ones(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

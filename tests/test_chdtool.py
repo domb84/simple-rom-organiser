@@ -170,19 +170,14 @@ class DetectTest(ChdtoolBase):
             info = chdtool.info({})
         self.assertFalse(info["found"])
         self.assertIn("MAME", info["hint"])
-        self.assertIn("mamedev.org" if sys.platform.startswith("win") else "org.mamedev.MAME", info["hint"])
+        self.assertIn("org.mamedev.MAME", info["hint"])
         self.assertTrue(info["steps"])
 
-    def test_install_hint_per_platform(self) -> None:
-        win, other = chdtool.install_hint(windows=True), chdtool.install_hint(windows=False)
-        self.assertIn("chdman.exe", win)
-        self.assertIn("https://www.mamedev.org/", win)
-        self.assertIn("next to the app", win)
-        self.assertNotIn("Discover", win)                               # no Steam Deck steps on Windows
-        self.assertIn("org.mamedev.MAME", other)                        # the Steam Deck keeps its Discover step
-        self.assertIn("Discover", " ".join(chdtool.install_steps(windows=False)))
-        self.assertIn("chdman.exe", " ".join(chdtool.install_steps(windows=True)))
-        for text in (win, other, *chdtool.install_steps(windows=True), *chdtool.install_steps(windows=False)):
+    def test_install_hint(self) -> None:
+        hint = chdtool.install_hint()
+        self.assertIn("org.mamedev.MAME", hint)                         # the Steam Deck's Discover step
+        self.assertIn("Discover", " ".join(chdtool.install_steps()))
+        for text in (hint, *chdtool.install_steps()):
             self.assertNotIn("needs chdman", text)                      # nothing needs it any more
             self.assertNotIn("only converting", text)
         self.assertEqual(chdtool.INSTALL_HINT, chdtool.install_hint())
@@ -322,64 +317,6 @@ class RunTest(ChdtoolBase):
         bad.write_text("3\n1 0 4 2352 a.bin 0\n")
         with self.assertRaises(chdtool.ChdmanError):
             chdtool.parse_gdi(bad)
-
-
-
-
-class NonAsciiInputTests(unittest.TestCase):
-    """chdman 0.289 on Windows cannot open a non-ASCII ``-i`` path; an 8.3 short path works (see ``chdman_input``)."""
-
-    def test_ascii_and_posix_pass_through(self) -> None:
-        with mock.patch.object(chdtool.winproc, "IS_WINDOWS", False):
-            self.assertEqual(chdtool.chdman_input(Path("/x/Café/a.chd")), str(Path("/x/Café/a.chd")))
-        with mock.patch.object(chdtool.winproc, "IS_WINDOWS", True):
-            plain = os.path.abspath("a.chd")
-            if plain.isascii():
-                self.assertEqual(chdtool.chdman_input(Path(plain)), plain)
-
-    def test_short_path_used_or_clear_error(self) -> None:
-        p = Path(os.path.abspath("Café") + os.sep + "a.chd")
-        with mock.patch.object(chdtool.winproc, "IS_WINDOWS", True), \
-                mock.patch.object(chdtool.winproc, "short_path", return_value="C:/CAF~1/A.CHD"):
-            self.assertEqual(chdtool.chdman_input(p), "C:/CAF~1/A.CHD")
-        for short in ("", str(p)):
-            with mock.patch.object(chdtool.winproc, "IS_WINDOWS", True), \
-                    mock.patch.object(chdtool.winproc, "short_path", return_value=short):
-                with self.assertRaises(chdtool.ChdmanError) as cm:
-                    chdtool.chdman_input(p)
-                self.assertIn("non-ASCII", str(cm.exception))
-
-    def test_hash_all_chdman_reports_instead_of_crashing(self) -> None:
-        from romorg import discsys
-        p = Path(os.path.abspath("Café") + os.sep + "a.chd")
-        with mock.patch.object(chdtool.winproc, "IS_WINDOWS", True), \
-                mock.patch.object(chdtool.winproc, "short_path", return_value=""):
-            with self.assertRaises(chdtool.ChdmanError):
-                discsys.hash_all_chdman(p, mock.Mock(tracks=[]), mock.Mock(), Path("."))
-
-    @unittest.skipUnless(os.name == "nt" and os.environ.get("ROMORG_CHDMAN_ORACLE") and os.environ.get("ROMORG_REAL_CHD"),
-                         "set ROMORG_CHDMAN_ORACLE (chdman.exe) and ROMORG_REAL_CHD (a small CHD); Windows only")
-    def test_real_chdman_extract_from_non_ascii_folder(self) -> None:
-        import shutil
-        from romorg import discsys
-        with tempfile.TemporaryDirectory() as d:
-            folder = Path(d) / "Tony's  Café Ünï 日本"
-            folder.mkdir()
-            dst = folder / "disc.chd"
-            shutil.copyfile(os.environ["ROMORG_REAL_CHD"], dst)
-            cm = chdtool.Chdman([os.path.abspath(os.environ["ROMORG_CHDMAN_ORACLE"])], "configured", "chdman")
-            info = chd.Chd(dst, load_map=False)
-            try:
-                try:
-                    got = discsys.hash_all_chdman(dst, info, cm, Path(d))
-                except chdtool.ChdmanError as exc:        # 8.3 names off on this volume: the clear error
-                    self.assertIn("non-ASCII", str(exc))
-                    return
-                want = discsys.hash_tracks_python(info, range(len(info.tracks)), None, None)
-                for i, h in want.items():
-                    self.assertEqual(got[i]["sha1"], h["sha1"])
-            finally:
-                info.close()
 
 
 if __name__ == "__main__":

@@ -313,7 +313,7 @@ def _upload_one(client: s3.Client, inv: Inventory, m: Any, key: str, root: Optio
         sent, how = d["size"], "moved"
     inv.add(full)
     if not getattr(m, "copy", False):
-        sortroot.remove_file(src)
+        os.unlink(src)
     return how, sent
 
 

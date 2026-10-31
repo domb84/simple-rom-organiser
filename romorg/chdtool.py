@@ -9,8 +9,7 @@ Detection order (first hit wins): ``$ROMORG_CHDMAN`` / the ``chdman_path`` setti
 BUNDLED in the AppImage (``tools/chdman``, started with ``LD_LIBRARY_PATH`` pointing at the bundled ``tools/lib``
 ahead of the system's; see :mod:`romorg.bundle`), ``chdman`` on ``PATH``, the Flatpak ``org.mamedev.MAME``
 (``flatpak run --command=chdman``), common tool folders (``~/.local/bin``, ``~/Emulation/tools``, EmuDeck /
-RetroDECK), ``/usr/bin`` and ``/usr/local/bin``; on Windows also ``chdman.exe`` next to the app (the exe's folder,
-the top folder of the .zip package) and in common MAME / tool folders (:func:`winproc.find_tool`). A bundled chdman that cannot start (the system lacks e.g. libSDL2)
+RetroDECK), ``/usr/bin`` and ``/usr/local/bin``. A bundled chdman that cannot start (the system lacks e.g. libSDL2)
 is reported (:func:`detect_report`) and skipped; everything else keeps working.
 
 Scratch space (Amendment 12): an extracted disc is about its full raw size. It is decoded in RAM when that is safe,
@@ -38,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import bundle, tempspace, winproc
+from . import bundle, process, tempspace
 from .cancellation import is_cancelled
 
 TEMP_PREFIX = ".romorg-chd-"
@@ -55,24 +54,16 @@ ProgressFn = Callable[[int, int, str], None]
 _NOT_NEEDED = "chdman is optional: the app reads, verifies and converts CHDs by itself."
 
 
-def install_hint(windows: Optional[bool] = None) -> str:
-    """Where to get chdman, for this platform (``windows`` overrides the detection; tests)."""
-    if winproc.IS_WINDOWS if windows is None else windows:
-        return ("chdman was not found. It ships with MAME: take chdman.exe from the MAME download at "
-                "https://www.mamedev.org/ and put it on PATH, next to the app (the .exe, or the top folder of the "
-                "unzipped package), or save its path in the app (chdman path). " + _NOT_NEEDED)
+def install_hint() -> str:
+    """Where to get chdman."""
     return ("chdman was not found. It ships with MAME: on a Steam Deck open Discover (the app store in Desktop Mode), "
             "search for \"MAME\" (org.mamedev.MAME) and install it; elsewhere install MAME's chdman with your "
             "package manager, or put any chdman on PATH, or set its path in the app (chdman path). " + _NOT_NEEDED)
 
 
-def install_steps(windows: Optional[bool] = None) -> list[str]:
+def install_steps() -> list[str]:
     """:func:`install_hint` as steps for the UI's list."""
     last = f"or save the path of a chdman binary below (config key \"{CONFIG_KEY}\", environment {ENV_VAR})"
-    if winproc.IS_WINDOWS if windows is None else windows:
-        return ["Download MAME for Windows from https://www.mamedev.org/ - chdman.exe is in the download",
-                "Put chdman.exe on PATH, or next to the app (the .exe, or the top folder of the unzipped package)",
-                last]
     return ["Steam Deck: open Discover (Desktop Mode) and install \"MAME\" (org.mamedev.MAME) - it ships chdman",
             "or install MAME's chdman with your package manager, or put any chdman on PATH",
             last]
@@ -126,7 +117,7 @@ def _probe_detail(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> 
     """``(runs and prints chdman's usage, why not)``; ``help``'s exit status is not 0."""
     try:
         proc = subprocess.run([*argv, "help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, env=env, **winproc.popen_kwargs())
+                              stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"cannot run: {exc}"
     text = proc.stdout.decode("utf-8", "replace")
@@ -149,11 +140,7 @@ def _probe(argv: Sequence[str], env: Optional[dict[str, str]] = None) -> bool:
 
 
 def bundled_chdman() -> Optional[Chdman]:
-    """The chdman shipped in the AppImage (``tools/chdman`` + ``tools/lib``), not probed; None outside an AppImage.
-
-    Linux only: the AppImage is the only package that ever carried a chdman (a Linux binary started with
-    ``LD_LIBRARY_PATH``). The Windows packages carry none, and a ``chdman.exe`` placed next to the app is found by
-    :func:`winproc.find_tool` as a ``folder`` chdman."""
+    """The chdman shipped in the AppImage (``tools/chdman`` + ``tools/lib``), not probed; None outside an AppImage."""
     if not sys.platform.startswith("linux"):
         return None
     tools = bundle.tools_dir()
@@ -183,10 +170,6 @@ def _candidates(config: Optional[dict], extra_dirs: Sequence[str] = ()) -> list[
     found = shutil.which("chdman")
     if found:
         out.append(("path", [found], found, ""))
-    elif winproc.IS_WINDOWS:
-        found = winproc.find_tool(("chdman",))
-        if found:
-            out.append(("folder", [found], found, ""))
     if shutil.which("flatpak"):
         for app in FLATPAK_APPS:
             out.append(("flatpak", ["flatpak", "run", "--command=chdman", app], f"{app} (Flatpak)", app))
@@ -323,8 +306,8 @@ def check_access(chdman: Chdman, folder: Path) -> None:
 # --------------------------------------------------------------------------- temp dirs / space
 
 def _pid_alive(pid: int) -> bool:
-    """Whether the owner of a scratch folder still runs (:func:`winproc.pid_alive`: never a signal on Windows)."""
-    return winproc.pid_alive(pid)
+    """Whether the owner of a scratch folder still runs (:func:`process.pid_alive`)."""
+    return process.pid_alive(pid)
 
 
 def acquire_workdir(chdman: Optional[Chdman], track_bytes: int, library: Sequence[Path] = ()) -> tempspace.Workdir:
@@ -400,7 +383,7 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=str(cwd) if cwd else None,
-                                env=chdman.environ(), **winproc.popen_kwargs(new_session=True))
+                                env=chdman.environ(), **process.popen_kwargs(new_session=True))
     except OSError as exc:
         raise ChdmanError(f"cannot run chdman: {exc}") from exc
     chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()
@@ -471,9 +454,6 @@ def run(chdman: Chdman, args: Sequence[str], progress: Optional[ProgressFn] = No
 
 
 def _terminate(proc: "subprocess.Popen[bytes]") -> None:
-    if winproc.IS_WINDOWS:
-        winproc.kill_tree(proc)
-        return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except (OSError, AttributeError):
@@ -491,22 +471,6 @@ def _terminate(proc: "subprocess.Popen[bytes]") -> None:
 
 
 # --------------------------------------------------------------------------- extractcd / createcd
-
-def chdman_input(path: Path) -> str:
-    """``path`` as chdman may be given it for ``-i``. chdman 0.289 on Windows cannot open an input file whose path has
-    a non-ASCII character, but opens its 8.3 short path; with none (8.3 names off) this raises :class:`ChdmanError`
-    (callers fall back to the built-in reader or report it per file). Everywhere else the path is passed as is."""
-    if not winproc.IS_WINDOWS:
-        return str(path)
-    p = os.path.abspath(str(path))
-    if p.isascii():
-        return str(path)
-    short = winproc.short_path(p)
-    if short and short.isascii():
-        return short
-    raise ChdmanError(f"chdman cannot open {Path(path).name}: a non-ASCII character in its path (Windows) and no "
-                      "8.3 short name for it - the built-in reader handles such files")
-
 
 @dataclass
 class ExtractedTrack:
@@ -550,7 +514,7 @@ def extract_cd(chdman: Chdman, chd: Path, workdir: Path, kind: str, track_sizes:
     ``disc.cue`` + ``disc.bin`` (split with ``track_sizes`` = bytes of each track, in order)."""
     check_access(chdman, Path(chd).parent)
     check_access(chdman, workdir)
-    chd_arg = chdman_input(chd)
+    chd_arg = str(chd)
     if kind == "gdrom":
         sheet = workdir / "disc.gdi"
         run(chdman, ["extractcd", "-i", chd_arg, "-o", str(sheet)], progress, "Extracting", cancel)
@@ -598,7 +562,7 @@ def extract_dvd(chdman: Chdman, chd: Path, workdir: Path, size: int = 0,
     check_access(chdman, Path(chd).parent)
     check_access(chdman, workdir)
     iso = workdir / "disc.iso"
-    run(chdman, ["extractdvd", "-i", chdman_input(chd), "-o", str(iso)], progress, "Extracting", cancel)
+    run(chdman, ["extractdvd", "-i", str(chd), "-o", str(iso)], progress, "Extracting", cancel)
     if not iso.is_file():
         raise ChdmanError("chdman did not write disc.iso")
     got = iso.stat().st_size

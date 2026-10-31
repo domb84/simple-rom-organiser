@@ -1,5 +1,7 @@
 # Handover to the Steam Deck, round 2 (v0.2 after the Windows pass 4 and the saves redesign)
 
+**Windows support was removed on 2026-10-31 (Amendment 115).** The `HANDOVER_WINDOWS*.md` files and the `packaging\*.ps1` scripts this file names are in the git history (commit `e6865c2`).
+
 Written 2026-10-08 on Windows for a Claude session (or a person) on the Steam Deck, any account. Nothing here needs the earlier
 conversation. Read this file, then `docs/DECK_RUNBOOK.md` (the step-by-step Deck checks; its "Saves" step is the important one)
 and the last sections of `docs/ARCHITECTURE.md` ("Windows pass 4", Amendment 31, "Folder picker and sidebar progress").

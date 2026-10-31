@@ -195,13 +195,6 @@ Stop it with **Ctrl+C**, or with the **Quit** button in the page.
 
 Tests: `python3 -m unittest discover -s tests -v`
 
-On Windows use the `py` launcher with Python 3.14 (the version the Windows builds ship) instead of
-`python3` / `python`: `python3` is often only the Microsoft Store stub and plain `python` can be an old
-install. So `py -3.14 -m romorg` and `py -3.14 -m unittest discover -s tests -v`, the same from PowerShell
-and Git Bash. The shell-script tests use Git for Windows' bash (they skip when none is found; WSL's
-`bash.exe` is only a last resort). For the native FLAC tests set `ROMORG_LIBFLAC` to a libFLAC.dll (the
-Windows build scripts fetch one into `packaging\.cache\native`).
-
 ## Using it
 
 The app has a **global header** on every screen: the title (click it to go home), the **updates
@@ -705,9 +698,6 @@ build downloads checksum-pinned Arch Linux packages, see `docs/THIRD_PARTY.md` f
 declare them, and where to get the source; the text is also inside the AppImage as `licenses/THIRD_PARTY.md`). A chdman
 you have installed is still found - `$ROMORG_CHDMAN` / the saved chdman path, `chdman` on `PATH`, the Flatpak
 `org.mamedev.MAME`, `~/.local/bin`, `~/Emulation/tools`, ... - and can be chosen on the Disc images page.
-The Windows packages carry no chdman either and do not need one; to use it anyway, take `chdman.exe` from the MAME
-download at mamedev.org and put it on `PATH`, next to the app (the exe's folder, or the top folder of the unzipped
-package), or save its path on the Disc images page (see `docs/PACKAGING.md`).
 `Simple_ROM_Organiser.AppImage --self-check` tests the CHD engine (libFLAC decodes, the scheduler runs, the writer writes
 a CHD that reads back).
 When chdman does extract, the disc goes to **scratch space - never your game folder**: (1) **RAM** (`/dev/shm`, `$XDG_RUNTIME_DIR`, or
@@ -968,7 +958,7 @@ serves and how many saves and states its systems' last scans found, shows its fo
 with no RetroArch found, and none chosen, nothing on its card matters.
 
 - **Finding RetroArch:** the app looks for the Steam build (also in other Steam libraries), Flatpak, a normal Linux install and
-  Snap, on Windows `%APPDATA%\RetroArch`, Steam and the usual portable folders, and on macOS the Application Support folder.
+  Snap, and on macOS the Application Support folder.
   **Change...** on its card picks another one found, or any `retroarch.cfg` (or its folder) you point at.
 - **What RetroArch's card shows:** where it keeps save files and save states, whether each gets one folder per core, and its config
   file, read from `retroarch.cfg`. Core and game override files that set their own save folders are listed, because the global
@@ -1292,19 +1282,13 @@ strip always on. This is the first part of the Deck mode; opening the window rel
 More detail is in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 The UI is sized for the Deck's 1280x800 screen with large touch targets. Every folder field has one **Folders...**
-button: the app's own folder browser, the same on Windows and Linux. (There is no native "Browse..." dialog: the one
-Windows offered opened behind the browser, and the Linux one only worked in Desktop Mode.)
-
-**Windows:** two packages, a single `.exe` and a `.zip` (`packaging\build_windows_exe.ps1`,
-`packaging\build_windows.ps1`; see [docs/PACKAGING.md](docs/PACKAGING.md)). Both builds end with
-`packaging\smoke_test.ps1`, which makes the checks of `packaging/smoke_test.sh` against the finished package.
+button: the app's own folder browser. (There is no native "Browse..." dialog: it only worked in Desktop Mode.)
 
 ## Where data is stored
 
 | Platform | Location |
 | --- | --- |
 | Linux / SteamOS | `$XDG_DATA_HOME/simple-rom-organiser` (default `~/.local/share/simple-rom-organiser`) |
-| Windows | `%LOCALAPPDATA%\simple-rom-organiser` |
 | macOS | `~/Library/Application Support/simple-rom-organiser` |
 
 Inside it: `dats/` (extracted TOSEC DATs and `release.json`), `nointro/` (the No-Intro

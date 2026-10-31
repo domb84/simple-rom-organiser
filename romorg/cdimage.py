@@ -79,10 +79,9 @@ class CdTrack:
 # * numbers are read with C's ``atoi`` ("01x" is 1) and times with ``sscanf("%d:%d:%d")`` (a single number is
 #   frames, "0:0" is 0, minutes / seconds / frames are not range-checked).
 #
-# Two deliberate differences, both where chdman 0.289 refuses the sheet (so there is no chdman CHD to differ from):
-# a UTF-8 byte order mark is skipped (chdman reads it as part of the first word), and a sheet that is not valid
-# UTF-8 is read in the Windows ANSI code page (chdman cannot open such names on Windows). On POSIX such a sheet's
-# names stay the raw bytes, as chdman uses them there.
+# One deliberate difference, where chdman 0.289 refuses the sheet (so there is no chdman CHD to differ from): a UTF-8
+# byte order mark is skipped (chdman reads it as part of the first word). The names of a sheet that is not valid UTF-8
+# stay the raw bytes, as chdman uses them.
 _WS = " \t\n\v\f\r"                 # C isspace() in the "C" locale
 
 
@@ -94,8 +93,6 @@ def read_sheet(path) -> str:
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
-        if os.name == "nt":
-            return raw.decode("mbcs", errors="replace")         # the ANSI code page (CP_ACP)
         return raw.decode("utf-8", errors="surrogateescape")     # = os.fsdecode of the bytes chdman opens
 
 

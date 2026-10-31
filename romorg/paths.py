@@ -1,4 +1,4 @@
-"""Per-user data / config locations (portable across Linux, Windows, macOS).
+"""Per-user data / config locations (Linux, macOS).
 
 Set ``ROMORG_DATA_DIR`` to override the data directory (used by tests and for
 portable installs).
@@ -22,10 +22,6 @@ def _base_data_dir() -> Path:
     override = os.environ.get("ROMORG_DATA_DIR")
     if override:
         return Path(override).expanduser()
-    if sys.platform.startswith("win"):
-        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-        base = Path(root) if root else Path.home() / "AppData" / "Local"
-        return base / APP_NAME
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / APP_NAME
     xdg = os.environ.get("XDG_DATA_HOME")

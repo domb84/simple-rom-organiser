@@ -132,7 +132,7 @@ class DiscSavesTests(PsServerCase):
         from test_nintendo import ps2_iso
         home = self.base / "home"
         home.mkdir()
-        env = mock.patch.dict(os.environ, {"HOME": str(home), "APPDATA": "", "USERPROFILE": ""})
+        env = mock.patch.dict(os.environ, {"HOME": str(home)})
         env.start()
         self.addCleanup(env.stop)
         self.iso.update({"Gamma (USA)": ps2_iso("SLUS_209.46"), "Gamma (Europe)": ps2_iso("SLES_500.12")})

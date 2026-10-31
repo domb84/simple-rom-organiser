@@ -47,9 +47,7 @@ _ST_END_OF_STREAM = 4
 
 
 def _candidates() -> List[str]:
-    return nativelib.candidates("libFLAC", "FLAC", ENV_LIB, names=("libFLAC.so.14", "libFLAC.so.12", "libFLAC.so.8", "libFLAC.so"),
-                                win_names=("libFLAC.dll", "FLAC.dll"),
-                                win_files=("libFLAC.dll", "FLAC.dll", "libFLAC-14.dll", "libFLAC-12.dll", "libFLAC-8.dll"))
+    return nativelib.candidates("libFLAC", "FLAC", ENV_LIB, names=("libFLAC.so.14", "libFLAC.so.12", "libFLAC.so.8", "libFLAC.so"))
 
 
 def _load():
@@ -99,7 +97,7 @@ def _bind(lib) -> None:
 
 
 def _sndfile() -> bool:
-    """libsndfile (what the Windows build bundles) can stand in for libFLAC when only the audio is wanted."""
+    """libsndfile can stand in for libFLAC when only the audio is wanted."""
     return not os.environ.get("ROMORG_NO_NATIVE_FLAC") and nativeflac.available()
 
 
@@ -271,8 +269,8 @@ def decode_pcm(data, start: int, samples_per_channel: int, big_endian: bool = Fa
                need_end: bool = True) -> Tuple[bytearray, int]:
     """Decode a hunk's FLAC frames to interleaved stereo 16-bit PCM bytes (little- or big-endian samples) and the
     offset where they end. Native when libFLAC loads; else, when the caller does not need the end offset
-    (``need_end=False``: the subcode after the frames is not wanted), libsndfile if that loads (what the Windows
-    build bundles; the offset returned is then 0); else the pure-Python decoder."""
+    (``need_end=False``: the subcode after the frames is not wanted), libsndfile if that loads (the offset returned
+    is then 0); else the pure-Python decoder."""
     if not need_end and start == 0 and _sndfile() and nativeflac.fd_available():
         # only the audio is wanted: libsndfile reading a memory file decodes without a single callback into Python,
         # which is a little quicker on one core and, unlike the libFLAC binding below, scales over decode threads

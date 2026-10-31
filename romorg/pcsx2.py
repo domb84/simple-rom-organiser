@@ -1,7 +1,7 @@
 """PCSX2 (PlayStation 2): where it keeps things, the disc's serial, and the saves.
 
 * **Where**: its settings are ``PCSX2.ini`` in ``<root>/inis`` (root: ``~/.var/app/net.pcsx2.PCSX2/config/PCSX2`` for the flatpak,
-  ``~/.config/PCSX2`` natively, ``Documents/PCSX2`` on Windows). ``[Folders]`` names the memory card and save state folders (relative to
+  ``~/.config/PCSX2`` natively). ``[Folders]`` names the memory card and save state folders (relative to
   the root, or a path; the flatpak's portal paths ``/run/user/.../doc/...`` work from outside the sandbox too), ``[MemoryCards]``
   the files in the slots and ``[GameList]`` the game folders.
 * **Serial**: a PS2 disc has ``SYSTEM.CNF`` in its ISO 9660 file system with ``BOOT2 = cdrom0:\\SLUS_209.46;1``: the serial is
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from . import emudata, winproc
+from . import emudata
 
 __all__ = ["Ps2Save", "detect_pcsx2", "read_serial", "serial_from_cnf", "save_serial", "find_cards", "find_states", "read_card_image",
            "parse_game_index", "ini_value", "PS2_DISC_EXTS"]
@@ -416,9 +416,6 @@ def detect_pcsx2(home: Optional[Path] = None, root: Optional[Path] = None) -> Di
     it is not installed. With ``root`` only that folder is looked at (the user chose it)."""
     home = Path(home) if home else Path.home()
     cands = [home / ".var" / "app" / "net.pcsx2.PCSX2" / "config" / "PCSX2", home / ".config" / "PCSX2"]
-    if os.environ.get("APPDATA"):
-        cands.append(Path(os.environ["APPDATA"]) / "PCSX2")
-    cands += [docs / "PCSX2" for docs in winproc.documents_dirs()]          # Windows: Documents\PCSX2 (wherever Documents is)
     cands.append(home / "Documents" / "PCSX2")
     cands += _beside_retroarch()                                                 # (a PCSX2 folder kept in RetroArch's system folder)
     if root is not None:

@@ -816,8 +816,8 @@ class ConvertTest(unittest.TestCase):
         self.assertFalse([p for p in (self.w.root).rglob("*") if p.is_symlink()])        # scratch links are gone
 
     def test_generated_gdi_works_without_symlinks(self) -> None:
-        """Unprivileged Windows cannot symlink (WinError 1314): the generated GDI then names hard links or the
-        original files, and chdman still finds every track's bytes next to the GDI."""
+        """Where symlinks cannot be made the generated GDI names hard links or the original files, and chdman still finds
+        every track's bytes next to the GDI."""
         import errno
         import shlex
         import shutil
@@ -1014,7 +1014,7 @@ class GdiTrackRefTest(unittest.TestCase):
         from romorg import discsys
         patches = {"symlink": mock.patch("romorg.discsys.os.symlink", side_effect=OSError(errno.EPERM, "no")),
                    "link": mock.patch("romorg.discsys.os.link", side_effect=OSError(errno.EXDEV, "no")),
-                   "relpath": mock.patch("romorg.discsys.os.path.relpath", side_effect=ValueError("other drive"))}
+                   "name": mock.patch("romorg.discsys.cdimage.sheet_quote", return_value=None)}
         with contextlib.ExitStack() as stack:
             for name in fail:
                 stack.enter_context(patches[name])
@@ -1027,7 +1027,7 @@ class GdiTrackRefTest(unittest.TestCase):
         try:
             os.symlink(self.src, self.base / "probe")
         except OSError:
-            self.skipTest("this account cannot create symlinks (Windows without Developer Mode)")
+            self.skipTest("this account cannot create symlinks")
         self.assertEqual(self.ref(), "track01.bin")
         self.assertTrue((self.work / "track01.bin").is_symlink())
         self.assertSameBytes("track01.bin")
@@ -1039,42 +1039,21 @@ class GdiTrackRefTest(unittest.TestCase):
         self.assertTrue(os.path.samefile(link, self.src))                         # no copy: the same file
         self.assertSameBytes("track01.bin")
 
-    @unittest.skipUnless(os.name == "nt", "Windows: a hard link shares the read-only attribute, so it cannot be deleted")
-    def test_no_hard_link_to_a_read_only_track_on_windows(self) -> None:
-        import stat
-        os.chmod(self.src, stat.S_IREAD)
-        self.addCleanup(os.chmod, self.src, stat.S_IWRITE | stat.S_IREAD)
-        name = self.ref("symlink")
-        self.assertEqual(os.listdir(self.work), [])                               # no link that rmtree would keep
-        self.assertTrue(os.path.samefile(os.path.join(self.work, name), self.src))
-
     def test_relative_path_when_no_link_can_be_made(self) -> None:
         name = self.ref("symlink", "link")
         self.assertEqual(os.listdir(self.work), [])                               # nothing was created
         self.assertTrue(os.path.samefile(os.path.join(self.work, name), self.src))  # chdman: <gdi folder> + name
 
     def test_copy_only_as_the_last_resort_and_only_with_space(self) -> None:
-        self.assertEqual(self.ref("symlink", "link", "relpath"), "track01.bin")
+        self.assertEqual(self.ref("symlink", "link", "name"), "track01.bin")
         link = self.work / "track01.bin"
         self.assertFalse(os.path.samefile(link, self.src))
         self.assertSameBytes("track01.bin")
         link.unlink()
         with mock.patch("romorg.chdtool.shutil.disk_usage", return_value=mock.Mock(free=1000)):
             with self.assertRaises(chdtool.ChdmanError):
-                self.ref("symlink", "link", "relpath")
+                self.ref("symlink", "link", "name")
         self.assertFalse(link.exists())
-
-    def test_relative_path_only_when_chdman_can_open_it(self) -> None:
-        """chdman 0.289 on Windows opens "<gdi folder>/<name>" as joined and fails (or hangs) from 260 characters
-        on: a relative name that would be that long is copied instead."""
-        from romorg import discsys
-        with mock.patch.object(discsys, "_CHDMAN_PATH_LIMIT", True):
-            self.assertNotEqual(self.ref("symlink", "link"), "track01.bin")          # short enough: relative
-            limit = len(os.path.abspath(self.work)) + 1 + len(os.path.relpath(self.src, self.work))
-            with mock.patch.object(discsys, "_CHDMAN_MAX_PATH", limit):
-                self.assertEqual(self.ref("symlink", "link"), "track01.bin")         # one too long: a copy
-        self.assertFalse(os.path.samefile(self.work / "track01.bin", self.src))
-        self.assertSameBytes("track01.bin")
 
     def test_generated_gdi_names_odd_folders_so_chdman_reads_them_back(self) -> None:
         """Apostrophes, double spaces and non-ASCII letters in the library's folder names: the relative names in
@@ -1138,7 +1117,7 @@ class SheetFilesTest(unittest.TestCase):
 
     def test_generated_gdi_quotes_every_name_readably(self) -> None:
         from romorg import cdimage, discsys
-        names = ["Tony's Game (Track 1).bin", "Track  2.bin"] + (['Odd "3".bin'] if os.name != "nt" else ["T3.bin"])
+        names = ["Tony's Game (Track 1).bin", "Track  2.bin", 'Odd "3".bin']
         for n in names:
             (self.dir / n).write_bytes(bytes(2352 * 10))
         cue = self.dir / "x.cue"

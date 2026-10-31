@@ -12,14 +12,13 @@ The game ID / title ID joins them with the game files (``nintendodisc``, Cemu's 
 
 from __future__ import annotations
 
-import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import emudata, winproc
+from . import emudata
 
 __all__ = ["NinSave", "detect_dolphin", "detect_cemu", "find_dolphin_wii", "find_dolphin_gc", "find_cemu", "read_title_list",
            "read_gci_header", "dolphin_game_dirs", "cemu_game_dirs"]
@@ -129,11 +128,6 @@ def detect_dolphin(home: Optional[Path] = None) -> Dict[str, object]:
               home / ".var" / "app" / "org.DolphinEmu.dolphin-emu" / "config" / "dolphin-emu" / "Dolphin.ini"),
              (home / ".local" / "share" / "dolphin-emu", home / ".config" / "dolphin-emu" / "Dolphin.ini"),
              (home / ".dolphin-emu", home / ".dolphin-emu" / "Config" / "Dolphin.ini")]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        cands.append((Path(appdata) / "Dolphin Emulator", Path(appdata) / "Dolphin Emulator" / "Config" / "Dolphin.ini"))
-    for docs in winproc.documents_dirs():                    # Windows, older installs: "Documents\Dolphin Emulator" (wherever Documents is)
-        cands.append((docs / "Dolphin Emulator", docs / "Dolphin Emulator" / "Config" / "Dolphin.ini"))
     for data, ini in cands:
         if (data / "Wii").is_dir() or (data / "GC").is_dir() or ini.is_file():
             cfg = ini if ini.is_file() else data / "Config" / "Dolphin.ini"
@@ -193,9 +187,6 @@ def detect_cemu(home: Optional[Path] = None) -> Dict[str, object]:
     home = Path(home) if home else Path.home()
     cands = [(home / ".var" / "app" / "info.cemu.Cemu" / "data" / "Cemu", home / ".var" / "app" / "info.cemu.Cemu" / "config" / "Cemu"),
              (home / ".local" / "share" / "Cemu", home / ".config" / "Cemu")]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        cands.append((Path(appdata) / "Cemu", Path(appdata) / "Cemu"))
     for data, conf in cands:
         if (data / "mlc01").is_dir() or (conf / "settings.xml").is_file():
             settings = conf / "settings.xml"

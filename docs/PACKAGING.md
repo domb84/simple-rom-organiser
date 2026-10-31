@@ -160,136 +160,46 @@ Stopping the game in Steam ends the server.
 Checks on `dist/*.AppImage` (ELF + `AI\x02` magic) and `build/appimage/AppDir` (bundled Python present,
 stdlib trimmed, `romorg/static` included) are skipped until `packaging/build_appimage.sh` has been run.
 
-## Windows
+## Engine, chdman and 7-Zip
 
-Two builds, both 64-bit and needing no install or admin rights:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging\build_windows_exe.ps1   # dist\Simple_ROM_Organiser-<version>-win64.exe
-powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1       # dist\Simple_ROM_Organiser-<version>-win64.zip
-```
-
-- **Single `.exe` (main download, about 12 MB):** built with PyInstaller `--onefile --windowed` from
-  `packaging/windows_entry.py`. With no console, output goes to `%LOCALAPPDATA%\simple-rom-organiser\app.log`
-  (rotated at 1 MiB; set `ROMORG_LOG=1` to force it). It unpacks itself to a temp folder on every start, so
-  startup takes a second or two. Unsigned one-file executables are sometimes flagged by antivirus tools.
-  Windows prerequisites: the `py` launcher with Python 3.14 installed (`py -3.14 --version`), or `-Python <python.exe>`.
-  Plain `python` on PATH is never used (it may be an old install) and `python3` is often the Microsoft Store
-  stub; `fetch_sndfile.ps1` and `build_pyz.sh` also go through `py` / skip interpreters that do not run.
-  The build needs Python 3.14 (`py -3.14`, or `-Python <python.exe>`); it installs the pinned PyInstaller
-  (`-PyInstallerVersion`, default 6.22.3) into a build venv (`packaging\.cache\venv-pyinstaller-3.14`), bundles
-  libFLAC (`-NoFlac` leaves it out), then runs the finished exe's import check, its self-check and the smoke
-  test (below). Every run of the exe during the build uses a throw-away data folder (`ROMORG_DATA_DIR`) and
-  `ROMORG_OFFLINE=1`. The licence texts go inside the exe (`licenses\`) and next to it (`dist\licenses`,
-  `dist\THIRD_PARTY_NOTICES.txt`, written by every build): ship them with the exe. A Python without its
-  `LICENSE.txt` stops the build.
-- **Zip (about 14 MB):** the official embeddable CPython 3.14 (`-PyVersion`, default 3.14.8) plus the `romorg`
-  sources, libFLAC and libsndfile in `app\native`, started by `Simple ROM Organiser.vbs`. Nothing is unpacked at
-  run time and it never trips antivirus.
-- **Why Python 3.14:** its `compression.zstd` reads Zstandard CHDs at library speed and makes the Zstandard preset
-  available, with no `libzstd.dll` to ship.
-- **Smoke test.** Both builds end with `packaging\smoke_test.ps1`, the Windows counterpart of
-  `packaging/smoke_test.sh` with the same checks (`tests/test_packaging.py` compares the two scripts): the
-  self-check's lines (libFLAC from the package, `compression.zstd`, the scheduler, the writer, the app is complete),
-  then the package is started with `--no-browser --port N` and asked for `/`, the files the page loads
-  (`/static/app.js`, `/static/style.css`), `/api/status` (version, No-Intro, Redump, updates, `"os": "windows"`),
-  `/api/platforms` (all 18 systems by name, and exactly 18), `/api/updates`, `/api/library/profile` (Amiga rules,
-  Dreamcast `"style": "redump"`), `/api/chdman` (built-in writer, native FLAC), the pages of the UI in the HTML
-  (`view-home`, `view-system`, `view-retroarch`, `view-chd`, `view-settings`, `view-databases`), `GET /api/library/defaults` and
-  `GET /api/retroarch` (JSON), and finally `POST /api/quit`, after which no process of the package may be left. A
-  miss fails the build. Whatever happens, the whole process tree is stopped (the onefile exe runs the app in a child
-  process; a child left behind would keep `dist\*.exe` locked). By hand:
-  `powershell -ExecutionPolicy Bypass -File packaging\smoke_test.ps1 -Exe dist\Simple_ROM_Organiser-<version>-win64.exe -DataDir build\smoke-data`
-  (the zip: `-Exe <unzipped>\python\python.exe -ExeArgs "-I -u -m romorg"`).
-- **Self-check.** Besides the CHD engine the self-check verifies that the app is complete (`selfcheck.check_app`, on
-  every platform): each `romorg` module imports and the web UI's files and pages are there, read the way the server
-  reads them. The lists (`selfcheck.APP_MODULES`, `STATIC_FILES`, `UI_VIEWS`) are kept equal to the source tree by
-  `tests/test_packaging.py`, so a module or UI file added later cannot be left out of a package unnoticed.
-  Both builds fail unless the package's own self-check passes with `--require-native`:
-  libFLAC loads from the package and encodes, Zstandard comes from `compression.zstd`, a shipped libsndfile loads
-  (the Windows package check, `selfcheck.check_windows_package`, which runs whenever the app is frozen or its
-  `app\native` folder exists), the scheduler runs worker processes and the writer makes a CHD with FLAC (`cdfl`)
-  audio hunks in worker processes. Run it by hand with
-  `"Simple ROM Organiser (console).cmd" --self-check --require-native` (zip) or
-  `Simple_ROM_Organiser-<version>-win64.exe --self-check --require-native --report check.txt` (exe: it has no
-  console, so the report goes to the file; without `--report` to `selfcheck.log` in the data folder; the exit code
-  is 0 when it passed).
-- Quit with the Quit button in the UI. Data and settings are in `%LOCALAPPDATA%\simple-rom-organiser`.
-- Folders are chosen with the app's own folder browser (**Folders...**), the same on every platform. The native
-  PowerShell dialog (`FolderBrowserDialog`) was removed on 2026-10-08: started from a background process it opened
-  behind the browser window, without a taskbar button, so Browse looked dead and a second click said a dialog was
-  already open.
-
-### Windows: chdman, 7-Zip and speed
-
-- **chdman is not needed and not shipped**: the app reads, verifies and writes CHDs itself, with the bundled
-  libFLAC for CD audio. An installed chdman stays usable as an option (`chdman.exe` is in the MAME download at
-  https://www.mamedev.org/): the app looks for it on `PATH`, next to the app (the exe's folder, or the top folder of
-  the unzipped package, next to `README.txt`; `winproc.app_dirs`), and in common folders (Program Files,
-  `%LOCALAPPDATA%\MAME`, RetroArch, Scoop, `C:\mame`), or `ROMORG_CHDMAN` / the `chdman_path` setting (the path
-  field in the Convert step), and it can be chosen in the Convert step.
-- **7-Zip** (`7z.exe`, for `.7z` / `.rar`) is found on `PATH`, in `C:\Program Files\7-Zip` and next to the app.
-- CHD hashing uses the same engine as on Linux (`romorg/chdsched.py`, Amendment 14): one work queue over all tracks
-  of all CHDs, decoded by worker processes (the frozen exe starts itself with `--chd-worker`; no console windows).
-  Workers start no processes of their own, so they are closed by closing their input and waiting, and only one
-  that is still running is terminated (no `taskkill /T`, which cost about 0.2 s per worker; it stays for chdman and
-  7-Zip). Auto worker count on Windows: one per CPU thread minus one, at most 12, limited by the free memory. Loose files are hashed and archives listed by a small thread pool
-  (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
-- External tools run with `CREATE_NO_WINDOW`, so no console window flashes from the windowed exe.
-- Very long paths (over 260 characters) need the Windows `LongPathsEnabled` setting (a registry value; it is
-  per machine and takes a restart). Both the PyInstaller exe (PyInstaller's default manifest has `longPathAware`;
-  `build_windows_exe.ps1` fails the build if it ever stops) and the embeddable `python.exe` / `pythonw.exe` of the zip
-  (checked in 3.14.8) carry a `longPathAware` manifest, so no `\\?\` prefixes are used. Tested from Python and from
-  the built exe (`/api/convert` of a set in a 359-character folder, CHD placed at 391 characters, with the setting
-  on). With the setting off, Windows fails those paths (WinError 2/3/206); a failed Convert item then names the
-  setting in its error text (`winproc.long_path_hint`) instead of just "cannot find the path".
+- **Self-check.** Besides the CHD engine the self-check verifies that the app is complete (`selfcheck.check_app`): each
+  `romorg` module imports and the web UI's files and page parts are there, read the way the server reads them. The lists
+  (`selfcheck.APP_MODULES`, `STATIC_FILES`, `UI_PARTS`) are kept equal to the source tree by `tests/test_packaging.py`, so a
+  module or UI file added later cannot be left out of a package unnoticed. `--require-native` makes libFLAC, a Zstandard library
+  and the writer's worker processes required (inside an AppImage the bundle check already requires the libraries).
+- **chdman is not needed and not shipped**: the app reads, verifies and writes CHDs itself. An installed chdman stays usable
+  as an option: `ROMORG_CHDMAN` / the `chdman_path` setting, `PATH`, the Flatpak, the common tool folders. It can be chosen in
+  Settings › Disc images.
+- **7-Zip** (`7z`, for `.rar` and unusual `.7z`) is found on `PATH`.
+- CHD hashing (`romorg/chdsched.py`, Amendment 14): one work queue over all tracks of all CHDs, decoded by worker processes.
+  Loose files are hashed and archives listed by a small thread pool (`scanner.scan_threads`, `ROMORG_SCAN_THREADS`).
 - **Real-data tests** skip unless their data exists. Overrides (the Steam Deck paths stay the defaults):
   `ROMORG_REAL_SCRATCH` (folder with `dats/TOSEC`, `nointro`, `dom`; test_datfile, test_kickstart, test_m3u,
-  test_platforms), `ROMORG_REAL_GC_DIR` (a folder holding the Super Mario Sunshine RVZ, for tests/test_rvz.py), `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT, a path or glob), `ROMORG_REAL_DC_DIR` (the Dreamcast
-  CHD folder), `ROMORG_REAL_CHD_FULL=1` (slow, every track), `ROMORG_REAL_SONY_DATS` (test_playstation),
-  `ROMORG_REAL_SETS` / `ROMORG_REAL_CHDMAN_CHDS` (test_chdwrite: source sets and chdman-made CHDs),
-  `ROMORG_CHDMAN_ORACLE` (a real chdman for the oracle tests), `ROMORG_LIBFLAC` (libFLAC dll/so).
+  test_platforms), `ROMORG_REAL_GC_DIR` (a folder holding the Super Mario Sunshine RVZ, for tests/test_rvz.py),
+  `ROMORG_REAL_DC_DAT` (Redump Dreamcast DAT), `ROMORG_REAL_CHD_FULL=1` (slow, every track), `ROMORG_REAL_SONY_DATS`
+  (test_playstation), `ROMORG_REAL_SETS` / `ROMORG_REAL_CHDMAN_CHDS` (test_chdwrite: source sets and chdman-made CHDs),
+  `ROMORG_CHDMAN_ORACLE` (a real chdman for the oracle tests), `ROMORG_LIBFLAC` (a libFLAC to load).
 - **Which engine hashes a CHD.** `engine = "auto"` (the default) is the built-in parallel reader first; `chdman` is
   used only for a codec name the reader does not know (a format newer than chdman 0.289) and when forced with
   `engine = "chdman"`. Creating a CHD is the built-in writer (`romorg/chdwrite.py`, settings `chd_writer` =
-  `auto` | `chdman`, `chd_preset` = `default` | `zstd`); its FLAC encoder uses the bundled libFLAC (without one,
-  audio tracks are stored with LZMA, larger but valid), its Zstandard preset Python 3.14's `compression.zstd`.
+  `auto` | `chdman`, `chd_preset` = `default` | `zstd`); its FLAC encoder uses libFLAC (without one, audio tracks are
+  stored with LZMA, larger but valid).
 - **Zstandard CHDs (`cdzs` / `zstd`).** Decoded by the built-in reader when a Zstandard library loads
-  (`romorg/zstdnative.py`): Python 3.14's `compression.zstd` (what the Windows builds use), or a `libzstd.dll` /
-  `zstd.dll` next to the app or in its `native` folder, or on Linux the AppImage's bundled `tools/lib/libzstd.so.1`
-  (`ROMORG_LIBZSTD` names one). Without either they are decoded
-  by the pure-Python fallback (`romorg/zstddec.py`: correct, about 1 MB/s per worker). The AppImage's Python 3.13 has no `compression.zstd`, so
-  **the AppImage bundles libzstd 1.5.7** (Arch `zstd 1.5.7-3`) and loads it ahead of any system copy: RVZ, Zstandard
-  CHDs and the Zstandard writer preset run at library speed on a SteamOS image that ships nothing extra. Outside the
-  AppImage (a source tree on Linux) the system `libzstd` is used. Inside an AppImage `--self-check` FAILS unless
-  libFLAC and libzstd were loaded from the bundle.
+  (`romorg/zstdnative.py`): Python 3.14's `compression.zstd`, or the AppImage's bundled `tools/lib/libzstd.so.1`
+  (`ROMORG_LIBZSTD` names one). Without either they are decoded by the pure-Python fallback (`romorg/zstddec.py`: correct,
+  about 1 MB/s per worker). The AppImage's Python 3.13 has no `compression.zstd`, so **the AppImage bundles libzstd 1.5.7**
+  (Arch `zstd 1.5.7-3`) and loads it ahead of any system copy: RVZ, Zstandard CHDs and the Zstandard writer preset run at
+  library speed on a SteamOS image that ships nothing extra. Outside the AppImage (a source tree on Linux) the system
+  `libzstd` is used. Inside an AppImage `--self-check` FAILS unless libFLAC and libzstd were loaded from the bundle.
 - **Native FLAC.** CD-audio (`cdfl`) hunks are encoded (`romorg/flacenc.py`) and decoded (`romorg/flacnative.py`)
-  with libFLAC when one loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, a `libFLAC.dll` next to the app or in
-  its `native` folder or inside the onefile exe, the system's). **Both Windows builds bundle libFLAC 1.5.0** (the
-  official Xiph.Org Win64 DLL, fetched and checksum-checked by `fetch_flac.ps1`, BSD-3-Clause; see
-  `docs/THIRD_PARTY.md`). When none loads, `romorg/nativeflac.py` decodes the audio with libsndfile (which contains
-  libFLAC): found via `ROMORG_SNDFILE`, next to the app (or in a `native` folder, or inside the onefile exe), or as
-  the system's `libsndfile`. Both are byte-identical to the pure-Python decoder (`tests/test_flacnative.py`), which
-  is the fallback and roughly 100 times slower. `ROMORG_NO_NATIVE_FLAC=1` switches both off
+  with libFLAC when one loads (`ROMORG_LIBFLAC`, the AppImage's bundled copy, the system's). When none loads,
+  `romorg/nativeflac.py` decodes the audio with libsndfile (which contains libFLAC): found via `ROMORG_SNDFILE`, next to the
+  app (or in a `native` folder), or as the system's `libsndfile`. Both are byte-identical to the pure-Python decoder
+  (`tests/test_flacnative.py`), which is the fallback and roughly 100 times slower. `ROMORG_NO_NATIVE_FLAC=1` switches both off
   (`ROMORG_NATIVE_FLAC=0`: libsndfile only).
-  **The Windows `.zip` package also bundles libsndfile** (`app\native\libsndfile-1.dll`, taken from the `soundfile` wheel by
-  `fetch_sndfile.ps1`; `build_windows.ps1 -NoSndfile` leaves it out) together with `THIRD_PARTY_NOTICES.txt` and
-  the licence texts in `licenses\`. **The single-file `.exe` does not by default** (`build_windows_exe.ps1
-  -BundleSndfile` adds it, with its licence texts in the exe's `licenses\` and in `dist\licenses`): libsndfile is
-  LGPL-2.1+, loaded dynamically only, and a user can replace the separate DLL in the zip, which is awkward when it
-  is packed inside an exe.
-- **Licences of what is linked into libFLAC.dll.** Xiph's DLL is a MinGW-w64 build (GCC 14.2.0 from MSYS2) with
-  libogg, winpthreads and the MinGW-w64 runtime start-up code linked in statically (its strings name
-  `mingw-w64-libraries/winpthreads/src/*.c` and "Mingw-w64 runtime failure"). Both packages ship
-  `licenses\libogg-COPYING.txt`, `licenses\winpthreads-COPYING.txt` and `licenses\mingw-w64-runtime-COPYING.txt`
-  (fetched and SHA-256 checked by `fetch_flac.ps1`). Any libgcc code is under the GCC Runtime Library Exception,
-  which sets no conditions.
 - **chdman and 7-Zip are never bundled** (GPL / LGPL programs run as separate processes; see
   `packaging/THIRD_PARTY_NOTICES.txt` for the wording and where to get them).
-- **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so
-  listing one costs ~0.1 ms instead of an ~86 ms `7z.exe` launch, and no 7-Zip is needed for them. BCJ / PPMd /
-  BZip2 / encrypted archives and `.rar` still use `7z.exe`; big members are also extracted by `7z.exe` when it is
-  installed (it decodes ~2x faster than Python). Zip members are matched from the CRC in the zip directory, so
+- **`.7z` archives are read in Python** (`romorg/sevenzip.py`: LZMA / LZMA2 / stored, header and members), so no 7-Zip is
+  needed for them. BCJ / PPMd / BZip2 / encrypted archives and `.rar` still use `7z`; big members are also extracted by `7z`
+  when it is installed (it decodes ~2x faster than Python). Zip members are matched from the CRC in the zip directory, so
   nothing is decompressed for a scan.
-- The exe build runs `--selftest` with the name of every `romorg` module: the server imports modules by name, which
-  PyInstaller cannot see, so `--collect-submodules romorg` is required and checked.

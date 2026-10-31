@@ -4591,3 +4591,47 @@ describes the bug that the follow-up fixed (the Carton Rouge install is now AGA 
   `whdknown.json.gz`, written by `tools/whdknown_set.py` (same format byte for byte: compact JSON, gzip 9, the same key order). Der Clou!'s SPS release
   had no entry: added with its five images' checksums. `AgaKeptReleases` pins them. On the real Amiga plan the targets stay 394, but the Fantastic Dizzy
   target changes from the SPS release [1904] to the AGA ADF set (the best platform of equal versions).
+
+## Amendment 115: one UI, one platform (2026-10-31)
+
+The user: "remove the old web ui and any windows specific functions. lets focus on steam os support where we're working now." The target
+is SteamOS / Linux from now on. Two commits, each checked with a plan oracle: the sorted (src, dst, status, reason) of `plan.ops`, `plan.playlists`, the
+`whdbuild.targets` and the profile of the real Amiga folder (69,530 ops, 41 playlists, 394 targets) and of the real Dreamcast folder (95 ops, 5 playlists),
+byte-identical before, after the first commit and after the second.
+
+**The old web UI is gone.** `index.html`, `app.js`, `style.css`, `deck.js`, `deck.css` are deleted: `next.html` / `next.js` / `next.css` are the only page, served at
+`/` and `/index.html`; `/classic` and `/next` are plain 404s. `next.js` has its own controller and keyboard handling, and the Deck flag stays (`DECK_PLACEHOLDER`,
+the `romorg-deck` meta). The file names `next.*` stay; renaming them was not part of this. The menu and Settings › Advanced lose "Classic interface".
+
+* **Tiles.** `avg_rating`, `best_missing`, `rated_all`, `rated_rules`, `regions` and `space` had no drawing in the new UI (only the old page drew them): they leave
+  `tiles.CATALOG` and `DEFAULT`, so Settings offers no dead choice. A saved `page_tiles` that names them loads and they drop out (the user's real config names three).
+  `tiles.CALC` is no longer derived from the catalogue: `/api/library/insights` still answers `space`, `best_missing`, `avg_rating` and `regions`.
+* **Seven endpoints have no caller now** and stay in the server, tested, for the UI to use later: `/api/library/saved`, `/api/library/vanished`,
+  `/api/ratings/igdb/test`, `/api/saves/convert`, `/api/updates/cancel`, `/api/whdload/check`, `/api/whdload/installs`.
+* `selfcheck.UI_VIEWS` (sections of `index.html`) became `UI_PARTS` (`head`, `main`, `strip`, `overlays`, `toasts` of `next.html`).
+* The browser tests drive the new UI. What the new UI cannot do any more has no test: ticking a whole folder for a restore, two regions equally best, the per-game saves
+  choice, the list of WHDLoad installs (see `/api/library/saved`, `/api/whdload/installs`).
+
+**Windows code is gone**, and the Windows packaging, handover documents and tests of it. `winproc.py` became `process.py` (`popen_kwargs`, `find_tool`, `pid_alive`; not
+`proc.py`: `proc` is the local name of every `Popen` in the modules that import it). Removed: the Windows packages and their self-check, the registry / drive / process-list
+search for RetroArch, `%APPDATA%` and Documents folders of the emulators, the `.exe` image names, `chdman.exe` and its path limits (`_CHDMAN_PATH_LIMIT`, short paths), the
+job and worker-count code, sharing-violation retries and read-only attributes (`sortroot`, `organiser`, `retroarch`: those helpers were one plain call on Linux, and the plain call is what is left),
+`msvcrt`, the DLL search, the drive list of the folder browser, the `os` value `windows`. macOS branches stay (not asked).
+
+**What says "Windows" and stays, on purpose:**
+
+* `organiser.safe_filename`, `_ILLEGAL_CHARS`, `_WINDOWS_RESERVED`: they protect exFAT / FAT SD cards and decide every target file name.
+* Case-insensitive compares, `fold` / casefold keys, `os.path.normcase` and the case-only rename logic. `retroarch.fold_name` is kept as the one place a save's name is
+  compared, though it now returns the name as it is (the casefold of its Windows branch is gone, as `SaveMatcher.fold` and `SavePin.fold`).
+* Backslashes in data: SYSTEM.CNF, cue / gdi sheets, zip and 7z members, Eden's `qt-config.ini` keys, `retroarch.cfg` values (`:\\saves`, a config carried over) and
+  the `origin` of archived objects (the real S3 archive has such objects). `write_cfg` keeps CRLF line ends.
+* Windows-1252 in DATs and Windows' `Game - Copy` names of saves (`saveindex`): data, wherever it was made.
+* `.exe` / `.dll` inside game data: Amiga programs (`GAMEUK.EXE`), `lhx.exe` in installers, the scan's extension lists.
+* A config, undo record, sidecar or `.romorg` marker a Windows run wrote still loads: nothing about reading them changed.
+
+There is no Proton-specific code to keep (no `compatdata`, `pfx`, `drive_c` or `Z:\\` anywhere); `emulators.running` sees a Windows build run through Proton by its
+`/proc/<pid>/comm` (`Cemu.exe` starts with `cemu`), now under test. `_discard_body` stays: Linux also resets a socket closed with unread data. `release` of the worker pool
+stays too: on Linux it is only a tidy close, but it is what `restart_workers` and the conversion flow are built around.
+
+Tests that said Windows but test Linux behaviour stayed: `tests/test_retroarch_windows.py` became `tests/test_retroarch_files.py` (the config byte for byte, moves that never
+leave a file twice, backups, names differing by case, BIOS files), `tests/test_winproc.py` became `tests/test_process.py`.

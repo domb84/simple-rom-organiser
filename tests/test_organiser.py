@@ -519,7 +519,6 @@ class OrganiseTests(unittest.TestCase):
         self.assertTrue(res["cancelled"])
         self.assertEqual(res["moved"], 2)
 
-    @unittest.skipUnless(os.name == "posix", "bytes filenames")
     def test_undecodable_names_apply(self) -> None:
         name = os.fsdecode(b"junk\xff.bin")
         try:
@@ -1383,8 +1382,7 @@ class LibraryPlanTests(unittest.TestCase):
 
 
 class ReadOnlyFilesTests(unittest.TestCase):
-    """ROMs unpacked from an archive are often read-only. On Windows such a file cannot be deleted, which the link + unlink
-    move does to the old name; it used to leave the file under both names and report a failure."""
+    """ROMs unpacked from an archive are often read-only: a move leaves them under one name, read-only."""
 
     def setUp(self) -> None:
         import stat
@@ -1414,40 +1412,6 @@ class ReadOnlyFilesTests(unittest.TestCase):
         self.assertEqual(dst.read_bytes(), b"rom")
         self.assertTrue(self._ro(dst))
         self.assertFalse(src.parent.exists())
-
-    @unittest.skipUnless(os.name == "nt", "the read-only attribute of a folder is a Windows matter")
-    def test_windows_an_emptied_read_only_folder_is_removed(self) -> None:
-        src = self.root / "Old Folder" / "game.sfc"
-        other = self.root / "Full" / "keep.txt"
-        for p in (src, other):
-            p.parent.mkdir()
-            p.write_bytes(b"rom")
-            os.chmod(p.parent, self.stat.S_IREAD)
-            self.assertTrue(os.stat(p.parent).st_file_attributes & self.stat.FILE_ATTRIBUTE_READONLY)
-        dst = self.root / "snes" / "game.sfc"
-        res = apply_renames([RenameOp(src, dst, "move", "", "", "move")], self.root)
-        self.assertEqual((res["moved"], res["failed"]), (1, []))
-        self.assertFalse(src.parent.exists())
-        self.assertEqual(organiser._remove_empty_dirs([other.parent], self.root, set()), [])
-        self.assertTrue(os.stat(other.parent).st_file_attributes & self.stat.FILE_ATTRIBUTE_READONLY)   # not empty: untouched
-
-    @unittest.skipUnless(os.name == "nt", "the read-only attribute is a Windows matter")
-    def test_windows_when_the_old_name_cannot_go_the_new_one_is_taken_away_again(self) -> None:
-        src, dst = self.root / "a.sfc", self.root / "b.sfc"
-        src.write_bytes(b"rom")
-        os.chmod(src, self.stat.S_IREAD)
-        real = os.unlink
-
-        def unlink(p, *a, **k):
-            if Path(p) == src and not self._ro(src):          # the delete after the attribute was cleared
-                raise PermissionError(13, "in use", str(p))
-            return real(p, *a, **k)
-
-        with mock.patch.object(organiser.os, "unlink", unlink):
-            with self.assertRaises(PermissionError):
-                organiser._move_exclusive(src, dst)
-        self.assertTrue(src.is_file() and self._ro(src))
-        self.assertFalse(dst.exists())
 
 
 if __name__ == "__main__":

@@ -369,5 +369,5 @@ class KeyFilesTest(unittest.TestCase):
     def test_an_emulator_that_is_not_set_up_has_no_rows(self) -> None:
         self.switch = {"eden": "", "ryujinx": ""}
         self.nin["wiiu"]["data"] = ""
-        with mock.patch.dict(os.environ, {"HOME": str(self.home), "APPDATA": "", "USERPROFILE": ""}):
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             self.assertEqual(self.k.check(self.nin, self.switch, [], home=self.home)["rows"], [])
