@@ -4391,6 +4391,21 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
   that has the file, not the one in the drive - `course2` was the game disk's `course` (both disks hold `course`, `Selection`, `Title.Music`);
   now the disk in the drive wins when it has the file (`split` of the install's file system).
 
+* **Addendum (SPS releases, the real Amiga plan)**: on the user's real plan only 2 expansions were `merged_into` a game and none of the 393
+  targets had `Target.extra`, though 318 of the targets are SPS releases. Root cause: the plan side (`library.merge_expansions`) already merged
+  SPS pairs (Cadaver / The Pay Off and HeroQuest / Return of the Witch Lord, both kept as SPS releases: exactly the 2), but
+  `whdbuild._attach_expansions` skipped every SPS base (`or t.sps`) and read an expansion's disks only as floppy files, so the merged
+  expansion was no game of its own and was not given to the install either. Now: an expansion kept as an SPS release is an `Extra` with
+  `sps=True` (its images - a zip / 7z or loose `.ipf` - one unit, as the base's SPS disks), `_disk_data` reads each side as what it is (an SPS
+  base with an ADF expansion and the reverse both work), the images are in the release's own file-name order, and the marker `source` is the
+  release name then `+ <expansion release>`. Real result: 2 merges and 2 targets with an expansion (both SPS + SPS), built and booted.
+  The other table games are not merged on the real plan for reasons of the rules, not of the merge: the expansion is not kept (rating
+  rule "no usable rating" excludes it: Falcon's two mission disks, Battle Isle's scenario disks, Space Crusade's Voyage Beyond, Corporation,
+  Earl Weaver's Commissioner's Disk, Lords of Chaos, PGA Tour, Test Drive II, World Class Leader Board, Hole-In-One; Battle Isle's
+  Moon of Chromos is also "pre-release", Scenario Disk 1 only in De / Fr), or the base itself is excluded (Earl Weaver, Corporation, Lords of
+  Chaos, Hole-In-One, Test Drive II, World Class Leader Board: "no usable rating" / "not among the top rated games"). Nothing is changed for
+  them; an expansion of a kept game could inherit its game's rating (a rule decision for the user).
+
 ### Amendment 113, addendum 4: separate releases are separate games
 
 Decided with the user (Kick Off 3 and Kick Off 3 - European Challenge): two releases that are games of their own are not merged, whatever their titles share. A check of every hand pair against OpenRetro (which keeps a record per game) showed these were wrongly joined, and they are no longer pairs: Alien Breed / Special Edition 92, Project-X / Special Edition 93, Worms / The Director's Cut, Assassin / Special Edition, Premier Manager 3 / Deluxe and Caesar / Caesar Deluxe (no record to confirm). Kept, as decided: the Sensible World of Soccer editions, the two Leisure Suit Larry titles, Hollywood Poker / Pro, Kick Off / Extra Time / Plus Extra Time, Pirates! / Gold (OpenRetro lists these as separate records too: the user chose to merge them). The older pairs (Gloom Deluxe, World Class Rugby Five Nations, Sensible Soccer International Edition ...) are unchanged.

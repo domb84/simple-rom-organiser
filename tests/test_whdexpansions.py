@@ -11,6 +11,7 @@ import re
 import shutil
 import tempfile
 import unittest
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -508,3 +509,90 @@ class HoleInOneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SPS_DAT = "Commodore Amiga - Games - SPS"
+SPS_BASE = "Zap (1990)(Acme)[0042]"
+SPS_EXP = "Zap - The Expansion (1991)(Acme)[data disk][0043]"
+SPS_EXP2 = "Zap - Second Expansion (1992)(Acme)[data disk][0044]"
+
+
+class SpsReleaseTests(unittest.TestCase):
+    """A game or an expansion kept as an SPS release (its images in a zip, as the library keeps them) merges and builds like a floppy set:
+    its images are the install's disks, in the release's own order, whether the other side of the pair is an SPS release or an ADF set."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        listed = {f"{BASE1}.adf\n{BASE2}.adf": [3, "Zap.lha"]}
+        rel = lambda name: [3, "Zap.lha"] if name == SPS_BASE else None          # noqa: E731
+        for p in (mock.patch.object(whdready, "known", return_value=listed), mock.patch.object(whdready, "checked", return_value=None),
+                  mock.patch.object(whdready, "release", side_effect=rel)):
+            p.start()
+            self.addCleanup(p.stop)
+        t = table(TABLE)
+        t.__enter__()
+        self.addCleanup(t.__exit__, None, None, None)
+
+    def sps(self, rel: str, images: list[str], key: int) -> tuple[list, dict]:
+        """One SPS release as one zip of ``images`` (one unit a disk, as the scan reads a zip)."""
+        z = self.tmp / f"{rel}.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            for n in reversed(images):                           # (written backwards: the order is the names')
+                zf.writestr(n, rel.encode() + b"|" + n.encode())
+        items, owners = [], {}
+        for i, n in enumerate(images):
+            rom = Rom(name=f"{rel} - {n}", size=1, crc="", md5="", sha1="", game=rel, dat=SPS_DAT)
+            it = library.Item(key=key + i, dat=SPS_DAT, rom=rom, style="tosec", path=z, member=n)
+            op = RenameOp(z, z, "ok")
+            items.append(it)
+            owners[it.key] = (op, MatchedUnit(z, op, rom, frozenset(), "", SPS_DAT, True, True, False, n))
+        return items, owners
+
+    def plan(self, base: list | None, exps: list, adf_base: bool = False) -> SimpleNamespace:
+        items, owners = [], {}
+        if adf_base:
+            p = make_plan(self.tmp, [BASE1, BASE2], {})
+            items, owners = list(p.items), dict(p.owners)
+        elif base:
+            items, owners = self.sps(SPS_BASE, base, 1)
+        for n, (rel, images) in enumerate(exps):
+            i, o = self.sps(rel, images, 20 + 10 * n)
+            items += i
+            owners.update(o)
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA)
+        return SimpleNamespace(selection=sel, owners=owners, items=items)
+
+    def test_an_sps_expansion_of_an_sps_game_is_one_title_with_it(self) -> None:
+        plan = self.plan(["Zap_Disk1.ipf"], [(SPS_EXP, ["ZapExp.ipf"])])
+        self.assertEqual([d.action for d in plan.selection.decisions.values()], [library.KEEP] * 2)      # (nothing is dropped)
+        self.assertEqual(len({library.counted_key(it, plan.selection) for it in plan.items}), 1)
+        self.assertEqual(plan.selection.decisions[20].merged_into, SPS_BASE)
+        self.assertEqual(plan.selection.decisions[1].includes, ("The Expansion",))
+
+    def test_the_install_is_given_the_games_images_then_the_expansions_in_order(self) -> None:
+        plan = self.plan(["Zap_Disk2.ipf", "Zap_Disk1.ipf"], [(SPS_EXP, ["ZapExp_B.ipf", "ZapExp_A.ipf"])])
+        [t] = whdbuild.targets(plan, AMIGA)
+        self.assertEqual((t.sps, [x.sps for x in t.extra], [x.expansion.titles[0] for x in t.extra]), (True, [True], ["Zap - The Expansion"]))
+        got = whdbuild._disk_data(t, t.extra)
+        self.assertEqual([d.split(b"|")[1] for d in got], [b"Zap_Disk1.ipf", b"Zap_Disk2.ipf", b"ZapExp_A.ipf", b"ZapExp_B.ipf"])
+        self.assertEqual(len(whdbuild._disk_data(t)), 2)                                           # (the game alone: its own two)
+        self.assertEqual(t.key()["source"], [SPS_BASE, f"+ {SPS_EXP}"])                             # (a changed set is made again)
+
+    def test_both_expansions_of_an_sps_game_follow_the_installs_order(self) -> None:
+        plan = self.plan(["Zap_Disk1.ipf"], [(SPS_EXP2, ["Two.ipf"]), (SPS_EXP, ["One.ipf"])])
+        [t] = whdbuild.targets(plan, AMIGA)
+        self.assertEqual([x.expansion.titles[0] for x in t.extra], ["Zap - The Expansion", "Zap - Second Expansion"])
+        self.assertEqual([d.split(b"|")[1] for d in whdbuild._disk_data(t, t.extra)], [b"Zap_Disk1.ipf", b"One.ipf", b"Two.ipf"])
+
+    def test_an_sps_expansion_of_a_floppy_set_game_is_read_as_images(self) -> None:
+        plan = self.plan(None, [(SPS_EXP, ["ZapExp.ipf"])], adf_base=True)
+        [t] = whdbuild.targets(plan, AMIGA)
+        self.assertEqual((t.sps, [x.sps for x in t.extra]), (False, [True]))
+        got = whdbuild._disk_data(t, t.extra)
+        self.assertEqual(len(got), 3)
+        self.assertTrue(got[2].endswith(b"ZapExp.ipf"))                                            # (the zip's member, not the zip)
+
+    def test_an_sps_expansion_without_its_game_is_a_game_of_its_own(self) -> None:
+        plan = self.plan(None, [(SPS_EXP, ["ZapExp.ipf"])])
+        self.assertEqual((plan.selection.merged, plan.selection.decisions[20].merged_into), ({}, ""))
