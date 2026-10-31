@@ -4390,3 +4390,7 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
   untried (the Starter Kit already holds those courses). Found on the way: `DF0:file` after "ask the disk by a file" took the first disk
   that has the file, not the one in the drive - `course2` was the game disk's `course` (both disks hold `course`, `Selection`, `Title.Music`);
   now the disk in the drive wins when it has the file (`split` of the install's file system).
+
+### Amendment 113, addendum 4: separate releases are separate games
+
+Decided with the user (Kick Off 3 and Kick Off 3 - European Challenge): two releases that are games of their own are not merged, whatever their titles share. A check of every hand pair against OpenRetro (which keeps a record per game) showed these were wrongly joined, and they are no longer pairs: Alien Breed / Special Edition 92, Project-X / Special Edition 93, Worms / The Director's Cut, Assassin / Special Edition, Premier Manager 3 / Deluxe and Caesar / Caesar Deluxe (no record to confirm). Kept, as decided: the Sensible World of Soccer editions, the two Leisure Suit Larry titles, Hollywood Poker / Pro, Kick Off / Extra Time / Plus Extra Time, Pirates! / Gold (OpenRetro lists these as separate records too: the user chose to merge them). The older pairs (Gloom Deluxe, World Class Rugby Five Nations, Sensible Soccer International Edition ...) are unchanged.

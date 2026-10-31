@@ -470,7 +470,10 @@ class HandPairsOfTheNewRatingsData(unittest.TestCase):
         self.assertTrue(one("Sega Dreamcast", "Sonic Adventure", "Sonic Adventure International"))
         self.assertTrue(one("Nintendo Game Boy Advance", "Pokemon - LeafGreen Version", "Pokemon - Blattgruene Edition"))
         self.assertTrue(one("Nintendo Entertainment System", "Super Mario Bros. 2", "Super Mario USA"))
-        self.assertTrue(one("Commodore Amiga", "Alien Breed", "Alien Breed - Special Edition 92"))
+        for a, b in [("Alien Breed", "Alien Breed - Special Edition 92"), ("Project-X", "Project-X - Special Edition 93"),
+                     ("Worms", "Worms - The Director's Cut"), ("Assassin", "Assassin - Special Edition"),
+                     ("Premier Manager 3", "Premier Manager 3 Deluxe"), ("Kick Off 3", "Kick Off 3 - European Challenge")]:
+            self.assertFalse(one("Commodore Amiga", a, b), (a, b))              # (separate releases are separate games)
         self.assertTrue(one("Commodore Amiga", "Sensible World of Soccer", "Sensible World of Soccer '96-'97"))
         self.assertTrue(one("Commodore Amiga", "Kick Off", "Kick Off Plus Extra Time", "Kick Off - Extra Time"))
         self.assertTrue(one("Commodore Amiga", "Pirates!", "Pirates! Gold"))

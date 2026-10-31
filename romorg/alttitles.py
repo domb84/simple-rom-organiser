@@ -282,10 +282,11 @@ SAME_GAME["Nintendo Game Boy Advance"].append(("Acrobat Kid", "Aero the Acro-Bat
 SAME_GAME["Nintendo Entertainment System"].append(("1943", "1943 - The Battle of Midway", "1943 - The Battle of Valhalla"))
 # (the Amiga: a game and its enlarged / enhanced edition or its CD32 disc, a data disk named by two publishers; checked in the audit of the
 #  real library: the same game, the ratings data does not know the second title)
+# (NOT the enlarged / enhanced editions that OpenRetro lists as games of their own: Alien Breed and its Special Edition 92, Project-X and
+#  its Special Edition 93, Worms and its Director's Cut, Assassin and its Special Edition, Premier Manager 3 and Deluxe, Kick Off 3 and
+#  European Challenge: separate releases are separate games)
 SAME_GAME["Commodore Amiga"].extend([
-    ("Alien Breed", "Alien Breed - Special Edition 92"), ("Project-X", "Project-X - Special Edition 93"),
-    ("Worms", "Worms - The Director's Cut"), ("James Pond 2 - Codename RoboCod", "James Pond 2 - Robocod"),
-    ("Caesar", "Caesar Deluxe"), ("Assassin", "Assassin - Special Edition"), ("Premier Manager 3", "Premier Manager 3 Deluxe"),
+    ("James Pond 2 - Codename RoboCod", "James Pond 2 - Robocod"),
     ("Wing Commander", "Wing Commander - Platinum Edition"), ("Donk! - The Samurai Duck!", "Donk! The Samurai Duck!"),
     ("SimCity Architecture 1 - Future Cities", "SimCity Graphics Set 1 - Future Cities"),
     ("SimCity Architecture 2 - Ancient Cities", "SimCity Graphics Set 2 - Ancient Cities"),
