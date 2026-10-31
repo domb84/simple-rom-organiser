@@ -75,6 +75,15 @@ SEED_MERGE: list[dict[str, Any]] = [
     {"archive": "WCLeaderboardGolf.lha", "base": ["World Class Leader Board"],
      "expansions": [exp("World Class Leader Board - Extra Courses", asks=[options("install", r"courses disk #1")]),
                     exp("World Class Leader Board - Extra Courses 2", asks=[options("install", r"courses disk #2")])]},
+    # Hole-In-One (the Files version: the script sets the version, no version question) asks "install data #1 (Menagerie)?" then "data #2
+    # (Holidays)?", Yes / No each, asking for the disk by a file on it ("Intermediate", then "Holidays"): data #1 is Course Disk #2
+    # (Intermediate & Menagerie), data #2 is Course Disk #3 (Alphabet Soup, Out of this World, Holidays). The game is TOSEC's "Hole-In-One"
+    # (program disk) and the Disc Company's "Hole-In-One - Miniature Golf" (Starter Kit). Mean 18's course disks are another game.
+    # (Data #2's disk was not at hand to try: it is in by the user's decision, assumed complete and installable.)
+    {"archive": "HoleInOne.lha", "base": ["Hole-In-One", "Hole-In-One - Miniature Golf"],
+     "expansions": [exp("Hole-In-One - Course Disk #2 - Intermediate & Menagerie", "Hole-In-One - Course Disk - Intermediate & Menagerie",
+                        asks=[bool_("Menagerie")]),
+                    exp("Hole-In-One - Course Disk #3 - Alphabet Soup & Out of this World & Holidays", asks=[bool_("Holidays")])]},
 ]
 
 # expansions with an install of their own (built from their disks alone), and the install of one disk of a package of two

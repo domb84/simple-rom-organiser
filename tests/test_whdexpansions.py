@@ -458,5 +458,53 @@ class HeroQuestShapeTests(unittest.TestCase):
         self.assertTrue(whdbuild._in_order(kept)[0].names[0].endswith("[cr CABAL].adf"))
 
 
+class HoleInOneTests(unittest.TestCase):
+    """Hole-In-One's install (the Files version, no version question) asks for data #1 (Menagerie) then data #2 (Holidays), each disk found by
+    a file on it: Course Disk #2 and Course Disk #3 are its expansions; Mean 18's course disks are another game."""
+
+    def test_the_game_under_both_names_takes_both_course_disks(self) -> None:
+        for base in ("Hole-In-One", "Hole-In-One - Miniature Golf"):
+            m = whdexpansions.merge_for_base(base)
+            self.assertEqual([x.archive for x in m], ["HoleInOne.lha"], base)
+        for t in ("Hole-In-One - Course Disk #2 - Intermediate & Menagerie", "Hole-In-One - Course Disk - Intermediate & Menagerie"):
+            (m, e), = whdexpansions.merge_for_expansion(t)
+            self.assertEqual((m.archive, e.asks[0]["prompt"]), ("HoleInOne.lha", "Menagerie"))
+        (m, e), = whdexpansions.merge_for_expansion("Hole-In-One - Course Disk #3 - Alphabet Soup & Out of this World & Holidays")
+        self.assertEqual(e.asks[0]["prompt"], "Holidays")
+        for t in ("Mean 18 - Ultimate Golf - Famous Courses I", "Mean 18 - Ultimate Golf - Misc Courses 3", "Mean 18 - Ultimate Golf"):
+            self.assertEqual(whdexpansions.merge_for_expansion(t), [], t)
+            self.assertEqual(whdexpansions.merge_for_base(t), [], t)
+
+    def test_the_package_asks_data_1_before_data_2_and_each_answer_matches_a_question(self) -> None:
+        spec = importlib.util.spec_from_file_location("gen_whdexpansions", Path(__file__).resolve().parent.parent / "tools" / "gen_whdexpansions.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        qs = [p for _c, p, _x in tool.package_questions("HoleInOne.lha")]
+        self.assertLess(next(i for i, p in enumerate(qs) if "Menagerie" in p), next(i for i, p in enumerate(qs) if "Holidays" in p))
+        for e in whdexpansions.merge_for_base("Hole-In-One")[0].expansions:
+            for a in e.asks:
+                self.assertTrue(tool.matches(a, tool.package_questions("HoleInOne.lha")), a)
+
+    def test_the_real_install_takes_the_disks_in_order_and_names_the_courses_it_got(self) -> None:
+        merge = whdexpansions.merge_for_base("Hole-In-One")[0]
+        base = make_adf("Hole-In-One", {"putt": b"game", "s/startup": b"x", "course": b"cb"})          # (the game's own disk has "course" too)
+        d1 = make_adf("Disk #2", {"Intermediate/H.00": b"i0", "Menagerie/H.00": b"m0", "course": b"c2", "Selection": b"s2",
+                                  "Title.Music": b"t2", "Putt2": b"p2", "DigiTek2": b"d2"})
+        d2 = make_adf("Disk #3", {"Holidays/H.00": b"h0", "AlphabetSoup/H.00": b"a0", "course": b"c3", "Selection": b"s3", "Title.Music": b"t3"})
+        with ai.Package(whdinstalls.package({"archive": merge.archive})[0]) as pkg:
+            both = pkg.install([base, d1, d2], cd=False, decruncher=lambda: None, asks=whdexpansions.asks_for(merge, merge.expansions))
+            only1 = pkg.install([base, d1], cd=False, decruncher=lambda: None, asks=whdexpansions.asks_for(merge, merge.expansions[:1]))
+            alone = pkg.install([base], cd=False, decruncher=lambda: None, asks=whdexpansions.asks_for(merge, ()))
+        f = {k.split("/", 1)[1]: v for k, v in both.files.items() if "/" in k}
+        self.assertEqual((f["data/course2"], f["data/course3"], f["data/Menagerie/H.00"], f["data/Holidays/H.00"]), (b"c2", b"c3", b"m0", b"h0"))
+        self.assertEqual(f["data/course"], b"cb")                                       # (course2 / course3 are the course disks' own)
+        self.assertEqual(sorted(both.forced), sorted(e.titles[0] for e in merge.expansions))
+        g = {k.split("/", 1)[1]: v for k, v in only1.files.items() if "/" in k}
+        self.assertEqual((g["data/course2"], "data/course3" in g, "data/Holidays/H.00" in g), (b"c2", False, False))
+        self.assertEqual(only1.forced, [merge.expansions[0].titles[0]])
+        self.assertFalse(any(k.endswith(("course2", "course3")) for k in alone.files))
+        self.assertEqual(alone.forced, [])
+
+
 if __name__ == "__main__":
     unittest.main()

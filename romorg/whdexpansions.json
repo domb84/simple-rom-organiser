@@ -291,6 +291,38 @@
      ]
     }
    ]
+  },
+  {
+   "archive": "HoleInOne.lha",
+   "base": [
+    "Hole-In-One",
+    "Hole-In-One - Miniature Golf"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Hole-In-One - Course Disk #2 - Intermediate & Menagerie",
+      "Hole-In-One - Course Disk - Intermediate & Menagerie"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Menagerie"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Hole-In-One - Course Disk #3 - Alphabet Soup & Out of this World & Holidays"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Holidays"
+      }
+     ]
+    }
+   ]
   }
  ],
  "standalone": [

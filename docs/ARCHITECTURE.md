@@ -4377,3 +4377,16 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
   their own. Graham Gooch's Second Innings alone stops at a WHDLoad requester (its install wants the game's disk too): a game of its own, no
   archive. The one-release rule still ranks the expansion's variants as a game of their own; the top-N slot an expansion took before the merge
   is not given back; no boot check inside the app (the fallback to other versions happens when an install fails, not when a slave refuses).
+
+* **Addendum (Hole-In-One)**: the user's decision - an expansion its game's single install takes in is merged and installed with the game,
+  assumed complete and installable. Hole-In-One's install (the Files version; the script sets the version, so there is no version question)
+  asks "install data #1 (Menagerie)?" then "data #2 (Holidays)?" (Yes / No each), finding each disk by a file on it ("Intermediate", then
+  "Holidays"): data #1 is Course Disk #2 (Intermediate & Menagerie; the older "Course Disk" title too), data #2 is Course Disk #3 (Alphabet
+  Soup, Out of this World, Holidays). The game is under both of its TOSEC titles, "Hole-In-One" (program disk) and "Hole-In-One - Miniature
+  Golf" (the Disc Company's Starter Kit); Mean 18's course disks are another game and stay apart. The tool checks both answers against the
+  script. Real copy run (`exptest3/`; scan, plan, library build, WHDLoad build; Starter Kit `[m corrupt files]` and `Hole-In-One (1989)(US)`
+  each with Course Disk #2): one archive with the course files added (`Menagerie/`, `Intermediate/`, `course2`, `Selection2`,
+  `Title.Music2`, `Putt2`, `DigiTek2`), boots headless to the course selection (A1200). Course Disk #3 was not at hand: in by the decision,
+  untried (the Starter Kit already holds those courses). Found on the way: `DF0:file` after "ask the disk by a file" took the first disk
+  that has the file, not the one in the drive - `course2` was the game disk's `course` (both disks hold `course`, `Selection`, `Title.Music`);
+  now the disk in the drive wins when it has the file (`split` of the install's file system).

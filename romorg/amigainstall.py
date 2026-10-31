@@ -324,6 +324,9 @@ class _Fs:
             v, rest = path.split(":", 1)
             v, rest = v.strip().casefold(), rest.strip("/").lstrip(":")
             if v == "" or v in _DRIVES:                 # (":file", "DF0:file": the disk in the drive)
+                cur = self.disks.get(self.current) if self.current is not None else None
+                if rest and cur is not None and _has(cur, rest):
+                    return self.current, rest             # (the disk in the drive has it: Hole-In-One's data disks both hold "course")
                 hit = next((lab for lab, d in self.disks.items() if rest and _has(d, rest)), None)
                 if hit is not None:
                     self.current = hit
