@@ -1858,7 +1858,7 @@
           releaseText(i) ? [el("dt", { text: "This release" }), el("dd", { text: releaseText(i) })] : null,
           !game ? [el("dt", { text: "Save files" }), el("dd", { text: `${fmt(i.files)}` }),
             el("dt", { text: "From" }), el("dd", { text: i.source && i.source !== "retroarch" ? i.label : (i.cores || []).join(", ") || "-" }),
-            i.name !== i.title ? [el("dt", { text: "Named" }), el("dd", { text: i.name })] : null] : null),
+            ...(i.name !== i.title ? [el("dt", { text: "Named" }), el("dd", { text: i.name })] : [])] : null),
         game || copy ? el("div", { class: "acts" },
           game ? el("button", { class: "act", type: "button", tabindex: "-1", id: "saves-change", on: { click: () => changeWhat(i) } }, glyph("A"), "Change what happens") : null,
           copy ? el("button", { class: "act", type: "button", tabindex: "-1", id: "saves-copy", on: { click: () => copyFor(i) } }, glyph("Y"), "Copy for another region") : null) : null);

@@ -251,6 +251,75 @@ class DiscSavesTests(PsServerCase):
         self.assertEqual((card / "BESLES-59990GOLF" / "BESLES-59990GOLF").read_bytes(), b"golf")
         self.assertTrue((card / "BASLUS-20990GOLF" / "BASLUS-20990GOLF").is_file())          # the original stays
 
+    def saves_rows(self) -> dict:
+        page = self.call("/api/scan/results?kind=saves&limit=50")
+        self.saves_page = page
+        return {r["title"]: r for r in page["items"]}
+
+    def plan_ready_rows(self) -> dict:
+        import time
+        for _ in range(100):                                           # (a list that comes first asks again until the plan is made)
+            rows = self.saves_rows()
+            if self.saves_page["plan_ready"]:
+                return rows
+            time.sleep(0.1)
+        self.fail("the plan was never ready")
+
+    def test_the_saves_list_says_what_the_next_build_does_and_for_which_release(self) -> None:
+        self.gametdb([("SLUS-20946", "Gamma"), ("SLES-50012", "Gamma"), ("SLPM-60001", "Gamma")])
+        self.call("/api/library/profile", {"platform": PS2, "prefer_saved": True})
+        rows = self.plan_ready_rows()
+        self.assertEqual(self.saves_page["default_choice"], "convert")
+        usa = rows["Gamma"] if "Gamma" in rows else next(r for r in rows.values() if r["game"] == "Gamma (USA)")
+        self.assertEqual((usa["dat"], usa["game"], usa["choice"]), (PS2_DAT, "Gamma (USA)", ""))
+        self.assertEqual(usa["release"], {"region": "USA", "code": "SLUS-20946"})
+        self.assertEqual(usa["convert"]["set"], usa["key"])
+        self.assertEqual((usa["convert"]["from"], usa["convert"]["to"]), ("SLUS-20946", ["SLES-50012", "SLPM-60001"]))     # (the other regions)
+        self.assertEqual(usa["convert"]["regions"]["SLPM-60001"], "Japan")
+        plan = self.call("/api/library/plan", {"platform": PS2, "limit": 500})                # the same words as the plan's rows (and so the Files list)
+        by_game = {i["saves"]["game"]: i["saves"]["effect"] for i in plan["items"] if i.get("saves")}
+        for row in rows.values():
+            if row["game"] in by_game:
+                self.assertEqual(row["effect"], by_game[row["game"]], row["game"])
+
+    def test_a_game_of_its_own_choice_is_listed_with_it_and_the_effect_follows(self) -> None:
+        self.call("/api/library/profile", {"platform": PS2, "prefer_saved": False})
+        rows = self.plan_ready_rows()
+        usa = next(r for r in rows.values() if r["game"] == "Gamma (USA)")
+        self.call("/api/library/saved", {"platform": PS2, "choice": "keep", "games": [{"dat": usa["dat"], "game": usa["game"]}]})
+        self.assertEqual(next(r for r in self.plan_ready_rows().values() if r["game"] == "Gamma (USA)")["choice"], "keep")
+        self.call("/api/library/saved", {"platform": PS2, "choice": "default", "games": [{"dat": usa["dat"], "game": usa["game"]}]})
+        self.assertEqual(next(r for r in self.plan_ready_rows().values() if r["game"] == "Gamma (USA)")["choice"], "")
+
+    def test_a_list_asked_for_before_the_plan_is_made_has_no_effect_yet(self) -> None:
+        import threading
+        from romorg import server
+        gate = threading.Event()
+        real = server.App._make_library_plan
+
+        def slow(app, *a, **k):
+            gate.wait(20)
+            return real(app, *a, **k)
+        with mock.patch.object(server.App, "_make_library_plan", slow), mock.patch.object(server.App._saves_plan_now, "__defaults__", (0.05,)):
+            self.call("/api/library/saved", {"platform": PS2, "choice": "keep", "games": [{"dat": PS2_DAT, "game": "Gamma (USA)"}]})     # (no plan now)
+            rows = self.saves_rows()
+            self.assertFalse(self.saves_page["plan_ready"])
+            self.assertTrue(all("effect" not in r for r in rows.values()))
+            gate.set()
+            self.assertTrue(all("effect" in r for r in self.plan_ready_rows().values()))
+
+    def test_a_copy_is_offered_for_a_disc_you_have_when_the_database_has_no_other_release(self) -> None:
+        import shutil
+        shutil.rmtree(self.pcsx2 / "memcards" / "Mcd001.ps2" / "BESLES-50012OTHER")           # (the European disc has no save of its own)
+        self.scan_ps2()
+        usa = next(r for r in self.saves_rows().values() if r["game"] == "Gamma (USA)")
+        self.assertEqual(usa["convert"]["to"], [])
+        disc = usa["convert"]["disc"]
+        self.assertEqual((disc["code"], disc["region"]), ("SLES-50012", "Europe"))
+        res = self.call("/api/saves/convert", {"platform": PS2, "set": usa["convert"]["set"], "to_file": disc["file"]})
+        self.assertEqual((res["old"], res["new"], res["saves"]), ("SLUS-20946", "SLES-50012", 1))
+        self.assertEqual(self.plan_ready_rows() != {}, True)                                  # (the list reads the saves and the plan again)
+
     def test_the_default_converts_a_save_of_a_release_you_lack_for_the_one_you_have(self) -> None:
         from test_nintendo import ps2_iso
         self.iso.update({"Golf (Europe)": ps2_iso("SLES_599.90")})
