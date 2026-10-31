@@ -189,10 +189,11 @@ def _index() -> tuple[dict[str, list], frozenset]:
     return _INDEX[1], _INDEX[2]
 
 
-# Games the PUAE core shows only black with its default CPU option (``puae_cpu_compatibility = "memory"``) and runs with another: title -> the
-# value to set. Found by booting the build's installs (Star Trek - 25th Anniversary: WHDLoad core dumps show the game waiting for a signal that never
-# comes; "compatible" runs it, "exact" and a 68030 do not). The tag in the Files view says it; the app does not change the user's core options.
-CPU_MODE: dict[str, str] = {"star trek 25th anniversary": "compatible"}
+# Games the PUAE core shows only black with its default CPU option (``puae_cpu_compatibility = "memory"``) and runs with another: title -> the value
+# to set. Anything but the default is tagged in the Files view. Found by booting the build's installs: Star Trek - 25th Anniversary (WHDLoad core dumps
+# show the game waiting for a signal that never comes; "compatible" runs it, "exact" and a 68030 do not); The Chaos Engine (ECS and AGA floppies),
+# Cyber World and Skidoo run with "exact" (of 49 black-screen games tried with it, only these three did). The app does not change the user's core options.
+CPU_MODE: dict[str, str] = {"star trek 25th anniversary": "compatible", "chaos engine": "exact", "cyber world": "exact", "skidoo": "exact"}
 
 
 def cpu_mode(title: str) -> str:

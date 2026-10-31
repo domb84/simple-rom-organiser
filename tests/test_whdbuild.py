@@ -645,6 +645,12 @@ class CpuModeTagTests(unittest.TestCase):
         self.assertEqual(whdready.cpu_mode("Star Trek - Judgment Rites"), "")
         self.assertEqual(whdready.cpu_mode(""), "")
 
+    def test_the_games_that_run_with_the_exact_cpu_are_tagged_and_their_neighbours_are_not(self) -> None:
+        for title in ("Chaos Engine, The", "The Chaos Engine", "Cyber World", "Skidoo"):
+            self.assertEqual(whdready.cpu_mode(title), "exact", title)
+        self.assertEqual(whdready.cpu_mode("Chaos Engine 2, The"), "")             # (another game: it boots with the default)
+        self.assertNotIn("memory", whdready.CPU_MODE.values())                      # (the default is never a tag)
+
     def test_the_games_facts_say_it_only_for_such_a_game(self) -> None:
         from romorg import server
         plat = SimpleNamespace(image_set_dats=(), disc_dats=())
@@ -653,6 +659,11 @@ class CpuModeTagTests(unittest.TestCase):
         self.assertEqual((star["platform"], star["cpu"]), ("AGA", "compatible"))
         other = server.App._row_facts(row("Cadaver (1990)(Image Works)(Disk 1 of 2).adf"), plat)
         self.assertNotIn("cpu", other)                                         # (a game the default runs: no key at all)
+        chaos = server.App._row_facts(row("Chaos Engine, The (1993)(Renegade)(Disk 1 of 2).adf"), plat)
+        self.assertEqual(chaos["cpu"], "exact")
+        disc = server.App._row_facts({"dat": "Commodore Amiga - Games - [ISO] CD32", "rom_name": "Chaos Engine, The (1994)(Renegade)[!].cue"},
+                                     SimpleNamespace(image_set_dats=(), disc_dats=("Commodore Amiga - Games - [ISO] CD32",)))
+        self.assertNotIn("cpu", disc)                                           # (a CD32 disc is not the floppy game)
 
 
 if __name__ == "__main__":

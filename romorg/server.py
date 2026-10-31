@@ -6705,7 +6705,7 @@ class App:
         disc = disc_class(dat) if dat in disc_dats else ""
         out = {"platform": disc or tags_mod.platform_class(t), "source": source, "languages": sorted(tags_mod.variant_languages(t)),
                "version": t.version or ""}
-        if cpu := _mod("whdready").cpu_mode(t.title):         # (a game PUAE shows black with its default CPU option: the tag says which to set)
+        if not disc and (cpu := _mod("whdready").cpu_mode(t.title)):     # (a floppy game PUAE shows black with its default CPU option: the tag says which to set)
             out["cpu"] = cpu
         return out
 
