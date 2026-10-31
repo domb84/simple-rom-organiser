@@ -666,14 +666,14 @@ _PAREN_WORDS: dict[str, tuple[str, ...]] = {
     "pre_release": ("beta", "alpha", "preview", "pre-release", "prerelease", "debug", "debug version",
                     "test program"),
     "prototype": ("proto", "possible proto"),
-    "demo": ("demo", "tech demo", "auto demo", "sample", "kiosk"),
+    "demo": ("demo", "tech demo", "auto demo", "sample", "kiosk", "promo"),
     "unreleased": ("unreleased",),
 }
 _PAREN_DEMO_PREFIX = "demo-"                       # every "(demo-xxx)" is a demo
 _PAREN_DEMO_KINDS = ("playable", "rolling", "slideshow")   # the ones TOSEC uses (display only)
 # the words No-Intro itself uses (the rest is TOSEC-only vocabulary)
 _NOINTRO_PAREN_WORDS = frozenset({"beta", "proto", "possible proto", "demo", "tech demo", "auto demo",
-                                  "sample", "kiosk", "debug", "debug version", "test program"})
+                                  "sample", "kiosk", "promo", "debug", "debug version", "test program"})
 _PAREN_RULE_OF: dict[str, str] = {w: r for r, ws in _PAREN_WORDS.items() for w in ws}
 _TRAILING_NUM_RE = re.compile(r"\s+\d+$")
 # bracket codes are case-sensitive: [b] bad dump but [B..] is something else.

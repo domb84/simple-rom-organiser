@@ -98,7 +98,7 @@ class TokenTable(unittest.TestCase):
             "pre_release": [("(", "pre-release"), ("(", "beta"), ("(", "Beta 2"), ("(", "alpha"), ("(", "preview"),
                             ("(", "Debug"), ("(", "Debug Version"), ("(", "Test Program"), ("[", "beta 1")],
             "prototype": [("(", "proto"), ("(", "Proto 3"), ("(", "Possible Proto")],
-            "demo": [("(", "demo-playable"), ("(", "demo-rolling"), ("(", "demo-slideshow"), ("(", "demo"),
+            "demo": [("(", "Promo"), ("(", "demo-playable"), ("(", "demo-rolling"), ("(", "demo-slideshow"), ("(", "demo"),
                      ("(", "Demo 2"), ("(", "Sample"), ("(", "Kiosk"), ("(", "Kiosk, GameCube"),
                      ("(", "Auto Demo"), ("(", "Tech Demo"), ("[", "technical demo")],
             "faked": [("[", "faked BKAC 1"), ("[", "fake release"), ("[", "faked release")],
@@ -114,7 +114,7 @@ class TokenTable(unittest.TestCase):
                            ("[", "f"), ("[", "tr de"), ("[", "p"), ("[", "!"), ("[", "bootable"), ("[", "BIOS"),
                            ("[", "budget"), ("[", "promo"), ("[", "aka Charlie"), ("[", "unknown hack"),
                            ("[", "inc. StarRay demo"), ("[", "U34"), ("[", "fixed"), ("[", "o-ring"[:0] or "HD"),
-                           ("(", "Unl"), ("(", "Aftermarket"), ("(", "Pirate"), ("(", "Promo"), ("(", "AGA"),
+                           ("(", "Unl"), ("(", "Aftermarket"), ("(", "Pirate"), ("(", "AGA"),
                            ("(", "Alt")]:
             self.assertIsNone(tags.classify_token(kind, text), (kind, text))
 

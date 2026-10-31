@@ -1348,6 +1348,20 @@ def _newer(s: _Set) -> tuple:
     return (s.vkey, s.date)
 
 
+def _edition_titles(sets: Sequence[_Set]) -> bool:
+    """True when the sets are of more than one title (a game that "Combine alternate titles" made of several editions: "Kick Off",
+    "Kick Off Plus Extra Time"): versions of different titles are not comparable, the year of the release is."""
+    return len({_tags_of(s.anchor).title.casefold() for s in sets}) > 1
+
+
+def _newest(sets: Sequence[_Set]) -> Callable[[_Set], tuple]:
+    """The test of "newer" for ``sets``: the version then the date of one title; the year first among several titles (a later edition
+    wins, an earlier one is the fallback when the later has no complete set)."""
+    if _edition_titles(sets):
+        return lambda s: (s.date[:4], s.vkey, s.date)
+    return _newer
+
+
 def _set_steps(prefer_whdload: bool) -> tuple[tuple[str, str, Callable[[_Set], Any]], ...]:
     """The ordered tests :func:`_pick_best` applies (lowest value wins): a word for each, what it means in words, the test."""
     from . import whdready
@@ -1374,8 +1388,9 @@ def _pick_best(sets: list[_Set], prefer_whdload: bool = False) -> _Set:
     for _tag, _label, key in _set_steps(prefer_whdload):
         best = min(key(s) for s in pool)
         pool = [s for s in pool if key(s) == best]
-    newest = max(_newer(s) for s in pool)
-    pool = [s for s in pool if _newer(s) == newest]
+    newer = _newest(pool)
+    newest = max(newer(s) for s in pool)
+    pool = [s for s in pool if newer(s) == newest]
     return min(pool, key=lambda s: (s.mods, s.anchor.rom.name.casefold(), s.anchor.rom.name, s.refs))
 
 
@@ -1384,6 +1399,8 @@ def _why_set(win: _Set, lose: _Set, prefer_whdload: bool) -> tuple[str, str]:
     for tag, label, key in _set_steps(prefer_whdload):
         if key(win) != key(lose):
             return tag, label
+    if _edition_titles([win, lose]) and win.date[:4] != lose.date[:4]:
+        return "Edition", "a later edition"
     if _newer(win) != _newer(lose):
         return "Version", "a newer version"
     if win.mods != lose.mods:
@@ -3050,8 +3067,9 @@ def variant_sets(items: Sequence[Item], profile: LibraryProfile, platform: "Plat
 
 
 def _pick_best_latest(sets: list[_Set]) -> _Set:
-    newest = max(_newer(s) for s in sets)
-    pool = [s for s in sets if _newer(s) == newest]
+    newer = _newest(sets)
+    newest = max(newer(s) for s in sets)
+    pool = [s for s in sets if newer(s) == newest]
     return min(pool, key=lambda s: (s.anchor.rom.name.casefold(), s.anchor.rom.name, s.refs))
 
 
@@ -3096,7 +3114,7 @@ _ALL = [STYLE_TOSEC, STYLE_NOINTRO, STYLE_REDUMP]
 _REDUMP_DESCRIPTIONS = {
     "pre_release": "Betas ((Beta)). Redump files most of them under the Preproduction category.",
     "prototype": "Prototypes ((Proto)) and every disc Redump files under the Preproduction category.",
-    "demo": "Demos, samples, Japanese trial discs ((Taikenban), (Tentou Taikenban), (Tentou-you Demo ...)) and "
+    "demo": "Demos, samples, promos, Japanese trial discs ((Taikenban), (Tentou Taikenban), (Tentou-you Demo ...)) and "
             "every disc Redump files under the Demos or Coverdiscs categories.",
 }
 _RULE_DESCRIPTIONS = {
@@ -3106,7 +3124,7 @@ _RULE_DESCRIPTIONS = {
     "bad_size": "Over- or under-sized dumps.",
     "pre_release": "Betas, alphas, previews and debug builds.",
     "prototype": "Prototypes, never officially released.",
-    "demo": "Demos, samples, kiosk and slideshow disks.",
+    "demo": "Demos, trials, samples, promos, kiosk and slideshow disks.",
     "faked": "Fake releases (a release pretending to be something else).",
     "unreleased": "Games that were never released.",
     "modified": "Disks modified from the original dump (a copy tool's mark, a saved high-score table; a common reason a Workbench disk is "

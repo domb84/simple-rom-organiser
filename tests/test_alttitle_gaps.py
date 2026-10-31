@@ -471,6 +471,13 @@ class HandPairsOfTheNewRatingsData(unittest.TestCase):
         self.assertTrue(one("Nintendo Game Boy Advance", "Pokemon - LeafGreen Version", "Pokemon - Blattgruene Edition"))
         self.assertTrue(one("Nintendo Entertainment System", "Super Mario Bros. 2", "Super Mario USA"))
         self.assertTrue(one("Commodore Amiga", "Alien Breed", "Alien Breed - Special Edition 92"))
+        self.assertTrue(one("Commodore Amiga", "Sensible World of Soccer", "Sensible World of Soccer '96-'97"))
+        self.assertTrue(one("Commodore Amiga", "Kick Off", "Kick Off Plus Extra Time", "Kick Off - Extra Time"))
+        self.assertTrue(one("Commodore Amiga", "Pirates!", "Pirates! Gold"))
+        self.assertTrue(one("Commodore Amiga", "Hollywood Poker", "Hollywood Poker Pro"))
+        self.assertTrue(one("Commodore Amiga", "Leisure Suit Larry in the Land of the Lounge Lizards",
+                            "Leisure Suit Larry 1 - In the Land of the Lounge Lizards"))
+        self.assertFalse(one("Commodore Amiga", "Kick Off", "Kick Off 2"))
         self.assertTrue(one("Commodore Amiga", "Sensible Soccer", "International Sensible Soccer - World Champions"))
         self.assertFalse(one("Commodore Amiga", "Alien Breed", "Alien Breed 3D"))
         self.assertIn(("Rock Star", "RockStar - Never Trust Rotten Tangerines"), library.NOT_SAME_GAME["Commodore Amiga"])

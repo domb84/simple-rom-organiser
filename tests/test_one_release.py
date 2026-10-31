@@ -32,6 +32,30 @@ def ipf_items(names: list[str], start: int) -> list:
                          style="tosec", path=Path(n + ".ipf"), member=None) for i, n in enumerate(names)]
 
 
+class LaterEditionWins(unittest.TestCase):
+    def sets(self, *names):
+        from types import SimpleNamespace
+        from tests.test_library import amiga_items
+        out = []
+        for it in amiga_items(list(names)):
+            t = library._tags_of(it)
+            out.append(SimpleNamespace(anchor=it, date=t.date, vkey=(0,), mods=0, lang_rank=0, cracked=False, platform_rank=0, slots={}))
+        return out
+
+    def test_among_several_titles_of_one_game_the_later_year_wins_not_the_version(self) -> None:
+        a, b = self.sets("Kick Off v1.2 (1989)(Anco)", "Kick Off Plus Extra Time (1990)(Anco)")
+        newer = library._newest([a, b])
+        self.assertGreater(newer(b), newer(a))
+
+    def test_one_title_is_judged_by_its_version_first(self) -> None:
+        a, b = self.sets("Falcon v1.00 (1989)(Mirrorsoft)", "Falcon v1.1 (1988)(Mirrorsoft)")
+        self.assertIs(library._newest([a, b]), library._newer)
+
+    def test_a_later_edition_is_said_to_be_the_reason(self) -> None:
+        a, b = self.sets("Kick Off (1989)(Anco)", "Kick Off Plus Extra Time (1990)(Anco)")
+        self.assertEqual(library._why_set(b, a, False)[0], "Edition")
+
+
 class OneReleaseOfAGame(unittest.TestCase):
     def select(self, items, profile=AMIGA_DP):
         return library.select(items, profile, AMIGA)

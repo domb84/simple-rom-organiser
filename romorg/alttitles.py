@@ -288,7 +288,12 @@ SAME_GAME["Commodore Amiga"].extend([
     ("Caesar", "Caesar Deluxe"), ("Assassin", "Assassin - Special Edition"), ("Premier Manager 3", "Premier Manager 3 Deluxe"),
     ("Wing Commander", "Wing Commander - Platinum Edition"), ("Donk! - The Samurai Duck!", "Donk! The Samurai Duck!"),
     ("SimCity Architecture 1 - Future Cities", "SimCity Graphics Set 1 - Future Cities"),
-    ("SimCity Architecture 2 - Ancient Cities", "SimCity Graphics Set 2 - Ancient Cities")])
+    ("SimCity Architecture 2 - Ancient Cities", "SimCity Graphics Set 2 - Ancient Cities"),
+    # (decided with the user: one game each; the latest edition is kept, the others are the fallback - ``library._pick_best``)
+    ("Sensible World of Soccer", "Sensible World of Soccer '95-'96", "Sensible World of Soccer '96-'97"),
+    ("Leisure Suit Larry in the Land of the Lounge Lizards", "Leisure Suit Larry 1 - In the Land of the Lounge Lizards"),
+    ("Hollywood Poker", "Hollywood Poker Pro"), ("Kick Off", "Kick Off - Extra Time", "Kick Off Plus Extra Time"),
+    ("Pirates!", "Pirates! Gold")])
 SAME_GAME["Nintendo Game Boy Advance"].extend([                        # (German titles the ratings data lacks)
     ("Tarzan - Return to the Jungle", "Tarzan - Rueckkehr in den Dschungel"),
     ("Pokemon - LeafGreen Version", "Pokemon - Blattgruene Edition"), ("Pokemon - Emerald Version", "Pokemon - Smaragd-Edition")])
