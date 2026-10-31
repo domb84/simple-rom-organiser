@@ -4568,8 +4568,9 @@ was added to `CPU_MODE`.** The causes are in the installs, not the core:
 | Center Court, Leading Lap MPV | black | black | black | A4000 and 68030: black; 68040 (Center Court): the game runs and stops with an access fault | ECS slave from an install of AGA disks (Center Court); not examined further |
 | Fears (SPS 1288 and ADF) | not installed | | | | the Fears.imager patcher fails (cycle 2: "Reading track 004" from the IPFs, 60 million instructions from the ADFs) |
 
-The shipped list's `-1` for Dizzy, Kolumbus, Der Clou! and Detroit is out of date or was a different run: these four boot with the default options here (with and
-without `puae_fastmem_size`). Not edited by hand.
+The shipped list's `-1` for Dizzy, Kolumbus, Der Clou! and Detroit was out of date: these four boot with the default options (with and without
+`puae_fastmem_size`); the list was corrected afterwards (`tools/whdknown_set.py`, see the follow-up below). The Anstoss / On the Ball / Carton Rouge row
+describes the bug that the follow-up fixed (the Carton Rouge install is now AGA and boots; the other two fail cleanly).
 
 **Follow-up: the answer search never changes the chipset; four list entries (2026-10-31).**
 * *Installer fallback bug.* `amigainstall.install` retries a failed script with another answer to one of its questions (the last one asked first).
