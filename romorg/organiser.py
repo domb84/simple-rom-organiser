@@ -1157,18 +1157,56 @@ def layout_parts(platform: Any, dat: str, name: str, title: str = "") -> tuple[s
     return None
 
 
-def library_place(platform: Any, root: Path, op: Any) -> Any:
+def folder_owners(platform: Any, root: Path, skip: Any = ()) -> dict[str, tuple]:
+    """The game each folder below ``<root>/Commodore Amiga - Games`` holds, by the names of its files (``{folder casefold: game key}``; a folder
+    of files that are more than one game is left out: nothing joins it). ``skip``: files (``os.path.normcase`` of the path) that do not
+    count - the ones about to be placed."""
+    from . import library, tags
+    out: dict[str, tuple] = {}
+    base = Path(root) / GAMES_DIR
+    if not base.is_dir():
+        return out
+    dat = getattr(platform, "game_dat", "") or ""
+    for d in base.iterdir():
+        if not d.is_dir():
+            continue
+        keys = {library.game_key_of(dat, tags.parse_name(f.name, "tosec"), True) for f in d.iterdir() if f.is_file() and os.path.normcase(str(f)) not in skip}
+        if len(keys) == 1:
+            out[d.name.casefold()] = next(iter(keys))
+    return out
+
+
+def _restore_folder(platform: Any, root: Path, name: str, claimed: dict[str, tuple]) -> str:
+    """The folder of a restored game below ``Commodore Amiga - Games``: its plain title, unless another game (``library.game_key``) holds
+    that folder already - then the publisher's name, the year and last a number are added (as :func:`_game_folder_names` does in a build). A
+    game keeps the folder of its own earlier files. ``claimed`` (``{folder casefold: game key}``, from :func:`folder_owners`) carries the folders of a batch."""
+    from . import library, tags
+    t = tags.parse_name(name.rsplit(".", 1)[0], "tosec")
+    key = library.game_key_of(getattr(platform, "game_dat", "") or "", t, True)
+    candidates = [safe_filename(t.title + "".join(f" ({x})" for x in extra if x))
+                  for extra in ((), (t.publisher,), (t.publisher, t.date[:4]))]
+    n = 1
+    while True:
+        for cand in candidates:
+            if claimed.get(cand.casefold(), key) == key:
+                claimed[cand.casefold()] = key
+                return cand
+        n += 1
+        candidates = [safe_filename(f"{t.title} ({n})")]
+
+
+def library_place(platform: Any, root: Path, op: Any, claimed: dict[str, tuple] | None = None) -> Any:
     """``op`` (a recognised file's rename of the plan without rules) moved to its place in the Amiga's library layout
     (:func:`layout_parts`: a game in a folder of its title, a system disk below ``Commodore Amiga - System``): the op as it is for
-    every other system, or a file no DAT knows. Restoring from the archive lays out a game as a build does."""
+    every other system, or a file no DAT knows. Restoring from the archive lays out a game as a build does. Games of one title that are
+    two games (``library.KEEP_APART``) get folders of their own (:func:`_restore_folder`); pass one ``claimed`` dict (``folder_owners``) for a whole batch."""
     dat = getattr(op, "dat", "") or ""
     if not dat or getattr(op, "unmatched", False) or op.status not in ("ok", "move") or not hasattr(op, "rom_name"):
         return op
     name = op.dst.name
     title = ""
     if dat in _amiga_game_dats_all(platform):
-        from . import tags
-        title = safe_filename(tags.parse_name(name.rsplit(".", 1)[0], "tosec").title)
+        title = _restore_folder(platform, root, name, folder_owners(platform, root) if claimed is None else claimed)
     parts = layout_parts(platform, dat, name, title)
     if parts is None:
         return op

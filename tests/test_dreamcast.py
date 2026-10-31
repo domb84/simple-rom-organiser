@@ -395,9 +395,8 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual((counts["excluded"], counts["superseded"], counts["kept"]), (2, 1, 4))
         self.assertEqual(counts["playlists_write"], 1)
 
-    def test_files_next_to_a_disc_are_set_aside_unless_asked_to_keep(self) -> None:
-        profile = dataclasses.replace(self.profile, keep_extras=False)
-        plan = self.plan(profile)
+    def test_files_next_to_a_disc_are_set_aside(self) -> None:
+        plan = self.plan()
         by_name = {Path(o.src).name: o for o in plan.ops if Path(o.src).name in ("b1.state", "b2.state")}
         self.assertEqual({n: (o.status, o.folder) for n, o in by_name.items()}, {"b1.state": ("move", "Saves"), "b2.state": ("move", "Saves")})
         self.assertIn("sat with Big Game (USA) (Disc 1)", by_name["b1.state"].reason)
@@ -422,19 +421,6 @@ class LibraryTest(unittest.TestCase):
         self.assertTrue((self.w.root / "_excluded" / "gamma" / "g.chd").is_file())
         self.assertEqual((self.w.root / "_unmatched" / "gamma" / "g.zip").read_bytes(), b"sheets")
         self.assertFalse(sheets.exists())
-
-    def test_a_set_aside_game_keeps_its_files_when_asked_to(self) -> None:
-        sheets = self.w.root / "gamma" / "g.zip"
-        sheets.write_bytes(b"sheets")
-        plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
-        gamma = [o for o in plan.ops if isinstance(o, dreamcast.DcOp) and o.game == "Gamma (Japan)"][0]
-        self.assertEqual(sorted(Path(d).name for _s, d in gamma.moves), ["g.chd", "g.zip"])       # ("keep other files": they travel with it)
-
-    def test_the_files_travel_with_the_game_when_asked_to(self) -> None:
-        plan = self.plan(dataclasses.replace(self.profile, keep_extras=True))
-        dreamcast.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
-        self.assertEqual((self.w.root / "Big Game (USA)" / "Big Game (USA) (Disc 1)" / "Big Game (USA) (Disc 1).state").read_bytes(), b"sidecar b1.state")
-        self.assertFalse((self.w.root / "_unmatched").exists())
 
     def test_discs_of_a_game_stay_together_and_get_one_playlist(self) -> None:
         plan = self.plan()

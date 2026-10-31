@@ -174,7 +174,6 @@ class LibraryProfile:
     saved_overrides: tuple[tuple[str, str, str], ...] = ()
     # BIOS / firmware / key files (told by checksum or name) stay with the ROMs; off: they are files like any other that matches no game.
     keep_bios: bool = True
-    keep_extras: bool = False                    # disc systems: files that sit with a game but are no disc image (saves, states, checksums) stay there
     convert_first: bool = True                   # Build library first converts what the system can convert (raw discs, zips of them -> CHD)
     delete_converted: bool = True                # ... and deletes the originals once checked (off: they are kept in _converted_originals)
     compress_7z: bool = True                     # cartridge games are kept as .7z (LZMA: smaller than zip, RetroArch reads it), repacked on Build
@@ -217,7 +216,7 @@ class LibraryProfile:
                 "keep_unrated": self.keep_unrated, "rank_scope": self.rank_scope,
                 "overrides": [list(o) for o in self.overrides], "saved_games": self.saved_games,
                 "saved_overrides": [list(o) for o in self.saved_overrides], "keep_bios": self.keep_bios,
-                "keep_extras": self.keep_extras, "convert_first": self.convert_first, "delete_converted": self.delete_converted,
+                "convert_first": self.convert_first, "delete_converted": self.delete_converted,
                 "compress_7z": self.compress_7z,
                 "prefer_saved": self.prefer_saved, "prefer_editions": self.prefer_editions,
                 "combine_alt_titles": self.combine_alt_titles, "prefer_whdload": self.prefer_whdload,
@@ -274,7 +273,7 @@ class LibraryProfile:
                    saved_games=d["saved_games"] if isinstance(d.get("saved_games"), str) and d["saved_games"] in SAVED_GAMES
                    else base.saved_games,
                    saved_overrides=_norm_saved_overrides(d["saved_overrides"]) if "saved_overrides" in d else base.saved_overrides,
-                   keep_bios=flag("keep_bios", base.keep_bios), keep_extras=flag("keep_extras", base.keep_extras),
+                   keep_bios=flag("keep_bios", base.keep_bios),
                    convert_first=flag("convert_first", base.convert_first), delete_converted=flag("delete_converted", base.delete_converted),
                    compress_7z=flag("compress_7z", base.compress_7z),
                    prefer_saved=flag("prefer_saved", base.prefer_saved),
@@ -336,7 +335,7 @@ def default_profile(platform: "Platform") -> LibraryProfile:
 #   the system's capability defaults (``default_profile``)  <  your defaults  <  the system's overrides
 RULE_FIELDS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags", "rescue_only_dump",
                "region_priority", "region_ties", "one_per_game", "borrow_other_editions", "keep_other_language", "min_rating", "top_n",
-               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "keep_extras", "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions",
+               "min_votes", "keep_unrated", "rank_scope", "saved_games", "keep_bios", "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions",
                "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload")
 # A system's override of the exclusion rules is two: the rules every system has (``exclude``) and the ones only the Amiga systems have
 # (``exclude_amiga``: virus-infected, over/under dump, faked, modified, unreleased). Both are stored as a full list of rules; each only
@@ -380,7 +379,7 @@ def applicable_fields(platform: "Platform") -> frozenset:
         if ok:
             out.add(field)
     if getattr(platform, "layout", "") == "game_folder":            # (the disc systems with a folder per game: Dreamcast, PlayStation, PlayStation 2)
-        out.update(("keep_extras", "complete_only"))                # (complete_only: a raw disc of a set with a disc missing is not converted yet)
+        out.add("complete_only")                                     # (complete_only: a raw disc of a set with a disc missing is not converted yet)
     if getattr(platform, "convertible", False):                    # (raw discs to CHD; SNES / N64: clean up the dumps)
         out.add("convert_first")
         if getattr(platform, "layout", "") == "game_folder" or getattr(platform, "disc_dats", ()):   # (and the Amiga's CD32 / CDTV discs)
@@ -3219,11 +3218,6 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "A BIOS or firmware file in the system's folder (told by its checksum: libretro's list and the TOSEC firmware lists, also "
         "in a zip) and the key files of the emulators (told by name) stay with the ROMs instead of going to _unmatched or the "
         "archive. Off: they are files like any other that match no game.", _ALL)
-    opt("keep_extras", "keep_extras", "Keep other files that sit with a game", False,
-        "A disc game lives in a folder of its own, and the files next to its disc image (saves and save states, a .zip, checksum files "
-        "and the like) are not part of the game. Off: they are set aside like any file that matches no game (into _unmatched or the "
-        "archive folder, with their path kept, and Undo brings them back); only the disc image stays. On: they stay with the game and "
-        "are renamed with it.", [STYLE_REDUMP])
     opt("convert_first", "convert_first", "Convert when building", True,
         "Build library first converts what this system can convert: raw disc images (an .iso, a .cue or .gdi with its tracks, also inside a "
         "zip or 7z) become a CHD named after the game; for the SNES and N64 the dumps are cleaned up (copier headers, byte order) so the "

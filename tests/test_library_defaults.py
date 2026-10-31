@@ -22,6 +22,18 @@ class LayeringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.snes = platforms.PLATFORMS[SNES]
 
+    def test_a_settings_file_that_still_carries_keep_extras_loads(self) -> None:
+        """The option "Keep other files that sit with a game" is gone (Amendment 113): an older config still names it, as a default and as a
+        system's own rule, and a profile saved by an older version too."""
+        ps = platforms.PLATFORMS["Sony PlayStation"]
+        cfg = {"library_defaults": {"keep_extras": True, "exclude": ["demo"]}, "library_overrides": {ps.name: {"keep_extras": True, "min_rating": 4.0}}}
+        profile = library.load_profile(cfg, ps)
+        self.assertEqual((sorted(profile.exclude), profile.min_rating), (["demo"], 4.0))
+        self.assertNotIn("keep_extras", profile.to_dict())
+        self.assertFalse(hasattr(profile, "keep_extras"))
+        self.assertNotIn("keep_extras", library.overridden_fields(cfg, ps))
+        self.assertNotIn("keep_extras", library.LibraryProfile.from_dict({"keep_extras": True, "latest_only": False}).to_dict())
+
     def test_a_system_follows_your_defaults_until_it_overrides_a_rule(self) -> None:
         cfg: dict = {}
         base = library.load_profile(cfg, self.snes)
@@ -176,13 +188,24 @@ class DefaultsServerTests(ServerCase):
         info = self.call("GET", "/api/library/defaults")
         ids = {e["id"] for e in info["catalog"]}
         fields = {e["field"] for e in info["catalog"]}
-        for rule in ("region_priority", "other_language", "keep_extras", "keep_bios", "one_per_game", "latest_only", "best_variant"):
+        for rule in ("region_priority", "other_language", "keep_bios", "one_per_game", "latest_only", "best_variant"):
             self.assertIn(rule, ids, rule)
         missing = [f for f in library.RULE_FIELDS if f not in fields and f not in ("exclude", "keep_flags", "region_ties", "saved_games", "prefer_saved")]
         self.assertEqual(missing, [])                                    # a rule of the profile that Settings could not show
-        out = self.call("POST", "/api/library/defaults", {"keep_extras": True})
-        self.assertTrue(out["profile"]["keep_extras"])
-        self.assertIn("keep_extras", out["changed"])
+        self.assertNotIn("keep_extras", ids | fields)                    # (gone: Amendment 113)
+        out = self.call("POST", "/api/library/defaults", {"keep_bios": False})
+        self.assertFalse(out["profile"]["keep_bios"])
+        self.assertIn("keep_bios", out["changed"])
+
+    def test_a_config_with_keep_extras_still_serves_defaults_and_profiles(self) -> None:
+        self.srv.app._config_update(library_defaults={"keep_extras": True, "keep_bios": False},
+                                    library_overrides={GBA: {"keep_extras": True}})
+        info = self.call("GET", "/api/library/defaults")
+        self.assertNotIn("keep_extras", info["profile"])
+        self.assertFalse(info["profile"]["keep_bios"])
+        prof = self.call("GET", f"/api/library/profile?platform={q(GBA)}")
+        self.assertNotIn("keep_extras", prof["profile"])
+        self.assertNotIn("keep_extras", prof.get("overridden", []))
 
     def test_the_tiles_of_the_system_pages_are_one_list_for_every_system(self) -> None:
         info = self.call("GET", "/api/settings/tiles")

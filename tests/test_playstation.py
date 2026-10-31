@@ -394,15 +394,15 @@ class Ps2LayoutTest(unittest.TestCase):
         self.assertIn("_unmatched/Mystery/m.chd", got)
         self.assertIn("_unmatched/Mystery/m.state", got)
 
-    def test_the_option_keeps_the_files_of_a_disc_with_it(self) -> None:
+    def test_the_files_of_a_disc_are_never_kept_with_it(self) -> None:
         self.w.cd_chd("Beta (Europe) (En,Fr,De)", "be.chd", ["be.state", "be.srm"])
-        plan = discsys.plan_library(self.w.scan(), dataclasses.replace(self.profile, keep_extras=True))
+        plan = discsys.plan_library(self.w.scan(), self.profile)
         discsys.apply_plan(plan.ops, self.w.root, playlists=plan.playlists)
         got = tree(self.w.root)
-        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)
-        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).srm", got)
-        self.assertFalse([k for k in got if k.startswith("_unmatched")])
-        again = discsys.plan_library(self.w.scan(), dataclasses.replace(self.profile, keep_extras=True))
+        self.assertNotIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).state", got)    # (the option that kept them is gone)
+        self.assertIn("Beta (Europe) (En,Fr,De)/Beta (Europe) (En,Fr,De).chd", got)
+        self.assertEqual(sorted(k for k in got if k.startswith("Saves/Beta/")), ["Saves/Beta/be.srm", "Saves/Beta/be.state"])   # (saves go under their game)
+        again = discsys.plan_library(self.w.scan(), self.profile)
         self.assertEqual([op for op in again.ops if op.status == "move"], [])
 
     def test_library_build_keeps_discs_together_and_writes_no_playlist(self) -> None:

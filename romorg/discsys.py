@@ -1606,8 +1606,8 @@ def plan_units(result: DcScanResult, profile: Any = None, ratings: Any = None, s
     def without_extras(u: DcUnit) -> DcUnit:
         """The files next to a disc image are no part of the game: they are set aside like any file that matches nothing (to ``_unmatched``,
         a save under its game in ``Saves``), whether the game is kept or set aside itself - a game that goes to ``_excluded`` takes its disc
-        image there, not the checksum sheets that sat with it. The option "Keep other files that sit with a game" keeps them with it."""
-        if profile is None or getattr(profile, "keep_extras", False) or u.kind not in ("chd", "raw"):
+        image there, not the checksum sheets that sat with it."""
+        if profile is None or u.kind not in ("chd", "raw"):
             return u
         game = {u.path} if u.kind == "chd" else {f for f in disc_files(u)}
         extras = [f for f in u.files if f not in game and not _stays_with_game(f)]

@@ -350,19 +350,23 @@ class LibraryDefaultsTests(UiTestCase):
         self.no_js_errors()
 
     def test_a_rule_only_some_systems_have_is_in_settings_and_only_on_those_systems(self) -> None:
+        sel = '#set-library-rules input[data-opt="prefer_unprotected"]'
         self.open("#/settings")
-        self.page.wait("!!document.querySelector('#set-library-rules input[data-opt=\"keep_extras\"]')", timeout=30)      # the disc systems' rule: a default too
-        self.assertFalse(self.page.eval("document.querySelector('#set-library-rules input[data-opt=\"keep_extras\"]').checked"))
-        self.click("#set-library-rules input[data-opt=\"keep_extras\"]")
+        self.page.wait(f"!!document.querySelector('{sel}')", timeout=30)      # the Amiga's rule: a default too
+        self.assertTrue(self.page.eval(f"document.querySelector('{sel}').checked"))
+        self.click(sel)
         deadline = time.time() + 15
-        while time.time() < deadline and not self.api("GET", "/api/library/defaults")["profile"]["keep_extras"]:
+        while time.time() < deadline and self.api("GET", "/api/library/defaults")["profile"]["prefer_unprotected"]:
             time.sleep(0.3)
-        self.assertTrue(self.api("GET", "/api/library/defaults")["profile"]["keep_extras"])
+        self.assertFalse(self.api("GET", "/api/library/defaults")["profile"]["prefer_unprotected"])
         self.settings_of()
-        self.assertFalse(self.page.eval("!!document.querySelector('#library-rules input[data-opt=\"keep_extras\"]')"))     # (the Amiga has no game folders)
+        own = '#library-rules input[data-opt="prefer_unprotected"]'
+        self.assertTrue(self.page.eval(f"!!document.querySelector('{own}')"))
+        self.assertFalse(self.page.eval(f"document.querySelector('{own}').checked"))      # it follows the default
         self.page.goto(self.fx.url + "#/system/sony-playstation/settings")
-        self.page.wait("!!document.querySelector('#library-rules input[data-opt=\"keep_extras\"]')", timeout=30)
-        self.assertTrue(self.page.eval("document.querySelector('#library-rules input[data-opt=\"keep_extras\"]').checked"))    # it follows the default
+        self.page.wait("document.querySelectorAll('#library-rules input').length > 3", timeout=30)
+        self.assertFalse(self.page.eval(f"!!document.querySelector('{own}')"))             # (a disc system has no such rule)
+        self.assertFalse(self.page.eval("!!document.querySelector('#library-rules input[data-opt=\"keep_extras\"]')"))
         self.no_js_errors()
 
     def test_the_files_are_a_tree_of_the_rom_folder_and_of_the_archive_with_filters(self) -> None:

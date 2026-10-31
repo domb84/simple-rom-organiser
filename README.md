@@ -543,11 +543,9 @@ Average rating, Regions, and Convert (disc systems). A tile with nothing to say 
 is left out of that page. The choice is `page_tiles` in `config.json`.
 
 **Files next to a disc (disc systems).** On Dreamcast, PlayStation and PlayStation 2 the files in a game's folder that are not its disc
-image (a save or save state, a `.zip`, a checksum file) are **not part of the game**: by default Build library sets them aside like any file that
+image (a save or save state, a `.zip`, a checksum file) are **not part of the game**: Build library sets them aside like any file that
 matches nothing, but a save, save state or memory card goes under its game: `<archive folder>/<system folder>/Saves/<Title>/<file>` (or `Saves/` in the
-ROM folder while no archive folder is set); the rest goes to `_unmatched`. The rule **Keep other files that
-sit with a game** (Settings, overridable per system; off by default) keeps them with the game and renames them with it, as earlier versions
-always did. Playlists, `gamelist.xml` and media folders always stay. Saves in RetroArch's own save folders are a different thing: see
+ROM folder while no archive folder is set); the rest goes to `_unmatched`. There is no option to keep them with the game. Playlists, `gamelist.xml` and media folders always stay. Saves in RetroArch's own save folders are a different thing: see
 *What happens to the saves*. Likewise loose saves and states in any system's folder are set aside when no game claims them.
 
 **Copy a name or a checksum.** In the upgrades list and in every checksum panel (Browse, the Library list's details) a file name,

@@ -336,7 +336,7 @@ LIBRARY_REASONS = ("kept", "bios", "excluded", "superseded", "incomplete", "dupl
 PROFILE_KEYS = ("exclude", "latest_only", "best_variant", "complete_only", "languages", "keep_flags",
                 "rescue_only_dump", "region_priority", "region_ties", "one_per_game", "borrow_other_editions",
                 "min_rating", "top_n", "min_votes", "keep_unrated", "rank_scope", "keep_other_language", "saved_games", "keep_bios",
-                "keep_extras", "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions", "combine_alt_titles",
+                "convert_first", "delete_converted", "compress_7z", "prefer_saved", "prefer_editions", "combine_alt_titles",
                 "prefer_whdload", "prefer_unprotected", "build_whdload")
 # Fallback labels of the exclusion rules (``tags.RULE_LABELS`` wins when present).
 RULE_LABELS = {
@@ -3038,7 +3038,7 @@ class App:
                 body = {**body, "region_ties": [tags.canon_region(r) if isinstance(r, str) else r for r in body["region_ties"]]}
             changes["region_ties"] = tuple(names("region_ties", getattr(tags, "REGIONS", None), "regions"))
         for key in ("latest_only", "best_variant", "complete_only", "rescue_only_dump", "one_per_game",
-                    "borrow_other_editions", "keep_other_language", "keep_bios", "keep_extras", "convert_first", "delete_converted", "compress_7z",
+                    "borrow_other_editions", "keep_other_language", "keep_bios", "convert_first", "delete_converted", "compress_7z",
                     "prefer_saved", "prefer_editions", "combine_alt_titles", "prefer_whdload", "prefer_unprotected", "build_whdload"):
             if key in body:
                 changes[key] = _bool_arg(body[key])
@@ -5622,7 +5622,8 @@ class App:
                     except ValueError:
                         return True
                     return bool(top) and top[0] in RESERVED_DIRS
-                known = [organiser.library_place(st.platform, root, op)                    # (recognised: its place in the library's layout)
+                claimed = organiser.folder_owners(st.platform, root, mine)               # (the folders as they are, but for the files placed now)
+                known = [organiser.library_place(st.platform, root, op, claimed)                    # (recognised: its place in the library's layout)
                          for op in _mod("discsys").file_ops(self._rename_plan(st))
                          if os.path.normcase(str(op.src)) in mine and op.status in ("move", "ok") and not reserved(op.dst)]
                 moves = [op for op in known if op.status == "move"]

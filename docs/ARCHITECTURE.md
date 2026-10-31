@@ -2634,7 +2634,7 @@ extension. The Overview card says *found*, the Library card *kept*.
 
 # AMENDMENT 21 - files next to a disc are not part of the game (later wins)
 
-* Rule `keep_extras` (`LibraryProfile`, `RULE_FIELDS`, catalogue entry, applicable to `layout == "game_folder"` systems only), default False.
+* (Removed by Amendment 113.) Rule `keep_extras` (`LibraryProfile`, `RULE_FIELDS`, catalogue entry, applicable to `layout == "game_folder"` systems only), default False.
   `discsys.plan_units`: for a kept CHD unit the unit's other files (not frontend files: `_stays_with_game`) become `_junk_op(... with_game=True)`
   ops (into `_unmatched` / the archive, path kept, reason "not a disc image: it sat with <game>"); `organiser.KEEP_SUFFIXES` is now only `.key`: saves, states, `.uae`
   and `.nvram` are set aside everywhere like any unmatched file (path kept); only frontend lists / media and key files stay. Tidy (no profile) is unchanged. Not part of the totals signature.
@@ -4202,8 +4202,8 @@ detector; each merge was made only where the copies were the same code.
   The API (`incomplete_sets`, `owned_incomplete`) and the classic UI are unchanged. With the rule off the sets stay and are no longer listed in the new UI.
 * (Amendment 110, addendum) A Dreamcast / disc-system game that the rules set aside (excluded, superseded, incomplete, a duplicate) takes only its
   disc image to its reason folder: the files that sat with it (checksum sheets in a zip, notes) are files no database knows and go to `_unmatched`, a
-  save to `_saves/<Title>`, as for a kept game (`discsys.plan_library`: `without_extras`). The option "Keep other files that sit with a game" still
-  lets them travel with the game.
+  save to `_saves/<Title>`, as for a kept game (`discsys.plan_library`: `without_extras`). (The option "Keep other files that sit with a game" that
+  let them travel with the game is gone: Amendment 113.)
 * (Amendment 110, addendum 3 - archive/restore audit) A file already in the same reason folder of the archive with the same size and content (any old or
   new reason-folder name) counts as archived, so a game restored under its database name and set aside again is not archived a second time
   (`App._archive_pass`, `listing`). The archive folder of a system is `App._archive_name`: the ROM folder's name, but the platform's name when two
@@ -4281,3 +4281,23 @@ The folder a game's saves go to (in the archive, `<archive>/<system>/Saves/<Titl
   and Game Boy Color Monopoly (one title; Europe's 256 KB is Japan's size, so size follows language, not region).
 
 * **Switch titles in Japanese script (`romorg/kana.py`, `alttitles.release_years` / `_phonetic`).** Offline, the title database has one name per title ID, no publisher alias and (in the cached ratings index) no Japanese alternate names, so the only evidence between a Japanese-script title and an English release is its own text. Two checked links: (1) a long katakana text next to Latin words is a gloss, not a subtitle, when its consonant skeleton is the words' (`Skyline Bowling - スカイライン・ボウリング`; a text with a kanji or more than the words is not); (2) a title of kana only joins the one English title whose skeleton it has when the catalogue says both came out within one year of each other, the skeleton has six or more consonants and neither side has a second candidate. Published as 132 -> 196 of 3,314 combined; the rest (kanji titles, a Latin prefix that fits several English titles, bonus content) stays apart; the LaunchBox Japanese alternate names need the next ratings download.
+
+**AMENDMENT 113 (v0.5) — the restore keeps one folder per game; export never deletes an app playlist; `keep_extras` is gone.**
+
+* **Amiga restore (`organiser.library_place`).** A game restored from the archive is laid out as a build lays it out (`Commodore Amiga - Games/<title>/`), but
+  the folder is now chosen by game, not by title alone: `organiser._restore_folder` gives the plain title unless another game (`library.game_key`, so the
+  publisher decides for `library.KEEP_APART` titles) already holds that folder, then adds the publisher, the year, last a number (the build's own order,
+  `_game_folder_names`). `organiser.folder_owners` reads the folders as they are on disk, without the files being placed now (the archive keeps the layout, so a
+  restored file first lands in the folder it left); `App.archive_restore` passes one shared `claimed` map for the whole batch. Before this, restoring both
+  Overlords (Virgin Mastertronic 1990 / Virgin 1991) put both in `Overlord/`, and one of them beside the other. Checked end to end (`tests/test_amiga_restore.py`:
+  exclude, build, `/api/archive/restore`, build; not archived twice) and with real files copied to a temp folder (Overlord 1991 / 1994, 1000cc Turbo; the
+  override key of a TOSEC game is the rom name with its extension).
+* **Export to a folder (`libexport`).** Export is the one mode that needs no archive and is never allowed to delete what the app did not make: only files
+  in the destination's manifest are ever removed (sync), and now a playlist the app wrote is not removed either - when the rules no longer want it, it
+  stays and is reported (`Removal.skip`). A playlist of the app that was edited in the destination since it was written is not overwritten (reported as
+  a conflict); an untouched one is still replaced when the game's disks change. A file that only looks like ours (the header line, not in the manifest) is
+  never touched.
+* **`keep_extras` ("Keep other files that sit with a game") is removed** from `LibraryProfile`, `RULE_FIELDS`, the catalogue, `discsys.plan_library`, the
+  totals signature, Settings and the labels of the UI. Everything in a disc game's folder that is not the game (disc image, frontend lists and media) is set aside
+  like any file no database knows: saves, states and memory cards under `Saves/<Title>`, the rest to `Unmatched` (Amendment 21, 110). An older settings file
+  or saved profile that still carries `keep_extras` loads: the key is ignored and not written again.

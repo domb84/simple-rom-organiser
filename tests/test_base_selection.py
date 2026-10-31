@@ -21,7 +21,7 @@ NAMES = [
 # a value for each rule that is none of the base ones: the base selection must not notice it
 OTHER = {"min_rating": 7.0, "top_n": 10, "min_votes": 99, "keep_unrated": True, "rank_scope": "owned",
          "overrides": (("x", "Alpha", "exclude"),), "saved_games": "keep", "saved_overrides": (("x", "Beta", "keep"),),
-         "keep_bios": False, "keep_extras": True, "convert_first": False, "delete_converted": False, "compress_7z": False,
+         "keep_bios": False, "convert_first": False, "delete_converted": False, "compress_7z": False,
          "prefer_saved": False, "build_whdload": False}
 
 

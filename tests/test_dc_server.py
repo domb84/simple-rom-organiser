@@ -224,7 +224,7 @@ class DcEndpointTests(DcServerCase):
         self.assertEqual(info["style"], "redump")
         ids = [c["id"] for c in info["catalog"] if c.get("group") != "ratings"]
         self.assertEqual(ids, ["pre_release", "prototype", "demo", "budget", "online", "latest_only", "prefer_editions", "combine_alt_titles", "one_per_game", "complete_only",
-                               "keep_bios", "keep_extras", "convert_first", "delete_converted", "languages",
+                               "keep_bios", "convert_first", "delete_converted", "languages",
                                "other_language", "region_priority"])
         self.assertTrue(info["available"]["one_per_game"])
         self.assertFalse(info["available"]["keep_flags"])
