@@ -279,6 +279,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .tag.t-cd32, .tag.t-cdtv { background: #2a2147; color: #c4b2ff; }
 .tag.t-aga { background: #15301f; color: #7fe0b0; }
 .tag.t-ecs, .tag.t-ocs { background: #1c2b3f; color: #8cc4ff; }
+.tag.t-cpu-compatible { background: #2e2716; color: var(--warn); }        /* the game needs PUAE's CPU option changed */
 .tag.t-whdload { background: #3a2a10; color: var(--warn); }
 .tag.t-upgrade { background: #12301f; color: #6fd39a; }               /* a better version of this game is wanted */
 .tag.t-playlist { background: #222b38; color: var(--text-2); }

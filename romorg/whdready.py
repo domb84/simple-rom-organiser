@@ -189,6 +189,18 @@ def _index() -> tuple[dict[str, list], frozenset]:
     return _INDEX[1], _INDEX[2]
 
 
+# Games the PUAE core shows only black with its default CPU option (``puae_cpu_compatibility = "memory"``) and runs with another: title -> the
+# value to set. Found by booting the build's installs (Star Trek - 25th Anniversary: WHDLoad core dumps show the game waiting for a signal that never
+# comes; "compatible" runs it, "exact" and a 68030 do not). The tag in the Files view says it; the app does not change the user's core options.
+CPU_MODE: dict[str, str] = {"star trek 25th anniversary": "compatible"}
+
+
+def cpu_mode(title: str) -> str:
+    """The ``puae_cpu_compatibility`` value a game needs (``"compatible"``), "" when the default runs it (the TOSEC title: the name before " (")."""
+    from . import alttitles
+    return CPU_MODE.get(alttitles.node(title or ""), "")
+
+
 def release(name: str) -> Optional[list]:
     """The shipped ``[level, install archive]`` of the image-set release (SPS / IPF) named ``name``, None: not known."""
     return _index()[0].get(name)

@@ -4539,3 +4539,7 @@ aborted and the file sent again); the setting is not in the UI.
   NoFileCache, PAL / NTSC, NoResInt), fast RAM size, audio, immediate blits. Not changed in the app: the core option is the user's
   RetroArch setting (as for Chaos Engine), so the shipped list keeps -1 (it is the default-settings result and `AgaKeptReleases` pins it).
   After the intro the screen is black again at 6000-11500 frames (headless, no input): not examined further.
+
+### Amendment 114, addendum: the CPU tag
+
+A game that PUAE shows black with its default CPU option carries the tag `CPU: compatible` in the Files view (beside the machine, language and "WHDLoad" tags; hovering says why, the detail panel has an "Emulator setting" row: set the core option `puae_cpu_compatibility` to that value). The table is `whdready.CPU_MODE` (title -> value, `whdready.cpu_mode`); the server adds `cpu` to a folder's facts only for such a game (`App._row_facts`). First entry: Star Trek - 25th Anniversary (`compatible`; "exact" and a 68030 do not run it). Not changed: the user's core options stay the user's, and `whdknown.json.gz` still records the results with PUAE's defaults. The three games that need `exact` (The Chaos Engine, Cyber World, Skidoo, see above) would be entries of the same table.

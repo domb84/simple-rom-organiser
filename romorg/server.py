@@ -6703,8 +6703,11 @@ class App:
         except Exception:  # noqa: BLE001 - a name that cannot be read has no facts
             return None
         disc = disc_class(dat) if dat in disc_dats else ""
-        return {"platform": disc or tags_mod.platform_class(t), "source": source, "languages": sorted(tags_mod.variant_languages(t)),
-                "version": t.version or ""}
+        out = {"platform": disc or tags_mod.platform_class(t), "source": source, "languages": sorted(tags_mod.variant_languages(t)),
+               "version": t.version or ""}
+        if cpu := _mod("whdready").cpu_mode(t.title):         # (a game PUAE shows black with its default CPU option: the tag says which to set)
+            out["cpu"] = cpu
+        return out
 
     def _annotate_game_folders(self, entries: list[dict[str, Any]], platform: Any) -> None:
         """Mark every file of a library folder that holds ONE Amiga game with that game's ``plat`` (machine), ``langs`` and ``whd`` (the folder

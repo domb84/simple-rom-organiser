@@ -1478,7 +1478,8 @@
     // what kind of game a folder holds (Amiga): its machine, what plays it, the language and version of the release kept
     const LANG_NAMES = { En: "English", De: "German", Fr: "French", It: "Italian", Es: "Spanish", Nl: "Dutch", Sv: "Swedish", Da: "Danish", No: "Norwegian",
       Fi: "Finnish", Pt: "Portuguese", Pl: "Polish", Ru: "Russian", Ja: "Japanese" };
-    const factTags = (x) => !x ? [] : [x.platform, x.install, (x.languages || []).join(" "), x.version].filter(Boolean);   // (install: only "WHDLoad")
+    const factTags = (x) => !x ? [] : [x.platform, x.install, (x.languages || []).join(" "), x.version, x.cpu ? `CPU: ${x.cpu}` : ""].filter(Boolean);   // (install: only "WHDLoad")
+    const cpuNote = (x) => `PUAE shows this game black with its default CPU option: set "CPU compatibility" to "${x.cpu}" (core option puae_cpu_compatibility)`;
     function describeDir(d) {
       const states = Object.entries(d.states || {}).map(([k, n]) => `${fmt(n)} ${(STATE_TEXT[k] || k).toLowerCase()}`).join(", ");
       const x = d.facts, facts = [];
@@ -1486,6 +1487,7 @@
         const add = (k, v) => { if (v) facts.push(el("dt", { text: k }), el("dd", { text: v })); };
         add("Played from", `${x.install === "WHDLoad" ? "A WHDLoad archive (.lha)" : x.source === "disc" ? "The disc" : "The disks, through a playlist"}, from ${x.source.toLowerCase()}`);
         add("Machine", [x.platform, (x.languages || []).map((c) => LANG_NAMES[c] || c).join(", "), x.version].filter(Boolean).join(" · "));
+        if (x.cpu) add("Emulator setting", cpuNote(x));
       }
       put(panel, el("span", { class: "panel-title", text: d.name }), el("p", { class: "lead", text: `${fmt(d.files)} file${d.files === 1 ? "" : "s"}` }),
         states ? el("p", { class: "note", text: states }) : null, facts.length ? el("dl", { class: "facts" }, facts) : null);
@@ -1521,7 +1523,7 @@
     function dirRow(d) {
       return el("button", { class: "row", type: "button", "data-key": `dir:${d.name}`, on: { click: () => { path = fullPath(d.name); load(); }, focus: () => describeDir(d) } },
         icon("folder", "row-icon"), el("span", { class: "row-name", text: d.name }),
-        d.facts || d.upgrades ? el("span", { class: "row-tags" }, ...(d.facts ? factTags(d.facts) : []).map((t) => el("span", { class: `tag t-${String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, text: t })), d.upgrades ? upgradeTag() : null) : null,
+        d.facts || d.upgrades ? el("span", { class: "row-tags" }, ...(d.facts ? factTags(d.facts) : []).map((t) => el("span", { class: `tag t-${String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, text: t, title: String(t).startsWith("CPU: ") ? cpuNote(d.facts) : undefined })), d.upgrades ? upgradeTag() : null) : null,
         el("span", { class: "row-value", text: `${fmt(d.files)} ›` }));
     }
 

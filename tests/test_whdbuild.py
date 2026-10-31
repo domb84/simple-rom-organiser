@@ -636,5 +636,24 @@ class AgaKeptReleases(unittest.TestCase):
                                          for n, c, x in ((1, "A", "[cr FLT]"), (2, "B", ""), (3, "C", ""))]), whdready.NO_BOOT)
 
 
+class CpuModeTagTests(unittest.TestCase):
+    """A game PUAE shows black with its default CPU option carries a tag that says which value runs it."""
+
+    def test_star_trek_25th_needs_the_compatible_cpu(self) -> None:
+        self.assertEqual(whdready.cpu_mode("Star Trek - 25th Anniversary"), "compatible")
+        self.assertEqual(whdready.cpu_mode("Star Trek: 25th Anniversary"), "compatible")       # (spelt alike)
+        self.assertEqual(whdready.cpu_mode("Star Trek - Judgment Rites"), "")
+        self.assertEqual(whdready.cpu_mode(""), "")
+
+    def test_the_games_facts_say_it_only_for_such_a_game(self) -> None:
+        from romorg import server
+        plat = SimpleNamespace(image_set_dats=(), disc_dats=())
+        row = lambda name: {"dat": "Commodore Amiga - Games - [ADF]", "rom_name": name}          # noqa: E731
+        star = server.App._row_facts(row("Star Trek - 25th Anniversary (1993-11-29)(Interplay)(AGA)(Disk 1 of 8)[HD].adf"), plat)
+        self.assertEqual((star["platform"], star["cpu"]), ("AGA", "compatible"))
+        other = server.App._row_facts(row("Cadaver (1990)(Image Works)(Disk 1 of 2).adf"), plat)
+        self.assertNotIn("cpu", other)                                         # (a game the default runs: no key at all)
+
+
 if __name__ == "__main__":
     unittest.main()
