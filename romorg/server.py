@@ -2951,8 +2951,9 @@ class App:
             out = whdbuild.build(todo, state.root, cat.get("installs") or [], progress=job.report, cancel=job.cancel)
             ready = _mod("whdready")
             newer = sorted({t.title for t in todo if ready.needs_whdload(t.archive)})      # (they boot once PUAE has WHDLoad 20)
+            lists = ("failed", "skipped", "expansions")          # (what the page shows one by one: a skipped install, an expansion installed with its game)
             return {"action": "whdbuild", "games": len(todo), **{k: (v if isinstance(v, int) else len(v)) for k, v in out.items()
-                                                                  if k != "failed"}, "failed": out["failed"][:50],
+                                                                  if k not in lists}, **{k: out[k][:50] for k in lists},
                     "needs_newer_whdload": newer}
 
         return {"job": self.jobs.start("whdbuild", work, platform=platform.name).to_dict()}

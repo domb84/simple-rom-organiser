@@ -374,7 +374,7 @@ APP_MODULES = (
     "convert", "datfile", "dcdisc", "discarchive", "discsys", "dreamcast", "emudata", "flacdec", "flacenc", "flacnative", "folders", "gametdb",
     "bios", "biosdata", "cdconvert", "databases", "datsource", "discmatch", "emulators", "idsaves", "igdb", "ipf", "kana", "kept", "keyfiles", "lha", "libexport", "library", "lzx", "m3u", "m68k", "memcards", "meter", "multihash", "nativeflac", "nativelib", "nintendoapp", "nintendodisc", "nintendosaves", "nointro", "openretro", "organiser", "paths", "pcsx2",
     "platforms", "playstation", "ps2save", "ratings", "rawdic", "redump", "retroarch", "rvz", "s3", "s3archive", "saveindex", "savecarry", "savepin", "scancache", "scanner", "selfcheck", "server", "sevenzip",
-    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdinstalls", "whdready",
+    "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdexpansions", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",
 )
 STATIC_FILES = ("index.html", "app.js", "style.css", "deck.js", "deck.css", "next.html", "next.js", "next.css")

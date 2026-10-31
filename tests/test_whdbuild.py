@@ -482,7 +482,7 @@ class WhdloadBuildEndpointTests(unittest.TestCase):
         cat = {"installs": self.installs}
         _app, out, result = self.run_build(self.state(), cat)
         self.assertEqual((out["job"]["kind"], out["job"]["platform"]), ("whdbuild", AMIGA.name))
-        self.assertEqual(result, {"action": "whdbuild", "games": 1, "built": 1, "moved": 0, "kept": 0, "removed": 0, "failed": [],
+        self.assertEqual(result, {"action": "whdbuild", "games": 1, "built": 1, "moved": 0, "kept": 0, "removed": 0, "failed": [], "skipped": [], "expansions": [],
                                   "needs_newer_whdload": []})
         lha = self.root / "Games" / "Zap (1993)(Acme)[cr FLT].lha"
         self.assertIsNotNone(whdbuild.marker_of(lha))

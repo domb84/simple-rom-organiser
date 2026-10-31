@@ -4171,11 +4171,17 @@
     const r = job.result || {};
     if (job.status !== "done" || !r.action) return;
     const failed = r.failed || [];
+    const skipped = r.skipped || [];
+    const withExpansions = (r.expansions || []).filter((x) => (x.installed || []).length).length;
+    const leftOut = (r.expansions || []).flatMap((x) => (x.left_out || []).map((l) => ({ title: `${x.title}: ${l.title}`, error: l.reason })));
     toast(`WHDLoad games: ${fmt(r.built || 0)} built, ${fmt(r.moved || 0)} moved, ${fmt(r.kept || 0)} already there`
+      + (withExpansions ? `, ${fmt(withExpansions)} with their expansions installed` : "")
       + (r.removed ? `, ${fmt(r.removed)} removed` : "") + (failed.length ? `, ${fmt(failed.length)} could not be built` : "")
+      + (skipped.length ? `, ${fmt(skipped.length)} skipped (an install this app cannot run)` : "")
       + ((r.needs_newer_whdload || []).length ? `. ${fmt(r.needs_newer_whdload.length)} need WHDLoad 20 in PUAE: ${r.needs_newer_whdload.join(", ")}` : ""),
       failed.length ? "error" : "ok", 8000);
-    showFailures("lib-failures", "WHDLoad games not built:", failed, (f) => `${f.title}: ${f.error}`, []);
+    showFailures("lib-failures", "WHDLoad games not built:", failed.concat(skipped.map((x) => ({ title: x.title, error: `skipped: ${x.reason}` })), leftOut),
+      (f) => `${f.title}: ${f.error}`, []);
   };
 
   function filterChips(container, counts, current, order, onPick, labelFor = (k) => k, allLabel = "All") {

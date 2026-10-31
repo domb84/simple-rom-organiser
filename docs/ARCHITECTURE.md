@@ -4318,3 +4318,62 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
 * **Among several titles of one game the later edition is kept** (`library._newest`): the year of the release comes before the version (versions of different titles cannot be compared); the earlier editions are the fallback, as only complete sets compete, so an edition with a missing disk gives way to the next. The word on a superseded release is `Edition` ("a later edition"). One title is still judged by its version first, then its date. (The year is the TOSEC date, `tags.date_key`.)
 * **A promo is a demo**: `(Promo)` is excluded by the demo rule like a trial, a sample or a kiosk disc.
 * The same applies to the release a game keeps among its originals and floppy sets (`library._one_release`): a new step `Edition` comes right after `Complete` (a release with a disk missing never beats a whole one, so it is also the fallback) and before WHDLoad, language and version. On the user's Amiga library: Kick Off keeps Plus Extra Time, Alien Breed Special Edition 92, Project-X Special Edition 93, Hollywood Poker Pro, Leisure Suit Larry 1 (1991), Pirates! Gold.
+
+**AMENDMENT 114 (v0.5) — an expansion its game's WHDLoad install takes in is one title with the game, installed together.**
+
+* The user's rule: when a game's WHDLoad install is ONE package for the base game and an expansion (data / mission / scenery disks), the
+  expansion is not a game of its own. One title in the library (tile, list, counts, top-N slot, folder), one archive that plays the game with
+  the expansion. Nothing is deleted: the expansion's disks stay as files, in the game's folder ("installed with <game>"). An expansion with
+  an install of its own stays a separate title with its own archive. Expansions of no install, and those whose game is not kept, are games
+  of their own as before.
+* **The table** (`romorg/whdexpansions.json`, read by `romorg/whdexpansions.py`, made by `tools/gen_whdexpansions.py`): per install package the
+  base game's TOSEC title(s), the expansions it takes (TOSEC titles, matched by letters and digits like the Matcher does) and for each the
+  forced answers (`amigainstall.Ask`: `bool` - a yes / no question, `askbool` or an `askchoice` of Yes / No; `options` - `askoptions`, the
+  choice that names it; `choice` - `askchoice`, the version question too); `save_disk` (a blank 901,120-byte disk between the game's disks and
+  the expansion's: HeroQuest); `base_pick` (a version of the game the slave is known to boot, tried first: HeroQuest's `[cr CABAL]`);
+  `assume` (the shipped list has no working result for the game alone from the disks at hand - Battle Isle's ADFs, Corporation's and Test
+  Drive II's cracks - but with the expansion the install ran and booted); and `standalone` rows (expansions with an install of their own:
+  Kick Off 2 Return to Europe / The Final Whistle, Kick Off 3 European Challenge, PowerMonger World War 1, Fighter Bomber Advanced Mission,
+  Chaos Strikes Back; Bloodwych's Extended Levels, the package's second slave). The tool checks every answer against the questions of the
+  package's Install script (evaluating the prompts built with `cat`) and writes the file only when each still matches. Conservative: only
+  expansions seen to install and boot (headless PUAE) with their game are in it - eleven installs: Cadaver (The Pay Off), HeroQuest (Return of
+  the Witch Lord), Falcon (both mission disks), Battle Isle (Scenario Disk 1, The Moon of Chromos), Earl Weaver Baseball (Commissioner's
+  Disk), Corporation (Mission Disk), Lords of Chaos (Expansion Kit One), Space Crusade (The Voyage Beyond), PGA Tour Golf (Tournament Course
+  Disk), Test Drive II (California, European, Muscle Cars, Supercars), World Class Leader Board (Extra Courses, 2).
+* **The plan** (`library.merge_expansions`, the last step of `select`, also of the rating-filtered target in `totals`): with "Build WHDLoad games"
+  on, when the game has a kept, complete version whose install (shipped list / the user's check: `whdready`) is the table's package at a level
+  that builds (or `assume`), and the expansion's own disks are complete and kept, `Selection.merged` maps the expansion's game key to the game's.
+  `library.counted_key(item, sel)` is `game_key` through that map: the totals (`kept`, names, problems, target), the game folder
+  (`organiser._into_game_folders`, `_game_folder_names`: named by the game, not by the expansion) and the build's games use it. Decisions
+  stay `keep` (nothing is dropped, no rating or top-N rule changes: the merge comes after them, so an expansion is never dropped because its game
+  is not kept - it is just not merged); `Decision.merged_into` (the expansion: "installed with <game>") and `Decision.includes` (the game:
+  "with The Pay Off") show in the file list's reason. Not done: the Overview's scan-time count (`server._games_count`), which has no selection.
+* **The build** (`whdbuild`): `targets` gives the game's `Target` the expansions' disks (`Target.extra`: per expansion one kept release - a set
+  in disk order - in the table's order; the expansion has no target of its own) and, for a game that has expansions or needs a file on the disk
+  (`prefer_disk`), the versions the rules set aside (`Target.alternates`). `_disk_data`: the game's disks, the blank disk where the table wants one,
+  the expansions' disks. The archive's marker `source` is the game's disk names then `+ <expansion disk names>` (a changed set is made again; a
+  game without expansions keeps its old source), `expansions` the titles whose forced answer the script was asked, `built_from` the version made.
+  `_install`: versions in order (a disk that holds `prefer_disk`, the table's `base_pick`, an original before a `[cr` crack, then the rules' order;
+  at most four), each with the expansions and then - when none installs - the game alone (two versions): the result's `expansions` says per game
+  which were installed and which `left_out` with the reason (also "the install did not ask for it"). Class C: an expansion with an install of its
+  own is a target from its disks alone; the table's row beats the shipped list's wrong archive (PowerMonger's World War 1 disk is `Powermonger.lha`
+  there) and, at level 3 (booted), its "does not boot"; an unproven row (level 1) defers to the list. `whdinstalls.Matcher` finds these installs
+  (`how` "expansion"). The job result adds `skipped` and `expansions`; the page's toast and list show them.
+* **Forced answers** (`amigainstall.Ask`): a forced question is answered whatever the answer search does - a failing install still tries other
+  answers to its other questions (the last first, `_MAX_TRIES` 8 / 45 s) but never changes a forced one (`_Interp.forced`); a forced `choice` of
+  the version question limits `Package.tries` to the versions that name it; a forced `options` ticks every option but those that say "only" and
+  those of an expansion that is not among the disks; an expansion that is not here is answered no. Questions that the script never asks
+  leave the expansion out (reported).
+* **`mount WHDI:`** (Strip Poker 3, Links): `amigainstall.Unsupported` (an `InstallError`): no answers are tried, no result is recorded for the
+  disks (they are fine), the build lists it under `skipped` with the reason and keeps what it had.
+* **Checked on a real library copy** (scan, plan, library build, WHDLoad build, boot headless in PUAE; a copy of the disks in
+  `exptest2/`): all 21 targets built, no failure; eleven games with their expansions installed in one archive each (files of the expansions in
+  the drawer: Cadaver `Disk.3` + `PayoffSolution`, HeroQuest `Disk.1` + `Disk.3`), every archive reached the game's title or menu. Hole-In-One -
+  Miniature Golf matches the Hole-In-One install rightly: its disk is the PAL "starter kit" version the install's ReadMe names (1.2: "contains
+  Alphabet, FarOut, Holidays levels"), and it builds (99 files).
+* **Not done**: Femme Fatale, Strip Poker II / 3, Super Tennis Champs, Populous (Promised Lands, Final Frontier), Hole-In-One's course disks,
+  XTreme Racing's data disks, Super SkidMarks, Goldrunner II / Vroom (RawDIC on cracks), Death or Glory, Links (mount), Exile's Discovery Disk,
+  Player Manager 2 Extra, Chaos Strikes Back and Fighter Bomber Advanced Mission (no boot seen; the list has them as not booting) stay games of
+  their own. Graham Gooch's Second Innings alone stops at a WHDLoad requester (its install wants the game's disk too): a game of its own, no
+  archive. The one-release rule still ranks the expansion's variants as a game of their own; the top-N slot an expansion took before the merge
+  is not given back; no boot check inside the app (the fallback to other versions happens when an install fails, not when a slave refuses).

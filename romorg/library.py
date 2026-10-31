@@ -641,6 +641,8 @@ class Decision:
     elsewhere: tuple[int, ...] = ()  # incomplete: missing disks the user has under another identity
     keeper: str = ""              # duplicate: the copy that stays (its path)
     tag: str = ""                 # superseded: what decided it, in a word ("Version", "WHDLoad", "Chipset", "CDTV" ...)
+    merged_into: str = ""         # keep: an expansion its game's WHDLoad install takes in: the game's name (:func:`merge_expansions`)
+    includes: tuple[str, ...] = ()   # keep: the game of an install that takes expansions in: their titles ("with The Pay Off")
     # keep: ``codes == ("borrowed",)`` marks a disk of another edition used to complete a set (``BORROWED_CODE``)
 
 
@@ -692,6 +694,7 @@ class Selection:
     incomplete: list[IncompleteSet] = field(default_factory=list)
     vanished: list[Vanished] = field(default_factory=list)
     combine_alt: bool = False                  # the profile's "Combine alternate titles" (what :func:`game_key` of its items needs)
+    merged: dict[tuple, tuple] = field(default_factory=dict)   # an expansion's game key -> its game's: one title (:func:`counted_key`)
     before_borrow: dict[int, Optional[Decision]] = field(default_factory=dict)   # a borrowed disk's own decision (its set may be dropped)
 
     def exclusion_counts(self) -> dict[str, dict[str, int]]:
@@ -766,6 +769,13 @@ def game_key(item: Item, combine: bool = False) -> tuple:
     (title, status, product tags; regions, languages, versions and disc numbers are not part of it). ``combine``: the profile's
     "Combine alternate titles" (the titles of one game in other regions are one title)."""
     return (game_dat(item.dat), _gkey(item, combine))      # tags.game_key = identity_key for TOSEC; a disc: its games DAT's
+
+
+def counted_key(item: Item, sel: Selection) -> tuple:
+    """The game an item counts for under ``sel``: :func:`game_key`, but an expansion that its game's WHDLoad install takes in
+    (:func:`merge_expansions`) counts for that game - one title in the tiles, the lists, the counts and the game's folder."""
+    key = game_key(item, sel.combine_alt)
+    return sel.merged.get(key, key) if sel.merged else key
 
 
 def _gkey(item: Item, combine: bool) -> tuple:
@@ -1465,6 +1475,7 @@ def select(items: Sequence[Item], profile: LibraryProfile, platform: "Platform",
     if saved:
         apply_saved(sel, items, saved, profile, platform.name)
     apply_overrides(sel, items, profile)
+    merge_expansions(items, sel, profile, platform)
     if report:                                   # (the lists a page shows: a count of the games does not read them)
         sel.vanished = _vanished(items, sel)
         _mark_covered(items, sel)
@@ -1604,6 +1615,91 @@ def _flawed_beside_clean(items: Sequence[Item], sel: Selection) -> None:
     # clean ones), so the comparison above may have put a disk of one aside without ever calling the set flawed - its playlist would point at it
     sel.sets = [cs for cs in sel.sets
                 if all((d := sel.decisions.get(k)) is None or d.action == KEEP for k in cs.slots.values())]
+
+
+def _release_levels(members: Sequence[Item], sel: Selection, image_sets: frozenset) -> Optional[tuple[Optional[str], int]]:
+    """``(the install, how well it works)`` for one release of a game - its kept disks (a set, or one disk) or an SPS release - from the
+    shipped list / the user's own check (``whdready``); None when it has no install."""
+    from . import whdready
+    first = members[0]
+    if first.dat in image_sets:
+        entry = whdready.release_of(first.rom)
+        return (entry[1] if entry and len(entry) > 1 else None, int(entry[0]) if entry and entry[0] is not None else 0) if entry else None
+    names = whdready.names_of(m.rom for m in members)
+    sha = whdready.sha_key(m.rom for m in members)
+    arc = whdready.archive(names) or (whdready.checked(names, sha) or {}).get("archive")
+    return arc, int(whdready.level(names, sha) or 0)
+
+
+def merge_expansions(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: "Platform") -> None:
+    """An expansion (a data, mission or scenery disk) whose game's WHDLoad install is one package for the game AND the expansion
+    (``whdexpansions``, shipped) is not a game of its own: with "Build WHDLoad games" on, when the game is kept and has that install, the
+    expansion's game key counts for the game's (:func:`counted_key`), its kept files are marked "installed with <game>" and stay with the
+    game (its folder), and the game's decision names them ("with The Pay Off"). Only when the expansion's disks are complete; nothing is
+    dropped or deleted - an expansion whose game is not kept, or has no install of that package, is a game of its own as before."""
+    if not getattr(profile, "build_whdload", False) or "build_whdload" not in applicable_fields(platform):
+        return
+    from . import whdexpansions, whdready
+    if not whdexpansions.merges():
+        return
+    image_sets = frozenset(_dats(platform, "image_set_dats"))
+    gdat = getattr(platform, "game_dat", "") or ""
+    wanted = {k for m in whdexpansions.merges() for k in (m.base_keys | {k for e in m.expansions for k in e.keys})}
+    by_title: dict[str, list[Item]] = {}
+    for it in items:
+        if it.dat == gdat or it.dat in image_sets:
+            t = whdexpansions.norm(_tags_of(it).title)
+            if t in wanted:
+                by_title.setdefault(t, []).append(it)
+    if not by_title:
+        return
+    for m in whdexpansions.merges():
+        kept_base = [it for k in sorted(m.base_keys) for it in by_title.get(k, []) if (d := sel.decisions.get(it.key)) is not None
+                     and d.action == KEEP and not d.missing]
+        if not kept_base:
+            continue
+        releases: dict[tuple, list[Item]] = {}                 # (a kept version of the game: one set, one SPS release, one disk)
+        for it in kept_base:
+            d = sel.decisions[it.key]
+            rel = ("set", d.set_id) if d.set_id is not None else ("sps", it.rom.game) if it.dat in image_sets else ("one", it.key)
+            releases.setdefault(rel, []).append(it)
+        base = next((members[0] for _r, members in sorted(releases.items(), key=lambda x: str(x[0]))
+                     if ((got := _release_levels(members, sel, image_sets)) is not None and got[0] == m.archive
+                         and got[1] >= whdready.IMAGES)), None)
+        if base is None and m.assume:                          # (no working result for the game alone: with its expansion it installs)
+            base = next((members[0] for _r, members in sorted(releases.items(), key=lambda x: str(x[0]))
+                         if members[0].dat not in image_sets
+                         and ((got := _release_levels(members, sel, image_sets)) is None or got[0] in (None, "", m.archive))), None)
+        if base is None:
+            continue                                           # (no kept version the install builds from: the expansions stay games)
+        base_key = game_key(base, sel.combine_alt)
+        taken: list[str] = []
+        for e in m.expansions:
+            mine = [it for k in sorted(e.keys) for it in by_title.get(k, [])]
+            kept = [it for it in mine if (d := sel.decisions.get(it.key)) is not None and d.action == KEEP]
+            if not kept or any(sel.decisions[it.key].missing for it in kept):
+                continue                                       # (not complete: as it is)
+            for it in mine:
+                key = game_key(it, sel.combine_alt)
+                if key != base_key:
+                    sel.merged.setdefault(key, base_key)
+            for it in kept:
+                sel.decisions[it.key].merged_into = base.rom.game or _tags_of(base).title
+            taken.append(_tags_of(kept[0]).title)
+        if taken:
+            title = _tags_of(base).title
+            for it in kept_base:
+                if game_key(it, sel.combine_alt) == base_key:
+                    d = sel.decisions[it.key]
+                    d.includes = tuple(sorted({*d.includes, *(_short_expansion(t, title) for t in taken)}))
+
+
+def _short_expansion(title: str, game: str) -> str:
+    """An expansion's name for "with ...": its title without the game's ("Cadaver - The Pay Off": "The Pay Off")."""
+    head = re.sub(r"[^0-9a-z]+", "", game.casefold())
+    if " - " in title and re.sub(r"[^0-9a-z]+", "", title.split(" - ", 1)[0].casefold()).startswith(head):
+        return title.split(" - ", 1)[1]
+    return title
 
 
 def title_key(it: Item, combine: bool = False) -> str:

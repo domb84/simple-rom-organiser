@@ -1061,7 +1061,7 @@ def _plan_library(result: "ScanResult", profile: "library.LibraryProfile", missi
     def whdload_game(keys: Iterable[int]) -> bool:
         """True when the game of these disks is played from its WHDLoad build."""
         keys = [k for k in keys if k in core.owners]
-        return bool(whd_games) and bool(keys) and library.game_key(_item_of(keys[0], core.owners), combine) in whd_games
+        return bool(whd_games) and bool(keys) and library.counted_key(_item_of(keys[0], core.owners), sel) in whd_games
     specs: list["m3u.PlaylistSpec"] = []
     counts: dict[str, int] = {}
     in_sets: set[int] = set()
@@ -1258,7 +1258,8 @@ def _game_folder_names(games: dict[tuple, list[int]], owners: dict) -> dict[tupl
     by_title: dict[str, list[tuple]] = {}
     tag: dict[tuple, Any] = {}
     for g, keys in games.items():
-        tag[g] = library._tags_of(_item_of(min(keys), owners))
+        own = [k for k in keys if library.game_key(_item_of(k, owners), True) == g]      # (an expansion kept with its game does not name the folder)
+        tag[g] = library._tags_of(_item_of(min(own or keys), owners))
         by_title.setdefault(safe_filename(tag[g].title).casefold(), []).append(g)
     taken: set[str] = set()
     folder: dict[tuple, str] = {}
@@ -1353,7 +1354,6 @@ def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> Non
     publisher; two games of one title (``library.KEEP_APART``) get the publisher's name, then the year, added."""
     from . import library
     wanted = {getattr(platform, "game_dat", "")} | set(platform.image_set_dats) | set(getattr(platform, "disc_dats", ()) or ())
-    combine = getattr(sel, "combine_alt", True)
     games: dict[tuple, list[int]] = {}
     for key, (op, unit) in owners.items():
         d = sel.decisions.get(key)
@@ -1362,7 +1362,7 @@ def _into_game_folders(owners: dict, sel: Any, root: Path, platform: Any) -> Non
             continue
         item = _item_of(key, owners)
         if item.dat in wanted:
-            games.setdefault(library.game_key(item, combine), []).append(key)
+            games.setdefault(library.counted_key(item, sel), []).append(key)      # (an expansion its game's install takes in: its folder)
     folder = _game_folder_names(games, owners)
     for g, keys in games.items():
         for key in keys:
@@ -1407,7 +1407,6 @@ def _whdload_games(sel: Any, owners: dict, profile: Any, platform: Any) -> tuple
         by_place.setdefault(pair[1], key)
     disks: set[str] = set()
     games: set[tuple] = set()
-    combine = getattr(sel, "combine_alt", True)
     for t in whdbuild.targets(SimpleNamespace(selection=sel, owners=owners), platform):
         if not t.sps and (whdready.checked(t.names) or {}).get("ok") is False:
             continue                                          # (its install failed here: played from its disks, with a playlist)
@@ -1415,7 +1414,7 @@ def _whdload_games(sel: Any, owners: dict, profile: Any, platform: Any) -> tuple
             disks.update(places.get(_fold(path), (_fold(path),)))
         key = by_place.get(_fold(t.disks[0][0])) if t.disks else None
         if key is not None:
-            games.add(library.game_key(_item_of(key, owners), combine))
+            games.add(library.counted_key(_item_of(key, owners), sel))
     return disks, games
 
 
@@ -1476,6 +1475,10 @@ def _apply_decision(op: RenameOp, d: Any, root: Path, partial: bool = False) -> 
         _add_reason(op, d.reason.split("; ")[-1])           # "borrowed as disk N of <set> (...)"
     if library.SAVED_KEEP in d.codes:
         _add_reason(op, d.reason)                           # "kept: you have saves or save states for it"
+    if d.merged_into:
+        _add_reason(op, f"installed with {d.merged_into}")  # (an expansion its game's WHDLoad install takes in)
+    if d.includes:
+        _add_reason(op, f"with {', '.join(d.includes)}")    # (the game: what its install takes in)
 
 
 def _library_delete_reason(op: RenameOp, by_src: dict[str, RenameOp]) -> str:

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import cancellation, kept, paths
+from . import cancellation, kept, paths, whdexpansions
 from .folders import WHDLOAD_MARKER
 
 BASE_URL = "https://www.whdload.de/games/"
@@ -195,6 +195,7 @@ class Matcher:
                     m = re.search(r"\s(?:in|meets)\s(.+)$", name, re.IGNORECASE)
                     if m and len(self._node(m.group(1)).split()) >= 3:     # ("Roger Rabbit In Hare Raising Havoc")
                         self._part(m.group(1), i, "")
+        self.by_archive = {i["archive"]: i for i in installs}
         self.byhol: dict[str, list[dict[str, Any]]] = {}       # the installs by their Hall of Light page
         for i in installs:
             if str(i.get("hol") or "").isdigit():
@@ -294,6 +295,9 @@ class Matcher:
         a preview's for a game ("Zap (Preview)" is no install of Zap) - whichever way it is found."""
         t = _plain(title or "")
         k = self._node(t)
+        row = whdexpansions.standalone_row(t)               # (an expansion with an install of its own: the one data / mission disk that has one)
+        if row is not None and row["archive"] in self.by_archive:
+            return [self.by_archive[row["archive"]]], "expansion", t
         arcadia, demo = "arcadia" in (title or "").casefold(), bool(_DEMO_RE.search(title or ""))
 
         def its(i: dict[str, Any]) -> bool:                # (an Arcadia install wants the arcade board's ROMs, not the floppies)

@@ -29,11 +29,39 @@ from . import ipf, rawdic
 from .adf import AdfDisk, AdfError
 from .lha import crc16
 
-__all__ = ["install", "install_archive", "Package", "chipset_hints", "version_choices", "InstallResult", "InstallError", "MemDisk", "write_lha", "pattern_regex"]
+__all__ = ["install", "install_archive", "Package", "chipset_hints", "version_choices", "InstallResult", "InstallError", "Unsupported", "Ask",
+           "MemDisk", "write_lha", "pattern_regex"]
 
 
 class InstallError(Exception):
     """The install cannot be done here (a step that needs an Amiga program, a disk that is missing, the script aborted)."""
+
+
+class Unsupported(InstallError):
+    """An install this app cannot run at all (it mounts a volume, ...): no disks make it work, so it is skipped with the reason - never a
+    failure of the game, never tried again with other answers."""
+
+
+@dataclass(frozen=True)
+class Ask:
+    """An answer the caller forces (an expansion installed together with its game): which question, and the answer.
+
+    ``kind``: ``bool`` - a yes / no question (``askbool``, or an ``askchoice`` of "Yes" / "No"); ``options`` - ``askoptions``: every option but the
+    ones of an ask that is ``want=False`` (an expansion not here) or that say "only"; ``choice`` - an ``askchoice`` (the version question
+    too): the first choice that ``choice`` matches. ``prompt`` / ``choice``: regular expressions (case-insensitive) on the question's text and
+    on a choice's. ``want=False``: the expansion is not among the disks: the question gets "No" (an option is left out). A forced answer is
+    never changed by the search for another answer that a failing install gets (:func:`install`)."""
+    kind: str
+    prompt: str = ""
+    choice: str = ""
+    expansion: str = ""
+    want: bool = True
+
+    def asks(self, prompt: str) -> bool:
+        return not self.prompt or re.search(self.prompt, prompt, re.IGNORECASE) is not None
+
+    def names(self, text: str) -> bool:
+        return bool(self.choice) and re.search(self.choice, text, re.IGNORECASE) is not None
 
 
 class _Exit(Exception):
@@ -575,6 +603,7 @@ class InstallResult:
     version: int = 0
     choices: list[str] = field(default_factory=list)
     guessed: int = 0                                   # disks matched only by the order they were asked for (a guess)
+    forced: list[str] = field(default_factory=list)    # the expansions whose forced answer the script was asked for (``Ask.expansion``)
 
 
 class _Interp:
@@ -595,15 +624,39 @@ class _Interp:
         self.answers: dict[int, int] = {}                  # (the k-th question asked: this answer - another try, see install)
         self.failed_runs: list[str] = []                   # (the install's programs that returned FAIL: a later error's reason)
         self.asked: list[tuple[int, int, list[str]]] = []  # (each question asked: its answers, the one given, their texts)
+        self.asks: tuple[Ask, ...] = ()                    # (answers forced: expansions installed with the game)
+        self.forced: set[int] = set()                      # (the questions that got a forced answer: the search leaves them)
+        self.hit: list[str] = []                           # (the expansions whose forced answer was given)
 
-    def _answer(self, n: int, given: Any, texts: list[str], prompt: str = "") -> Any:
-        """The answer to the next question (one of ``n``): ``given``, or the one this try gives it."""
+    def _answer(self, n: int, given: Any, texts: list[str], prompt: str = "", forced: bool = False) -> Any:
+        """The answer to the next question (one of ``n``): ``given``, or the one this try gives it (never for a forced one)."""
         k = len(self.asked)
-        if k in self.answers:
+        if forced:
+            self.forced.add(k)
+        elif k in self.answers:
             given = self.answers[k]
             self.log.append(f"answered \"{texts[given] if given < len(texts) else given}\" (another try)")
         self.asked.append((n, given if isinstance(given, int) else 0, texts, prompt))
         return given
+
+    def _hits(self, ask: Ask) -> None:
+        if ask.want and ask.expansion and ask.expansion not in self.hit:
+            self.hit.append(ask.expansion)
+            self.log.append(f"installed with the game: {ask.expansion}")
+
+    def _forced(self, kind: str, prompt: str, texts: list[str]) -> Optional[tuple[Ask, int]]:
+        """``(the ask, the answer's index)`` when a forced answer is for this question: a yes / no one (``bool``) by the text of Yes / No, a
+        ``choice`` by the choice it names."""
+        for a in self.asks:
+            if a.kind != kind or not a.asks(prompt):
+                continue
+            if kind == "bool" and len(texts) >= 2:
+                idx = next((i for i, t in enumerate(texts) if re.match(r"\s*(?:yes|ja|oui)\b" if a.want else r"\s*(?:no|nein|non|don'?t)\b", t, re.IGNORECASE)), None)
+                if idx is not None:
+                    return a, idx
+            elif kind == "choice" and a.want and (idx := next((i for i, t in enumerate(texts) if t.strip() and a.names(t)), None)) is not None:
+                return a, idx
+        return None
 
     # -- evaluation
     def ev(self, x: Any) -> Any:
@@ -915,6 +968,11 @@ class _Interp:
         texts = [str(c) for c in o.get("choices", [])][:2] or ["Yes", "No"]
         if _SAVE_DISK_RE.search(str((o.get("prompt") or [""])[0])):
             return 0
+        forced = self._forced("bool", str((o.get("prompt") or [""])[0]), ["Yes", "No"] if not o.get("choices") else texts)
+        if forced is not None:                            # (an expansion that is here: yes; one that is not: no - and no other answer is tried)
+            self._answer(2, forced[1], texts, str((o.get("prompt") or [""])[0]), forced=True)
+            self._hits(forced[0])
+            return 1 if forced[1] == 0 else 0
         d = (o.get("default") or [1])[0]
         got = self._answer(2, 0 if d else 1, texts, str((o.get("prompt") or [""])[0]))   # (as an answer: 0 the first, "yes")
         return 0 if got else 1
@@ -925,7 +983,16 @@ class _Interp:
         prompt = str((o.get("prompt") or [""])[0]).lower()
         if self.version_choice is not None and "version" in prompt and not self.choices:
             self.choices = choices                         # (the version question: only the first - Civilization asks "Floppy
-            return self.version_choice                     #  Disk version" or "CD version" after it)
+            for a in self.asks:                            #  Disk version" or "CD version" after it)
+                if a.kind == "choice" and a.want and 0 <= self.version_choice < len(choices) and a.names(choices[self.version_choice]):
+                    self._hits(a)
+            return self.version_choice
+        for kind in ("bool", "choice"):                    # (an expansion's question: "Do you want to install ... ?" Yes / No, or the choice naming it)
+            forced = self._forced(kind, prompt, choices)
+            if forced is not None:
+                self._answer(len(choices), forced[1], choices, prompt, forced=True)
+                self._hits(forced[0])
+                return forced[1]
         return self._answer(len(choices), self._choice(choices, prompt, o), choices, prompt)
 
     def _choice(self, choices: list[str], prompt: str, o: dict) -> Any:
@@ -949,12 +1016,32 @@ class _Interp:
 
     def f_askoptions(self, a: list) -> Any:
         _p, o = self.opts(a)
+        mask = self._forced_options(str((o.get("prompt") or [""])[0]), [str(c) for c in o.get("choices", [])])
+        if mask is not None:
+            return mask
         if o.get("default"):
             return o["default"][0]
         n = len(o.get("choices", []))                     # (the Installer's own default: every option - else, another try, the first
         every = (1 << n) - 1 if n else 0                  #  only: Test Drive II's "Program Disk + WHDLoad slave" without the data
         got = self._answer(2, 0, ["every option", "the first option"], str((o.get("prompt") or [""])[0]))   # disks no one has)
         return every if got == 0 else (1 if n else 0)
+
+    def _forced_options(self, prompt: str, choices: list[str]) -> Optional[int]:
+        """The options an expansion needs (``Ask`` kind ``options``): every one - the game's own data disks too - but those that name "only"
+        and those of an expansion that is not here; None when no forced answer is for this question."""
+        asks = [a for a in self.asks if a.kind == "options" and a.asks(prompt)]
+        if not asks or not any(a.want for a in asks):
+            return None
+        mask = 0
+        for i, c in enumerate(choices):
+            if not c.strip() or re.search(r"\bonly\b", c, re.IGNORECASE) or any(not a.want and a.names(c) for a in asks):
+                continue
+            mask |= 1 << i
+        for a in asks:
+            if a.want and any(a.names(c) and mask >> i & 1 for i, c in enumerate(choices)):
+                self._hits(a)
+        self.log.append(f"options: {', '.join(c for i, c in enumerate(choices) if mask >> i & 1)}")
+        return mask
 
     def f_askdisk(self, a: list) -> Any:
         _p, o = self.opts(a)
@@ -1310,6 +1397,8 @@ class _Interp:
                 if k is None or k + 1 >= len(names):
                     raise InstallError("join: no AS / TO")
                 self.fs.write(_join(cwd, names[k + 1]), b"".join(self.fs.read(_join(cwd, x)) for x in names[:k]))
+            elif word == "mount":                            # (Mount WHDI: FROM T:WHDI.mountlist: a volume of its own - Strip Poker 3, Links)
+                raise Unsupported(f"the install mounts a volume of its own (\"{line.strip()[:60]}\"), which this app cannot do")
             elif word == "patcher":                          # (Patcher -p<module> -s<drive>: its module run here - amigados)
                 self._patcher(cwd, args)
             elif word in ("xfddecrunch", "xfddecrunchall") and self.decruncher is not None:
@@ -1724,16 +1813,17 @@ class Package:
 
     def install(self, disks: list[Any], volumes: Optional[list[MemDisk]] = None, cd: Optional[bool] = None,
                 decruncher: Optional[Callable[[], Any]] = None, hints: tuple[str, ...] = (),
-                system: Optional[list[MemDisk]] = None) -> InstallResult:
+                system: Optional[list[MemDisk]] = None, asks: tuple[Ask, ...] = ()) -> InstallResult:
         """Each version the script names is tried; the first that installs wins (else the first reason it gave). The script's CD
         versions ("CD³² release") only for a CD's files (``cd``; by default: when ``volumes`` are given) - floppies made into the CD
-        version would install a game that is not theirs."""
+        version would install a game that is not theirs. ``asks``: the answers that are forced (an expansion installed with the game,
+        :class:`Ask`): a version question's forced choice limits the versions tried to those that name it."""
         if not self.scripts:
             return install_scriptless(self.dir, disks, hints)
         if len(self.homes) > 1:
             self._choose_home(disks)
         try:
-            return self._attempt(disks, volumes, cd, decruncher, hints, False, system)
+            return self._attempt(disks, volumes, cd, decruncher, hints, False, system, asks)
         except InstallError as exc:
             first = exc
         # IPFs in the order of the disk numbers they carry, when that is not the order the install reads them in (Shadow of the
@@ -1743,7 +1833,7 @@ class Package:
             orders = [list(disks)] + ([list(p) for p in itertools.permutations(disks)][1:] if len(disks) <= 3 else [])
             for order in orders:
                 try:
-                    res = self._attempt(order, volumes, cd, decruncher, hints, True, system)
+                    res = self._attempt(order, volumes, cd, decruncher, hints, True, system, asks)
                     res.log.append("the disks in another order than their numbers")
                     return res
                 except InstallError:
@@ -1770,8 +1860,9 @@ class Package:
 
     def _attempt(self, disks: list[Any], volumes: Optional[list[MemDisk]], cd: Optional[bool],
                  decruncher: Optional[Callable[[], Any]], hints: tuple[str, ...], keep_order: bool,
-                 system: Optional[list[MemDisk]] = None) -> InstallResult:
+                 system: Optional[list[MemDisk]] = None, asks: tuple[Ask, ...] = ()) -> InstallResult:
         first: Optional[InstallError] = None
+        unsupported: list[bool] = []
         cd = bool(volumes) if cd is None else cd
         scripts = sorted(self.scripts, key=lambda p: 0 if hints and _hinted([p.name], hints) == 0 else 1)   # ("Install_AGA" for AGA)
         if not cd:                                           # (a script for the CD version - "InstallCD32" - never for floppies:
@@ -1780,21 +1871,29 @@ class Package:
                 raise InstallError(f"the install's script ({self.scripts[0].name}) is for the CD version, not for floppies")
         for script in scripts:                               # (several only when there is no plain "Install": "Install_AGA" ...)
             names = self.names if script == self.scripts[0] else version_names(script.read_text(encoding="latin-1"))
-            for v in self.tries(len(disks), names, hints):
+            for v in self.tries(len(disks), names, hints, asks):
                 if v is not None and not cd and _CD_RE.search(names.get(v, "")):
                     continue
                 try:
                     return install(self.dir, disks, v, volumes, decruncher=decruncher, script=script, hints=hints,
-                                   keep_order=keep_order, system=system)
+                                   keep_order=keep_order, system=system, asks=asks)
                 except InstallError as exc:                  # (the reason of the version that got furthest)
                     if first is None or getattr(exc, "progress", 0) > getattr(first, "progress", 0):
                         first = exc
+                    unsupported.append(isinstance(exc, Unsupported))
+        if unsupported and all(unsupported):                 # (no version can be run here: the install is skipped, not failed)
+            raise Unsupported(str(first))
         raise first  # type: ignore[misc]
 
-    def tries(self, n_disks: int, names: Optional[dict[int, str]] = None, hints: tuple[str, ...] = ()) -> list[Optional[int]]:
+    def tries(self, n_disks: int, names: Optional[dict[int, str]] = None, hints: tuple[str, ...] = (),
+              asks: tuple[Ask, ...] = ()) -> list[Optional[int]]:
         """The versions to try, in order: those whose text names this many disks ("AGA version (5 disks)": the version these disks
-        are, where several would install), the script's own default, then the others."""
+        are, where several would install), the script's own default, then the others. A version a forced ``choice`` names ("Standard +
+        Mission Disk Release (3 disks)") is the only one tried: the others would leave the expansion out."""
         names = self.names if names is None else names
+        forced = [v for v, t in sorted(names.items()) if any(a.kind == "choice" and a.want and a.names(t) for a in asks)]
+        if forced:
+            return forced
         fits = [v for v, t in names.items() if re.search(rf"\b{n_disks}\s*(\+\s*\d+\s*)?disks?\b", t, re.IGNORECASE)
                 and not re.search(rf"\b{n_disks}\s*\+", t)]
         order = fits + [None] + [v for v in sorted(names) if v not in fits]
@@ -2187,7 +2286,7 @@ def _int(v: Any) -> int:
 
 def install(package: Path, disks: list[Any], version: Optional[int] = None, volumes: Optional[list[MemDisk]] = None,
             decruncher: Optional[Callable[[], Any]] = None, script: Optional[Path] = None, hints: tuple[str, ...] = (),
-            keep_order: bool = False, system: Optional[list[MemDisk]] = None) -> InstallResult:
+            keep_order: bool = False, system: Optional[list[MemDisk]] = None, asks: tuple[Ask, ...] = ()) -> InstallResult:
     """Run the install script of ``package`` (the unpacked install's drawer, holding ``Install``) with the ADFs ``disks``.
     ``decruncher``: gives a :class:`romorg.xfd.Decruncher` for a script that runs xfdDecrunch (None: such a script stops)."""
     package = Path(package)
@@ -2213,12 +2312,15 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
         it.hints = tuple(hints)
         it.cd = bool(volumes)
         it.answers = answers
+        it.asks = tuple(asks)
         it.vars["@user-level"] = level
         try:
             for f in forms:
                 it.ev(f)
         except _Exit:
             pass
+        except Unsupported:
+            raise
         except InstallError as exc:
             if it.failed_runs and it.failed_runs[-1].split(" ", 1)[0] not in str(exc):
                 exc = InstallError(f"{exc} ({it.failed_runs[-1]})")
@@ -2259,7 +2361,7 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
                 files["load"] = loader
                 it.log.append("load: " + loader.decode("latin-1").replace("\n", " / ").strip(" /"))
             return InstallResult(files=files, dirs=set(fs.work_dirs), log=it.log, version=_int(it.vars.get("#version", 0)),
-                                 choices=it.choices, guessed=len(fs.guessed))
+                                 choices=it.choices, guessed=len(fs.guessed), forced=list(it.hit))
         score = 0 if "no .slave was installed" in str(err) else it.steps        # (the reason of the try that got furthest -
         if first is None or score > far:                                        #  not "no slave" when another said why)
             first, far = err, score
@@ -2269,8 +2371,8 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
             continue
         for k in reversed(range(len(it.asked))):           # (the question asked last first: the likeliest reason - Battle Isle's
             n, given, texts, prompt = it.asked[k]            #  "Do you have the First Data Disk?" after an icon question of 20)
-            if k in answers or re.search(r"\bicons?\b", prompt, re.IGNORECASE):
-                continue                                     # (which icon: never why an install fails)
+            if k in answers or k in it.forced or re.search(r"\bicons?\b", prompt, re.IGNORECASE):
+                continue                                     # (which icon: never why an install fails; a forced answer: never changed)
             for alt in range(n):
                 t = texts[alt] if alt < len(texts) else ""
                 if alt != given and not (_CD_RE.search(t) and not volumes) and not re.search(r"\b(demo|preview)\b", t, re.IGNORECASE) \

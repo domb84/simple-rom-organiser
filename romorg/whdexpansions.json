@@ -1,0 +1,341 @@
+{
+ "merge": [
+  {
+   "archive": "Cadaver.lha",
+   "base": [
+    "Cadaver"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Cadaver - The Pay Off"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "data disk",
+       "choice": "payoff"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "HeroQuest.lha",
+   "base": [
+    "HeroQuest"
+   ],
+   "save_disk": true,
+   "base_pick": "\\[cr CABAL\\]",
+   "expansions": [
+    {
+     "titles": [
+      "HeroQuest - Return of the Witch Lord"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Expansion Disk"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "Falcon.lha",
+   "base": [
+    "Falcon"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Falcon - Mission Disk Volume 1 - Operation Counterstrike"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Counterstrike"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Falcon - Mission Disk Volume II - Operation Firefight"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Firefight"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "BattleIsle.lha",
+   "base": [
+    "Battle Isle"
+   ],
+   "assume": true,
+   "expansions": [
+    {
+     "titles": [
+      "Battle Isle - Scenario Disk Volume 1 - Air-Land-Sea Strategy"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "First Data Disk"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Battle Isle '93 - The Moon of Chromos",
+      "Battle Isle '93 - Scenario Disk Volume 2 - The Moon of Chromos"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Second Data Disk"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "EarlWeaverBaseball.lha",
+   "base": [
+    "Earl Weaver Baseball"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Earl Weaver Baseball - Commissioner's Disk"
+     ],
+     "asks": [
+      {
+       "kind": "bool",
+       "prompt": "Commissioner"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "Corporation.lha",
+   "base": [
+    "Corporation"
+   ],
+   "assume": true,
+   "expansions": [
+    {
+     "titles": [
+      "Corporation - Mission Disk"
+     ],
+     "asks": [
+      {
+       "kind": "choice",
+       "prompt": "version",
+       "choice": "Mission Disk Release"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "LordsOfChaos.lha",
+   "base": [
+    "Lords of Chaos"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Lords of Chaos - Expansion Kit One"
+     ],
+     "asks": [
+      {
+       "kind": "choice",
+       "prompt": "version",
+       "choice": "\\+ Expansion Disk"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "SpaceCrusade.lha",
+   "base": [
+    "Space Crusade"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "Space Crusade Expansion - The Voyage Beyond"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "data disk",
+       "choice": "Expansion disk"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "PGATourGolf.lha",
+   "base": [
+    "PGA Tour Golf"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "PGA Tour Golf - Tournament Course Disk"
+     ],
+     "asks": [
+      {
+       "kind": "choice",
+       "prompt": "version",
+       "choice": "Game and Tournament"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "TestDrive2.lha",
+   "base": [
+    "Test Drive II - The Duel"
+   ],
+   "assume": true,
+   "expansions": [
+    {
+     "titles": [
+      "Test Drive II - California Challenge"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install/add",
+       "choice": "California"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Test Drive II - European Challenge"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install/add",
+       "choice": "European"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Test Drive II - The Muscle Cars"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install/add",
+       "choice": "Muscle"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "Test Drive II - The Supercars"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install/add",
+       "choice": "Supercars"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "archive": "WCLeaderboardGolf.lha",
+   "base": [
+    "World Class Leader Board"
+   ],
+   "expansions": [
+    {
+     "titles": [
+      "World Class Leader Board - Extra Courses"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install",
+       "choice": "courses disk #1"
+      }
+     ]
+    },
+    {
+     "titles": [
+      "World Class Leader Board - Extra Courses 2"
+     ],
+     "asks": [
+      {
+       "kind": "options",
+       "prompt": "install",
+       "choice": "courses disk #2"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "standalone": [
+  {
+   "title": "Kick Off 2 - Return to Europe",
+   "archive": "KickOff2ReturnToEurope.lha",
+   "level": 3
+  },
+  {
+   "title": "Kick Off 2 - The Final Whistle",
+   "archive": "KickOff2FinalWhistle.lha",
+   "level": 3
+  },
+  {
+   "title": "PowerMonger - World War 1 Edition",
+   "archive": "PowermongerWW1.lha",
+   "level": 3
+  },
+  {
+   "title": "Kick Off 3 - European Challenge",
+   "archive": "KickOff3EC.lha",
+   "level": 3
+  },
+  {
+   "title": "Fighter Bomber - Advanced Mission Disk",
+   "archive": "FighterBomberAM.lha",
+   "level": 1
+  },
+  {
+   "title": "Chaos Strikes Back",
+   "archive": "ChaosStrikesBack.lha",
+   "level": 1
+  },
+  {
+   "title": "Bloodwych - The Extended Levels",
+   "archive": "Bloodwych.lha",
+   "level": 3,
+   "asks": [
+    {
+     "kind": "choice",
+     "prompt": "install",
+     "choice": "Extended Levels"
+    }
+   ],
+   "prefer_disk": "C/BEXT"
+  }
+ ]
+}

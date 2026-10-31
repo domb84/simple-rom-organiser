@@ -192,7 +192,7 @@ def _kept(items: list[Item], sel: library.Selection) -> dict[tuple, set[str]]:
             continue
         if library.BORROWED_CODE in d.codes and borrowed_by.get(it.key) == d.set_id:
             continue
-        out.setdefault(library.game_key(it, sel.combine_alt), set()).add(library._rom_name(it))
+        out.setdefault(library.counted_key(it, sel), set()).add(library._rom_name(it))
     return out
 
 
@@ -223,6 +223,7 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
         coverage = library.rating_coverage(items, sel, platform, profile, lookup)
         cutoff = library.target_cutoff(items, profile, platform, lookup, sel)
         library.apply_ratings(sel, items, profile, platform, library.RatingContext(lookup, cutoff))
+        library.merge_expansions(items, sel, profile, platform)
     else:
         sel = library.select(items, profile, platform)
         if lookup is not None:
@@ -237,11 +238,11 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
     by_dat: dict[str, int] = {}
     for key in kept:
         by_dat[key[0]] = by_dat.get(key[0], 0) + 1
-    broken = {library.game_key(it, profile.combine_alt_titles) for it in items
+    broken = {library.counted_key(it, sel) for it in items
               if (d := sel.decisions.get(it.key)) is not None
               and (d.action == INCOMPLETE or (d.action == KEEP and d.missing))} - set(kept)
-    names = _names(items, kept, profile)
-    why = {(library.game_key(it, profile.combine_alt_titles), library._rom_name(it)): d.tag or "Rules" for it in items
+    names = _names(items, kept, profile, sel)
+    why = {(library.counted_key(it, sel), library._rom_name(it)): d.tag or "Rules" for it in items
            if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED}
     explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
@@ -252,15 +253,19 @@ def _game_name(it: Item) -> str:
     return getattr(it.rom, "game", "") or library._tags_of(it).title
 
 
-def _names(items: list[Item], kept: dict[tuple, set[str]], profile: library.LibraryProfile) -> dict[tuple, str]:
-    """A name to show for each kept game: the DAT game name of its first rom (sorted, so it is the same every time)."""
+def _names(items: list[Item], kept: dict[tuple, set[str]], profile: library.LibraryProfile,
+           sel: Optional[library.Selection] = None) -> dict[tuple, str]:
+    """A name to show for each kept game: the DAT game name of its first rom (sorted, so it is the same every time; an expansion that
+    counts for its game - ``library.counted_key`` - names it only when nothing else does)."""
     out: dict[tuple, str] = {}
+    rank: dict[tuple, tuple] = {}
     for it in items:
-        key = library.game_key(it, profile.combine_alt_titles)
+        key = library.game_key(it, profile.combine_alt_titles) if sel is None else library.counted_key(it, sel)
         if key in kept:
             name = _game_name(it)
-            if key not in out or name < out[key]:
-                out[key] = name
+            r = (sel is not None and library.game_key(it, sel.combine_alt) != key, name)
+            if key not in rank or r < rank[key]:
+                out[key], rank[key] = name, r
     return out
 
 
@@ -296,7 +301,7 @@ def _borrowed(items: list[Item], sel: library.Selection) -> dict[tuple, frozense
         lent = {b["key"] for b in cs.borrowed.values()}
         own = [by_key[k] for _s, k in sorted(cs.slots.items()) if k not in lent and k in by_key]
         if own and lent:
-            out.setdefault(library.game_key(own[0], sel.combine_alt), set()).update(library._rom_name(by_key[k]) for k in lent if k in by_key)
+            out.setdefault(library.counted_key(own[0], sel), set()).update(library._rom_name(by_key[k]) for k in lent if k in by_key)
     return {k: frozenset(v) for k, v in out.items()}
 
 
@@ -314,7 +319,7 @@ def compute_user_items(items: list[Item], platform: Any, profile: library.Librar
     games: dict[tuple, tuple[str, frozenset]] = {}
     problems: dict[tuple, tuple[str, list[str], str]] = {}
     for it in items:
-        key = library.game_key(it, profile.combine_alt_titles)
+        key = library.counted_key(it, sel)
         if key in kept:
             continue
         d = sel.decisions.get(it.key)
