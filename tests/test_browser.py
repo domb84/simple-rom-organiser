@@ -1383,7 +1383,7 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.click("#main a[href$=\"/saves\"]")
         self.list_ready(3)
         text = self.page.eval("document.querySelector('#main [data-section=list]').textContent")
-        for tag in ("Follows the game", "No ROM here", "No game"):
+        for tag in ("Kept for its saves", "No ROM here", "No game"):                     # (what the next build does with each)
             self.assertIn(tag, text)
         self.click(".views .chip", "No game")
         self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length === 2", timeout=30)
@@ -1400,6 +1400,28 @@ class SavesUiTests(NoMachineFolders, UiTestCase):
         self.assertIn("Follows the game", text)
         self.assertIn("No ROM here", text)
         self.assertIn("Alpha Run", text)
+        self.no_js_errors()
+
+    def test_a_system_that_is_not_a_playstation_has_no_copy_for_another_region(self) -> None:
+        self.retroarch_with_saves()
+        self.start("#/system/commodore-amiga/saves")
+        self.list_ready(3)
+        self.pad()
+        self.page.eval("document.querySelector('#main [data-section=list] .row').focus()")
+        self.page.wait("!!document.getElementById('saves-change')", timeout=30)
+        self.assertFalse(self.page.eval("!!document.getElementById('saves-copy')"))
+        self.assertIn("Change what happens", self.strip())
+        self.assertNotIn("Copy for another region", self.strip())
+        self.tap("Y")                                                                    # (nothing)
+        self.assertFalse(self.page.eval("!!document.querySelector('.sheet')"))
+        self.click(".views .chip", "No game")                                            # a save of no game: no choice
+        self.page.wait("document.querySelectorAll('#main [data-section=list] .row').length === 2", timeout=30)
+        self.page.eval(f"{self._find('#main [data-section=list] .row', 'Mystery')}.focus()")
+        self.page.wait("!document.getElementById('saves-change')", timeout=30)
+        self.assertNotIn("Change what happens", self.strip())
+        self.tap("A")
+        time.sleep(0.3)
+        self.assertFalse(self.page.eval("!!document.querySelector('.sheet')"))
         self.no_js_errors()
 
     def test_settings_has_the_choice_and_how_each_system_behaves(self) -> None:
@@ -1445,6 +1467,163 @@ class EmulatorsUiTests(NoMachineFolders, UiTestCase):
         self.click("#main a[href$=\"key=pcsx2\"]")
         self.page.wait(f"document.querySelector('.crumb-path')?.textContent === {str(home / '.config' / 'PCSX2')!r}", timeout=30)
         self.go("#/settings/emulators", f"!!{row}")
+        self.no_js_errors()
+
+
+class SavesScreenTests(NoMachineFolders, UiTestCase):
+    """System › Saves of a PlayStation 2: what the next build does with each game's saves, the game's own choice, a copy for another region."""
+
+    SLUG, PLATFORM = "sony-playstation-2", "Sony PlayStation 2"
+
+    def setUp(self) -> None:
+        super().setUp()
+        import sqlite3
+        import chdtestlib as T
+        from romorg import paths
+        from test_nintendo import ps2_iso
+        images = {"Gamma (USA)": ps2_iso("SLUS_209.46"), "Delta (USA)": ps2_iso("SLUS_209.47")}
+        T.write_dat(paths.redump_dir() / "Sony - PlayStation 2.dat", [(n, "Games", [d], "iso") for n, d in images.items()],
+                    name="Sony - PlayStation 2", version="2026-06-15 03-41-38")
+        db = paths.data_dir() / "nintendo" / "gametdb.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE IF NOT EXISTS names (kind TEXT, id TEXT, name TEXT); DELETE FROM names WHERE kind='ps2';")
+        conn.executemany("INSERT INTO names VALUES ('ps2', ?, ?)", [("SLUS-20946", "Gamma"), ("SLES-50012", "Gamma"), ("SLPM-60001", "Gamma")])
+        conn.commit()
+        conn.close()
+        self.addCleanup(db.unlink, True)
+        self.roms = self.fx.tmp / "ps2"
+        for name, iso in images.items():
+            (self.roms / name).mkdir(parents=True)
+            T.build_dvd_chd(self.roms / name / f"{name}.chd", iso)
+        self.pcsx2 = self.fx.tmp / "pcsx2"
+        self.card = self.pcsx2 / "memcards" / "Mcd001.ps2"
+        for name in ("BASLUS-20946GAMMA", "BASLUS-20947DELTA", "BASLUS-29999LOST"):
+            (self.card / name).mkdir(parents=True)
+            (self.card / name / "data.bin").write_bytes(b"save")
+        (self.pcsx2 / "inis").mkdir()
+        (self.pcsx2 / "inis" / "PCSX2.ini").write_text("[Folders]\n")
+        self.page.goto(self.fx.url)
+        self.api("POST", "/api/chdman", {"engine": "python"})
+        self.api("POST", "/api/emulators/config", {"source": "pcsx2", "folder": str(self.pcsx2)})
+        self.scan(platform=self.PLATFORM, root=str(self.roms))
+        self.open_saves()
+
+    def open_saves(self) -> None:
+        self.page.goto(self.fx.url + f"#/system/{self.SLUG}/saves")
+        self.page.wait("!!window.RomorgNext", timeout=30)
+        self.page.eval(self.PAD)
+        self.list_ready(3)
+        self.page.wait("document.querySelector('#main [data-section=panel]').textContent.includes('On the next build')", timeout=30)
+        self.page.wait("!document.querySelector('#main [data-section=panel]').textContent.includes('Working it out')", timeout=60)
+        self.pad()
+        self.focus_row("Gamma")
+
+    def focus_row(self, title: str) -> None:
+        row = self._find("#main [data-section=list] .row", title)
+        self.page.wait(f"!!{row}", timeout=30)
+        self.page.eval(f"{row}.focus()")
+        self.page.wait(f"document.querySelector('.panel-title')?.textContent === {title!r}", timeout=30)
+
+    def panel(self) -> str:
+        return self.page.eval("document.querySelector('#main [data-section=panel]').textContent")
+
+    def row_text(self, title: str) -> str:
+        return self.page.eval(f"{self._find('#main [data-section=list] .row', title)}.textContent")
+
+    def sheet(self) -> str:
+        self.page.wait("!!document.querySelector('.sheet')", timeout=30)
+        return self.page.eval("document.querySelector('.sheet').textContent")
+
+    def test_the_panel_says_what_the_next_build_does_and_what_a_rule_would_do(self) -> None:
+        text = self.panel()
+        for words in ("On the next build", "If a rule replaces it", "Copy or convert them to the new version (default)", "This release", "USA · SLUS-20946",
+                      "Change what happens", "Copy for another region"):
+            self.assertIn(words, text)
+        self.assertIn("Follows the game", self.row_text("Gamma"))
+        strip = self.strip()
+        self.assertLess(strip.index("Change what happens"), strip.index("Copy for another region"))
+        self.focus_row("Delta")                                                          # (the database has no other release of it)
+        self.assertNotIn("Copy for another region", self.panel())
+        self.assertNotIn("Copy for another region", self.strip())
+        self.no_js_errors()
+
+    def test_a_choice_is_posted_and_shown_and_the_default_clears_it(self) -> None:
+        self.tap("A")
+        offered = self.sheet()
+        self.assertIn("If a rule replaces Gamma", offered)
+        self.assertIn("Copy or convert them to the new version, from Settings › Saves", offered)
+        self.page.wait("document.activeElement.dataset.current === '1'", timeout=30)     # (the focus is on the current one)
+        self.assertIn("Use the default", self.page.eval("document.activeElement.textContent"))
+        for _ in range(4):
+            self.tap("down")
+        self.assertIn("Archive the saves with the ROM", self.page.eval("document.activeElement.textContent"))
+        self.tap("A")
+        self.page.wait(f"{self._find('#main [data-section=list] .row', 'Gamma')}?.textContent.includes('Your choice')", timeout=30)
+        self.page.wait("document.querySelector('#main [data-section=panel]').textContent.includes('Archive the saves with the ROM (only this game)')", timeout=30)
+        self.page.wait("document.activeElement.textContent.startsWith('Gamma')", timeout=30)      # (the focus is back on the row)
+        self.assertEqual(self.api("GET", "/api/library/profile?platform=Sony%20PlayStation%202")["profile"]["saved_overrides"],
+                         [["Sony - PlayStation 2", "Gamma (USA)", "archive"]])
+        self.tap("A")
+        self.sheet()
+        self.assertIn("Archive", self.page.eval("document.querySelector('.sheet .row[data-current]').textContent"))
+        self.page.eval("document.querySelector('.sheet .row').click()")                  # Use the default
+        self.page.wait(f"!{self._find('#main [data-section=list] .row', 'Gamma')}?.textContent.includes('Your choice')", timeout=30)
+        self.page.wait("document.querySelector('#main [data-section=panel]').textContent.includes('(default)')", timeout=30)
+        self.no_js_errors()
+
+    def test_b_closes_a_sheet_and_nothing_is_posted(self) -> None:
+        self.tap("A")
+        self.sheet()
+        self.tap("B")
+        self.page.wait("!document.querySelector('.sheet')", timeout=30)
+        self.assertNotIn("Your choice", self.row_text("Gamma"))
+        self.tap("Y")
+        self.assertIn("Experimental", self.sheet())
+        self.tap("B")
+        self.page.wait("!document.querySelector('.sheet')", timeout=30)
+        self.assertEqual(sorted(p.name for p in self.card.iterdir()), ["BASLUS-20946GAMMA", "BASLUS-20947DELTA", "BASLUS-29999LOST"])
+        self.no_js_errors()
+
+    def test_y_copies_the_save_for_another_region_and_the_original_stays(self) -> None:
+        self.tap("Y")
+        offered = self.sheet()
+        for words in ("Copy the save for another region", "Gamma, USA · SLUS-20946. Your save stays as it is.", "Europe", "SLES-50012", "Japan", "SLPM-60001",
+                      "Experimental: a game that keeps the region inside its save may still refuse the copy."):
+            self.assertIn(words, offered)
+        self.assertIn("Make a copy", self.strip())
+        self.tap("A")                                                                    # Europe, the first
+        self.page.wait("document.getElementById('toasts').textContent.includes('1 save converted from SLUS-20946 to SLES-50012')", timeout=30)
+        self.page.wait("document.querySelector('.panel-title')?.textContent === 'Gamma' && document.activeElement.textContent.startsWith('Gamma')", timeout=30)
+        self.assertTrue(list(self.card.glob("BESLES-50012*")))
+        self.assertTrue((self.card / "BASLUS-20946GAMMA" / "data.bin").is_file())
+        self.no_js_errors()
+
+    def test_a_running_emulator_and_a_refused_choice_are_said(self) -> None:
+        self.stub({"path": "/api/saves/convert", "method": "POST", "body": {"skipped_running": True}},
+                  {"path": "/api/library/saved", "method": "POST", "status": 409,
+                   "body": {"error": "No save source is set up for this system, so saves are not looked at.", "code": "no_retroarch"}})
+        self.page.goto("about:blank")
+        self.open_saves()
+        self.tap("Y")
+        self.sheet()
+        self.tap("A")
+        self.page.wait("document.getElementById('toasts').textContent.includes('The emulator is running: close it and try again.')", timeout=30)
+        self.page.wait("!document.querySelector('.sheet')", timeout=30)
+        self.tap("A")
+        self.sheet()
+        self.tap("down")
+        self.tap("A")
+        self.page.wait("document.getElementById('toasts').textContent.includes('No save source is set up')", timeout=30)
+
+    def test_the_panel_buttons_work_with_a_mouse(self) -> None:
+        self.page.eval("RomorgNext.setMode('mouse')")
+        self.click("#saves-change")
+        self.assertIn("Use the default", self.sheet())
+        self.page.eval("RomorgNext.press('B', 'mouse')")
+        self.page.wait("!document.querySelector('.sheet')", timeout=30)
+        self.click("#saves-copy")
+        self.assertIn("Experimental", self.sheet())
         self.no_js_errors()
 
 
