@@ -1903,8 +1903,8 @@ class Package:
         if hints:                                          # (AGA disks: the versions that say AGA first, those for the other
             chip = [v for v in order if v is not None and _hinted([names[v]], hints) == 0]          #  chipset last)
             other = [v for v in order if v is not None and v not in chip and _hinted([names[v]], _OTHER_CHIP[hints]) == 0]
-            order = chip + [v for v in order if v not in chip and v not in other] + other
-        return order
+            order = chip + [v for v in order if v not in chip and v not in other]     # (a version for the other chipset: never - it
+        return order                                                                  #  would install files these disks cannot run)
 
     def close(self) -> None:
         import shutil
@@ -2243,6 +2243,12 @@ def _hinted(texts: list[str], hints: tuple[str, ...]) -> Optional[int]:
     return next((i for i, t in enumerate(texts) if rx.search(t)), None)
 
 
+def _contradicts(text: str, hints: tuple[str, ...]) -> bool:
+    """Whether an answer's ``text`` names only the other chipset than the disks' ``hints`` ("ECS (5 disks)" for AGA disks)."""
+    other = _OTHER_CHIP.get(tuple(hints))
+    return bool(other) and _hinted([text], tuple(hints)) is None and _hinted([text], other) is not None
+
+
 def _script_of(folder: Path) -> Optional[Path]:
     scripts = _scripts_of(folder)
     return scripts[0] if scripts else None
@@ -2378,6 +2384,8 @@ def install(package: Path, disks: list[Any], version: Optional[int] = None, volu
                 continue                                     # (which icon: never why an install fails; a forced answer: never changed)
             for alt in range(n):
                 t = texts[alt] if alt < len(texts) else ""
+                if _contradicts(t, hints):                   # (AGA disks: never the answer "ECS", ECS disks: never "AGA")
+                    continue
                 if alt != given and not (_CD_RE.search(t) and not volumes) and not re.search(r"\b(demo|preview)\b", t, re.IGNORECASE) \
                         and not _hidden(texts, alt):
                     queue.append(({**answers, **{q: x[1] for q, x in enumerate(it.asked[:k])}, k: alt}, level))

@@ -621,13 +621,20 @@ class AgaKeptReleases(unittest.TestCase):
             "DreamWeb (1994)(Empire)(AGA)[1815]", "Fantastic Dizzy (1993)(Codemasters)(M6)[1904]",
             "Ishar 2 - Messengers of Doom (1993)(Silmarils)(AGA)(M3)[0787]", "Jurassic Park v1.00 (1993)(Ocean)(AGA)(M5)[0836]",
             "Lion King, The (1995)(Virgin)(AGA)[0527]", "Second Samurai (1994)(Psygnosis)(AGA)[1624]",
-            "Transarctica (1993)(Silmarils)(M3)[0744]", "Virocop v1.01 (1995)(Renegade)(AGA)[1920]"]
+            "Transarctica (1993)(Silmarils)(M3)[0744]", "Virocop v1.01 (1995)(Renegade)(AGA)[1920]",
+            "Christoph Kolumbus (1994)(Software 2000)(AGA)(DE)[0448]", "Clou!, Der (1994)(Max Design)(AGA)(DE)[0451]"]
+    BOOT_ADF = [["Fantastic Dizzy (1994-08-22)(Codemasters)(AGA)(M6)(Disk 1 of 2).adf", "Fantastic Dizzy (1994-08-22)(Codemasters)(AGA)(M6)(Disk 2 of 2).adf"],
+                ["Detroit (1994)(Impressions)(AGA)(Disk 1 of 2)[h DLM].adf", "Detroit (1994)(Impressions)(AGA)(Disk 2 of 2).adf"]]
 
     def test_sps_releases_boot(self) -> None:
         for rel in self.BOOT:
             entry = whdready.release(rel)
             self.assertIsNotNone(entry, rel)
             self.assertEqual(entry[0], whdready.BOOTS, rel)
+
+    def test_aga_adf_sets_boot(self) -> None:
+        for names in self.BOOT_ADF:
+            self.assertEqual(whdready.level(names), whdready.BOOTS, names[0])
 
     def test_failures_stay_not_booting(self) -> None:
         self.assertEqual(whdready.level(["Ace Ball (1995)(TimSoft)(OCS-AGA)[cr WT].adf"]), whdready.NO_BOOT)

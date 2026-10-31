@@ -461,6 +461,35 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(ai.InstallError, "RawDIC"):
             ai.install(self.pkg, [self.disk1])
 
+    def test_the_answer_search_never_settles_on_the_other_chipset(self) -> None:
+        """AGA disks whose AGA route fails are not installed through the ECS answer (the files would not be the ones the AGA slave
+        reads: Anstoss' World Cup Edition); ECS disks never through AGA; an answer naming both stays one."""
+        def script(second: str) -> str:
+            return ('(set #c (askchoice (prompt "Which version of Game?") (default 0) (choices "AGA (5 disks)" "%s")))'
+                    '(if (= #c 0) (abort "AGA route fails") (copyfiles (source "Game.slave") (dest "WORK:Game")))' % second)
+        (self.pkg / "Install").write_text(script("ECS (5 disks)"))
+        with self.assertRaisesRegex(ai.InstallError, "AGA route fails"):
+            ai.install(self.pkg, [], hints=("AGA",))
+        self.assertIn("Game/Game.slave", ai.install(self.pkg, []).files)             # (no hint: the search still tries the other)
+        self.assertIn("Game/Game.slave", ai.install(self.pkg, [], hints=("ECS", "OCS")).files)
+        (self.pkg / "Install").write_text(script("ECS/AGA (5 disks)"))               # (both acceptable: a legitimate fallback)
+        self.assertIn("Game/Game.slave", ai.install(self.pkg, [], hints=("AGA",)).files)
+        (self.pkg / "Install").write_text('(set #c (askchoice (prompt "Which?") (default 1) (choices "AGA" "ECS")))'
+                                          '(if (= #c 1) (abort "ECS route fails") (copyfiles (source "Game.slave") (dest "WORK:Game")))')
+        with self.assertRaisesRegex(ai.InstallError, "ECS route fails"):
+            ai.install(self.pkg, [], hints=("ECS", "OCS"))
+        self.assertTrue(ai._contradicts("ECS (4 disks)", ("AGA",)))
+        self.assertFalse(ai._contradicts("ECS/AGA (4 disks)", ("AGA",)))
+        self.assertFalse(ai._contradicts("ECS (4 disks)", ()))
+
+    def test_versions_for_the_other_chipset_are_not_tried(self) -> None:
+        (self.pkg / "Install").write_text('(set #multiple-versions "<")\n(procedure P_SelectVersion (askchoice (choices "" ; x)\n'
+                                          ' "" "ECS version (4 disks)" "AGA version (5 disks)" "Standard")))')
+        ai.write_lha(self.tmp / "pkg.lha", {f"GameInstall/{p.name}": p.read_bytes() for p in self.pkg.iterdir()})
+        with ai.Package((self.tmp / "pkg.lha").read_bytes()) as pkg:
+            self.assertEqual(pkg.tries(5, hints=("AGA",)), [3, None, 4])
+            self.assertEqual(pkg.tries(5), [3, None, 2, 4])                            # (no hint: every version)
+
     def test_a_script_that_asks_for_the_version_is_tried_with_each(self) -> None:
         script = ('(set #multiple-versions "yes")\n(procedure P_SelectVersion (set #version (askchoice (prompt "Which version?") '
                   '(default 0) (choices "" "Disk version"))))\n(P_SelectVersion)\n'

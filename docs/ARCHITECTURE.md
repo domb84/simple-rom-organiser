@@ -4570,3 +4570,23 @@ was added to `CPU_MODE`.** The causes are in the installs, not the core:
 
 The shipped list's `-1` for Dizzy, Kolumbus, Der Clou! and Detroit is out of date or was a different run: these four boot with the default options here (with and
 without `puae_fastmem_size`). Not edited by hand.
+
+**Follow-up: the answer search never changes the chipset; four list entries (2026-10-31).**
+* *Installer fallback bug.* `amigainstall.install` retries a failed script with another answer to one of its questions (the last one asked first).
+  For Anstoss WCE, On the Ball WCE (SPS 2595) and Carton Rouge the AGA route failed and the search then answered the chipset question "ECS (5 disks)",
+  which installed files the AGA slave cannot find (DOS error 205): `whdbuild` wrote that archive as if it were good. Now an alternative answer whose text
+  names only the other chipset than the disks' (`chipset_hints`: AGA, or ECS / OCS) is never tried (`amigainstall._contradicts`; "ECS/AGA (4 disks)" still
+  is), and `Package.tries` no longer appends the versions that name the other chipset (they were tried last). Kept: the default order, the "No" answers of
+  expansions, the base-alone fallback and the versions-tried order (all whdbuild / whdexpansions / amigainstall tests pass; new tests in `test_amigainstall`).
+  Result on the user's disks, through `whdbuild.build` (before: `out_before`, after: `out_after`): Anstoss WCE ADFs and On the Ball WCE SPS: before a built
+  archive (broken), now `failed` with "the install's program anstoss1 cannot run here: anstoss1 is not an Amiga program (unknown hunk type $3f5)"
+  and no archive (an ADF set records `ok: false` for its disks, as every failed install does: they get a playlist; an SPS release is never recorded).
+  Carton Rouge: now the AGA answer "AGA (6 disks - bootable)" is found, the install is AGA files, and it boots (French copy-protection page of the
+  game, `fixaga/shots/cartonrouge-default-12000.png`). Whether the Anstoss AGA install could run with a better `anstoss1` handling is not looked into.
+* *Four list entries.* Built with `whdbuild.build` from the AGA release as the target (the rules keep another version; a -1 release is never a target, so
+  the target was made by hand) and booted with the default options and with `puae_fastmem_size = 8`, screenshots at 2000 / 5000 / 12000 frames
+  (`/home/deck/.cache/romorg-speed/fixaga/shots/`): Fantastic Dizzy AGA 1994-08-22 (language menu), Christoph Kolumbus AGA (title picture), Der Clou! AGA
+  (its own "Der Clou! (AGA Version)" menu, then the opening scene with fast RAM), Detroit AGA (the Detroit menu). All four now level 3 in
+  `whdknown.json.gz`, written by `tools/whdknown_set.py` (same format byte for byte: compact JSON, gzip 9, the same key order). Der Clou!'s SPS release
+  had no entry: added with its five images' checksums. `AgaKeptReleases` pins them. On the real Amiga plan the targets stay 394, but the Fantastic Dizzy
+  target changes from the SPS release [1904] to the AGA ADF set (the best platform of equal versions).
