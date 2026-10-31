@@ -696,6 +696,10 @@ class Selection:
     combine_alt: bool = False                  # the profile's "Combine alternate titles" (what :func:`game_key` of its items needs)
     merged: dict[tuple, tuple] = field(default_factory=dict)   # an expansion's game key -> its game's: one title (:func:`counted_key`)
     before_borrow: dict[int, Optional[Decision]] = field(default_factory=dict)   # a borrowed disk's own decision (its set may be dropped)
+    # what the rating filter set aside: item key -> (the decision it made, the decision the item had before), and the chosen sets it dropped
+    # (``merge_expansions`` gives an expansion its game's rating back from them)
+    rating_dropped: dict[int, tuple] = field(default_factory=dict)
+    rating_sets: dict[int, "ChosenSet"] = field(default_factory=dict)
 
     def exclusion_counts(self) -> dict[str, dict[str, int]]:
         """``{"exclusive": {code: files}, "any": {code: files}}``: excluded files per reason code.
@@ -1673,18 +1677,41 @@ def merge_expansions(items: Sequence[Item], sel: Selection, profile: LibraryProf
         if base is None:
             continue                                           # (no kept version the install builds from: the expansions stay games)
         base_key = game_key(base, sel.combine_alt)
+        base_name = base.rom.game or _tags_of(base).title
         taken: list[str] = []
         for e in m.expansions:
             mine = [it for k in sorted(e.keys) for it in by_title.get(k, [])]
-            kept = [it for it in mine if (d := sel.decisions.get(it.key)) is not None and d.action == KEEP]
-            if not kept or any(sel.decisions[it.key].missing for it in kept):
+            views = {it.key: v for it in mine if (v := _kept_view(sel, it)) is not None}
+            if any(v[0] is v[1] for v in views.values()):      # (a version of the expansion is kept on its own: it is the expansion; the rating
+                views = {k: v for k, v in views.items() if v[0] is v[1]}   # filter's alternates - another release - are not added to it)
+            else:                                              # (only the game's rating keeps it: the expansion itself, not a compilation of it)
+                exact = {t.casefold() for t in e.titles}
+                views = {k: v for k, v in views.items() if _tags_of(next(i for i in mine if i.key == k)).title.casefold() in exact}
+                pool = [it for it in mine if it.key in views]
+                if len({game_key(it, sel.combine_alt) for it in pool}) > 1:        # (one release of the expansion: an SPS release, else the
+                    pick = sorted(pool, key=lambda it: (it.dat not in image_sets, _tags_of(it).title.casefold(), it.key))[0]  # first title)
+                    views = {it.key: views[it.key] for it in pool if game_key(it, sel.combine_alt) == game_key(pick, sel.combine_alt)}
+            kept = [it for it in mine if it.key in views]
+            if not kept or any(views[it.key][0].missing for it in kept):
                 continue                                       # (not complete: as it is)
             for it in mine:
                 key = game_key(it, sel.combine_alt)
                 if key != base_key:
                     sel.merged.setdefault(key, base_key)
+            rescued: set[tuple] = set()
             for it in kept:
-                sel.decisions[it.key].merged_into = base.rom.game or _tags_of(base).title
+                before, now = views[it.key]
+                if before is not now:                          # (set aside by the rating filter alone: it has its game's rating)
+                    sel.decisions[it.key] = replace(before, reason=f"kept with {base_name}: it takes its game's rating")
+                    rescued.add(game_key(it, sel.combine_alt))
+                    sid = sel.decisions[it.key].set_id
+                    if sid in sel.rating_sets and all(cs.id != sid for cs in sel.sets):
+                        sel.sets = sorted([*sel.sets, sel.rating_sets[sid]], key=lambda cs: cs.id)
+                sel.decisions[it.key].merged_into = base_name
+            if rescued and sel.rating:
+                code = views[kept[0].key][1].codes[0] if views[kept[0].key][1].codes else ""
+                sel.rating = {**sel.rating, "kept": sel.rating.get("kept", 0) + len(rescued), "excluded": sel.rating.get("excluded", 0) - len(rescued),
+                              "excluded_by": {c: n - (len(rescued) if c == code else 0) for c, n in (sel.rating.get("excluded_by") or {}).items()}}
             taken.append(_tags_of(kept[0]).title)
         if taken:
             title = _tags_of(base).title
@@ -1692,6 +1719,21 @@ def merge_expansions(items: Sequence[Item], sel: Selection, profile: LibraryProf
                 if game_key(it, sel.combine_alt) == base_key:
                     d = sel.decisions[it.key]
                     d.includes = tuple(sorted({*d.includes, *(_short_expansion(t, title) for t in taken)}))
+
+
+def _kept_view(sel: Selection, it: Item) -> Optional[tuple[Decision, Decision]]:
+    """``(decision, current)`` of an item an expansion's disks are kept by: its kept decision (the same twice), or - when only the rating
+    filter set it aside (its decision is still the filter's) - the decision it had before the filter (an expansion takes the rating of its
+    game, so the filter does not decide it). None: not kept (any other rule, your own choice, incomplete)."""
+    d = sel.decisions.get(it.key)
+    if d is None:
+        return None
+    if d.action == KEEP:
+        return d, d
+    got = sel.rating_dropped.get(it.key)
+    if got is not None and got[0] is d and got[1].action == KEEP and d.codes and set(d.codes) <= set(RATING_CODES):
+        return got[1], d
+    return None
 
 
 def _short_expansion(title: str, game: str) -> str:
@@ -2504,6 +2546,7 @@ class _Unit:
     title: str
     rated: Optional[tuple[float, int]]      # None = unrated (no match / fewer votes than ``min_votes``)
     complete: bool                          # no member is a partial Redump set (``Decision.missing``)
+    expansion: bool = False                 # an expansion of the shipped table (``whdexpansions``): it may take its game's rating (:func:`merge_expansions`)
 
     def rank(self) -> tuple:
         assert self.rated is not None
@@ -2526,6 +2569,9 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
             for k in cs.slots.values():
                 owner_of[k] = own[0]
     titles = _rated_titles(items, rdats, profile)
+    inherits = _inherits_rating(profile, platform)
+    from . import whdexpansions
+    exp_keys = {k for m in whdexpansions.merges() for e in m.expansions for k in e.keys} if inherits else set()
     units: dict[tuple, _Unit] = {}
     for it in items:
         d = sel.decisions.get(it.key)
@@ -2542,7 +2588,8 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
                 r = None
             else:
                 title, r = _game_rating(titles.get(key) or [title], lookup, profile.min_votes)
-            u = units[key] = _Unit(key, owner, [], title, r, True)
+            u = units[key] = _Unit(key, owner, [], title, r, True,
+                                   inherits and whdexpansions.norm(_tags_of(owner).title) in exp_keys)
         u.items.append(it)
         if d.missing:
             u.complete = False
@@ -2578,11 +2625,31 @@ def _game_rating(titles: Sequence[str], lookup: Callable[[str], Optional[tuple[f
     return at, best
 
 
+def _inherits_rating(profile: LibraryProfile, platform: Any) -> bool:
+    """Whether an expansion of a game's WHDLoad install takes the game's rating (:func:`merge_expansions`): "Build WHDLoad games" is on."""
+    if not getattr(profile, "build_whdload", False) or "build_whdload" not in applicable_fields(platform):
+        return False
+    from . import whdexpansions
+    return bool(whdexpansions.merges())
+
+
+def _slot_units(units: Sequence[_Unit]) -> list[_Unit]:
+    """The units that can take a place among the top N: an expansion whose game is among the units (kept before the rating filter) takes
+    its game's rating and never a place of its own, so it pushes no other game out (:func:`merge_expansions`)."""
+    if not any(u.expansion for u in units):
+        return list(units)
+    from . import whdexpansions
+    have = {whdexpansions.norm(_tags_of(u.owner).title) for u in units if not u.expansion}
+    bases = [(e.keys, m.base_keys) for m in whdexpansions.merges() for e in m.expansions]
+    return [u for u in units
+            if not (u.expansion and any(b & have for k, b in bases if whdexpansions.norm(_tags_of(u.owner).title) in k))]
+
+
 def _cutoff(units: Sequence[_Unit], profile: LibraryProfile) -> tuple:
     """Rank key of the ``top_n``-th best complete, rated game at or above ``min_rating`` (``INF_KEY``: fewer)."""
     if profile.top_n is None:
         return INF_KEY
-    pool = sorted(u.rank() for u in units
+    pool = sorted(u.rank() for u in _slot_units(units)
                   if u.rated is not None and u.complete
                   and (profile.min_rating is None or u.rated[0] >= profile.min_rating))
     # (cut at the rating / votes / title of the N-th game: every game of that title stays or goes together)
@@ -2655,10 +2722,14 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
             continue
         dropped[codes[0]] = dropped.get(codes[0], 0) + 1
         for it in u.items:
+            before = sel.decisions.get(it.key)
             sel.decisions[it.key] = Decision(key=it.key, action=EXCLUDED, codes=tuple(codes), detail=detail,
                                              reason=f"excluded: {_describe([(c, '') for c in codes]).strip()} ({detail})")
+            if u.expansion and before is not None:
+                sel.rating_dropped[it.key] = (sel.decisions[it.key], before)
             gone.add(it.key)
     if gone:
+        sel.rating_sets.update({cs.id: cs for cs in sel.sets if set(cs.slots.values()) & gone})
         sel.sets = [cs for cs in sel.sets if not (set(cs.slots.values()) & gone)]
         sel.incomplete = [x for x in sel.incomplete if not (x.kept and set(x.present.values()) <= gone)]
     _rate_incomplete(sel, items, profile, platform, ctx, cutoff)

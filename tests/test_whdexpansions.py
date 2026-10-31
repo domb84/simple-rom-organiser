@@ -296,6 +296,102 @@ class MergeTests(unittest.TestCase):
         self.assertTrue(next(iter(totals._names(items, totals._kept(items, sel), library.default_profile(AMIGA), sel).values())).startswith("Zap ("))
 
 
+class InheritRatingTests(unittest.TestCase):
+    """An expansion its game's install takes in has the rating of its game: kept with it whatever its own rating (none, too few votes, not in
+    the top N), when it passes every other rule and its disks are complete; it takes no place of its own among the top N."""
+
+    OTHER = "Other Game (1990)(Acme)"
+    EXP_DEMO = "Zap - The Expansion (1991)(Acme)(demo)[data disk]"
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for p in (mock.patch.object(whdready, "known", return_value=dict(LISTED)), mock.patch.object(whdready, "checked", return_value=None)):
+            p.start()
+            self.addCleanup(p.stop)
+        t = table(TABLE)
+        t.__enter__()
+        self.addCleanup(t.__exit__, None, None, None)
+
+    def select(self, names: list[str], rates: dict[str, float], top_n: int = 1, **fields):
+        items = amiga_items(names)
+        profile = replace(library.default_profile(AMIGA), top_n=top_n, rank_scope="owned", min_votes=5, keep_unrated=False, **fields)
+        ctx = library.RatingContext(lambda title: (rates[title], 100) if title in rates else None, None)
+        return items, library.select(items, profile, AMIGA, ratings=ctx)
+
+    def test_an_expansion_without_a_rating_is_kept_with_its_rated_game(self) -> None:
+        items, sel = self.select([BASE1, BASE2, EXP], {"Zap": 8.0})
+        self.assertEqual([sel.decisions[k].action for k in (1, 2, 3)], [library.KEEP] * 3)
+        self.assertEqual(sel.decisions[3].merged_into, BASE1)
+        self.assertEqual(sel.decisions[3].reason, f"kept with {BASE1}: it takes its game's rating")
+        self.assertEqual(sel.decisions[1].includes, ("The Expansion",))
+        self.assertEqual(len({library.counted_key(it, sel) for it in items}), 1)
+        self.assertEqual((sel.rating["kept"], sel.rating["excluded"], sel.rating["excluded_by"].get(library.RATING_UNRATED, 0)), (2, 0, 0))
+
+    def test_every_expansion_of_the_install_is_kept_with_the_game(self) -> None:
+        _items, sel = self.select([BASE1, BASE2, EXP, EXP2], {"Zap": 8.0})
+        self.assertEqual({d.action for d in sel.decisions.values()}, {library.KEEP})
+        self.assertEqual(sel.decisions[1].includes, ("Second Expansion", "The Expansion"))
+
+    def test_the_expansion_takes_no_place_among_the_top_n_and_pushes_no_game_out(self) -> None:
+        # (rated higher than its game, it would be the one game of "top 1": the game, with its expansion, is)
+        _items, sel = self.select([BASE1, BASE2, EXP], {"Zap": 8.0, "Zap - The Expansion": 9.5})
+        self.assertEqual({d.action for d in sel.decisions.values()}, {library.KEEP})
+        _items, sel = self.select([BASE1, BASE2, EXP, self.OTHER], {"Zap": 8.0, "Zap - The Expansion": 9.5, "Other Game": 7.0})
+        self.assertEqual([sel.decisions[k].action for k in (1, 2, 3, 4)], [library.KEEP] * 3 + [library.EXCLUDED])
+        self.assertEqual(sel.decisions[4].codes, (library.RATING_NOT_TOP,))
+
+    def test_an_expansion_of_a_game_the_rating_filter_drops_is_dropped_with_it(self) -> None:
+        _items, sel = self.select([BASE1, BASE2, EXP, self.OTHER], {"Zap": 6.0, "Other Game": 9.0})
+        self.assertEqual([sel.decisions[k].action for k in (1, 2, 3, 4)], [library.EXCLUDED] * 3 + [library.KEEP])
+        self.assertEqual(sel.decisions[3].codes, (library.RATING_UNRATED,))
+        self.assertEqual(sel.merged, {})
+
+    def test_an_expansion_that_a_rule_excludes_stays_excluded(self) -> None:
+        _items, sel = self.select([BASE1, BASE2, self.EXP_DEMO], {"Zap": 8.0})
+        self.assertEqual(sel.decisions[3].action, library.EXCLUDED)
+        self.assertNotIn(library.RATING_UNRATED, sel.decisions[3].codes)
+        self.assertEqual((sel.decisions[3].merged_into, sel.merged), ("", {}))
+
+    def test_an_incomplete_expansion_stays_as_it_is(self) -> None:
+        _items, sel = self.select([BASE1, BASE2, "Zap - The Expansion (1991)(Acme)(Disk 1 of 2)[data disk]"], {"Zap": 8.0})
+        self.assertNotEqual(sel.decisions[3].action, library.KEEP)
+        self.assertEqual(sel.merged, {})
+
+    def test_no_install_of_the_game_from_these_disks_no_inheritance(self) -> None:
+        with mock.patch.object(whdready, "known", return_value={}):
+            _items, sel = self.select([BASE1, BASE2, EXP], {"Zap": 8.0})
+        self.assertEqual([sel.decisions[k].action for k in (1, 2, 3)], [library.KEEP, library.KEEP, library.EXCLUDED])
+        self.assertEqual(sel.decisions[3].codes, (library.RATING_UNRATED,))
+
+    def test_with_the_rule_off_the_expansion_has_its_own_rating(self) -> None:
+        _items, sel = self.select([BASE1, BASE2, EXP], {"Zap": 8.0}, build_whdload=False)
+        self.assertEqual(sel.decisions[3].codes, (library.RATING_UNRATED,))
+
+    def test_the_target_decides_the_same_way(self) -> None:
+        from romorg import totals
+        items = amiga_items([BASE1, BASE2, EXP, self.OTHER])
+        profile = replace(library.default_profile(AMIGA), top_n=1, rank_scope="owned", min_votes=5, keep_unrated=False)
+        ctx = library.RatingContext(lambda title: {"Zap": (8.0, 100), "Other Game": (7.0, 100)}.get(title), None)
+        sel = library.base_selection(items, profile, AMIGA)
+        library.apply_ratings(sel, items, profile, AMIGA, ctx)
+        library.merge_expansions(items, sel, profile, AMIGA)                   # (as ``totals.compute_target`` does)
+        self.assertEqual(len(totals._kept(items, sel)), 1)
+        self.assertEqual(sel.decisions[3].action, library.KEEP)
+
+    def test_the_tree_counts_a_file_of_yours_the_target_holds_under_another_name_with_its_game(self) -> None:
+        from romorg import server, totals
+        items = amiga_items([BASE1, BASE2, EXP])
+        sel = library.select(items, library.default_profile(AMIGA), AMIGA, report=False)
+        keys = totals.NameKeys({EXP + ".adf": library.counted_key(items[2], sel)})
+        other = "Zap - The Expansion (1991)(Acme)[cr FLT][data disk].adf"                 # (a version of the expansion the target does not name)
+        entry = {"parts": (other,), "row": {"rom_name": other, "dat": GAMES}, "state": "moved", "side": "library"}
+        own = server.App._game_unit(entry, AMIGA, totals.NameKeys(), False)[1]          # (its own game's key, as the tree makes it)
+        keys.merged = {own: library.counted_key(items[0], sel)}                            # (what the target merges: the expansion's key -> its game's)
+        self.assertEqual(server.App._game_unit(entry, AMIGA, keys, False)[1], library.counted_key(items[0], sel))
+        self.assertEqual(own[1][1], "zap - the expansion")
+
+
 def adf_for(game: str, files: dict[str, bytes], label: str) -> bytes:
     return make_adf(label, files)
 

@@ -6510,7 +6510,8 @@ class App:
             t = (tags_mod.redump_tags(name, category) if style == "redump"
                  else tags_mod.parse_name(name, style))
             dat = _mod("library").game_dat(raw_dat)                                                   # (a disc: its games DAT's)
-            return ("game", (dat, _mod("library").game_key_of(dat, t, combine)))     # (the tiles' key: no region, no disc number)
+            key = (dat, _mod("library").game_key_of(dat, t, combine))             # (the tiles' key: no region, no disc number)
+            return ("game", (getattr(keys, "merged", None) or {}).get(key, key))   # (an expansion its game's install takes in: its game's)
         except Exception:  # noqa: BLE001 - a name that cannot be read counts as itself
             return ("name", name)
 

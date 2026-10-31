@@ -4405,6 +4405,36 @@ Left as they are (the user decides or the data cannot): Sensible World of Soccer
   Moon of Chromos is also "pre-release", Scenario Disk 1 only in De / Fr), or the base itself is excluded (Earl Weaver, Corporation, Lords of
   Chaos, Hole-In-One, Test Drive II, World Class Leader Board: "no usable rating" / "not among the top rated games"). Nothing is changed for
   them; an expansion of a kept game could inherit its game's rating (a rule decision for the user).
+* **Addendum (an expansion takes the rating of its game; decided with the user)**: with the rating filter on, an expansion of the table was
+  excluded when it had no usable rating, too few votes or was not in the top N, so on the real library only Cadaver / The Pay Off and
+  HeroQuest / Return of the Witch Lord merged. Now an expansion that its game's install takes in **has its game's rating**: when the game is kept
+  (by rating, saves, rules ...) and the install is the one `merge_expansions` already finds, the expansion is kept with it and merges as before.
+  Where: `library.merge_expansions` (plan time, same place and call sites as before - `select` and `totals.compute_target`, which runs
+  `apply_ratings` then `merge_expansions`). `apply_ratings` records, for a unit of the table's expansions, the decision it replaced
+  (`Selection.rating_dropped`: item key -> (the filter's decision, the earlier one)) and the chosen sets it dropped (`Selection.rating_sets`);
+  `merge_expansions` takes those back only when (a) the game is kept in a form the install builds from (ADF set or SPS release; the same
+  test as before), (b) the item's decision is still the filter's own and only rating codes (`rating_low`, `rating_not_top`, `rating_unrated`)
+  set it aside - a virus / pre-release / demo / bad dump / wrong-language disk, a superseded version, an incomplete set, a choice of yours
+  (`apply_overrides` replaces the decision) stay exactly as they are -, (c) the expansion's disks are complete, (d) the item is the
+  expansion itself - its exact title is in the table row - not a compilation that holds it (Kixx's "Cadaver & The Pay Off" is not rescued),
+  and (e) no other version of the expansion is kept on its own (then that one is the expansion and the filter's alternates are not added);
+  of several releases of it rescued at once (a TOSEC ADF set and an SPS release under two titles - Battle Isle's Moon of Chromos) one is
+  taken: the SPS release, else the first title. The rescued decision is the earlier KEEP with `reason = "kept with <game>: it takes its game's
+  rating"` and `merged_into`; its set goes back to `sel.sets`; `sel.rating` (kept / excluded / excluded_by) is corrected. Nothing is
+  deleted; an expansion whose game is not kept, or whose install does not merge, keeps the filter's decision (reported as before).
+  **No place of its own among the top N**: `_cutoff` (so `target_cutoff` and the owned-scope cutoff) skips a unit that is an expansion of
+  the table while its game is among the units kept before the filter (`_slot_units`), so it pushes no game out - and the two slots the
+  already-merged Pay Off / Witch Lord used to take go to the next two games (on the real library +2 games: Alien Breed 3D, California Games;
+  nothing leaves). Only with "Build WHDLoad games" on (`_inherits_rating`); the rule off is as before.
+  **The tree**: a file of the user's the target holds under another name (Falcon's Firefight [cr PDX] against the target's r2.1 release) was
+  counted by `server.App._game_unit` as a title of its own, so the tree had one more than the tile (501 / 500): `totals.Target.merged`
+  (`Selection.merged`) now travels with `Totals.name_keys` (a `NameKeys` dict with `.merged`) and `_game_unit` maps a fallback key through it.
+  Real Amiga plan (`ROMORG_DATA_DIR=mock-amiga2`, top 500 by rating, `build_whdload` on): `merged_into` decisions 2 -> 9 (the 5 new
+  expansions: Falcon Mission Disks 1 and II, Battle Isle Scenario Disk 1 and The Moon of Chromos, Space Crusade's Voyage Beyond; Moon of Chromos'
+  pre-release dumps and Scenario Disk 1's De / Fr dumps stay excluded - an English / non-pre-release version of each is the one kept), targets
+  with `extra` 2 -> 5, tile = tree = 500 games (before: 498 = 498). The expansions of Earl Weaver, Corporation, Lords of Chaos, PGA Tour, Test
+  Drive II, World Class Leader Board and Hole-In-One stay excluded: their game is not kept. Library build through scan, plan, `library_apply`
+  and `whdload_build` on copies of the real disks, archives booted headless: see the handover.
 
 ### Amendment 113, addendum 4: separate releases are separate games
 

@@ -148,6 +148,12 @@ def user_items(result: Any) -> list[Item]:
 
 # --------------------------------------------------------------------------- selection results
 
+class NameKeys(dict):
+    """``{rom name: game key}`` of the games the rules keep; ``merged``: the game key of an expansion that counts for its game -> its game's
+    (a file of yours the target holds under another name counts for the game too)."""
+    merged: dict = {}
+
+
 @dataclass
 class Target:
     """The games the rules keep for the WHOLE DAT."""
@@ -166,6 +172,7 @@ class Target:
     names: dict[tuple, str] = field(default_factory=dict)            # game key -> a name to show for it (the DAT's game name)
     explain: Optional[dict] = None              # why a "top N" keeps the number of games it keeps (:func:`_explain_top`)
     why: dict[tuple, str] = field(default_factory=dict)              # (game key, rom name) -> what put that version out, in a word (a better one is kept)
+    merged: dict[tuple, tuple] = field(default_factory=dict)         # an expansion's game key -> its game's (``library.Selection.merged``)
 
     @property
     def count(self) -> int:
@@ -246,7 +253,7 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
            if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED}
     explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why)
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why, dict(sel.merged))
 
 
 def _game_name(it: Item) -> str:
@@ -639,7 +646,9 @@ class TotalsManager:
             want, t = self._want.get(name), self._targets.get(name)
             if want is None or t is None or t[0] != want.tkey or isinstance(t[1], Exception):
                 return {}
-            return {n: key for key, names in t[1].games.items() for n in names}
+            out = NameKeys({n: key for key, names in t[1].games.items() for n in names})
+            out.merged = t[1].merged
+            return out
 
     def missing_names(self, name: str) -> Optional[frozenset]:
         """The rom names the rules keep for games you have no version of (what "missing" counts); None while the target, or your scan
