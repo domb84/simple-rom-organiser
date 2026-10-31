@@ -114,5 +114,24 @@ class AmigaRestore(ServerCase):
         self.assertEqual(len({a.rsplit("/", 1)[0] for a in adfs}), 2, adfs)
 
 
+class MixedFolder(unittest.TestCase):
+    def test_a_folder_that_holds_more_than_one_game_is_joined_by_no_game(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from romorg import organiser
+        plat = SimpleNamespace(game_dat="")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / organiser.GAMES_DIR / "Overlord"
+            d.mkdir(parents=True)
+            (d / "Overlord (1990)(Virgin Mastertronic).adf").write_bytes(b"a")
+            (d / "Overlord (1991)(Virgin).adf").write_bytes(b"b")
+            owners = organiser.folder_owners(plat, Path(tmp))
+            self.assertEqual(owners, {"overlord": organiser.MIXED_FOLDER})
+            claimed = dict(owners)
+            folder = organiser._restore_folder(plat, Path(tmp), "Overlord (1992)(Virgin).adf", claimed)
+            self.assertNotEqual(folder.casefold(), "overlord")                   # (it does not join the folder of two games)
+
+
 if __name__ == "__main__":
     unittest.main()

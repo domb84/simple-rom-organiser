@@ -1157,9 +1157,12 @@ def layout_parts(platform: Any, dat: str, name: str, title: str = "") -> tuple[s
     return None
 
 
+MIXED_FOLDER: tuple = ("\0more than one game",)      # the owner of a folder that holds several games: equal to no game key
+
+
 def folder_owners(platform: Any, root: Path, skip: Any = ()) -> dict[str, tuple]:
     """The game each folder below ``<root>/Commodore Amiga - Games`` holds, by the names of its files (``{folder casefold: game key}``; a folder
-    of files that are more than one game is left out: nothing joins it). ``skip``: files (``os.path.normcase`` of the path) that do not
+    of files that are more than one game is held by ``MIXED_FOLDER``: no game joins it). ``skip``: files (``os.path.normcase`` of the path) that do not
     count - the ones about to be placed."""
     from . import library, tags
     out: dict[str, tuple] = {}
@@ -1173,6 +1176,8 @@ def folder_owners(platform: Any, root: Path, skip: Any = ()) -> dict[str, tuple]
         keys = {library.game_key_of(dat, tags.parse_name(f.name, "tosec"), True) for f in d.iterdir() if f.is_file() and os.path.normcase(str(f)) not in skip}
         if len(keys) == 1:
             out[d.name.casefold()] = next(iter(keys))
+        elif keys:
+            out[d.name.casefold()] = MIXED_FOLDER
     return out
 
 
