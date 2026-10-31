@@ -4301,3 +4301,7 @@ The folder a game's saves go to (in the archive, `<archive>/<system>/Saves/<Titl
   totals signature, Settings and the labels of the UI. Everything in a disc game's folder that is not the game (disc image, frontend lists and media) is set aside
   like any file no database knows: saves, states and memory cards under `Saves/<Title>`, the rest to `Unmatched` (Amendment 21, 110). An older settings file
   or saved profile that still carries `keep_extras` loads: the key is ignored and not written again.
+
+### Amendment 113, addendum: the ratings data of 2026-10-30
+
+The newer LaunchBox data (63,868 entries, 60,042 before) joins 30 more Japanese-script Switch titles to their English release (376 Japanese-script titles in groups, 346 before). It also lost a few names the older data had: three PS2 SpongeBob games under their translated titles, GBA `Acrobat Kid` / `Aero the Acro-Bat` and NES `1943` / `1943 - The Battle of Midway` / `... Valhalla`. They are the same games (checked in the DATs: same sizes, different regions), so they are hand pairs in `alttitles.SAME_GAME`. DS `12` (8 MB, Europe) and `Final Fantasy XII - Revenant Wings` (128 MB) are now apart: the old data was wrong about them.

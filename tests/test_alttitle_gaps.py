@@ -456,5 +456,17 @@ class TheSwitchReleaseYears(AltTitlesCase):
         self.assertEqual(alttitles.release_years("Nintendo Switch"), {"little inferno": frozenset({2017})})
 
 
+class HandPairsOfTheNewRatingsData(unittest.TestCase):
+    def test_titles_the_newer_ratings_data_lost_are_still_one_game(self) -> None:
+        def one(plat: str, *titles: str) -> bool:
+            h = alttitles.hand_games(plat)
+            return len(set.intersection(*(set(h.get(alttitles.node(t), ())) for t in titles))) > 0
+        self.assertTrue(one("Nintendo Game Boy Advance", "Acrobat Kid", "Aero the Acro-Bat"))
+        self.assertTrue(one("Nintendo Entertainment System", "1943", "1943 - The Battle of Midway", "1943 - The Battle of Valhalla"))
+        self.assertTrue(one("Sony PlayStation 2", "Nickelodeon SpongeBob SquarePants - Battle for Bikini Bottom",
+                            "Nickelodeon Bob l'Eponge - La Bataille de Bikini Bottom"))
+        self.assertFalse(one("Nintendo DS", "12", "Final Fantasy XII - Revenant Wings"))
+
+
 if __name__ == "__main__":
     unittest.main()

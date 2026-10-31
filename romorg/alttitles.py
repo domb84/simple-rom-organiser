@@ -271,6 +271,15 @@ SAME_GAME: dict[str, list[tuple[str, ...]]] = {
         ("Final Fantasy Origins", "Final Fantasy Origins - Final Fantasy", "Final Fantasy Origins - Final Fantasy II")],
 }
 SAME_GAME["Super Nintendo Entertainment System"].append(("Cannondale Cup", "Exertainment Mountain Bike Rally"))
+# (the ratings data of 2026-10-30 lost these names, which the data of 2026-10-14 had: the same game, checked in the DATs)
+SAME_GAME["Nintendo Game Boy Advance"].append(("Acrobat Kid", "Aero the Acro-Bat"))                          # (4 MB each, Japan / USA, Europe)
+SAME_GAME["Nintendo Entertainment System"].append(("1943", "1943 - The Battle of Midway", "1943 - The Battle of Valhalla"))
+SAME_GAME["Sony PlayStation 2"].extend([                                      # (SpongeBob: one game under the title of each language)
+    ("Nickelodeon Bob Esponja - La Pelicula", "Nickelodeon SpongeBob - Il Film", "Nickelodeon SpongeBob Schwammkopf - Der Film"),
+    ("Nickelodeon Bob Esponja - Luces, Camara, Esponja!", "Nickelodeon Bob l'Eponge - Silence on Tourne !", "Nickelodeon SpongeBob - Ciak si Gira!",
+     "Nickelodeon SpongeBob Schwammkopf - Film Ab!", "Nickelodeon SpongeBob SquarePants - Lights, Camera, Pants!"),
+    ("Nickelodeon Bob l'Eponge - La Bataille de Bikini Bottom", "Nickelodeon SpongeBob Schwammkopf - Schlacht um Bikini Bottom",
+     "Nickelodeon SpongeBob SquarePants - Battle for Bikini Bottom")])
 
 
 def hand_games(platform_name: str) -> dict[str, frozenset]:
