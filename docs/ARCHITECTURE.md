@@ -4545,3 +4545,28 @@ aborted and the file sent again); the setting is not in the UI.
 A game that PUAE shows black with its default CPU option carries the tag `CPU: compatible` in the Files view (beside the machine, language and "WHDLoad" tags; hovering says why, the detail panel has an "Emulator setting" row: set the core option `puae_cpu_compatibility` to that value). The table is `whdready.CPU_MODE` (title -> value, `whdready.cpu_mode`); the server adds `cpu` to a folder's facts only for such a game (`App._row_facts`). First entry: Star Trek - 25th Anniversary (`compatible`; "exact" and a 68030 do not run it). Not changed: the user's core options stay the user's, and `whdknown.json.gz` still records the results with PUAE's defaults. The three games that need `exact` (The Chaos Engine, Cyber World, Skidoo, see above) would be entries of the same table.
 
 Decided with the user: anything but PUAE's default is tagged. The table now also holds The Chaos Engine (the floppy games, not a CD32 / CDTV disc), Cyber World and Skidoo, each `exact` (`CPU: exact`); `CPU_MODE` never holds the default value.
+
+**Sweep of the other 'installs, does not boot' AGA games (2026-10-31).** The 14 AGA releases the user owns that the shipped list records as
+`-1` were installed (hand builder, the user's disks copied; Fears also from its ADF set) and booted headless (real RetroArch + PUAE, A1200,
+`puae_fastmem_size = 8`) at about 2000 / 5000 / 12000 frames with `puae_cpu_compatibility` default (`memory`) / `compatible` / `exact`; the ones
+still black also on an A4000 with each of the three, and on a 68030 and a 68040 with `compatible`; every screenshot looked at. The control
+reproduced (Star Trek 25th: black at default, credits at 5000 frames with `compatible`). Result: **no game needs a non-default CPU option; nothing
+was added to `CPU_MODE`.** The causes are in the installs, not the core:
+
+| Game (release used) | default | compatible | exact | other option sets | what it is |
+| --- | --- | --- | --- | --- | --- |
+| Fantastic Dizzy AGA (1994-08-22) ADF | boots (language menu) | boots | black | - | boots with the default; `exact` breaks it |
+| Christoph Kolumbus AGA (SPS 0448) | boots (title picture) | boots | boots | - | boots with the default |
+| Der Clou! AGA (SPS 0451) | boots (AGA menu) | boots | boots | - | boots with the default |
+| Detroit AGA (ADF set) | boots (menu) | boots | boots | - | boots with the default |
+| Blade (OCS-AGA ADF set) | menu, then "Please insert Disk Two" | same | same | - | the install is the ECS slave on `OCSData`; the game asks for a disk |
+| Star Trek 25th (SPS 1466), control | black | credits (5000 frames), later black | black | - | reproduces |
+| Ace Ball (OCS-AGA ADF, cr WT) | "data/disk-files are damaged" | same | same | A4000, 68030, 68040, WHDLoad 20.1: same | the crack's files differ from what the slave checks |
+| Uridium 2 (AGA review copy, cr FLT) | "requires WHDLoad 20" | same | same | with 20.1: "data/disk-files are damaged" | the disks are not a version the slave takes |
+| Anstoss WCE, On the Ball WCE (SPS 2595), Carton Rouge | DOS error 205 ("alloc" / "intro") | same | same | A4000, 68030, 68040: same | the installer's AGA route failed on these disks and it went on with the ECS route ("answered ECS (another try)"): wrong files for the slave |
+| Sabre Team AGA (SPS 1158) | DOS error 205 on "Disk.1" | same | same | - | the package has no install script for AGA (its README): the AGA slave wants `Disk.1`-`Disk.5` images, the build gives it the ECS file layout |
+| Center Court, Leading Lap MPV | black | black | black | A4000 and 68030: black; 68040 (Center Court): the game runs and stops with an access fault | ECS slave from an install of AGA disks (Center Court); not examined further |
+| Fears (SPS 1288 and ADF) | not installed | | | | the Fears.imager patcher fails (cycle 2: "Reading track 004" from the IPFs, 60 million instructions from the ADFs) |
+
+The shipped list's `-1` for Dizzy, Kolumbus, Der Clou! and Detroit is out of date or was a different run: these four boot with the default options here (with and
+without `puae_fastmem_size`). Not edited by hand.
