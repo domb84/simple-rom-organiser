@@ -467,10 +467,6 @@ class DcEndpointTests(DcServerCase):
         sndfile = {"native": True, "library": "libsndfile", "note": "libFLAC not found"}
         with mock.patch("romorg.flacnative.status", return_value=sndfile):
             self.assertEqual(self.call("/api/chdman")["flac"]["library"], "libsndfile")
-        js = server.read_static("app.js").decode()
-        self.assertIn('flac.library === "libsndfile"', js)              # the UI says libsndfile, not libFLAC
-        self.assertIn("chd-flac-note", js)
-        self.assertIn('id="chd-flac-note"', server.read_static("index.html").decode())
 
     def test_startup_sweeps_stale_temp_folders(self) -> None:
         self.call("/api/folders", {"platform": PLAT, "path": str(self.roms)})

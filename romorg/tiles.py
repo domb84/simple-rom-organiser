@@ -1,7 +1,8 @@
-"""The tiles at the top of every system page: which ones exist, which ones are shown, in what order (Settings > Tiles).
+"""The tiles at the top of every system page: which ones exist, which ones are shown, in what order (Settings > System page tiles).
 
 The page draws each tile from data it already has (the scan, the library totals, the preview) or, for the ones marked ``calc``, from
 ``GET /api/library/insights``. The choice is one list for every system, kept in ``config.json`` as ``page_tiles`` (shown tiles, in order).
+A saved list may name tiles that are gone (the old page drew them): they drop out when it is read.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ MAX_TILES = 10
 CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "have_all", "label": "Have, all entries", "text": "How many of the database's games you own, whatever your rules say.", "calc": False},
     {"id": "have_rules", "label": "Have, with your rules", "text": "How many of the games your library rules keep you own.", "calc": False},
-    {"id": "rated_all", "label": "Rated, all entries", "text": "The share of the database's games with a community rating.", "calc": False},
-    {"id": "rated_rules", "label": "Rated, with your rules", "text": "The share of the games your rules keep that have a rating.", "calc": False},
     {"id": "needs_look", "label": "Needs a look", "text": "Games you own that are not the preferred version, are left out by your rules or are incomplete; each opens its list.", "calc": False},
     {"id": "files_to_change", "label": "Files to change", "text": "How many files the library build would move, rename or set aside (from the live preview).", "calc": False},
     {"id": "unmatched", "label": "Unmatched files", "text": "Files in the folder that match nothing in the database. Hidden when there are none.", "calc": False},
@@ -25,14 +24,11 @@ CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "saves", "label": "Saves", "text": "Saves and save states found for the system. Hidden without a save source.", "calc": False},
     {"id": "database", "label": "Database", "text": "The version of the system's database and whether it is up to date.", "calc": False},
     {"id": "last_scan", "label": "Last scan", "text": "When the folder was last scanned.", "calc": False},
-    {"id": "space", "label": "Space", "text": "The size of the games you own against the size of the whole library your rules describe (from the database's sizes).", "calc": True},
-    {"id": "best_missing", "label": "Best you are missing", "text": "The highest rated game of your library rules that you do not own.", "calc": True},
-    {"id": "avg_rating", "label": "Average rating", "text": "The average rating of your games against that of the whole library your rules describe.", "calc": True},
-    {"id": "regions", "label": "Regions", "text": "Where your games come from.", "calc": True},
     {"id": "convert", "label": "Convert", "text": "Games that could be converted to CHD (disc systems only).", "calc": True},
 )
-DEFAULT: tuple[str, ...] = ("have_all", "have_rules", "rated_all", "rated_rules", "needs_look", "files_to_change", "unmatched", "bios", "saves")
-CALC = frozenset(t["id"] for t in CATALOG if t["calc"])
+DEFAULT: tuple[str, ...] = ("have_all", "have_rules", "needs_look", "files_to_change", "unmatched", "bios", "saves")
+# what GET /api/library/insights works out: the Convert tile, and numbers no tile shows any more (the server still has them)
+CALC = frozenset({"convert", "space", "best_missing", "avg_rating", "regions"})
 _IDS = tuple(t["id"] for t in CATALOG)
 
 

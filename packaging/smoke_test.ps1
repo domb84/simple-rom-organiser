@@ -84,10 +84,8 @@ try {
 
     $main = Get-Text "/"
     Assert-Match $main 'src="/static/next.js"' "the main page is not the big-screen UI"
-    $index = Get-Text "/classic"
     $status = Get-Text "/api/status"
     Write-Host "GET /           -> $($main.Length) characters"
-    Write-Host "GET /classic    -> $($index.Length) characters"
     Write-Host "GET /api/status -> $($status.Substring(0, [Math]::Min(160, $status.Length)))..."
     Assert-Match $status '"version"' "status missing version"
     Assert-Match $status '"nointro"' "status missing the No-Intro block"
@@ -95,16 +93,16 @@ try {
     Assert-Match $status '"redump"' "status missing the Redump block"
     Assert-Match $status '"os": "windows"' "status does not say the app runs on Windows"
 
-    # the pages of the UI: home, a system, and the three v0.2 added; and the files the page loads
-    foreach ($view in "view-home", "view-system", "view-retroarch", "view-chd", "view-settings", "view-databases", "view-bios") {
-        Assert-Match $index ('id="' + $view + '"') "the page lacks $view"
+    # the parts of the page the script draws into, and the files the page loads
+    foreach ($part in "head", "main", "strip", "overlays", "toasts") {
+        Assert-Match $main ('id="' + $part + '"') "the page lacks $part"
     }
-    foreach ($file in [regex]::Matches($index + $main, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique) {
+    foreach ($file in [regex]::Matches($main, '(?:src|href)="(/static/[^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique) {
         if ((Get-Text $file).Length -lt 1000) { throw "smoke test failed: $file is empty" }
         Write-Host "GET $file -> ok"
     }
 
-    if ($index -notmatch 'name="romorg-token" content="([^"]+)"') { throw "smoke test failed: the page has no token" }
+    if ($main -notmatch 'name="romorg-token" content="([^"]+)"') { throw "smoke test failed: the page has no token" }
     $token = $Matches[1]
     $auth = @{ "X-Romorg-Token" = $token }
     $platforms = Get-Text "/api/platforms" $auth

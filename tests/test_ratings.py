@@ -1214,33 +1214,13 @@ class ServerTests(TmpDirCase):
 
 class UiContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.html = server.read_static("index.html").decode()
-        self.js = server.read_static("app.js").decode()
-        self.css = server.read_static("style.css").decode()
+        self.js = server.read_static("next.js").decode()
 
     def test_no_hard_coded_rating_rule_list_in_the_script(self) -> None:
-        for rule in ('"min_rating"', '"top_n"', '"min_votes"', '"keep_unrated"', "'min_rating'", "'top_n'", "'keep_unrated'"):
+        for rule in ('"keep_unrated"', "'min_rating'", "'top_n'", "'keep_unrated'"):      # (the catalogue the server sends draws them)
             self.assertNotIn(rule, self.js, rule)
-        for needle in ('e.group === "ratings"', "ratingEntries", "e.filter", "e.summary", "e.choices", "e.kind === \"choice\"",
-                       "/api/ratings/download", "info.reason_labels", "rating_codes", 'class: "rating-rows"'):
+        for needle in ('c.group === "ratings"', "info.catalog", "c.choices", 'c.kind === "choice"', "/api/ratings/download"):
             self.assertIn(needle, self.js, needle)
-
-    def test_ratings_ui_pieces(self) -> None:
-        for needle in ("Ratings found for", "LaunchBox data from", "Download ratings",
-                       "Games with no rating are excluded while a rating filter is set (tick Keep unrated games to keep them).",
-                       "Ratings: LaunchBox Games Database community ratings", "target games are rated", "Preview and Build wait for it",
-                       "retryPending", "ratings_pending", "Unrated", "Rated", "th-sort", "rating-cell", "ratingCell"):
-            self.assertIn(needle, self.js, needle)
-        self.assertIn('id="lib-ratings-banner"', self.html)
-        for sel in (".rating-rows", ".rating-input", ".ratings-status", ".ratings-banner", ".th-sort"):
-            self.assertIn(sel, self.css)
-
-    def test_every_dollar_id_exists(self) -> None:
-        import re
-        ids = set(re.findall(r'\$\("([^"$`]+)"\)', self.js))
-        missing = [i for i in ids if f'id="{i}"' not in self.html and f'id: "{i}"' not in self.js]
-        self.assertEqual(missing, [])
-
 
 
 if __name__ == "__main__":

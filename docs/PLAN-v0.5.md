@@ -42,9 +42,9 @@ hover; the focused control grows and gets the blue ring; menus say "Exclude" / "
 | LB / RB | `[` / `]` | click a view chip | previous / next view or system |
 | LT / RT | Page Up / Down | wheel | scroll |
 | Menu (Start) | Ctrl+Enter | the button | the screen's main action (Restore ticked, Save and test); with none, the app menu |
-| - | F10 | the `⋯` button | app menu: classic interface, Quit |
+| - | F10 | the `⋯` button | app menu: what's running, Quit |
 
-Steam Input may present the controller as a gamepad or as keys; both work (the existing `deck.js` layer). Text is typed with Steam+X
+Steam Input may present the controller as a gamepad or as keys; both work. Text is typed with Steam+X
 on the Deck; the UI avoids typing wherever a list can do it.
 
 ## Old UI to new screens
@@ -124,10 +124,9 @@ Everything the old UI does keeps a place, unless it is listed under "Dropped". "
    RetroArch (Amendment 72, mocked as screens 32-37): which RetroArch, move saves and states (folders, one folder per core, the backup
    zip and its folder, a preview with the retroarch.cfg changes, the result), asset folders one by one or one shared folder for all.
    A system's databases (versions, folders, counts per database): the classic "DAT" section, which only ever showed facts.
-   Nothing is left on the classic page; the menu still opens it.
-6. **Swap - done 2026-10-25**: the big-screen UI is the main page (`/`, also `/next`), the old one is at `/classic` for a while
-   (menu › Classic interface). Still to do: **remove** the old UI (`app.js`, `style.css`, its tests) once every row of the table has its screen; browser tests move
-   to the new UI.
+   Nothing is left on the classic page.
+6. **Swap - done 2026-10-25, old UI removed 2026-10-31 (Amendment 115)**: the big-screen UI is the only page (`/`, also `/index.html`); `/classic` and
+   `/next` are gone, and so are `index.html`, `app.js`, `style.css`, `deck.js`, `deck.css`. The browser tests drive the new UI.
 7. **Game Mode launch and packaging** (needs the Deck): `--deck` opens a fullscreen app window of an installed browser and quits the
    server when it closes; Steam launch options documented (`shortcuts.vdf` only if the user asks); self-check and smoke test cover
    the new files.

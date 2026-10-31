@@ -85,7 +85,7 @@ class Ps2EndpointTests(PsServerCase):
         self.assertEqual((info["verify_dvd"], info["verify_audio"], info["verify_scan"]), (True, False, False))
         full = self.scan_ps2()
         self.assertEqual((full["verified"], full["identified"]), (4, 0))
-        self.call("/api/chdman", {"verify_scan": True})                # the classic page's one switch sets both
+        self.call("/api/chdman", {"verify_scan": True})                # the older single switch sets both
         self.assertEqual({k: self.call("/api/chdman")[k] for k in ("verify_dvd", "verify_audio")}, {"verify_dvd": True, "verify_audio": True})
         self.call("/api/chdman", {"verify_scan": False})
         plan = self.call("/api/library/plan", {"platform": PS2})

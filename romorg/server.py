@@ -6,7 +6,7 @@ Security model (the server can rename files, so it is locked down):
 * rejects requests whose ``Host`` header is not ``127.0.0.1:<port>`` /
   ``localhost:<port>`` (defeats DNS-rebinding attacks from web pages);
 * every mutating endpoint is POST + JSON and requires the per-run secret in
-  the ``X-Romorg-Token`` header (the token is injected into index.html).
+  the ``X-Romorg-Token`` header (the token is injected into next.html).
 
 The other ``romorg`` modules are imported lazily through :func:`_mod` so the
 server starts quickly and tests can substitute fakes via ``sys.modules``.
@@ -48,17 +48,11 @@ from urllib.parse import parse_qs, urlsplit
 
 PACKAGE = "romorg"
 STATIC_TYPES = {
-    "index.html": "text/html; charset=utf-8",
-    "app.js": "text/javascript; charset=utf-8",
-    "style.css": "text/css; charset=utf-8",
-    "deck.js": "text/javascript; charset=utf-8",
-    "deck.css": "text/css; charset=utf-8",
     "next.html": "text/html; charset=utf-8",
     "next.js": "text/javascript; charset=utf-8",
     "next.css": "text/css; charset=utf-8",
 }
-MAIN_PATHS = ("/", "/index.html", "/next", "/next/")        # the big-screen UI (v0.5; /next was its address while it grew)
-CLASSIC_PATHS = ("/classic", "/classic/")                   # the old UI, kept for a while
+MAIN_PATHS = ("/", "/index.html")                           # the UI
 TOKEN_PLACEHOLDER = "__ROMORG_TOKEN__"
 DECK_PLACEHOLDER = "__ROMORG_DECK__"
 TOKEN_HEADER = "X-Romorg-Token"
@@ -7010,7 +7004,7 @@ class App:
             if preset == "zstd" and not _mod("chdwrite").zstd_available():
                 raise ApiError(HTTPStatus.CONFLICT, "Zstandard compression needs a Zstandard library (libzstd)")
             values["chd_preset"] = preset
-        if "verify_scan" in body:                       # (the one switch of the classic page: both checks)
+        if "verify_scan" in body:                       # (the older single switch: both checks)
             values["chd_verify_dvd"] = values["chd_verify_audio"] = _bool_arg(body.get("verify_scan"))
         for key in ("verify_dvd", "verify_audio"):
             if key in body:
@@ -7285,8 +7279,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
             return
-        name = "next.html" if path in MAIN_PATHS else "index.html" if path in CLASSIC_PATHS else path.rsplit("/", 1)[-1]
-        if path not in (*MAIN_PATHS, *CLASSIC_PATHS, f"/static/{name}", f"/{name}") or name not in STATIC_TYPES:
+        name = "next.html" if path in MAIN_PATHS else path.rsplit("/", 1)[-1]
+        if path not in (*MAIN_PATHS, f"/static/{name}", f"/{name}") or name not in STATIC_TYPES:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
         try:
@@ -7294,7 +7288,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
-        if name in ("index.html", "next.html"):
+        if name == "next.html":
             data = data.replace(TOKEN_PLACEHOLDER.encode(), self.server.app.token.encode())
             data = data.replace(DECK_PLACEHOLDER.encode(), b"1" if self.server.app.deck else b"")
         self._send(HTTPStatus.OK, data, STATIC_TYPES[name])

@@ -17,7 +17,7 @@ conversation. Read this file, then `docs/PLAN-v0.5.md` and the last amendments o
 ## What v0.5 is (one paragraph)
 
 The default UI (`/`) is a new big-screen UI for 1280x720, driven by controller, keyboard or mouse: `romorg/static/next.html/.css/.js`
-(own vanilla kit, no framework; the CSP forbids style attributes, so styles go through the CSSOM). The old UI is at `/classic`. The
+(own vanilla kit, no framework; the CSP forbids style attributes, so styles go through the CSSOM). The old UI is gone (Amendment 115). The
 server (`romorg/server.py`, stdlib only) is unchanged in shape: a JSON API the UI calls. Background tasks carry on when their screen
 is left (a toast when done, "What's running" in the menu).
 
@@ -56,7 +56,7 @@ is left (a toast when done, "What's running" in the menu).
 
 - Share the user-files selection between the build preview and the totals (the version choice is shared now; they differ slightly: the preview counts
   saves - `prefer_saved`).
-- Remove the classic UI; Game Mode launcher (Steam shortcut); running several tasks at once.
+- Game Mode launcher (Steam shortcut); running several tasks at once.
 - WHDLoad saves (`saves/PUAE/WHDSaves/`) are not shown on the Saves page.
 - Check PUAE's floppy write-redirect option: saves written into an ADF would stop it matching TOSEC.
 

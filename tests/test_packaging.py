@@ -223,7 +223,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertIn("-SelfCheck", text)                     # the self-check's lines are asserted there too
             self.assertNotIn("Invoke-WebRequest \"http://127.0.0.1", text)   # no second, weaker smoke test of its own
         # every URL the Linux test asks for
-        urls = set(re.findall(r'\$URL(/[A-Za-z0-9/_%?=.-]*)', sh))
+        urls = set(re.findall(r'\$URL(/[A-Za-z0-9/_%?=.-]*)', sh)) - {"/static/"}
         self.assertGreaterEqual(urls, {"/", "/api/status", "/api/platforms", "/api/updates", "/api/chdman", "/api/quit",
                                        "/api/library/profile?platform=Commodore%20Amiga",
                                        "/api/library/profile?platform=Sega%20Dreamcast"})
@@ -245,9 +245,8 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertIn(f'"{name}"', ps)
         self.assertIn("$count -ne 20", ps)
         self.assertIn("StatusCode -ne 200", ps)                       # (every request must answer 200)
-        # v0.2: the three new pages are in the HTML, their endpoints answer, the page's own files are served
-        for needle in ('"view-databases"', '"view-retroarch"', '"view-chd"', '"/api/library/defaults"', '"/api/retroarch"',
-                       "/static/"):
+        # the parts of the page are in the HTML, the settings' endpoints answer, the page's own files are served
+        for needle in ('"overlays"', '"toasts"', '"/api/library/defaults"', '"/api/retroarch"', "/static/"):
             self.assertIn(needle, ps)
         # a miss fails the build; the app is quit through the API and the whole process tree is gone either way
         self.assertIn('$ErrorActionPreference = "Stop"', ps)
@@ -317,8 +316,9 @@ class WindowsPackagingTests(unittest.TestCase):
         static = sorted(p.name for p in (ROOT / "romorg" / "static").iterdir() if p.is_file())
         self.assertEqual(sorted(selfcheck.STATIC_FILES), static)
         self.assertEqual(sorted(server.STATIC_TYPES), static)                  # and the server serves each of them
-        page = (ROOT / "romorg" / "static" / "index.html").read_text(encoding="utf-8")
-        self.assertEqual(sorted(re.findall(r'<section class="view[^"]*" id="(view-[a-z]+)"', page)), sorted(selfcheck.UI_VIEWS))
+        page = (ROOT / "romorg" / "static" / "next.html").read_text(encoding="utf-8")
+        for part in selfcheck.UI_PARTS:
+            self.assertIn(f'id="{part}"', page)
         for name in ("libexport", "meter", "retroarch", "sortroot"):   # the modules v0.2 added
             self.assertIn(name, selfcheck.APP_MODULES)
         ok, text = selfcheck.check_app()
@@ -345,19 +345,24 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("module retroarch", text)
 
         def no_script(name: str) -> bytes:
-            if name == "app.js":
+            if name == "next.js":
                 raise FileNotFoundError(name)
             return real_read(name)
 
         with mock.patch.object(server, "read_static", no_script):
             ok, text = selfcheck.check_app()
         self.assertFalse(ok)
-        self.assertIn("static/app.js", text)
-        old_page = real_read("index.html").replace(b'id="view-databases"', b'id="view-old"')
-        with mock.patch.object(server, "read_static", lambda name: old_page if name == "index.html" else real_read(name)):
+        self.assertIn("static/next.js", text)
+        old_page = real_read("next.html").replace(b'id="strip"', b'id="old"')
+        with mock.patch.object(server, "read_static", lambda name: old_page if name == "next.html" else real_read(name)):
             ok, text = selfcheck.check_app()
         self.assertFalse(ok)
-        self.assertIn("view-databases", text)
+        self.assertIn("the page part strip", text)
+        wrong_ref = real_read("next.html").replace(b"/static/next.css", b"/static/gone.css")
+        with mock.patch.object(server, "read_static", lambda name: wrong_ref if name == "next.html" else real_read(name)):
+            ok, text = selfcheck.check_app()
+        self.assertFalse(ok)
+        self.assertIn("static/gone.css (next.html asks for it", text)
         # an incomplete app fails the whole self-check, in a source tree too
         with mock.patch.object(bundle, "bundle_root", return_value=None), \
                 mock.patch.object(selfcheck, "check_chdman", return_value=("SKIP", "-")), \
@@ -539,7 +544,7 @@ class BuiltArtifactTests(unittest.TestCase):
         stdlibs = list((APPDIR / "usr" / "python" / "lib").glob("python3.*"))
         self.assertEqual(len(stdlibs), 1)
         stdlib = stdlibs[0]
-        self.assertTrue((stdlib / "site-packages" / "romorg" / "static" / "index.html").is_file())
+        self.assertTrue((stdlib / "site-packages" / "romorg" / "static" / "next.html").is_file())
         self.assertTrue((stdlib / "site-packages" / "romorg" / "__main__.py").is_file())
         for trimmed in ("tkinter", "idlelib", "test", "ensurepip", "site-packages/pip"):
             self.assertFalse((stdlib / trimmed).exists(), f"{trimmed} should be stripped")

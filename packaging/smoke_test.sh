@@ -51,21 +51,23 @@ done
 
 MAIN="$(curl -fsS "$URL/")"
 grep -q 'src="/static/next.js"' <<<"$MAIN" || { echo "the main page is not the big-screen UI" >&2; exit 1; }
-INDEX="$(curl -fsS "$URL/classic")"
 STATUS="$(curl -fsS "$URL/api/status")"
 echo "GET /           -> ${#MAIN} bytes"
-echo "GET /classic    -> ${#INDEX} bytes"
 echo "GET /api/status -> $STATUS"
 grep -q '"version"' <<<"$STATUS" || { echo "status missing version" >&2; exit 1; }
 grep -q '"nointro"' <<<"$STATUS" || { echo "status missing the No-Intro block" >&2; exit 1; }
 grep -q '"updates"' <<<"$STATUS" || { echo "status missing the updates block" >&2; exit 1; }
 grep -q '"redump"' <<<"$STATUS" || { echo "status missing the Redump block" >&2; exit 1; }
-# the pages of the classic UI (also checked by packaging/smoke_test.ps1 on Windows)
-for view in view-home view-system view-retroarch view-chd view-settings view-databases view-bios; do
-  grep -q "id=\"$view\"" <<<"$INDEX" || { echo "the page lacks $view" >&2; exit 1; }
+# the parts of the page the script draws into (also checked by packaging/smoke_test.ps1 on Windows), and its own files
+for part in head main strip overlays toasts; do
+  grep -q "id=\"$part\"" <<<"$MAIN" || { echo "the page lacks $part" >&2; exit 1; }
 done
+for file in next.js next.css; do
+  curl -fsS -o /dev/null "$URL/static/$file" || { echo "/static/$file missing" >&2; exit 1; }
+done
+echo "GET /static/next.js, /static/next.css -> ok"
 
-TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$INDEX" | head -n1)"
+TOKEN="$(sed -n 's/.*name="romorg-token" content="\([^"]*\)".*/\1/p' <<<"$MAIN" | head -n1)"
 if [[ -n "$TOKEN" ]]; then
   PLATFORMS="$(curl -fsS -H "X-Romorg-Token: $TOKEN" "$URL/api/platforms")"
   for name in "Commodore Amiga" "Nintendo Game Boy Advance" "Nintendo 64" "Nintendo Entertainment System" \

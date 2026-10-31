@@ -403,58 +403,42 @@ class ServerTestCase(unittest.TestCase):
 
 
 class StaticAndSecurityTests(ServerTestCase):
-    def test_index_has_token_and_security_headers(self) -> None:
-        status, body, headers = self.request("GET", "/classic")
-        self.assertEqual(status, 200)
-        html = body.decode()
-        self.assertIn('content="test-token"', html)
-        self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
-        self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
-        self.assertEqual(headers["Cache-Control"], "no-store")
-        for element_id in ("home-groups", "sys-tabs", "tab-files", "dat-cards"):
-            self.assertIn(f'id="{element_id}"', html)
-
-    def test_static_assets(self) -> None:
-        for path, ctype in (("/static/app.js", "text/javascript"), ("/static/style.css", "text/css"),
-                            ("/static/deck.js", "text/javascript"), ("/static/deck.css", "text/css")):
-            status, body, headers = self.request("GET", path)
-            self.assertEqual(status, 200, path)
-            self.assertTrue(headers["Content-Type"].startswith(ctype))
-            self.assertGreater(len(body), 100)
-
-    def test_the_big_screen_ui_is_the_main_page_and_the_old_one_is_at_classic(self) -> None:
-        for path in ("/classic", "/classic/"):
-            self.assertIn('src="/static/app.js"', self.request("GET", path)[1].decode())
-        for path in ("/", "/index.html", "/next", "/next/"):
+    def test_the_main_page_has_the_token_and_the_security_headers(self) -> None:
+        for path in ("/", "/index.html"):
             status, body, headers = self.request("GET", path)
             self.assertEqual(status, 200, path)
             html = body.decode()
             self.assertIn('content="test-token"', html)
             self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
-            self.assertIn('<meta name="romorg-deck" content="">', html)
             self.assertIn('src="/static/next.js"', html)
+            self.assertIn('href="/static/next.css"', html)
             self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            for element_id in ("head", "main", "strip", "overlays", "toasts"):
+                self.assertIn(f'id="{element_id}"', html)
+
+    def test_static_assets(self) -> None:
         for path, ctype in (("/static/next.js", "text/javascript"), ("/static/next.css", "text/css")):
             status, body, headers = self.request("GET", path)
             self.assertEqual(status, 200, path)
             self.assertTrue(headers["Content-Type"].startswith(ctype))
-        self.assertEqual(self.request("GET", "/next/other")[0], 404)
-        self.assertEqual(self.request("GET", "/classic/other")[0], 404)
-        self.srv.app.deck = True
-        self.assertIn('<meta name="romorg-deck" content="1">', self.request("GET", "/")[1].decode())
+            self.assertGreater(len(body), 100)
 
-    def test_the_page_says_it_is_not_for_a_deck_by_default_and_loads_the_controller_layer(self) -> None:
-        _status, body, _headers = self.request("GET", "/classic")
+    def test_the_old_ui_and_its_addresses_are_gone(self) -> None:
+        for path in ("/classic", "/classic/", "/classic/other", "/next", "/next/", "/next/other", "/static/app.js", "/static/style.css",
+                     "/static/deck.js", "/static/deck.css", "/static/index.html", "/app.js"):
+            self.assertEqual(self.request("GET", path)[0], 404, path)
+
+    def test_the_page_says_it_is_not_for_a_deck_by_default(self) -> None:
+        _status, body, _headers = self.request("GET", "/")
         html = body.decode()
         self.assertIn('<meta name="romorg-deck" content="">', html)
         self.assertNotIn(server.DECK_PLACEHOLDER, html)
-        self.assertIn('href="/static/deck.css"', html)
-        self.assertIn('src="/static/deck.js"', html)
         self.assertIs(self.get("/api/status")["deck"], False)
 
     def test_the_page_and_status_say_so_when_served_for_a_deck(self) -> None:
         self.srv.app.deck = True
-        _status, body, _headers = self.request("GET", "/classic")
+        _status, body, _headers = self.request("GET", "/")
         self.assertIn('<meta name="romorg-deck" content="1">', body.decode())
         self.assertIs(self.get("/api/status")["deck"], True)
 
@@ -469,12 +453,12 @@ class StaticAndSecurityTests(ServerTestCase):
         self.assertFalse(deck(False, {"SteamDeck": "1", "ROMORG_DECK": "off"}))
 
     def test_ui_ids_exist(self) -> None:
-        """Every $("id") used by app.js must exist in index.html."""
+        """Every $("id") used by next.js exists in next.html, or next.js makes it."""
         import re
-        js = server.read_static("app.js").decode()
-        html = server.read_static("index.html").decode()
+        js = server.read_static("next.js").decode()
+        html = server.read_static("next.html").decode()
         ids = set(re.findall(r'\$\("([\w-]+)"\)', js))
-        missing = sorted(i for i in ids if f'id="{i}"' not in html)
+        missing = sorted(i for i in ids if f'id="{i}"' not in html and f'id: "{i}"' not in js)
         self.assertEqual(missing, [])
 
     def test_unknown_paths_404(self) -> None:
@@ -2634,66 +2618,44 @@ class LibraryServerTests(ServerTestCase):
         self.assertEqual(len(server._tag_filter(rows, {"rule": "bad_dump", "flag": "bad"})), 1)
         self.assertEqual(len(server._tag_filter(rows, {"rule": "virus"})), 0)
 
-    def test_the_page_is_balanced_and_every_page_holds_its_own_content(self) -> None:
-        """A stray closing tag once ended a page early: what followed then showed on every other page."""
+    def test_the_page_is_balanced(self) -> None:
+        """A stray closing tag ends a part of the page early: what follows then shows where it does not belong."""
         from html.parser import HTMLParser
-        void = {"input", "br", "img", "meta", "link", "hr"}
+        void = {"input", "br", "img", "meta", "link", "hr", "path", "circle"}
 
         class Walk(HTMLParser):
             def __init__(self) -> None:
                 super().__init__()
-                self.stack: list[tuple[str, str]] = []
+                self.stack: list[str] = []
                 self.problems: list[str] = []
-                self.owner: dict[str, str] = {}
 
             def handle_starttag(self, tag: str, attrs: Any) -> None:
-                if tag in void:
-                    return
-                ident = dict(attrs).get("id") or ""
-                views = [i for t, i in self.stack if t == "section" and i.startswith("view-")]
-                if ident and not ident.startswith("view-"):
-                    self.owner[ident] = views[-1] if views else ""
-                self.stack.append((tag, ident))
+                if tag not in void:
+                    self.stack.append(tag)
 
             def handle_endtag(self, tag: str) -> None:
                 if tag in void:
                     return
-                if not self.stack or self.stack[-1][0] != tag:
+                if not self.stack or self.stack[-1] != tag:
                     self.problems.append(f"</{tag}> at line {self.getpos()[0]} closes {self.stack[-1] if self.stack else None}")
                 for i in range(len(self.stack) - 1, -1, -1):
-                    if self.stack[i][0] == tag:
+                    if self.stack[i] == tag:
                         del self.stack[i:]
                         break
 
         walk = Walk()
-        walk.feed(server.read_static("index.html").decode())
+        walk.feed(server.read_static("next.html").decode())
         self.assertEqual((walk.problems, walk.stack), ([], []))
-        for ident, view in (("emu-list", "view-retroarch"), ("ra-assets-table", "view-retroarch"), ("ra-card", "view-retroarch"),
-                            ("chdman-box", "view-chd"), ("set-archive-own-box", "view-settings"), ("set-library-rules", "view-settings"),
-                            ("databases-body", "view-databases"), ("lib-plan-btn", "view-system"), ("ra-bios-panel", "view-bios"),
-                            ("bios-sources", "view-bios"), ("bios-found", "view-bios")):
-            self.assertEqual(walk.owner.get(ident), view, ident)
 
-    def test_ui_has_no_manual_download_and_has_library_step(self) -> None:
-        html = server.read_static("index.html").decode()
-        js = server.read_static("app.js").decode()
-        for gone in ("update-tosec-btn", "update-nointro-btn", "force-download", "release-info", "nointro-info"):
-            self.assertNotIn(gone, html)
+    def test_ui_has_no_manual_download_and_has_the_build(self) -> None:
+        js = server.read_static("next.js").decode()
+        for gone in ("update-tosec-btn", "update-nointro-btn", "force-download", "/api/dats/update"):
             self.assertNotIn(gone, js)
-        for present in ("updates-btn", "updates-line", "lib-plan-btn", "lib-apply-btn", "library-rules",
-                        "lib-incomplete"):
-            self.assertIn(f'id="{present}"', html)
-        self.assertNotIn("/api/dats/update", js)
-        self.assertIn("/api/library/apply", js)
-        self.assertIn("/api/updates/check", js)
-        # AMENDMENT 8: panel rendered from the catalog, vanish list, no hard-coded rule lists
-        for present in ("lib-vanish-box", "lib-vanish-table", "files-tree", "files-chips"):
-            self.assertIn(f'id="{present}"', html)
-        self.assertIn("/api/library/vanished", js)
-        self.assertIn("TOSEC convention", js)
-        self.assertIn("info.catalog", js)
-        for hard_coded in ("Pre-release / beta", "demo-playable"):
+        for present in ("/api/library/plan", "/api/library/apply", "/api/updates/check", "/api/tree?"):
+            self.assertIn(present, js)
+        for hard_coded in ("Pre-release / beta", "demo-playable"):            # the rules come from the server's catalogue
             self.assertNotIn(hard_coded, js)
+        self.assertIn("info.catalog", js)
 
 
 SNES_DAT = "Nintendo - Super Nintendo Entertainment System"
@@ -2944,72 +2906,33 @@ class ChecksumServerTests(unittest.TestCase):
 
 
 class UiStructureTests(unittest.TestCase):
-    """The system-cards + per-system-tabs layout (Amendment 15): ids, routes and what must not be hard-coded."""
+    """The one page (next.html, next.js, next.css): routes, and what must not be hard-coded."""
 
-    def test_html_has_home_tabs_and_global_header(self) -> None:
-        html = server.read_static("index.html").decode()
-        for element_id in ("topbar", "updates-line", "updates-btn", "quit-btn", "job-bar", "view-home", "home-groups", "side", "side-toggle", "more-btn",
-                           "view-system", "back-link", "sys-tabs", "tabbtn-files", "tabbtn-settings",
-                           "tab-files", "tab-settings", "folder-input",
-                           "scan-btn", "summary-cards", "sys-tiles", "library-rules-summary",
-                           "files-q", "files-sides", "files-tree", "saves-table", "lib-gate"):
-            self.assertIn(f'id="{element_id}"', html)
-        for gone in ("stepnav", "step-systems", "step-scan", "platform-select", "systems-body", 'class="step-num"',
-                     'id="tab-library"', 'id="tab-browse"', 'id="tab-tree"', 'id="result-table"', 'id="lib-table"'):       # one page per system now
-            self.assertNotIn(gone, html)
-        self.assertEqual(html.count('role="tab"'), 2)
+    def test_the_page_loads_nothing_from_outside(self) -> None:
+        html = server.read_static("next.html").decode()
         self.assertNotIn("http://", html.replace("http://www.w3.org", ""))      # no external resources
         self.assertNotIn("https://", html)
-
-    def test_js_routes_and_the_files_tree(self) -> None:
-        js = server.read_static("app.js").decode()
-        for needle in ("#/system/", "const Route", "parse(hash)", 'addEventListener("hashchange"', "function applyRoute",
-                       "const Files", "/api/tree?", "history.replaceState", "/api/scan/checksums", "checksums:",
-                       "function checksumPanel", "Show checksums", "ArrowRight", "function sideItem", "p.last_scan"):
-            self.assertIn(needle, js)
-        for system in ("Dreamcast", "PlayStation", "Nintendo 64", "Game Boy"):   # systems come from /api/platforms
-            self.assertNotIn(f'"{system}', js)
-        self.assertNotIn("src=\"http", js)       # (a docs hyperlink is fine; no external script / image is loaded)
-        css = server.read_static("style.css").decode()
+        css = server.read_static("next.css").decode()
         self.assertNotIn("url(http", css)
         self.assertNotIn("@import", css)
-        self.assertIn(":focus-visible", css)
+        self.assertIn(":focus", css)
 
-
-class RegionSortableUiTests(unittest.TestCase):
-    """The drag-and-drop region priority list (Amendment 16): markup / script contract; behaviour is checked in a browser."""
-
-    def setUp(self) -> None:
-        self.js = server.read_static("app.js").decode()
-        self.css = server.read_static("style.css").decode()
-
-    def test_pointer_drag_keyboard_and_buttons_exist(self) -> None:
-        for needle in ("function sortableList", "data-drag-handle", '"pointerdown"', "pointermove", "pointerup", "pointercancel",
-                       "setPointerCapture", "requestAnimationFrame", "aria-live", 'role: "status"', "aria-label", '"Move to top"',
-                       "row-top", "row-up", "row-down", 'key === "Escape"', 'key === "ArrowUp"', 'key === "ArrowDown"',
-                       'type: "search"', "Find a ${noun}", "region_priority: order", "Could not save the region priority"):
-            self.assertIn(needle, self.js, needle)
-        self.assertNotIn("draggable", self.js)              # HTML5 drag and drop is unreliable on touch screens
-        self.assertNotIn("dragstart", self.js)
-
-    def test_css_touch_action_only_on_the_handle_and_targets(self) -> None:
-        self.assertRegex(self.css, r"\.drag-handle\s*\{[^}]*touch-action:\s*none")
-        self.assertEqual(self.css.count("touch-action: none"), 1)
-        self.assertRegex(self.css, r"\.sortable-list\s*\{[^}]*height:\s*min\(360px,\s*60vh\)")
-        self.assertRegex(self.css, r"\.drag-handle\s*\{[^}]*width:\s*44px")
-        self.assertIn(".sortable-row:focus-visible", self.css)
-        self.assertIn(".sr-only", self.css)
-        self.assertIn(".sortable-divider", self.css)
+    def test_js_routes_and_no_hard_coded_systems(self) -> None:
+        js = server.read_static("next.js").decode()
+        for needle in ("#/system/", 'addEventListener("hashchange"', "/api/tree?", "/api/scan/checksums", "gamepadconnected",
+                       "navigator.getGamepads", "p.last_scan"):
+            self.assertIn(needle, js)
+        for system in ("Dreamcast\"", "PlayStation\"", "Nintendo 64", "Game Boy"):   # systems come from /api/platforms
+            self.assertNotIn(f'"{system}', js)
+        self.assertNotIn("src=\"http", js)
+        for gone in ("/classic", "app.js", "deck.js"):
+            self.assertNotIn(gone, js)
 
     def test_no_hard_coded_region_list_and_no_move_unmatched_option(self) -> None:
+        js = server.read_static("next.js").decode()
         for region in ("United Kingdom", "Argentina", "Scandinavia", "Hong Kong", "New Zealand"):
-            self.assertNotIn(region, self.js)
-        html = server.read_static("index.html").decode()
-        for gone in ("lib-move-unmatched", "organise-move-unmatched"):
-            self.assertNotIn(gone, html)
-            self.assertNotIn(gone, self.js)
-        self.assertNotIn("move_unmatched", self.js)
-        self.assertNotIn("Move unmatched", html)
+            self.assertNotIn(region, js)
+        self.assertNotIn("move_unmatched", js)
 
 
 class MainTests(unittest.TestCase):
@@ -3060,11 +2983,10 @@ class ZipappTests(unittest.TestCase):
                     break
                 except OSError:
                     time.sleep(0.1)
-            self.assertIn('src="/static/next.js"', html)              # the big-screen UI is the main page
+            self.assertIn('src="/static/next.js"', html)              # the UI is the main page
             self.assertNotIn(server.TOKEN_PLACEHOLDER, html)
-            for script in ("next.js", "app.js"):
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/static/{script}", timeout=2) as resp:
-                    self.assertIn(b"X-Romorg-Token", resp.read())
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/static/next.js", timeout=2) as resp:
+                self.assertIn(b"X-Romorg-Token", resp.read())
         finally:
             proc.terminate()
             try:

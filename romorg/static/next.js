@@ -2,7 +2,7 @@
  *
  * One small kit (tiles, rows, switches, list pickers, a side panel, a progress view, the button strip) and one input layer: a
  * controller (the Gamepad API, or Steam Input as keys), a keyboard, a mouse or touch all drive the same screens. Screens are hash
- * routes; each returns its header, its body and what the buttons do there. The old UI stays at "/classic" for a while.
+ * routes; each returns its header, its body and what the buttons do there.
  */
 (() => {
   "use strict";
@@ -155,7 +155,6 @@
     else if (archiveFor(p)) o.aside_to = archiveFor(p);
     return o;
   }
-  const classic = (hash) => `/classic${hash || ""}`;
   /** This browser's own choices (playlist labels, hidden folders...): never needed, so a refused storage is no error. */
   const Prefs = {
     get(k, d) { try { const v = localStorage.getItem(`romorg-next:${k}`); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
@@ -394,11 +393,9 @@
     const busy = Activity.items();
     const v = await picker("Menu", [
       ...(busy.length ? [{ label: "What's running", sub: busy.map((i) => i.text).join(", "), value: "activity" }] : []),
-      { label: "Classic interface", sub: "The old pages, for what is not here yet", value: "classic" },
       { label: "Quit", sub: "Stop the app", value: "quit" },
     ]);
     if (v === "activity") showActivity();
-    if (v === "classic") location.href = classic();
     if (v === "quit" && await confirmDialog("Quit the app?", "Quit", "Cancel")) {
       try { await post("/api/quit"); } catch (_) { /* it may stop before it answers */ }
       Screen.show({ title: "ROM Organiser", body: el("div", { class: "screen" }, el("h2", { class: "big-title", text: "The app has stopped" }),
@@ -742,7 +739,7 @@
   });
 
   // ------------------------------------------------------------------ a system
-  /** The tiles of the system screen that this UI draws (the others of the setting are drawn by the classic page). */
+  /** The tiles of the system screen, one for each entry of the catalogue (tiles.py). */
   const TILE_DRAW = {
     have_all: (d) => {
       const s = d.summary;
@@ -1221,7 +1218,7 @@
     const draw = (focusId) => {
       put(list, ...t.catalog.map((c) => {
         const on = shownIds.includes(c.id);
-        const r = row({ name: c.label, sub: TILE_DRAW[c.id] ? c.text : `${c.text} (classic page only for now)`, sw: on, key: c.id,
+        const r = row({ name: c.label, sub: c.text, sw: on, key: c.id,
           onClick: async () => {
             const next = on ? shownIds.filter((x) => x !== c.id) : shownIds.length >= 10 ? null : [...shownIds, c.id];
             if (!next) { toast("Up to ten tiles: switch one off first."); return; }
@@ -2235,8 +2232,7 @@
         row({ name: "More ratings: your IGDB key", sub: "Optional", value: ig.configured ? "Set" : "Not set", arrow: true, onClick: igdb }),
         switchRow({ name: "Show hidden folders when choosing a folder", on: Prefs.get("hidden", false), save: async (on) => { Prefs.set("hidden", on); return on; } }),
         row({ name: "Data folder", value: S.status.data_dir || "", info: true }),
-        row({ name: "Version", value: S.status.version, info: true }),
-        row({ name: "Classic interface", sub: "The old pages", arrow: true, href: classic() }))),
+        row({ name: "Version", value: S.status.version, info: true }))),
       hints: [["A", "Select"], ["B", "Back"]] };
   });
 
@@ -2447,7 +2443,7 @@
       hints: [["A", "Switch"], ["B", "Back"], ["Start", "Point RetroArch at these"]] };
   });
 
-  // ------------------------------------------------------------------ a system: its databases (what the classic "DAT" section showed)
+  // ------------------------------------------------------------------ a system: its databases
   route(/^\/system\/([^/]+)\/databases$/, async (ctx, slug) => {
     await Promise.all([loadPlatforms(), loadStatus()]);
     const p = bySlug(slug);

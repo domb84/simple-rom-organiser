@@ -377,9 +377,9 @@ APP_MODULES = (
     "sortroot", "switchapp", "switchdb", "switchfmt", "switchmatch", "switchkeys", "switchsaves", "switchscan", "switchverify", "tags", "tempspace", "tiles", "tosec", "whdexpansions", "whdinstalls", "whdready",
     "totals", "treeview", "winproc", "xfd", "zstddec", "zstdnative",
 )
-STATIC_FILES = ("index.html", "app.js", "style.css", "deck.js", "deck.css", "next.html", "next.js", "next.css")
-# the pages of the UI (sections of index.html): the home page, a system, and the three pages v0.2 added
-UI_VIEWS = ("view-home", "view-system", "view-retroarch", "view-chd", "view-saves", "view-settings", "view-databases", "view-bios")
+STATIC_FILES = ("next.html", "next.js", "next.css")
+# the parts of the page (next.html) the script draws every screen into
+UI_PARTS = ("head", "main", "strip", "overlays", "toasts")
 
 
 def check_app() -> Tuple[bool, str]:
@@ -406,17 +406,17 @@ def check_app() -> Tuple[bool, str]:
             missing.append(f"static/{name} (empty)")
         elif name not in STATIC_TYPES:
             missing.append(f"static/{name} (the server does not serve it)")
-    page = files.get("index.html", b"").decode("utf-8", "replace")
-    missing += [f"the page {view}" for view in UI_VIEWS if page and f'id="{view}"' not in page]
+    page = files.get("next.html", b"").decode("utf-8", "replace")
+    missing += [f"the page part {part}" for part in UI_PARTS if page and f'id="{part}"' not in page]
     if page:
         import re
         for ref in re.findall(r'(?:src|href)="/static/([^"]+)"', page):
             if ref not in STATIC_FILES:
-                missing.append(f"static/{ref} (index.html asks for it; it is not in the list of UI files)")
+                missing.append(f"static/{ref} (next.html asks for it; it is not in the list of UI files)")
     if missing:
         return False, "the app is incomplete: " + "; ".join(missing)
     return True, (f"the app is complete: {len(APP_MODULES)} modules import, the web UI has its {len(STATIC_FILES)} "
-                  f"files and {len(UI_VIEWS)} pages")
+                  f"files and {len(UI_PARTS)} page parts")
 
 
 def check_chdman() -> Tuple[str, str]:

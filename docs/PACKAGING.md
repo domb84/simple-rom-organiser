@@ -34,7 +34,7 @@ packaging/build_pyz.sh               # secondary: dist/simple-rom-organiser.pyz
     channel.
 - Staging happens in `build/appimage/AppDir`, which is deleted and rebuilt on every run.
 - Before packing, the script checks that the bundled interpreter can import the app and its stdlib
-  dependencies (`sqlite3`, `ssl`, `zlib`, …) and can see `romorg/static/index.html`.
+  dependencies (`sqlite3`, `ssl`, `zlib`, …) and can see `romorg/static/next.html`.
 - Options, set as environment variables:
 
   | Variable | Effect |

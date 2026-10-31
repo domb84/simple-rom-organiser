@@ -572,34 +572,22 @@ class TotalsEndpointTests(unittest.TestCase):
 
 
 class UiContractTests(unittest.TestCase):
-    """Markup / script contract of the Recalculate affordance and the Overview totals (behaviour: headless browser)."""
+    """What the page's script must ask the server for (behaviour: headless browser)."""
 
-    def setUp(self) -> None:
-        self.html = server.read_static("index.html").decode()
-        self.js = server.read_static("app.js").decode()
-        self.css = server.read_static("style.css").decode()
+    def test_the_system_screen_reads_the_totals_the_insights_and_the_tile_setting(self) -> None:
+        js = server.read_static("next.js").decode()
+        for needle in ("/api/library/totals", "/api/library/insights", "/api/settings/tiles", "have_rules", 'id: "sys-tiles"'):
+            self.assertIn(needle, js, needle)
+        self.assertIn('aria-live="polite"', server.read_static("next.html").decode())
 
-    def test_the_library_page_has_the_tiles_the_rules_bar_and_the_live_list(self) -> None:
-        for needle in ('id="sys-tiles"', 'id="tile-lists"', 'id="rules-bar"', 'id="lib-live"', 'id="lib-apply-btn"',
-                       'id="set-tiles-panel"', 'aria-live="polite"'):
-            self.assertIn(needle, self.html)
-        self.assertNotIn('id="tab-overview"', self.html)                      # the Overview page is gone
-        for needle in ("/api/library/totals", "/api/library/insights", "/api/settings/tiles", "function renderTotals", "function loadTotals",
-                       "scheduleTotals", "const TILES", "have_rules", "Scan to see how many you have", "calculating...", "recalculating...",
-                       "autoSchedule", "Updating the list..."):
-            self.assertIn(needle, self.js, needle)
-        self.assertIn(".tile-grid", self.css)
-
-    def test_previews_recalculate_and_block_apply_while_stale(self) -> None:
-        for needle in ("const Previews", "Recalculate preview", "Recalculates with your current rules and folder contents",
-                       "Rules changed since this preview", "Could not calculate", '"Try again"',
-                       "Calculating...", "clockText(it.at)", "staleAll", "Previews.onScan()", "plan_id: plan.plan_id",
-                       'b.dataset.stale === "1"', 'b.dataset.busy === "1"', 'role: "status"', '"aria-live": "polite"'):
-            self.assertIn(needle, self.js, needle)
-        for pair in ("lib",):
-            self.assertIn(f"{pair}: {{ btn:", self.js)
-        for needle in (".pv-banner", ".pv-stale", ".pv-attn", ".pv-spin", ".pv-meta"):
-            self.assertIn(needle, self.css)
+    def test_every_tile_of_the_catalogue_has_its_drawing_and_settings_offers_no_other(self) -> None:
+        import re
+        from romorg import tiles
+        js = server.read_static("next.js").decode()
+        block = js[js.index("const TILE_DRAW = {"):js.index("async function systemScreen")]
+        drawn = re.findall(r"^    (\w+): \(d\) =>", block, re.M)
+        self.assertEqual(sorted(drawn), sorted(t["id"] for t in tiles.CATALOG))
+        self.assertLessEqual(set(tiles.DEFAULT), set(drawn))
 
 
 if __name__ == "__main__":

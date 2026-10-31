@@ -1069,7 +1069,7 @@ with no RetroArch found, and none chosen, nothing on its card matters.
 - The `.m3u` is written next to disk 1 (after organising: inside the DAT folder) and lists the
   disks in order by their **current** file names (relative paths). With *Disk labels* on,
   entries are `file|Disk 1` etc. so the labels show in RetroArch's Disk Control menu.
-  *Add save disk* appends a `#SAVEDISK:` line (the separate playlist tool of the classic page).
+  *Add save disk* appends a `#SAVEDISK:` line.
 - **Build library** (Amiga): every game played from its disks gets a playlist ending in `#SAVEDISK:` -
   also a game of one disk, and an SPS release (its images in name order) - so PUAE adds a blank disk
   to save to (it makes it in RetroArch's saves folder, under `PUAE/`). A game the build makes a WHDLoad
@@ -1263,9 +1263,8 @@ You can also just `chmod +x` the AppImage and double-click it.
 
 When you are done, use **Quit** so that Steam sees the "game" exit.
 
-**The big-screen interface (v0.5).** It is the app's main page (the old pages are at `/classic` for now): big tiles, one job per screen, made for 1280x720 and larger, and driven the same way by a controller,
-a keyboard or a mouse. It covers Home, every system (files, needs a look, rules, settings, WHDLoad, saves), Build library and all the settings;
-nothing needs the classic page any more, but the menu still opens it ("Classic interface"). Backups of saves go to
+**The interface (v0.5).** One page: big tiles, one job per screen, made for 1280x720 and larger, and driven the same way by a controller,
+a keyboard or a mouse. It covers Home, every system (files, needs a look, rules, settings, saves), Build library and all the settings. Backups of saves go to
 `~/.local/share/simple-rom-organiser/save-backups` unless you choose another folder in Emulators › RetroArch › Saves and states. Disc images has two checks: "Fully check DVD images" and "Check audio tracks on CDs". Keys:
 arrows move, Enter selects, Esc goes back, `/` searches, `x` is the screen's second action, `[` `]` switch, Ctrl+Enter is the main
 action, F10 the menu. Long tasks (a scan, a build, a restore) go on when you leave their screen: a line along the top and a chip in the

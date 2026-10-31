@@ -212,16 +212,25 @@ class DefaultsServerTests(ServerCase):
         self.assertEqual((info["shown"], info["max"]), (info["default"], 10))
         self.assertEqual(self.call("GET", "/api/status")["tiles"], info["default"])
         self.assertEqual(sorted(info["order"]), sorted(t["id"] for t in info["catalog"]))
-        self.assertEqual(len(info["catalog"]), 16)
-        out = self.call("POST", "/api/settings/tiles", {"shown": ["space", "have_all", "space", "regions"]})
-        self.assertEqual(out["shown"], ["space", "have_all", "regions"])                      # in the order given, once each
-        self.assertEqual(out["order"][:3], ["space", "have_all", "regions"])
-        self.assertEqual(self.call("GET", "/api/status")["tiles"], ["space", "have_all", "regions"])
+        self.assertEqual(len(info["catalog"]), 10)
+        out = self.call("POST", "/api/settings/tiles", {"shown": ["last_scan", "have_all", "last_scan", "database"]})
+        self.assertEqual(out["shown"], ["last_scan", "have_all", "database"])                 # in the order given, once each
+        self.assertEqual(out["order"][:3], ["last_scan", "have_all", "database"])
+        self.assertEqual(self.call("GET", "/api/status")["tiles"], ["last_scan", "have_all", "database"])
         self.assertEqual(self.call("POST", "/api/settings/tiles", {"shown": []})["shown"], [])   # an empty page is a choice too
-        for bad in ({"shown": ["nope"]}, {"shown": "have_all"}, {"shown": [t["id"] for t in info["catalog"]]}):
+        for bad in ({"shown": ["nope"]}, {"shown": "have_all"}, {"shown": ["space"]}):           # (space: only the old page drew it)
             code, _ = self.http("POST", "/api/settings/tiles", bad)
             self.assertEqual(code, 400, bad)
         self.assertEqual(self.call("POST", "/api/settings/tiles", {"reset": True})["shown"], info["default"])
+
+    def test_a_saved_list_with_tiles_only_the_old_page_drew_loads_and_they_drop_out(self) -> None:
+        saved = ["best_missing", "have_all", "have_rules", "needs_look", "files_to_change", "unmatched", "bios", "saves", "space", "regions"]
+        paths.update_config(lambda cfg: cfg.__setitem__("page_tiles", saved))
+        want = ["have_all", "have_rules", "needs_look", "files_to_change", "unmatched", "bios", "saves"]
+        info = self.call("GET", "/api/settings/tiles")
+        self.assertEqual(info["shown"], want)
+        self.assertEqual(self.call("GET", "/api/status")["tiles"], want)
+        self.assertEqual(self.call("POST", "/api/settings/tiles", {"shown": info["shown"][:3]})["shown"], want[:3])   # (Settings can save it again)
 
 
 class MigrationServerTests(ServerCase):
