@@ -3434,7 +3434,7 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
         "(de-en) counts as both.", _ALL, default_value=["En"])
     opt("other_language", "keep_other_language", "Keep games that exist only in other languages", True,
         "A game with no version in your languages anywhere in the database (for example a Japan-only release) is kept "
-        "instead of left out. As soon as a version in one of your languages exists, only that one is kept.",
+        "instead of excluded. As soon as a version in one of your languages exists, only that one is kept.",
         [STYLE_NOINTRO, STYLE_REDUMP])
     opt("region_priority", "region_priority", "Region priority", True,
         "Best region first. When one version per game is kept, the first region listed here wins "
@@ -3446,8 +3446,8 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
                     "tokens": [], "description": desc, "applies_to": list(_ALL), **extra})
 
     rating("min_rating", "Minimum rating", "number",
-           "Leave out games rated below this (0-10, LaunchBox community rating). Empty = off. Games with no usable "
-           "rating are left out too unless 'Keep unrated games' is ticked.",
+           "Exclude games rated below this (0-10, LaunchBox community rating). Empty = off. Games with no usable "
+           "rating are excluded too unless 'Keep unrated games' is ticked.",
            default=None, min=0.5, max=10, step=0.5, unit="/10", filter=True, summary="rated \u2265 {v}",
            hint="coverage_ge")
     rating("top_n", "Top N games", "number",
@@ -3458,7 +3458,7 @@ def rule_catalog(platform_style: str = STYLE_TOSEC) -> list[dict[str, Any]]:
            default=DEFAULT_MIN_VOTES, min=1, max=100000, step=1, unit="votes", integer=True,
            summary="min {v} votes", summary_when_filter=True)
     rating("keep_unrated", "Keep unrated games", "option",
-           "While a rating filter is set, games without a usable rating are left out. Tick to keep them in addition "
+           "While a rating filter is set, games without a usable rating are excluded. Tick to keep them in addition "
            "to the rated games that pass.", default=False, summary="keep unrated", summary_when_filter=True)
     rating("rank_scope", "Rank against", "choice",
            "Whole DAT: the top N is taken from every game the other rules keep for the whole DAT, so adding files "

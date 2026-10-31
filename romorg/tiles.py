@@ -17,7 +17,7 @@ MAX_TILES = 10
 CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "have_all", "label": "Have, all entries", "text": "How many of the database's games you own, whatever your rules say.", "calc": False},
     {"id": "have_rules", "label": "Have, with your rules", "text": "How many of the games your library rules keep you own.", "calc": False},
-    {"id": "needs_look", "label": "Needs a look", "text": "Games you own that are not the preferred version, are left out by your rules or are incomplete; each opens its list.", "calc": False},
+    {"id": "needs_look", "label": "Needs a look", "text": "Games you own that have a better version", "calc": False},
     {"id": "files_to_change", "label": "Files to change", "text": "How many files the library build would move, rename or set aside (from the live preview).", "calc": False},
     {"id": "unmatched", "label": "Unmatched files", "text": "Files in the folder that match nothing in the database. Hidden when there are none.", "calc": False},
     {"id": "bios", "label": "BIOS and firmware", "text": "BIOS and firmware files found among your files. Hidden when there are none.", "calc": False},
