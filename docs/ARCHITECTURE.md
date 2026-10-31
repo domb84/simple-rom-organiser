@@ -4460,3 +4460,24 @@ Decided with the user (Kick Off 3 and Kick Off 3 - European Challenge): two rele
   Pinball's own pointers are games); of the 49 earlier "game" results of `exptest/boot2.json` and `exptest2/boot_c.json` 4 change (the
   KO2 pair in each); the others were looked at by eye. PowerMonger WW1's row (level 3) rests on a screen the same runs called blank - not
   re-run here.
+* **Addendum (the 16 AGA games kept as a floppy / SPS release, "no WHDLoad install": checked by install and boot)**: the premise was
+  mostly a counting artefact. A check that looked a kept SPS file up by its DAT name in `whdbuild.targets` finds nothing, because an SPS
+  target is named by its *release* (`Target.names == [rom.game]`); with the lookup by release 13 of the 16 have a level-3 target on the real
+  plan (11 SPS AGA, Fantastic Dizzy and Transarctica SPS non-AGA). Those 13 were built by the real path (scan, plan, library apply,
+  `whdload_build` on a copy library: 13 built, 0 failed) and booted headless in PUAE (A1200, 8 MB fast), looked at by eye at 4000 / 12000
+  frames (`/home/deck/.cache/romorg-speed/aga16/shots/r1-*`): Alien Breed II ("A Team 17 Product" intro), Blitz Tennis (title), Body Blows
+  (title menu at 4000, high-score attract at 7000), Chaos Engine 2 (game select menu), Coala (Empire logo), DreamWeb (in-game), Fantastic Dizzy
+  (language select), Ishar 2 and Transarctica (Silmarils logo), Jurassic Park (language select), Lion King (title menu), Second Samurai (the
+  game's own "Press FIRE to load SECOND SAMURAI..." loader page after the intro), Virocop (Warner / Renegade title). No data change: all 13 are
+  already 3 in `whdknown.json.gz` (`tests/test_whdbuild.py::AgaKeptReleases` pins them). The other three are the real failures, all already -1:
+  * *Star Trek 25th Anniversary* (kept: the ADF set, [m bamcopy]; the SPS [1466] and the [a2] / plain sets give the same installed data):
+    the install runs (`xadunfileM` of the `st00#?` parts: 8 disks into `data/`, `database/data.000` 8255782 bytes) and WHDLoad starts, but the
+    screen stays black from 700 to 30000 frames on A1200 and A4000 (`shots/st1-*`, `st3-*`, `st4-*`). The slave needs Kickstart 3.1 emulation
+    (kick40068.A1200 and its RTB are both in the core's WHDLoad drawer), so no log is visible headless; not solved, stays -1.
+  * *Ace Ball* (one cracked ADF, [cr WT]): the install works (ECS slave by default, AGA slave with an "AGA" hint, crunched `ACE` / `AACE` /
+    `AceBall` decrunched by xfdDecrunch), both slaves stop at "The data/disk-files are damaged or it is an unsupported version" on A500 and A1200
+    (`shots/ace1-*`, `ace2-*`): the slave checks the files of the original, the crack differs and no other release of the game is in the databases.
+  * *1869 - History Experience Part I* (the real plan keeps the English [cr FLT] set, not the German ones: it is not language-excluded there):
+    installs (ECS version), the slave stops at "DOS-Error #121 (file is not executable) on reading 1869" on A500 and A1200
+    (`shots/a1869-*`); the only set that boots is the unofficial Polish translation ([cr Aquarius][tr pl Aquarius], language-excluded) and the German releases.
+  Tools used: `/home/deck/.cache/romorg-speed/aga16/{setup,plan,libflow,boot,tryv,cand,addload}.py`.
