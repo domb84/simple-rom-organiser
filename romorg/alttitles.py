@@ -41,7 +41,12 @@ def node(title: str) -> str:
     title = _OTHER_SCRIPT_PART_RE.sub(" ", title or "").strip()     # ("ABZÛ (アブズ)": the Japanese name in brackets is a gloss)
     if ratings.has_other_script(title):
         return ratings.native_key(title)
-    return ratings.roman_key(ratings.norm_title(title))
+    return _SPELT_RE.sub(_SPELT_TO, ratings.roman_key(ratings.norm_title(title)))
+
+
+# two spellings of one word that the normal form still tells apart: "Mega Man" / "Megaman", "3-D" / "3D"
+_SPELT_RE = re.compile(r"\bmega man\b|(?<=\d) d\b")
+_SPELT_TO = lambda m: "megaman" if m.group(0).startswith("m") else "d"      # noqa: E731
 
 
 def link(title: str) -> str:
@@ -241,7 +246,8 @@ SAME_GAME: dict[str, list[tuple[str, ...]]] = {
         ("Hibernated 1 - This Place is Death", "Hibernated 1 - This Place is Death - Director's Cut"),
         ("A320 Airbus", "A320 Airbus - Edition Europa", "A320 Airbus - Edition USA"), ("Brutal Football", "Brutal Football - Deluxe Edition"),
         ("Sensible World of Soccer '95-'96", "Sensible World of Soccer '95-'96 - European Championship Edition"),
-        ("Sensible Soccer", "Sensible Soccer - International Edition", "Sensible Soccer - European Champions - 92-93 Season"),
+        ("Sensible Soccer", "Sensible Soccer - International Edition", "Sensible Soccer - European Champions - 92-93 Season",
+         "International Sensible Soccer - World Champions"),
         ("Eishockey Manager", "Eishockey Manager - Limited Edition")],
     "Super Nintendo Entertainment System": [
         ("SimAnt", "SimAnt - The Electronic Ant Colony"), ("Angelique", "Angelique - Premium Box"),
@@ -274,6 +280,21 @@ SAME_GAME["Super Nintendo Entertainment System"].append(("Cannondale Cup", "Exer
 # (the ratings data of 2026-10-30 lost these names, which the data of 2026-10-14 had: the same game, checked in the DATs)
 SAME_GAME["Nintendo Game Boy Advance"].append(("Acrobat Kid", "Aero the Acro-Bat"))                          # (4 MB each, Japan / USA, Europe)
 SAME_GAME["Nintendo Entertainment System"].append(("1943", "1943 - The Battle of Midway", "1943 - The Battle of Valhalla"))
+# (the Amiga: a game and its enlarged / enhanced edition or its CD32 disc, a data disk named by two publishers; checked in the audit of the
+#  real library: the same game, the ratings data does not know the second title)
+SAME_GAME["Commodore Amiga"].extend([
+    ("Alien Breed", "Alien Breed - Special Edition 92"), ("Project-X", "Project-X - Special Edition 93"),
+    ("Worms", "Worms - The Director's Cut"), ("James Pond 2 - Codename RoboCod", "James Pond 2 - Robocod"),
+    ("Caesar", "Caesar Deluxe"), ("Assassin", "Assassin - Special Edition"), ("Premier Manager 3", "Premier Manager 3 Deluxe"),
+    ("Wing Commander", "Wing Commander - Platinum Edition"), ("Donk! - The Samurai Duck!", "Donk! The Samurai Duck!"),
+    ("SimCity Architecture 1 - Future Cities", "SimCity Graphics Set 1 - Future Cities"),
+    ("SimCity Architecture 2 - Ancient Cities", "SimCity Graphics Set 2 - Ancient Cities")])
+SAME_GAME["Nintendo Game Boy Advance"].extend([                        # (German titles the ratings data lacks)
+    ("Tarzan - Return to the Jungle", "Tarzan - Rueckkehr in den Dschungel"),
+    ("Pokemon - LeafGreen Version", "Pokemon - Blattgruene Edition"), ("Pokemon - Emerald Version", "Pokemon - Smaragd-Edition")])
+SAME_GAME["Nintendo Entertainment System"].append(("Super Mario Bros. 2", "Super Mario USA"))      # (the Japanese release of the USA game)
+SAME_GAME["Sega Dreamcast"] = [("Jet Set Radio", "Jet Grind Radio", "De La Jet Set Radio"),         # (the Japanese re-release; the ratings data names two of them)
+                               ("Sonic Adventure", "Sonic Adventure International")]                # (the Japanese multi-language edition: not Sonic Adventure 2)
 SAME_GAME["Sony PlayStation 2"].extend([                                      # (SpongeBob: one game under the title of each language)
     ("Nickelodeon Bob Esponja - La Pelicula", "Nickelodeon SpongeBob - Il Film", "Nickelodeon SpongeBob Schwammkopf - Der Film"),
     ("Nickelodeon Bob Esponja - Luces, Camara, Esponja!", "Nickelodeon Bob l'Eponge - Silence on Tourne !", "Nickelodeon SpongeBob - Ciak si Gira!",

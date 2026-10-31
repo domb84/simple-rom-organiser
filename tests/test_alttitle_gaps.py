@@ -466,6 +466,23 @@ class HandPairsOfTheNewRatingsData(unittest.TestCase):
         self.assertTrue(one("Sony PlayStation 2", "Nickelodeon SpongeBob SquarePants - Battle for Bikini Bottom",
                             "Nickelodeon Bob l'Eponge - La Bataille de Bikini Bottom"))
         self.assertFalse(one("Nintendo DS", "12", "Final Fantasy XII - Revenant Wings"))
+        self.assertTrue(one("Sega Dreamcast", "Jet Grind Radio", "De La Jet Set Radio", "Jet Set Radio"))
+        self.assertTrue(one("Sega Dreamcast", "Sonic Adventure", "Sonic Adventure International"))
+        self.assertTrue(one("Nintendo Game Boy Advance", "Pokemon - LeafGreen Version", "Pokemon - Blattgruene Edition"))
+        self.assertTrue(one("Nintendo Entertainment System", "Super Mario Bros. 2", "Super Mario USA"))
+        self.assertTrue(one("Commodore Amiga", "Alien Breed", "Alien Breed - Special Edition 92"))
+        self.assertTrue(one("Commodore Amiga", "Sensible Soccer", "International Sensible Soccer - World Champions"))
+        self.assertFalse(one("Commodore Amiga", "Alien Breed", "Alien Breed 3D"))
+        self.assertIn(("Rock Star", "RockStar - Never Trust Rotten Tangerines"), library.NOT_SAME_GAME["Commodore Amiga"])
+        self.assertFalse(one("Sega Dreamcast", "Sonic Adventure", "Sonic Adventure 2"))
+
+
+class SpeltAlike(unittest.TestCase):
+    def test_two_spellings_of_one_word_are_one_title(self) -> None:
+        self.assertEqual(alttitles.node("Mega Man - Battle Network 3 - Blue Version"), alttitles.node("Megaman - Battle Network 3 - Blue Version"))
+        self.assertEqual(alttitles.node("Wolfenstein 3-D"), alttitles.node("Wolfenstein 3D"))
+        self.assertNotEqual(alttitles.node("Mega Man X"), alttitles.node("Mega Man X2"))
+        self.assertNotEqual(alttitles.node("Sonic 3 Blast"), alttitles.node("Sonic 3D Blast"))
 
 
 if __name__ == "__main__":

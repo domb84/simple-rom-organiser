@@ -871,6 +871,10 @@ NOT_SAME_GAME: dict[str, list[tuple[str, str]]] = {
     "Nintendo Game Boy Color": [("Game Boy Gallery 3", "Game Boy Gallery 4"), ("Space Invasion", "Space Invasion & Painter")],
     # (Japan's "The Sims" is 16 MB like Bustin' Out; The Sims 2 is 32 MB. The ratings data lists "Sims" as a name of The Sims 2.)
     "Nintendo Game Boy Advance": [("Sims 2, The", "Sims, The")],
+    # (Amiga: "Rock Star" 1989 (16-32 Diffusion) and "RockStar - Never Trust Rotten Tangerines" 1996 (Mirage Media): seven years apart)
+    "Commodore Amiga": [("Rock Star", "RockStar - Never Trust Rotten Tangerines")],
+    # (two Asian multicarts: 384 KB and 1 MB, the ratings data lumps them)
+    "Nintendo Entertainment System": [("100-in-1", "168-in-1 New Contra Function 16")],
     # Redump files these under "Bonus Discs": a promotion / making-of / fan disc is no copy of the game
     "Sega Dreamcast": [("Memories Off 2nd", "Memories Off 2nd - Making Disc"), ("Memories Off 2nd", "Memories Off 2nd - Promotion Disc"),
                        ("Sentimental Graffiti 2", "Sentimental Graffiti 2 - Third Window")],
