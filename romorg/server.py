@@ -64,15 +64,14 @@ CSP = (
 )
 
 
-def _staged(job: "Job", index: int, count: int, label: str) -> Callable[..., None]:
-    """A progress callback that maps ``(done, total, message)`` of one step onto its share of a job of ``count`` steps:
-    ``done`` becomes ``index + done / total``, so the job's percentage (and ETA) follow the whole run."""
+def _staged(job: "Job", label: str) -> Callable[..., None]:
+    """A progress callback for one step of a job: its ``(done, total, message)`` are shown under ``label`` (a count of files, not a share of the job)."""
     def report(*args: Any, **kwargs: Any) -> None:
         nums = [a for a in args if isinstance(a, (int, float)) and not isinstance(a, bool)]
         texts = [a for a in args if isinstance(a, (str, os.PathLike))]
-        frac = min(1.0, nums[0] / nums[1]) if len(nums) > 1 and nums[1] else 0.0
+        done, total = (min(nums[0], nums[1]), nums[1]) if len(nums) > 1 and nums[1] else (0, 0)
         text = Path(texts[0]).name if texts and isinstance(texts[0], os.PathLike) else (texts[0] if texts else "")
-        job.report(index + frac, count, f"[{min(index + 1, count)}/{count}] {label}" + (f": {text}" if text else ""))
+        job.report(done, total, f"{label}: {text}" if text else label)
     return report
 
 
@@ -4320,7 +4319,7 @@ class App:
             ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same, aname, self._archive_listing)
             if arch:
                 arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
-                                               progress=_staged(job, 0, 1, "uploading to the archive" if inv else "moving to the archive"))
+                                               progress=_staged(job, "Uploading to the archive" if inv else "Moving to the archive"))
             res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
                                                        playlists=list(plan.playlists),
                                                        keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
@@ -4349,7 +4348,7 @@ class App:
                 out = {"moved": 0, "failed": []}
                 if sweep:
                     out = self._archive_moves(sweep, [state.root, aside], st.root,
-                                              progress=_staged(job, 0, 1, "moving the archived files out"))
+                                              progress=_staged(job, "Moving the archived files out"))
                 if sweep or arch_out:
                     res["aside"] = {"path": self._archive_where(aside), "s3": inv is not None, "moved": out["moved"] + (arch_out or {}).get("moved", 0),
                                     "failed": (out["failed"] + (arch_out or {}).get("failed", []))[:20]}

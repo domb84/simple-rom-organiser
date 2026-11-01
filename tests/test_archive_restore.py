@@ -24,6 +24,13 @@ from test_s3 import AK, BUCKET, SK, FakeS3, _handler  # noqa: E402
 Q = GBA.replace(" ", "%20")
 
 
+class StepProgressTests(unittest.TestCase):
+    def test_a_step_reports_its_files_not_a_share_of_one(self) -> None:
+        job = server.Job(0, "library")
+        server._staged(job, "Uploading to the archive")(7950, 69128, "castles.adf")
+        self.assertEqual(job.progress, {"done": 7950, "total": 69128, "message": "Uploading to the archive: castles.adf"})
+
+
 class LocalArchive(ServerCase):
     def setUp(self) -> None:
         super().setUp()
