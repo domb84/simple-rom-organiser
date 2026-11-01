@@ -230,17 +230,32 @@
     const count = el("span", { text: "" }), share = el("span", { text: "" });
     const now = el("div", { class: "progress-now" });
     const head = el("h2", { class: "big-title", text: title });
-    const node = el("div", { class: "progress" }, head, el("div", { class: "rows" }, el("span", { class: "bar big" }, fill),
+    // a job of several steps: the whole run, the bar of its current step under it
+    const allFill = el("span", { style: "width:0%" }), allShare = el("span", { text: "" });
+    const whole = el("div", { class: "rows progress-whole hidden" }, el("span", { class: "bar big" }, allFill), el("div", { class: "progress-line" }, el("span", { text: "Whole build" }), allShare));
+    const stepName = el("div", { class: "progress-step hidden" });
+    const bar = el("span", { class: "bar big" }, fill);
+    const node = el("div", { class: "progress" }, head, whole, el("div", { class: "rows" }, stepName, bar,
       el("div", { class: "progress-line" }, count, share)), now);
     return {
       node,
       update(job) {
         const p = job.progress || {};
         const total = p.total || 0, done = p.done || 0;
+        const steps = p.overall !== undefined;
+        whole.classList.toggle("hidden", !steps);
+        stepName.classList.toggle("hidden", !steps);
+        bar.classList.toggle("big", !steps);
+        if (steps) {
+          allFill.style.width = `${Math.min(100, 100 * p.overall)}%`;
+          allShare.textContent = `${Math.floor(100 * p.overall)}%`;
+          stepName.textContent = `Step ${p.step_no} of ${p.step_count}: ${p.step}`;
+        }
         fill.style.width = total ? `${Math.min(100, (100 * done) / total)}%` : "4%";
         count.textContent = total ? `${fmt(done)} of ${fmt(total)}` : "";
         share.textContent = total ? `${pct(done, total)}%` : "";
-        put(now, p.message ? el("span", { text: p.message }) : "");
+        const said = steps && p.message ? p.message.replace(`${p.step}: `, "") : p.message;      // (the file; the step is named above)
+        put(now, said ? el("span", { text: said }) : "");
       },
       title(text) { head.textContent = text; },
     };
@@ -276,7 +291,7 @@
       if (j && j.status === "running") {
         const pr = j.progress || {};
         out.push({ text: `${JOB_TEXT[j.kind] || "Working"}${j.platform ? ` · ${j.platform}` : ""}`, detail: pr.message || "",
-          pct: pr.total ? Math.round((100 * pr.done) / pr.total) : null, job: j });
+          pct: pr.overall !== undefined ? Math.floor(100 * pr.overall) : pr.total ? Math.round((100 * pr.done) / pr.total) : null, job: j });
       }
       if (this.updates && this.updates.running) out.push({ text: "Updating the databases", detail: (this.updates.progress || {}).message || "" });
       for (const t of this.local.values()) out.push({ text: t, detail: "" });
@@ -306,7 +321,7 @@
       this.told.add(job.id);
       const r = job.result || {};
       if (job.kind === "library" && job.status === "done" && r.whdload_next && this.watching !== job.id) {
-        post("/api/whdload/build", { platform: r.whdload_next }).catch(() => {});   // (the rule "Build WHDLoad games": next, also when nobody watches)
+        post("/api/whdload/build", { platform: r.whdload_next, after: r.whdload_after }).catch(() => {});   // (the rule "Build WHDLoad games": next, also when nobody watches)
       }
       if (this.watching === job.id) { return; }                 // (its own screen shows how it went)
       const what = JOB_TEXT[job.kind] || "The task";
@@ -992,8 +1007,8 @@
     const r = job.result || {};
     if (job.status === "done" && r.whdload_next) {
       try {
-        await post("/api/whdload/build", { platform: r.whdload_next });
-        view.title("Building WHDLoad games…");
+        await post("/api/whdload/build", { platform: r.whdload_next, after: r.whdload_after });
+        if (!r.whdload_after) view.title("Building WHDLoad games…");
         await followJob((j) => view.update(j), ctx.alive);
       } catch (err) { toast(err.message, "error"); }
       if (!ctx.alive()) return;

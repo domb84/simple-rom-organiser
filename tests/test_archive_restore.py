@@ -31,6 +31,47 @@ class StepProgressTests(unittest.TestCase):
         self.assertEqual(job.progress, {"done": 7950, "total": 69128, "message": "Uploading to the archive: castles.adf"})
 
 
+class BuildStepTests(unittest.TestCase):
+    def job(self) -> server.Job:
+        job = server.Job(0, "library")
+        job.set_steps([("a", "First", 10), ("b", "Second", 30), ("c", "Third", 60)])
+        return job
+
+    def test_the_whole_run_moves_on_while_each_step_starts_at_zero(self) -> None:
+        job = self.job()
+        job.report(5, 10, "half of the first")
+        self.assertEqual((job.progress["overall"], job.progress["step_no"], job.progress["step_count"]), (0.05, 1, 3))
+        job.step("b")
+        self.assertEqual((job.progress["done"], job.progress["total"], job.progress["step"], job.progress["overall"]), (0, 0, "Second", 0.1))
+        job.report(15, 30)
+        self.assertEqual(job.progress["overall"], 0.25)
+        job.step("c")
+        job.report(60, 60)
+        self.assertEqual(job.progress["overall"], 1.0)
+
+    def test_the_whole_run_never_goes_back(self) -> None:
+        job = self.job()
+        job.step("b")
+        job.report(30, 30)
+        job.report(0, 30, "a second pass of the same step")
+        self.assertEqual(job.progress["overall"], 0.4)
+        job.step("c", 600)                                                 # (it turns out longer than expected)
+        self.assertEqual(job.progress["overall"], 0.4)
+
+    def test_a_later_job_goes_on_from_where_the_build_stopped(self) -> None:
+        job = server.Job(1, "whdbuild")
+        job.set_steps([("whdload", "WHDLoad", 1)], start=0.8, before=5, count=6)
+        job.report(1, 2)
+        self.assertEqual((job.progress["overall"], job.progress["step_no"], job.progress["step_count"]), (0.9, 6, 6))
+
+    def test_a_job_without_steps_reports_as_before(self) -> None:
+        job = server.Job(0, "scan")
+        self.assertEqual(job.resume_at("whdload"), {})
+        job.step("nothing")
+        job.report(1, 2, "x")
+        self.assertEqual(job.progress, {"done": 1, "total": 2, "message": "x"})
+
+
 class LocalArchive(ServerCase):
     def setUp(self) -> None:
         super().setUp()
@@ -64,6 +105,14 @@ class LocalArchive(ServerCase):
         none = self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded&path=Superseded")      # (nothing set aside: an empty view)
         self.assertEqual((none["dirs"], none["files"]), ([], []))
         self.assertEqual(self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded")["dirs"], [])
+
+    def test_a_build_says_its_steps_and_ends_with_the_whole_run_done(self) -> None:
+        self.call("POST", "/api/library/apply", {"aside_to": str(self.tmp / "rom-archive")})
+        job = self.wait()
+        self.assertEqual(job["status"], "done", job.get("error"))
+        self.assertEqual((job["progress"]["step"], job["progress"]["step_no"]), ("Saves and a last scan", job["progress"]["step_count"]))
+        self.assertGreaterEqual(job["progress"]["step_count"], 3)
+        self.assertGreater(job["progress"]["overall"], 0.5)
 
     def test_the_preview_is_worked_out_once_until_something_it_looks_at_changes(self) -> None:
         body = {"summary": True, "limit": 1, "aside_to": str(self.tmp / "rom-archive")}

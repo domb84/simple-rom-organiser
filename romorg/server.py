@@ -197,6 +197,50 @@ class Job:
         self.finished: float | None = None
         self.thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._steps: list[list[Any]] = []  # a job of several steps: [key, label, weight (its expected seconds)]
+        self._at = 0
+        self._span = (0.0, 1.0, 0, 0)      # (share of the whole done before / at the end, steps before this job, steps in all)
+
+    def set_steps(self, steps: list[tuple[str, str, float]], start: float = 0.0, end: float = 1.0, before: int = 0, count: int = 0) -> None:
+        """Give the job steps: ``progress`` then also has ``step``, ``step_no``, ``step_count`` and ``overall`` (0 to 1, it never goes back),
+        while ``done`` / ``total`` stay those of the current step. ``start``, ``end``, ``before`` and ``count`` place it in a longer run."""
+        with self._lock:
+            self._steps = [[k, label, max(float(w), 0.001)] for k, label, w in steps]
+            self._at = 0
+            self._span = (start, end, before, count or before + len(steps))
+            self._publish()
+
+    def step(self, key: str, weight: float | None = None) -> None:
+        """Go on to the step ``key`` (``weight``: what it is expected to take now); nothing when the job has no such step."""
+        with self._lock:
+            at = next((i for i, s in enumerate(self._steps) if s[0] == key), None)
+            if at is None:
+                return
+            if weight is not None:
+                self._steps[at][2] = max(float(weight), 0.001)
+            self._at = at
+            self.progress.update(done=0, total=0, message="")
+            self._publish()
+
+    def resume_at(self, key: str) -> dict[str, Any]:
+        """Where a job that does the step ``key`` of this run goes on from (``{}``: this job has no such step)."""
+        with self._lock:
+            at = next((i for i, s in enumerate(self._steps) if s[0] == key), None)
+            if at is None:
+                return {}
+            return {"overall": self._share(sum(s[2] for s in self._steps[:at])), "step": self._span[2] + at + 1}
+
+    def _share(self, weight: float) -> float:
+        start, end = self._span[:2]
+        return start + (end - start) * weight / sum(s[2] for s in self._steps)
+
+    def _publish(self) -> None:
+        if not self._steps:
+            return
+        cur, p = self._steps[self._at], self.progress
+        frac = min(1.0, p["done"] / p["total"]) if p.get("total") else 0.0
+        p["overall"] = max(p.get("overall", 0.0), round(self._share(sum(s[2] for s in self._steps[:self._at]) + frac * cur[2]), 4))
+        p.update(step=cur[1], step_no=self._span[2] + self._at + 1, step_count=self._span[3])
 
     def report(self, *args: Any, **kwargs: Any) -> None:
         """Flexible progress callback.
@@ -216,6 +260,7 @@ class Job:
             if texts:
                 msg = texts[0]
                 self.progress["message"] = Path(msg).name if isinstance(msg, os.PathLike) else msg
+            self._publish()
 
     def to_dict(self) -> dict[str, Any]:
         with self._lock:
@@ -2930,7 +2975,12 @@ class App:
         whdbuild = _mod("whdbuild")
         todo = whdbuild.targets(self._library_plan(state), platform)
 
+        after = body.get("after") if isinstance(body.get("after"), dict) else {}          # (the library build it goes on from: the same overall bar)
+
         def work(job: Job) -> Any:
+            if after:
+                job.set_steps([("whdload", "Building WHDLoad games", 1.0)], start=float(after.get("overall") or 0), before=int(after.get("step") or 1) - 1,
+                              count=int(after.get("step") or 1))
             out = whdbuild.build(todo, state.root, cat.get("installs") or [], progress=job.report, cancel=job.cancel)
             ready = _mod("whdready")
             newer = sorted({t.title for t in todo if ready.needs_whdload(t.archive)})      # (they boot once PUAE has WHDLoad 20)
@@ -4279,6 +4329,10 @@ class App:
             raise ApiError(HTTPStatus.CONFLICT, inv.error, "no_s3")
 
         def work(job: Job) -> Any:
+            try:
+                job.set_steps(self._build_steps(state, key, aside, aname=self._archive_name(state.platform, state.root, aside), s3=inv is not None))
+            except Exception:  # noqa: BLE001 - the steps only share out a bar: the build goes on without them
+                traceback.print_exc()
             if inv is not None:                                         # an S3 archive: reachable, and no upload of a killed run left open
                 job.report(0, 0, "Connecting to the S3 archive...")
                 try:
@@ -4293,6 +4347,7 @@ class App:
             planner = _mod("discsys").plan_disc_splits if self._is_dc(st) else convert.plan_splits
             splits = [op for op in planner(st.result) if op.status == "split"]
             if splits:
+                job.step("split", len(splits))
                 job.report(0, len(splits), "Separating the files in zips that are no game...")
                 split_res = convert.apply_splits(splits, st.root, progress=job.report, cancel=job.cancel)
                 if split_res["split"]:
@@ -4302,6 +4357,7 @@ class App:
             if self._convert_on_build(st.platform, self._config()):      # raw discs / odd dumps are converted first
                 latest = self._latest_arg(st, {})
                 if any(op.status == "convert" for op in self._convert_plan(st, latest)):
+                    job.step("convert")
                     conv_res = self._apply_conversions(job, st, latest)
                     self._rescan_into(job, st, conv_res)
                     self._carry_temp(st, conv_res)
@@ -4311,15 +4367,17 @@ class App:
             plan = self._library_plan(st, *key)
             todo = sum(1 for op in plan.ops if op.status in ACTIONABLE) + sum(
                 1 for p in plan.playlists if p.status == "write")
-            job.report(0, todo, "Building library...")
             sortroot = _mod("sortroot")
             arch_out: dict[str, Any] | None = None
             # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
             aname = self._archive_name(st.platform, st.root, aside)
             ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same, aname, self._archive_listing)
             if arch:
+                job.step("archive", self._archive_seconds(arch, inv is not None))
                 arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
                                                progress=_staged(job, "Uploading to the archive" if inv else "Moving to the archive"))
+            job.step("organise", 1 + todo * self.SECONDS_PER_RENAME)
+            job.report(0, todo, "Building library...")
             res = dict(_mod("organiser").apply_renames(ops, st.root, progress=job.report, cancel=job.cancel,
                                                        playlists=list(plan.playlists),
                                                        keep_dirs=tuple(getattr(st.platform, "protected_dirs", ()) or ())))
@@ -4331,6 +4389,7 @@ class App:
             if conv_res is not None:
                 res["converted"] = {"count": len(conv_res.get("converted") or []) if isinstance(conv_res.get("converted"), list) else conv_res.get("converted", 0),
                                     "failed": list(conv_res.get("failed") or [])[:20]}
+            job.step("finish")
             saves_moves, _saves_info = self._saves_moves(plan, st.root, aside, aname)
             if saves_moves:             # before the saves follow renames: the saves of an archived game go with it, under its old name
                 res["saves_archived"] = self._apply_saves_moves(saves_moves)
@@ -4355,9 +4414,41 @@ class App:
             if ("build_whdload" in self._library_mod().applicable_fields(st.platform) and self._profile(st.platform).build_whdload
                     and not job.cancel.is_set()):
                 res["whdload_next"] = st.platform.name          # (the page starts "Build WHDLoad games" next: a job of its own, cancellable)
+                res["whdload_after"] = job.resume_at("whdload")  # (it goes on with the same bar)
             return self._rescan_into(job, st, res)
 
         return {"job": self.jobs.start("library", work, cancellable=False, platform=state.platform.name).to_dict()}
+
+    SECONDS_PER_RENAME = 0.01
+    SECONDS_PER_WHDLOAD_GAME = 15.0
+
+    @staticmethod
+    def _archive_seconds(moves: list[Any], s3: bool) -> float:
+        """About how long archiving ``moves`` takes: only what the steps of a build are weighed by (S3: measured, docs Amendment 114)."""
+        size = sum(getattr(m, "size", 0) or 0 for m in moves)
+        return len(moves) * 0.07 + size / 25e6 if s3 else len(moves) * 0.01 + size / 200e6
+
+    def _build_steps(self, state: ScanState, key: Any, aside: Path, aname: str, s3: bool) -> list[tuple[str, str, float]]:
+        """The steps of a library build with what each is expected to take, from the plan; the weights only share out the overall bar."""
+        convert = _mod("convert")
+        plan = self._library_plan(state, *key)
+        steps: list[tuple[str, str, float]] = [("start", "Getting ready", 10.0)]
+        splits = sum(1 for op in (_mod("discsys").plan_disc_splits if self._is_dc(state) else convert.plan_splits)(state.result) if op.status == "split")
+        if splits:
+            steps.append(("split", "Cleaning zips", float(splits)))
+        if self._convert_on_build(state.platform, self._config()):
+            todo = [op for op in self._convert_plan(state, self._latest_arg(state, {})) if op.status == "convert"]
+            if todo:
+                steps.append(("convert", "Converting", sum(_file_size(op.src) for op in todo) / 20e6 + 5 * len(todo)))
+        arch = self._archive_pass(state.root, plan, aside, self._archived_same, aname, self._archive_listing)[1]
+        if arch:
+            steps.append(("archive", "Uploading to the archive" if s3 else "Moving to the archive", self._archive_seconds(arch, s3)))
+        ops = sum(1 for op in plan.ops if op.status in ACTIONABLE) + len(plan.playlists)
+        steps += [("organise", "Organising the library", 1 + ops * self.SECONDS_PER_RENAME), ("finish", "Saves and a last scan", 20 + len(plan.ops) * 0.002)]
+        if "build_whdload" in self._library_mod().applicable_fields(state.platform) and self._profile(state.platform).build_whdload:
+            games = len(_mod("whdbuild").targets(plan, state.platform))
+            steps.append(("whdload", "Building WHDLoad games", 1 + games * self.SECONDS_PER_WHDLOAD_GAME))
+        return steps
 
     @staticmethod
     def _moved_pairs(ops: Any) -> list[tuple[Any, Any]]:

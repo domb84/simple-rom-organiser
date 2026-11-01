@@ -1728,8 +1728,39 @@ class WhdloadUiTests(UiTestCase):
         self.click("#build-start")
         self.page.wait("document.getElementById('main').textContent.includes('Library built')", timeout=120)
         sent = self.page.eval("window.__calls.filter(c => c.path === '/api/whdload/build').map(c => c.body)")
-        self.assertEqual(sent, [{"platform": "Commodore Amiga"}])
+        self.assertEqual([s["platform"] for s in sent], ["Commodore Amiga"])
+        self.assertTrue(0 < sent[0]["after"]["overall"] < 1, sent)                       # (it goes on with the same overall bar)
+        self.assertGreater(sent[0]["after"]["step"], 1)
         self.no_js_errors()
+
+    def test_a_build_shows_the_whole_run_and_the_step_it_is_on(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.page.goto(self.fx.url)
+        self.set_archive(str(arch))
+        self.scan("Commodore Amiga", str(self.fx.root))
+        self.start("#/system/commodore-amiga/build")
+        self.page.wait("!!document.getElementById('build-start')", timeout=60)
+        self.page.eval("""(() => {
+          const running = {id: 77, kind: "library", platform: "Commodore Amiga", status: "running", started: 1, result: null, bytes: 0, cancellable: false,
+            progress: {done: 23700, total: 69128, message: "Uploading to the archive: Castles II (1993).adf", step: "Uploading to the archive", step_no: 3, step_count: 5, overall: 0.423}};
+          const real = window.fetch;
+          window.fetch = (url, opts) => {
+            const say = (body) => Promise.resolve(new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}}));
+            if (String(url).includes("/api/library/apply")) return say({job: running});
+            if (String(url).includes("/api/job")) return say(running);
+            return real(url, opts);
+          };
+        })()""")
+        self.click("#build-start")
+        self.page.wait("document.querySelector('.progress-whole') && !document.querySelector('.progress-whole').classList.contains('hidden')", timeout=30)
+        text = self.page.eval("document.querySelector('.progress').textContent")
+        for part in ("Whole build", "42%", "Step 3 of 5: Uploading to the archive", "23,700 of 69,128", "34%", "Castles II (1993).adf"):
+            self.assertIn(part, text)
+        self.assertNotIn("Uploading to the archive: Castles", text)                      # (the step is named once)
+        if os.environ.get("ROMORG_SHOT"):
+            self.page.screenshot(os.environ["ROMORG_SHOT"], 1280, 800)
+        self.page.goto("about:blank")
 
     def test_a_system_without_whdload_starts_no_such_build(self) -> None:
         arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
