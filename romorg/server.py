@@ -902,6 +902,7 @@ class App:
         self._chdman_cache: tuple[float, Any, dict[str, Any]] | None = None
         self._totals_mgr: Any = None                           # totals.TotalsManager (library totals, Amendment 17)
         self._cutoffs: dict[str, tuple[tuple, Any]] = {}       # platform -> (key, rank key of the N-th best game) (Amendment 18)
+        self._rating_titles: dict[str, tuple[Any, dict[tuple, list[str]]]] = {}
         self._foreign_cache: dict[str, tuple[tuple, Any]] = {}   # platform -> (key, game names of the systems that share its cores)
         if hasattr(self.updates, "ratings_wanted"):
             self.updates.ratings_wanted = self._ratings_wanted
@@ -1134,7 +1135,17 @@ class App:
                     items = totals.target_items(platform, list(dats))
                     cutoff = library.target_cutoff(items, profile, platform, lookup)
                 self._cutoffs[platform.name] = (key, cutoff)
-        return library.RatingContext(lookup, cutoff)
+        return library.RatingContext(lookup, cutoff, self._game_titles(platform, profile))
+
+    def _game_titles(self, platform: Any, profile: Any) -> dict[tuple, list[str]]:
+        """Every title each game has in the whole database (``library.rated_titles``), worked out once per set of DATs and titles rule."""
+        totals = _mod("totals")
+        key = (profile.combine_alt_titles, totals.signature_text(self._dats_signature(platform)), self._ratings_sig())
+        cached = self._rating_titles.get(platform.name)
+        if cached is None or cached[0] != key:
+            dats, _missing = self._platform_dats(platform)
+            cached = self._rating_titles[platform.name] = (key, self._library_mod().rated_titles(totals.target_items(platform, list(dats)), profile, platform))
+        return cached[1]
 
     def _profile_json(self, profile: Any, platform: str | None = None) -> dict[str, Any]:
         data = profile.to_dict() if hasattr(profile, "to_dict") else dataclasses.asdict(profile)

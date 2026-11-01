@@ -4253,6 +4253,9 @@ The folder a game's saves go to (in the archive, `<archive>/<system>/Saves/<Titl
 * **Rating of a combined game** (`library._units`, `_rate_incomplete`): the best (rating, then votes) of every title of the game among all its releases
   (kept or not, `library._rated_titles`, `_game_rating`) with at least `min_votes` votes; the title that ranks it is the title that gave it. It no longer
   depends on which release is kept. (`totals`' "best missing" insight still rates by the title of one release.)
+  The titles come from the whole database (`library.rated_titles`, `RatingContext.titles`; `Target.titles` for the totals, `App._game_titles` for a plan), not
+  only from the files in the folder: a build archives the releases that are not kept, and a game must not lose its rating, and so its place, with them. A build
+  followed by another changes nothing.
 * **No ratings index.** `alttitles._lb_names` keeps the names of the last index in `ratings/alttitles.json` (rewritten when the index changes) and uses
   them when the index is gone, so the games do not come apart (N64 without the index: 518 games with it, 616 without, 518 with the remembered names).
   `alttitles.notice(platform)` is the text the library plan's `notices` carry (`App._plan_notices`, shown under the plan, no reason for Build to ask again) when the index is missing (and, with nothing

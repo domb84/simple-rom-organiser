@@ -771,6 +771,19 @@ class TotalsRatingTests(unittest.TestCase):
         self.assertEqual((out["rated_all"]["rated"], out["rated_target"]["games"]), (5, 4))
         self.assertIsNone(totals.compute_target(GBA, [dat_of(names)], FILTER).rated_all)    # (no ratings installed: nothing to count)
 
+    def test_a_game_keeps_its_rating_when_the_release_that_gave_it_is_archived(self) -> None:
+        names = ["Biohazard (Japan)", "Resident Evil (USA)", "Ace (USA)"]
+        lookup = lambda title: (8.0, 50) if title == "Resident Evil" else (9.0, 50) if title == "Ace" else None     # noqa: E731
+        one_game = lambda it, combine=False: (GBA_DAT, "re" if library._tags_of(it).title in ("Biohazard", "Resident Evil") else library._tags_of(it).title)     # noqa: E731
+        with mock.patch.object(library, "game_key", one_game):
+            every = gba_items(names)
+            only = gba_items(["Biohazard (Japan)", "Ace (USA)"])
+            prof = replace(FILTER, top_n=2, rank_scope="owned")
+            before = library.select(only, prof, GBA, RatingContext(lookup))
+            after = library.select(only, prof, GBA, RatingContext(lookup, titles=library.rated_titles(every, prof, GBA)))
+        self.assertEqual(before.decisions[only[0].key].codes, (library.RATING_UNRATED,))
+        self.assertEqual(after.decisions[only[0].key].action, library.KEEP)
+
     def test_filter_without_lookup_is_an_error(self) -> None:
         with self.assertRaises(library.RatingsUnavailable):
             totals.compute_target(GBA, [dat_of(GBA_NAMES)], replace(FILTER, min_rating=5.0))

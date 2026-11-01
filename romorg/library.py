@@ -1433,9 +1433,12 @@ class RatingContext:
     """What the rating filter needs: a title lookup and, for ``rank_scope == "dat"``, the rank of the cutoff game.
 
     ``lookup(title) -> (rating out of 10, votes) | None`` (already bound to the platform); ``cutoff`` = the rank key of
-    the N-th best game of the whole target set (see :func:`target_cutoff`; ``INF_KEY`` = fewer than N rated games, no cap)."""
+    the N-th best game of the whole target set (see :func:`target_cutoff`; ``INF_KEY`` = fewer than N rated games, no cap);
+    ``titles`` = the titles of each game in the whole database (:func:`rated_titles`), so a game keeps its rating when the release
+    that gave it is no longer in the folder."""
     lookup: Callable[[str], Optional[tuple[float, int]]]
     cutoff: Optional[tuple] = None
+    titles: Optional[dict[tuple, list[str]]] = None
 
 
 INF_KEY: tuple = (float("inf"),)
@@ -2554,7 +2557,7 @@ class _Unit:
 
 
 def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: LibraryProfile,
-           lookup: Callable[[str], Optional[tuple[float, int]]]) -> list[_Unit]:
+           lookup: Callable[[str], Optional[tuple[float, int]]], known: Optional[dict[tuple, list[str]]] = None) -> list[_Unit]:
     """The kept GAMES of the rated DATs (a game = :func:`game_key`; a disk borrowed from another edition belongs to the
     game of the set it completes) with their rating."""
     from . import ratings as _ratings
@@ -2568,7 +2571,7 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
         if own:
             for k in cs.slots.values():
                 owner_of[k] = own[0]
-    titles = _rated_titles(items, rdats, profile)
+    titles = _rated_titles(items, rdats, profile, known)
     inherits = _inherits_rating(profile, platform)
     from . import whdexpansions
     exp_keys = {k for m in whdexpansions.merges() for e in m.expansions for k in e.keys} if inherits else set()
@@ -2596,9 +2599,11 @@ def _units(items: Sequence[Item], sel: Selection, platform: Any, profile: Librar
     return sorted(units.values(), key=lambda u: _stable(u.key))
 
 
-def _rated_titles(items: Sequence[Item], rdats: set, profile: LibraryProfile) -> dict[tuple, list[str]]:
+def _rated_titles(items: Sequence[Item], rdats: set, profile: LibraryProfile,
+                  known: Optional[dict[tuple, list[str]]] = None) -> dict[tuple, list[str]]:
     """``{game key: [the titles of its releases]}`` of the rated DATs' items, kept or not: a game combined from several titles
-    ("Biohazard" / "Resident Evil") is as good as the best rated of them, whichever release the rules keep."""
+    ("Biohazard" / "Resident Evil") is as good as the best rated of them, whichever release the rules keep. ``known``: the titles the
+    whole database has for a game (:func:`rated_titles`), so what a build archived still counts."""
     out: dict[tuple, set] = {}
     if not profile.combine_alt_titles:
         return {}
@@ -2609,7 +2614,14 @@ def _rated_titles(items: Sequence[Item], rdats: set, profile: LibraryProfile) ->
         if t.bios or tags.bonus_disc(t):
             continue
         out.setdefault(game_key(it, True), set()).add(t.title)
-    return {k: sorted(v, key=lambda x: (x.casefold(), x)) for k, v in out.items()}
+    return {k: sorted(v | set((known or {}).get(k, ())), key=lambda x: (x.casefold(), x)) for k, v in out.items()}
+
+
+def rated_titles(target_items: Sequence[Item], profile: LibraryProfile, platform: Any) -> dict[tuple, list[str]]:
+    """The titles of each game in the whole database, for :class:`RatingContext`."""
+    from . import ratings as _ratings
+
+    return _rated_titles(target_items, set(_ratings.rated_dats(platform)), profile)
 
 
 def _game_rating(titles: Sequence[str], lookup: Callable[[str], Optional[tuple[float, int]]],
@@ -2691,7 +2703,7 @@ def apply_ratings(sel: Selection, items: Sequence[Item], profile: LibraryProfile
     * a game without a usable rating gets ``rating_unrated`` unless ``keep_unrated`` (then it is kept IN ADDITION).
     Excluded games turn every kept file into ``excluded`` and their playlists / incomplete reports vanish.
     Summary in ``sel.rating``."""
-    units = _units(items, sel, platform, profile, ctx.lookup)
+    units = _units(items, sel, platform, profile, ctx.lookup, ctx.titles)
     if profile.top_n is None:
         cutoff = INF_KEY
     elif profile.rank_scope == "dat":
@@ -2747,7 +2759,7 @@ def _rate_incomplete(sel: Selection, items: Sequence[Item], profile: LibraryProf
     from . import ratings as _ratings
 
     rdats = set(_ratings.rated_dats(platform))
-    titles = _rated_titles(items, rdats, profile)
+    titles = _rated_titles(items, rdats, profile, ctx.titles)
     games: dict[tuple, list[Item]] = {}
     for it in items:
         d = sel.decisions.get(it.key)

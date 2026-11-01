@@ -173,6 +173,7 @@ class Target:
     explain: Optional[dict] = None              # why a "top N" keeps the number of games it keeps (:func:`_explain_top`)
     why: dict[tuple, str] = field(default_factory=dict)              # (game key, rom name) -> what put that version out, in a word (a better one is kept)
     merged: dict[tuple, tuple] = field(default_factory=dict)         # an expansion's game key -> its game's (``library.Selection.merged``)
+    titles: Optional[dict] = None                      # every title of each game in the database (``library.rated_titles``)
 
     @property
     def count(self) -> int:
@@ -253,7 +254,8 @@ def compute_target(platform: Any, dats: Iterable[Any], profile: library.LibraryP
            if (d := sel.decisions.get(it.key)) is not None and d.action == SUPERSEDED}
     explain = _explain_top(items, sel, platform, profile, lookup, kept, names) if profile.top_n is not None and lookup is not None else None
     return Target({k: frozenset(v) for k, v in kept.items()}, by_dat, time.time(), time.time() - t0, len(items),
-                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why, dict(sel.merged))
+                  len(broken), cutoff, dict(sel.rating) or None, coverage, rated_all, rated_target, _borrowed(items, sel), names, explain, why, dict(sel.merged),
+                  library.rated_titles(items, profile, platform) if profile.rating_active else None)
 
 
 def _game_name(it: Item) -> str:
@@ -841,10 +843,11 @@ class TotalsManager:
                             raise library.RatingsUnavailable("ratings are not installed")
                         with self._cv:
                             t = self._targets.get(name)
-                        cut = t[1].cutoff if t is not None and t[0] == want.tkey and not isinstance(t[1], Exception) else None
+                        made = t[1] if t is not None and t[0] == want.tkey and not isinstance(t[1], Exception) else None
+                        cut = made.cutoff if made is not None else None
                         if want.profile.rank_scope == "dat" and want.profile.top_n is not None and cut is None:
                             raise library.RatingsUnavailable("the target is not ready")
-                        ctx = library.RatingContext(lookup, cut)
+                        ctx = library.RatingContext(lookup, cut, made.titles if made is not None else None)
                     args = (want.state.result, want.platform, want.profile)
                     lg = self._lang_games(want)
                     value = compute_user(*args, ctx, lg)
