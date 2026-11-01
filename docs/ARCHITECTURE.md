@@ -3854,6 +3854,7 @@ detector; each merge was made only where the copies were the same code.
   disc) grouped into games by `library.game_key` (alternate titles combined, as the rules do by default); a game is yours when you have
   every disk of one of its releases. System disks (`totals.system_dats`) and [BIOS] entries are no games. It sets `games_total` /
   `games_have` / `games_missing` and `count_by: "game"`, which the tiles, the Missing tile, the Home cards and the classic page read.
+  With "Build WHDLoad games" on, an expansion of the shipped table counts for its game (`library.expansion_games`, the table's rows whatever is kept), as `merge_expansions` makes it in a build; a set of the expansion without any release of the game in the database stays a game.
 * The saved summary has a version (`SUMMARY_VERSION` 2): one saved before is worked out again (in the background, then saved).
 * User's data: 4,484 of 4,780 games (was 34,975 of 38,933 disks).
 

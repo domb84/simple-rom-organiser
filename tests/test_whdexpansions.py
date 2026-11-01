@@ -49,6 +49,17 @@ def table(data: dict):
         f.cache_clear()
 
 
+class CountTests(unittest.TestCase):
+    def test_an_expansion_is_its_game_in_a_count_of_every_game(self) -> None:
+        items = amiga_items(["Zap (1990)(Acme)", "Zap - The Expansion (1991)(Acme)", "Zip (1990)(Acme)"])
+        prof = replace(library.default_profile(AMIGA), build_whdload=True)
+        with table(TABLE):
+            got = library.expansion_games(items, prof, AMIGA)
+            self.assertEqual(got, {library.game_key(items[1], True): library.game_key(items[0], True)})
+            self.assertEqual(library.expansion_games(items, replace(prof, build_whdload=False), AMIGA), {})
+            self.assertEqual(library.expansion_games(items[1:], prof, AMIGA), {})     # (no game of its in the list: a game of its own)
+
+
 class TableTests(unittest.TestCase):
     def test_the_shipped_table_is_made_by_the_tool_from_the_packages(self) -> None:
         spec = importlib.util.spec_from_file_location("gen_whdexpansions", Path(__file__).resolve().parent.parent / "tools" / "gen_whdexpansions.py")

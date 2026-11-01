@@ -1844,7 +1844,7 @@ class App:
         (No-Intro), one disc of one region (Redump). ``games_total``: the entries of the system's game DATs grouped into games as the
         library groups them (``library.game_key``: every version, region, revision, disc, SPS original and CD32 disc of a game is one
         game, alternate titles combined); ``games_have``: those you have a complete release of (every disk / disc of one version or
-        region - ``library._release_of_parts``). System disks (Workbench, Kickstart, firmware) and [BIOS] entries are no games.
+        region - ``library._release_of_parts``). An expansion the game's WHDLoad install takes in counts for the game. System disks (Workbench, Kickstart, firmware) and [BIOS] entries are no games.
         {} when the databases cannot be read here (the catalogue systems: Switch, Wii U)."""
         platform = state.platform
         library, totals = self._library_mod(), _mod("totals")
@@ -1891,6 +1891,11 @@ class App:
         for rel, members in releases.items():
             key = library.game_key(members[0], True)
             games[key] = games.get(key, False) or complete(rel, members)
+        # (an expansion its game's WHDLoad install takes in is that game, as in a build; without the game it is a game of its own)
+        for key, base in library.expansion_games(target, self._profile(platform, self._config()), platform).items():
+            if key in games and base in games:
+                mine = games.pop(key)
+                games[base] = games[base] or mine
         n_have = sum(games.values())
         return {"games_total": len(games), "games_have": n_have, "games_missing": len(games) - n_have, "count_by": "game"}
 

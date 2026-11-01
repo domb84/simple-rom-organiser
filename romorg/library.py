@@ -1638,6 +1638,26 @@ def _release_levels(members: Sequence[Item], sel: Selection, image_sets: frozens
     return arc, int(whdready.level(names, sha) or 0)
 
 
+def expansion_games(items: Sequence[Item], profile: LibraryProfile, platform: "Platform") -> dict[tuple, tuple]:
+    """``{an expansion's game key: its game's}`` of the shipped table, whatever is kept: a count of every game (:meth:`App._game_counts`)
+    sees one title where :func:`merge_expansions` will. Empty with "Build WHDLoad games" off."""
+    if not _inherits_rating(profile, platform):
+        return {}
+    from . import whdexpansions
+    combine = profile.combine_alt_titles
+    keys: dict[str, set] = {}
+    for it in items:
+        keys.setdefault(whdexpansions.norm(_tags_of(it).title), set()).add(game_key(it, combine))
+    out: dict[tuple, tuple] = {}
+    for m in whdexpansions.merges():
+        bases = sorted(k for t in m.base_keys for k in keys.get(t, ()))
+        if bases:
+            for e in m.expansions:
+                for t in e.keys:
+                    out.update((k, bases[0]) for k in keys.get(t, ()) if k not in bases)
+    return out
+
+
 def merge_expansions(items: Sequence[Item], sel: Selection, profile: LibraryProfile, platform: "Platform") -> None:
     """An expansion (a data, mission or scenery disk) whose game's WHDLoad install is one package for the game AND the expansion
     (``whdexpansions``, shipped) is not a game of its own: with "Build WHDLoad games" on, when the game is kept and has that install, the
