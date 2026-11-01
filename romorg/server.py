@@ -4372,6 +4372,7 @@ class App:
             # what the rules archive goes from where it is straight to the archive folder (not via _excluded/ ... first)
             aname = self._archive_name(st.platform, st.root, aside)
             ops, arch = self._archive_pass(st.root, plan, aside, self._archived_same, aname, self._archive_listing)
+            arch += self._leftover_moves(st, plan, aside, aname, arch)   # (one list, one upload: what this build sets aside and what earlier ones left)
             if arch:
                 job.step("archive", self._archive_seconds(arch, inv is not None))
                 arch_out = self._archive_moves(arch, [st.root, aside], st.root, cancel=job.cancel,
@@ -4402,8 +4403,8 @@ class App:
                 follow = self._ra_follow(moved, "move", plan)
                 if follow:
                     res["saves"] = follow
-            if not job.cancel.is_set():                             # the tidy-up: what was archived leaves this folder
-                sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside, {st.platform.name: aname}), aname)       # what earlier builds left in _excluded/ ...
+            if not job.cancel.is_set():                             # the tidy-up: anything that still came to lie in _excluded/ ...
+                sweep = self._relay_sweep(st.platform, st.root, aside, sortroot.plan_sweep({st.platform.name: st.root}, aside, {st.platform.name: aname}), aname)
                 out = {"moved": 0, "failed": []}
                 if sweep:
                     out = self._archive_moves(sweep, [state.root, aside], st.root,
@@ -4428,6 +4429,23 @@ class App:
         size = sum(getattr(m, "size", 0) or 0 for m in moves)
         return len(moves) * 0.07 + size / 25e6 if s3 else len(moves) * 0.01 + size / 200e6
 
+    def _leftover_moves(self, state: ScanState, plan: Any, aside: Path, aname: str, arch: list[Any]) -> list[Any]:
+        """What earlier builds left in ``_excluded/`` ... that goes to the archive with ``arch`` (not a file the plan takes back into the library
+        or moves itself); a target ``arch`` has already gets a free name, as nothing is uploaded yet to say it is taken."""
+        sortroot = _mod("sortroot")
+        norm = lambda p: os.path.normcase(str(p))                 # noqa: E731
+        busy = {norm(s) for op in plan.ops if getattr(op, "status", "") in ("move", "rename")
+                for s in ([m[0] for m in op.moves] if hasattr(op, "moves") else [op.src])} | {norm(m.src) for m in arch}
+        names = sortroot.Names()
+        names.taken |= {norm(m.dst).casefold() for m in arch}
+        out = [m for m in self._relay_sweep(state.platform, state.root, aside, sortroot.plan_sweep({state.platform.name: state.root}, aside, {state.platform.name: aname}), aname)
+               if norm(m.src) not in busy]
+        for m in out:
+            if norm(m.dst).casefold() in names.taken:
+                m.dst = names.free(m.dst)
+            names.taken.add(norm(m.dst).casefold())
+        return out
+
     def _build_steps(self, state: ScanState, key: Any, aside: Path, aname: str, s3: bool) -> list[tuple[str, str, float]]:
         """The steps of a library build with what each is expected to take, from the plan; the weights only share out the overall bar."""
         convert = _mod("convert")
@@ -4441,6 +4459,7 @@ class App:
             if todo:
                 steps.append(("convert", "Converting", sum(_file_size(op.src) for op in todo) / 20e6 + 5 * len(todo)))
         arch = self._archive_pass(state.root, plan, aside, self._archived_same, aname, self._archive_listing)[1]
+        arch += self._leftover_moves(state, plan, aside, aname, arch)
         if arch:
             steps.append(("archive", "Uploading to the archive" if s3 else "Moving to the archive", self._archive_seconds(arch, s3)))
         ops = sum(1 for op in plan.ops if op.status in ACTIONABLE) + len(plan.playlists)

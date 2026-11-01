@@ -106,6 +106,25 @@ class LocalArchive(ServerCase):
         self.assertEqual((none["dirs"], none["files"]), ([], []))
         self.assertEqual(self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded")["dirs"], [])
 
+    def test_what_earlier_builds_left_goes_up_with_the_rest_in_one_pass(self) -> None:
+        put(self.root / "_excluded" / "left.gba", b"left by an earlier build")
+        put(self.root / "same name.txt", b"found by this build")
+        put(self.root / "_unmatched" / "same name.txt", b"left by an earlier build, the same target")
+        self.job("/api/scan", {"path": str(self.root), "platform": GBA})
+        real, runs = server.App._archive_moves, []
+
+        def counted(app: server.App, moves: list, *a: object, **k: object) -> object:
+            runs.append(len(moves))
+            return real(app, moves, *a, **k)
+        with mock.patch.object(server.App, "_archive_moves", counted):
+            res = self.job("/api/library/apply", {"aside_to": str(self.tmp / "rom-archive")})
+        self.assertEqual(len(runs), 1, runs)
+        self.assertEqual((res["aside"]["moved"], res["aside"]["failed"]), (runs[0], []))
+        self.assertTrue((self.arch / "Excluded" / "left.gba").is_file())
+        self.assertEqual(sorted(p.read_bytes() for p in (self.arch / "Unmatched").glob("same name*")),      # (both kept, neither over the other)
+                         [b"found by this build", b"left by an earlier build, the same target"])
+        self.assertFalse((self.root / "_excluded").exists() or (self.root / "_unmatched").exists())
+
     def test_a_build_says_its_steps_and_ends_with_the_whole_run_done(self) -> None:
         self.call("POST", "/api/library/apply", {"aside_to": str(self.tmp / "rom-archive")})
         job = self.wait()
