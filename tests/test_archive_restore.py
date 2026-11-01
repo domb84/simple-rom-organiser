@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from pathlib import Path  # noqa: E402
 
+from romorg import server  # noqa: E402
+
 from servercase import GB, GBA, SNES, ServerCase, put, tree  # noqa: E402
 from test_s3 import AK, BUCKET, SK, FakeS3, _handler  # noqa: E402
 
@@ -55,6 +57,19 @@ class LocalArchive(ServerCase):
         none = self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded&path=Superseded")      # (nothing set aside: an empty view)
         self.assertEqual((none["dirs"], none["files"]), ([], []))
         self.assertEqual(self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded")["dirs"], [])
+
+    def test_the_preview_is_worked_out_once_until_something_it_looks_at_changes(self) -> None:
+        body = {"summary": True, "limit": 1, "aside_to": str(self.tmp / "rom-archive")}
+        first = self.call("POST", "/api/library/plan", body)
+        with mock.patch.object(server.App, "_all_archive_moves", side_effect=AssertionError("worked out again")):
+            self.assertEqual(self.call("POST", "/api/library/plan", body)["plan_id"], first["plan_id"])
+            self.call("GET", f"/api/tree?platform={Q}&side=library&show=have")               # (Files, and back)
+            self.assertEqual(self.call("POST", "/api/library/plan", body)["files"], first["files"])
+        self.call("POST", "/api/library/profile", {"platform": GBA, "override": {"fields": ["keep_bios"], "on": True}})
+        self.call("POST", "/api/library/profile", {"platform": GBA, "keep_bios": False})       # (new rules: a new preview)
+        with mock.patch.object(server.App, "_all_archive_moves", return_value=[]) as again:
+            self.call("POST", "/api/library/plan", body)
+        again.assert_called_once()
 
     def test_an_unrecognised_file_goes_back_where_it_came_from_and_is_not_archived_twice(self) -> None:
         res = self.job("/api/archive/restore", {"platform": GBA, "paths": ["Unmatched/notes"]})

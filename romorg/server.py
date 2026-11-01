@@ -3880,6 +3880,12 @@ class App:
         rows = self._library_rows(state, key)
         if _bool_arg(body.get("summary")):
             self.warm_tree(state)                                  # (the system page: Files is likely next)
+        made = self._preview_inputs(state, plan, key, body) if _bool_arg(body.get("summary")) else None
+        held = state.items.get(("library", "preview"))
+        if made is not None and held is not None and held[0] == made:      # (nothing it looks at changed: back on the system page, no second wait)
+            if "running" in (held[1].get("saves") or {}):
+                held[1]["saves"]["running"] = _mod("retroarch").is_running()
+            return held[1]
         file_rows = [r for r in rows if r[0].get("item") == "file"]
         reasons = self._reason_counts(plan, rows)
         # rows per category, whether they move or already sit in place (``reasons`` counts only what this build changes)
@@ -4021,7 +4027,21 @@ class App:
                 if it.get("cs_kind"):
                     src = self._kind_rows(state, it["cs_kind"])
                     it["checksums"] = self._checksums(state, it["cs_kind"], src[it["cs_id"]][0])
+        if made is not None:
+            state.items[("library", "preview")] = (made, page)
         return page
+
+    def _preview_inputs(self, state: ScanState, plan: Any, key: tuple[bool, bool], body: dict[str, Any]) -> tuple[Any, ...] | None:
+        """What the summary of a build preview is worked out from; the same again gives the same preview (kept with the plans, so what
+        drops those drops it). None for a build into another folder: what that folder holds is looked at each time."""
+        if _str_arg(body.get("export_to")):
+            return None
+        platform, cfg = state.platform, self._config()
+        aside = self._archive_of(platform, state.root)
+        inv = self._s3_inventory(aside) if aside is not None else None
+        return (json.dumps(body, sort_keys=True), self._plan_id(state, key), id(plan), id(self._saves_report(state)), self._ra_state()[2].get("follow"),
+                self._convert_on_build(platform, cfg), self._compress_7z(platform, cfg), self._delete_converted(platform, cfg),
+                cfg.get("latest_only"), inv.version if inv is not None else "")
 
     @staticmethod
     def _sort_saves(rows: list[tuple[dict[str, Any], str]], desc: bool, total: Callable[[dict[str, Any]], int]) -> list[tuple[dict[str, Any], str]]:
