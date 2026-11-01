@@ -1386,7 +1386,9 @@
   // ------------------------------------------------------------------ Files
   const FILE_VIEWS = [
     { key: "library", label: "Library", side: "library", show: "have", count: (f) => f.show && f.show.have },
-    { key: "excluded", label: "Excluded", side: "library", show: "excluded", count: (f) => f.show && f.show.excluded },
+    { key: "excluded", label: "Excluded", side: "archive", show: "excluded", folder: "Excluded", count: (_f, sides) => sides && sides.excluded },
+    { key: "superseded", label: "Superseded", side: "archive", show: "superseded", folder: "Superseded", count: (_f, sides) => sides && sides.superseded },
+    { key: "incomplete", label: "Incomplete", side: "archive", show: "incomplete", folder: "Incomplete", count: (_f, sides) => sides && sides.incomplete },
     { key: "missing", label: "Missing", side: "library", show: "missing", count: (f) => f.show && f.show.missing },
     { key: "archive", label: "Archive", side: "archive", show: "", count: (_f, sides) => sides && sides.archive },
   ];
@@ -1404,11 +1406,15 @@
     if (!p) { location.replace("#/"); return null; }
     try { await post("/api/scan/select", { platform: p.name }); } catch (_) { /* the tree says when there is no scan */ }
     const f = fileFilters[slug] = fileFilters[slug] || {};
-    let view = FILE_VIEWS.find((v) => v.key === ctx.params.view) || FILE_VIEWS[0];
-    let path = "", facets = null, sides = null, page = null, query = "", searching = false;
+    // (what a build sets aside is in the archive; with no archive it stays in the ROM folder)
+    const fileViews = FILE_VIEWS.map((v) => (v.folder && !archiveFor(p) ? { ...v, side: "library", folder: "" } : v));
+    let view = fileViews.find((v) => v.key === ctx.params.view) || fileViews[0];
+    const topOf = (v) => v.folder || "";       // (a view of one archive folder opens in it)
+    const ticks = () => view.side === "archive" && !view.folder;        // (the Archive view: tick files to restore them)
+    let path = topOf(view), facets = null, sides = null, page = null, query = "", searching = false;
     const ticked = new Set();
     let upgradeWaits = 0, archiveTidy = 0;
-    const views = el("nav", { class: "views", "data-section": "views", "aria-label": "Views" });
+    const views = el("nav", { class: "views many", "data-section": "views", "aria-label": "Views" });
     const bar = el("nav", { class: "filter-bar hidden", "data-section": "filters", "aria-label": "Filters" });      // (the choices of the filters, on the page itself)
     const list = el("div", { class: "rows", "data-section": "list" });
     const panel = el("aside", { class: "panel", "data-section": "panel" });
@@ -1417,7 +1423,7 @@
     const head = { title: "Files", crumbs: [[p.name, `#/system/${slug}`]] };
     const params = (extra = {}) => qs({ platform: p.name, side: view.side, show: view.show, ...f, ...extra });
 
-    const drawViews = () => put(views, el("span", { class: "glyph" }, "LB"), ...FILE_VIEWS.map((v) => {
+    const drawViews = () => put(views, el("span", { class: "glyph" }, "LB"), ...fileViews.map((v) => {
       const n = facets ? v.count(facets, sides) : null;
       return el("button", { class: `chip${v === view ? " on" : ""}`, type: "button", tabindex: "-1", "data-view": v.key, on: { click: () => setView(v) } },
         n === null || n === undefined ? v.label : `${v.label} ${fmt(n)}`);
@@ -1448,8 +1454,8 @@
       bar.classList.toggle("hidden", !chips.length);
       put(bar, ...chips);
     };
-    const setView = (v) => { view = v; path = ""; ticked.clear(); load(); };
-    const step = (d) => setView(FILE_VIEWS[(FILE_VIEWS.indexOf(view) + d + FILE_VIEWS.length) % FILE_VIEWS.length]);
+    const setView = (v) => { view = v; path = topOf(v); ticked.clear(); load(); };
+    const step = (d) => setView(fileViews[(fileViews.indexOf(view) + d + fileViews.length) % fileViews.length]);
 
     const companion = (file) => /\.lha$/i.test(file.name) ? "WHDLoad" : /\.m3u$/i.test(file.name) ? "Playlist" : "";        // (what plays a game: beside its disks)
     const nameOf = (file) => companion(file) ? file.name : (file.row && (file.row.release || file.row.title)) || file.name.replace(/\.[^.]+$/, "");
@@ -1458,7 +1464,10 @@
       const r = file.row || {};
       const facts = [];
       const add = (k, v) => { if (v) facts.push(el("dt", { text: k }), el("dd", { text: v })); };
-      if (view.side === "archive") {
+      if (view.side === "archive" && file.state === "incoming") {
+        add("Now", file.from || file.name);
+        add("After the build", `In the archive: ${fullPath(file.name)}`);
+      } else if (view.side === "archive") {
         add("In the archive", fullPath(file.name));
       } else if (file.state === "missing") {
         add("Not in your folder", r.name || file.name);
@@ -1472,7 +1481,7 @@
       const btns = [];
       if (r.game_ref) btns.push(el("button", { class: "btn", type: "button", id: "panel-choose", on: { click: () => gameMenu(file) } }, "Keep or exclude…"));
       if (r.cs_kind !== undefined && r.cs_kind !== null) btns.push(el("button", { class: "btn", type: "button", on: { click: () => details(file) } }, "More details"));
-      if (view.side === "archive") btns.push(el("button", { class: "btn primary", type: "button", style: "min-width:0", on: { click: () => restore([fullPath(file.name)]) } }, "Restore"));
+      if (view.side === "archive" && file.state !== "incoming") btns.push(el("button", { class: "btn primary", type: "button", style: "min-width:0", on: { click: () => restore([fullPath(file.name)]) } }, "Restore"));      // (not there yet: nothing to restore)
       put(panel, el("span", { class: "panel-title", text: nameOf(file) }),
         el("span", { class: "tag", text: STATE_TEXT[file.state] || CAT_TEXT[r.category] || file.state }),
         el("dl", { class: "facts" }, facts), ...btns);
@@ -1511,9 +1520,9 @@
 
     function fileRow(file, sub) {
       const r = file.row || {};
-      const tick = view.side === "archive" ? el("span", { class: `tick${ticked.has(fullPath(file.name)) ? " on" : ""}`, "aria-hidden": "true" }) : null;
+      const tick = ticks() && file.state !== "incoming" ? el("span", { class: `tick${ticked.has(fullPath(file.name)) ? " on" : ""}`, "aria-hidden": "true" }) : null;
       const b = el("button", { class: `row${r.saved_keep || file.saved_keep ? " dim" : ""}`, type: "button", "data-key": fullPath(file.name),
-        on: { click: () => (view.side === "archive" ? describe(file) : r.game_ref ? gameMenu(file) : describe(file)), focus: () => describe(file) } },
+        on: { click: () => (r.game_ref && (view.side !== "archive" || view.folder) ? gameMenu(file) : describe(file)), focus: () => describe(file) } },
         tick || el("span", { class: "dot", style: `background:${STATE_DOT[file.state] || "#6b7686"}` }),
         el("span", { class: "row-name" }, nameOf(file), sub ? el("small", { text: sub }) : null),
         companion(file) || file.upgrade ? el("span", { class: "row-tags" }, companion(file) ? el("span", { class: `tag t-${companion(file).toLowerCase()}`, text: companion(file) }) : null, file.upgrade ? upgradeTag(file.upgrade_why) : null) : null,
@@ -1542,14 +1551,14 @@
       if (!page.ready) { put(list, message("Scan this system first: the files come from its last scan.", "warn")); put(panel, ); return; }
       // (the counts of the library views come from the library side: the archive side's facets count the archive's files)
       if (page.facets && view.side === "library") facets = page.facets;
-      if (page.sides) sides = { ...(sides || {}), [view.side]: page.sides[view.side] };
+      if (page.sides) { const { library: _l, archive: _a, ...reasons } = page.sides; sides = { ...(sides || {}), ...reasons, [view.side]: page.sides[view.side] }; }
       if (view.side === "archive" && page.facets !== undefined) archiveTidy = page.archive_tidy || 0;
       if (page.upgrades_pending && upgradeWaits++ < 12) setTimeout(() => { if (ctx.alive() && !topOverlay()) { facets = null; load(); } }, 5000);      // (the better versions are still being worked out)
       if (!facets) {
         try {
           const top = await get(`/api/tree?${qs({ platform: p.name, side: "library", show: "have", ...f })}`);
           facets = top.facets;
-          sides = { ...(top.sides || {}), ...(sides || {}) };
+          sides = { ...(sides || {}), ...(top.sides || {}) };
         } catch (_) { /* no counts */ }
       }
       if (view.side === "library" && (!sides || sides.archive === undefined)) {
@@ -1571,7 +1580,7 @@
       const more = (page.total_files || 0) > (page.offset || 0) + page.files.length;
       if (more) rows.push(row({ name: "Show more", icon: "list", id: "files-more", onClick: () => loadMore() }));
       put(list, ...(rows.length ? rows : [row({ name: "Nothing here in this view", static: true })]));
-      if (view.side === "archive") describeTicked();
+      if (ticks()) describeTicked();
       else put(panel, el("p", { class: "note", text: "The panel describes what is focused." }));
       updateHints();
       const target = (focusKey && list.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)) || list.querySelector("button");
@@ -1598,7 +1607,7 @@
       query = q;
       if (!q) { put(list, row({ name: "Type to search", static: true })); return; }
       const found = [];
-      const queue = [""];
+      const queue = [topOf(view)];
       let asked = 0;
       while (queue.length && found.length < 200 && asked < 40) {
         const at = queue.shift();
@@ -1707,15 +1716,15 @@
     }
 
     function updateHints() {
-      const h = [["A", view.side === "archive" ? "Details" : "Open"], ["B", path ? "Up a folder" : "Back"], ["LB RB", "Views"], ["Y", "Search"], ["X", "Filter"]];
-      if (view.side === "archive") h.splice(1, 0, ["Start", "Restore ticked"]);
+      const h = [["A", view.side === "archive" && !view.folder ? "Details" : "Open"], ["B", path !== topOf(view) ? "Up a folder" : "Back"], ["LB RB", "Views"], ["Y", "Search"], ["X", "Filter"]];
+      if (ticks()) { h.splice(1, 0, ["Start", "Restore ticked"]); h.splice(h.findIndex(([k]) => k === "Y"), 1, ["Y", "Tick"]); }
       Screen.current.hints = h;
       stripKey = "";
       renderStrip();
     }
     const tick = () => {
       const e = document.activeElement;
-      if (view.side !== "archive" || !e || !e._file) return;
+      if (!ticks() || !e || !e._file || e._file.state === "incoming") return;
       const key = fullPath(e._file.name);
       if (ticked.has(key)) ticked.delete(key); else ticked.add(key);
       e.querySelector(".tick").classList.toggle("on", ticked.has(key));
@@ -1723,9 +1732,9 @@
     };
 
     ctx.show({ ...head, focus: "#main [data-section=list] .row",         // (the list first: the filter chips above it are one step up)
-      back: () => { if (searching) { load(); return; } if (path) { const up = path.split("/").slice(0, -1).join("/"); const from = `dir:${baseName(path)}`; path = up; load(from); } else location.hash = `#/system/${slug}`; },
-      keys: { LB: () => step(-1), RB: () => step(1), Y: () => (view.side === "archive" ? tick() : openSearch()), X: filters,
-        Start: () => { if (view.side === "archive" && ticked.size) restore([...ticked]); } },
+      back: () => { if (searching) { load(); return; } if (path !== topOf(view)) { const up = path.split("/").slice(0, -1).join("/"); const from = `dir:${baseName(path)}`; path = up; load(from); } else location.hash = `#/system/${slug}`; },
+      keys: { LB: () => step(-1), RB: () => step(1), Y: () => (ticks() ? tick() : openSearch()), X: filters,
+        Start: () => { if (ticks() && ticked.size) restore([...ticked]); } },
       body: el("div", { class: "screen tight" }, views, bar, where, searchBox, el("div", { class: "split" }, el("div", { class: "grow" }, list), panel)),
       hints: [] });
     await load();

@@ -6428,6 +6428,7 @@ class App:
                                     "text": "/".join(Path(d).relative_to(root).parts).casefold()})
 
     TREE_SHOW = ("", "have", "missing", "bios", "unmatched", "saves", "kept_saves", "changed", "excluded")
+    TREE_REASONS = {"excluded": "Excluded", "superseded": "Superseded", "incomplete": "Incomplete"}      # what a build sets aside: view -> its folder in the archive
     TREE_CHANGED = frozenset(("moved", "renamed", "new", "converted", "deleted", "incoming", "copy", "saves"))
 
     @staticmethod
@@ -6467,8 +6468,8 @@ class App:
             return False
         if show == "changed" and entry["state"] not in App.TREE_CHANGED:      # (the big-screen UI's "Changes" view: what a build does)
             return False
-        if show == "excluded" and cat != "excluded":
-            return False
+        if show in App.TREE_REASONS and (entry["parts"][0] != App.TREE_REASONS[show] if entry["side"] == "archive" else cat != show):
+            return False                                    # (in the archive its folder says, a game archived by an earlier build has no row)
         if skip != "state" and f.get("state") and entry["state"] != f["state"]:
             return False
         tags = row.get("tags") or {}
@@ -6628,7 +6629,7 @@ class App:
             return {"platform": platform.name, "side": side, "ready": False,
                     "reason": "Scan this system first: the tree is made from its scan."}
         f = {k: v for k in ("show", "state", "region", "language", "rated", "machine", "install", "upgrade", "hide_saved") if (v := _str_arg(query.get(k)))}
-        if f.get("show") and f["show"] not in self.TREE_SHOW:
+        if f.get("show") and f["show"] not in self.TREE_SHOW and f["show"] not in self.TREE_REASONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown choice: {f['show']}")
         q = _str_arg(query.get("q")).strip().casefold()
         if q:
@@ -6643,7 +6644,7 @@ class App:
         path = _str_arg(query.get("path"))
         page = index.children(path, offset)
         if page is None:
-            if path:
+            if path and not (side == "archive" and path == self.TREE_REASONS.get(f.get("show", ""))):      # (nothing set aside for that reason)
                 raise ApiError(HTTPStatus.NOT_FOUND, "No such folder in the tree")
             page = {"path": "", "dirs": [], "files": [], "total_files": 0, "offset": 0, "files_below": 0, "bytes": 0, "changed": 0}
         for item in page["files"]:                                        # the row each file belongs to (its game, its reason, its saves)
@@ -6676,6 +6677,10 @@ class App:
             out["facets"] = self._tree_facets(entries, side, f, platform)
             out["sides"] = {s: sum(1 for e in entries if e["side"] == s and e["state"] not in ("missing", "saveonly") and self._tree_pass(e, f))
                             for s in ("library", "archive")}
+            kept_side = "archive" if base is not None else "library"       # (without an archive a build sets these aside in the ROM folder)
+            plain = {k: v for k, v in f.items() if k != "show"}
+            for why in self.TREE_REASONS:                                  # the files of each reason, as its folder counts them
+                out["sides"][why] = sum(1 for e in entries if e["side"] == kept_side and self._tree_pass(e, {**plain, "show": why}))
             out["archive_root"] = self._archive_where(base)
             if side == "archive" and base is not None:                      # (files an earlier build archived the old way: "Tidy the archive")
                 organiser = _mod("organiser")

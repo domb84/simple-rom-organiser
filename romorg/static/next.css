@@ -297,6 +297,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .chip { height: 2.875rem; padding: 0 1.375rem; border: 0; border-radius: 1.4375rem; background: var(--surface); color: var(--text-2);
   font-size: 1.3rem; display: inline-flex; align-items: center; }
 .chip.on { background: var(--text); color: var(--bg); font-weight: 600; }
+.views.many { gap: 0.4rem; } .views.many .chip { padding: 0 0.85rem; font-size: 1.1rem; }      /* the six views of the Files list, on one line of a Deck */
 .tick { flex: none; width: 2.125rem; height: 2.125rem; border-radius: 0.5rem; border: 3px solid var(--grey-dot); }
 .tick.on { background: var(--good); border-color: var(--good); }
 .tick.on::after { content: "✓"; display: flex; align-items: center; justify-content: center; height: 100%; color: var(--bg); font-weight: 800; }

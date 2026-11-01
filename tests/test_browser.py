@@ -1185,6 +1185,23 @@ class WorkInProgressTests(UiTestCase):
 
 
 class LayoutTests(UiTestCase):
+    def test_the_views_of_files_stay_on_one_line_with_big_numbers(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.page.goto(self.fx.url)
+        self.set_archive(str(arch))
+        self.start("#/system/commodore-amiga/files?view=archive")
+        self.list_ready()
+        self.page.call("Emulation.setDeviceMetricsOverride", width=1280, height=800, deviceScaleFactor=1, mobile=False)
+        self.page.wait("!!document.querySelector('.chip[data-view=excluded]')")
+        lines = self.page.eval("""(() => {
+          const big = {library: 'Library 100', excluded: 'Excluded 11,140', superseded: 'Superseded 23,428', incomplete: 'Incomplete 4', missing: 'Missing 0', archive: 'Archive 69,128'};
+          const chips = [...document.querySelectorAll('.views .chip')];
+          chips.forEach((c) => { c.textContent = big[c.dataset.view]; });
+          return new Set(chips.map((c) => c.offsetTop)).size;
+        })()""")
+        self.assertEqual(lines, 1)
+
     def test_every_screen_fits_the_window(self) -> None:
         self.start("#/")
         for width, height in ((1280, 720), (1280, 800), (1920, 1080)):
@@ -1311,6 +1328,26 @@ class S3ArchiveUiTests(UiTestCase):
 
 class RestoreUiTests(UiTestCase):
     """Ticking files on the Archive view and restoring them (the archive keeps its copy)."""
+
+    def test_what_a_build_sets_aside_has_a_view_of_its_archive_folder(self) -> None:
+        arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))
+        self.addCleanup(shutil.rmtree, arch, True)
+        self.page.goto(self.fx.url)
+        self.set_archive(str(arch))
+        self.start("#/system/commodore-amiga/files?view=archive")
+        self.list_ready()
+        self.page.wait("!!document.querySelector('.chip[data-view=excluded]')?.textContent.match(/\\d/)", timeout=30)
+        folders = self.page.eval("Object.fromEntries([...document.querySelectorAll('#main [data-section=list] button.row')].map(r => [r.querySelector('.row-name').textContent, r.querySelector('.row-value').textContent.replace(/\\D/g, '')]))")
+        self.assertTrue(int(folders["Excluded"]) > 0, folders)
+        for view, name in (("excluded", "Excluded"), ("superseded", "Superseded"), ("incomplete", "Incomplete")):
+            chip = self.page.eval(f"document.querySelector('.chip[data-view={view}]').textContent")
+            self.assertEqual(chip, f"{name} {folders.get(name, '0')}".replace(",", ""))
+        self.click(".chip[data-view=excluded]")
+        self.page.wait("document.querySelector('.crumb-path')?.textContent === 'Excluded'", timeout=30)
+        self.list_ready()
+        self.assertIn("Back", self.strip())                                              # (its folder is the top of this view)
+        self.assertIsNone(self.page.eval("document.querySelector('#main .tick')"))       # (nothing to tick: they are not in the archive yet)
+        self.no_js_errors()
 
     def test_several_ticked_files_are_restored_from_the_archive(self) -> None:
         arch = Path(tempfile.mkdtemp(prefix="romorg-ui-arch-"))

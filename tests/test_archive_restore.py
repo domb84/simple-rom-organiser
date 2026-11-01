@@ -43,6 +43,19 @@ class LocalArchive(ServerCase):
         self.assertEqual((self.root / "Bash (USA).gba").read_bytes(), self.rom["Bash (USA)"])
         self.assertTrue((self.arch / "Excluded" / "bash old.gba").is_file())                 # the archive keeps its copy
 
+    def test_each_reason_has_a_view_of_its_folder_counted_as_the_folder_is(self) -> None:
+        put(self.arch / "Excluded" / "more" / "two.gba", b"two")
+        top = self.call("GET", f"/api/tree?platform={Q}&side=library&show=have")
+        arch = self.call("GET", f"/api/tree?platform={Q}&side=archive")
+        folder = {d["name"]: d["files"] for d in arch["dirs"]}
+        self.assertEqual((top["sides"]["excluded"], top["sides"]["superseded"], top["sides"]["incomplete"]), (folder["Excluded"], 0, 0))
+        self.assertEqual(folder["Excluded"], 2)
+        view = self.call("GET", f"/api/tree?platform={Q}&side=archive&show=excluded&path=Excluded")
+        self.assertEqual(([d["name"] for d in view["dirs"]], [f["name"] for f in view["files"]]), (["more"], ["bash old.gba"]))
+        none = self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded&path=Superseded")      # (nothing set aside: an empty view)
+        self.assertEqual((none["dirs"], none["files"]), ([], []))
+        self.assertEqual(self.call("GET", f"/api/tree?platform={Q}&side=archive&show=superseded")["dirs"], [])
+
     def test_an_unrecognised_file_goes_back_where_it_came_from_and_is_not_archived_twice(self) -> None:
         res = self.job("/api/archive/restore", {"platform": GBA, "paths": ["Unmatched/notes"]})
         self.assertEqual((res["restored"], res["placed"], res["at_original"]), (1, 0, 1))
